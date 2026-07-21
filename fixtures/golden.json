@@ -1,0 +1,50 @@
+{
+  "_comment": "Single source of truth for values captured from real BOSS RC-5 hardware. Consumed by both the JS test suite (test/) and the Swift test suite (macos/RC5Kit). Do not edit without hardware evidence.",
+  "constants": {
+    "samplesPerMinute": 2646000,
+    "maxTempoTenths": 1600,
+    "minTempoTenths": 200,
+    "measureFieldOffset": 7,
+    "nameLength": 12,
+    "slotCount": 99
+  },
+  "tailMarkers": { "memory1": 56, "memory2": 57 },
+  "slotParams": [
+    { "frames": 19684950, "measures": 256, "tempoTenths": 1376, "source": "pedal-authored" },
+    { "frames": 6860867, "measures": 64, "tempoTenths": 987, "source": "pedal-authored" },
+    { "frames": 18687375, "measures": 256, "tempoTenths": 1449, "source": "pedal-authored", "note": "144.99 BPM — proves truncation, rounding would give 1450" },
+    { "frames": 19619123, "measures": 256, "tempoTenths": 1381, "source": "pedal-authored" },
+    { "frames": 16934400, "measures": 256, "tempoTenths": 1600, "source": "pedal-authored", "note": "exactly 160.0 BPM — the boundary is inclusive" },
+    { "frames": 12083400, "measures": 128, "tempoTenths": 1121, "source": "pedal-authored" },
+    { "frames": 16666362, "measures": 128, "tempoTenths": 812, "source": "pedal-accepted" },
+    { "frames": 9862363, "measures": 128, "tempoTenths": 1373, "source": "pedal-accepted" },
+    { "frames": 32294771, "measures": 256, "tempoTenths": 838, "source": "pedal-accepted" },
+    { "frames": 10525200, "measures": 128, "tempoTenths": 1287, "source": "pedal-accepted" }
+  ],
+  "outOfRange": {
+    "tooShortFrames": 1000,
+    "tooLongFrames": 3000000000
+  },
+  "technicalNames": [
+    { "name": "FIFTH-~2.WAV", "technical": true },
+    { "name": "TRACK.WAV", "technical": true },
+    { "name": "deep-space-is-my-home-part1-v02.wav", "technical": false },
+    { "name": "Nice Song.wav", "technical": false },
+    { "name": "dropped.wav", "technical": false }
+  ],
+  "canonicalFloat32Header": {
+    "_comment": "First 56 bytes of a float32 WAV exactly as the pedal normalized it (base64). Bytes 4-7 (RIFF size) and 52-55 (data size) are file-specific; everything else must match canonicalize() output byte-for-byte.",
+    "base64": "UklGRrDQBAVXQVZFZm10IBwAAAADAAIARKwAACBiBQAIACAACgAAAAAAAAAAAAAAZGF0YYDQBAU=",
+    "sizeFieldOffsets": [4, 5, 6, 7, 52, 53, 54, 55]
+  },
+  "nameEncoding": {
+    "name": "Deep Space 1",
+    "codes": [68, 101, 101, 112, 32, 83, 112, 97, 99, 101, 32, 49]
+  },
+  "factorySlot": {
+    "_comment": "Values of a never-touched slot as the pedal formats it; every virgin slot on real hardware is byte-identical.",
+    "TRACK1": { "Rev": 0, "PlyLvl": 100, "Pan": 50, "One": 0, "StrtMod": 0, "StpMod": 0, "Measure": 1, "MeasMod": 1, "MeasLen": 0, "MeasBtLp": 0, "RecTmp": 1200, "WavStat": 0, "WavLen": 0 },
+    "MASTER": { "Tempo": 1200, "DubMode": 0, "RecAction": 1, "AutoRec": 0, "FadeTime": 5, "Level": 100, "LpMod": 0, "LpLen": 0, "TrkMod": 1, "Sync": 0 },
+    "RHYTHM": { "Level": 100, "Reverb": 30, "Pattern": 0, "Variation": 0, "VariationChange": 0, "Kit": 0, "Beat": 2, "Fill": 1, "Part1": 1, "Part2": 1, "Part3": 1, "Part4": 0, "RecCount": 0, "PlayCount": 0, "Start": 0, "Stop": 1, "ToneLow": 10, "ToneHigh": 10, "State": 0 }
+  }
+}
