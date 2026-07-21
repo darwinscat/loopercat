@@ -152,7 +152,8 @@ juce_add_gui_app(LooperCat
 
 target_sources(LooperCat PRIVATE
     app/Main.cpp
-    app/MainComponent.cpp)
+    app/MainComponent.cpp
+    app/SlotTable.cpp)
 
 target_compile_definitions(LooperCat PRIVATE
     JUCE_WEB_BROWSER=0
@@ -174,5 +175,30 @@ target_link_libraries(LooperCat PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags)
+
+if(LOOPERCAT_BUILD_TESTS)
+
+# ----------------------------------------------------------------------------
+# The live-refresh harness: the REAL PedalMonitor (worker thread + async
+# delivery) against a scratch volume that mounts, edits and unmounts under
+# it — the headless proof behind "rows follow the filesystem". Needs JUCE,
+# so it lives in the app tier, registered under the same ctest.
+# ----------------------------------------------------------------------------
+juce_add_console_app(pedal_monitor_harness PRODUCT_NAME "pedal_monitor_harness")
+target_sources(pedal_monitor_harness PRIVATE tests/pedal_monitor_harness.cpp)
+target_compile_definitions(pedal_monitor_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1        # runDispatchLoopUntil pumps the delivery loop
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(pedal_monitor_harness PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME pedal_monitor_harness COMMAND pedal_monitor_harness)
+
+endif()  # LOOPERCAT_BUILD_TESTS
 
 endif()  # LOOPERCAT_BUILD_APP

@@ -19,31 +19,41 @@ public:
 
     void initialise(const juce::String&) override
     {
+        const auto args = getCommandLineParameterArray();
+
+        // --volume <path>: pin the pedal volume instead of autodetecting —
+        // rc5cat parity, and the hook that lets a synthetic pedal directory
+        // drive the app in tests.
+        const int volumeFlag = args.indexOf("--volume");
+        const juce::String explicitVolume = volumeFlag >= 0 ? args[volumeFlag + 1] : juce::String();
+
         // --snapshot <file.png>: render the main content offscreen and exit.
         // The headless proof that the window actually draws — no display
         // permissions involved; used by the DoD check and CI screenshots.
-        const auto args = getCommandLineParameterArray();
-        const int flag = args.indexOf("--snapshot");
-        if (flag >= 0) {
-            setApplicationReturnValue(writeSnapshot(args[flag + 1]));
+        const int snapshotFlag = args.indexOf("--snapshot");
+        if (snapshotFlag >= 0) {
+            setApplicationReturnValue(
+                writeSnapshot(args[snapshotFlag + 1], explicitVolume.toStdString()));
             quit();
             return;
         }
 
-        mainWindow = std::make_unique<MainWindow>(getApplicationName());
+        mainWindow = std::make_unique<MainWindow>(getApplicationName(),
+                                                  explicitVolume.toStdString());
     }
 
     void shutdown() override { mainWindow = nullptr; }
     void systemRequestedQuit() override { quit(); }
 
 private:
-    static int writeSnapshot(const juce::String& path)
+    static int writeSnapshot(const juce::String& path, const std::string& explicitVolume)
     {
         if (path.isEmpty()) {
             std::cerr << "--snapshot requires a target file path\n";
             return 2;
         }
-        MainComponent content;
+        MainComponent content(explicitVolume);
+        content.refreshNow();
         const juce::Image image =
             content.createComponentSnapshot(content.getLocalBounds(), false, 1.0f);
         const juce::File file = juce::File::getCurrentWorkingDirectory().getChildFile(path);
@@ -61,11 +71,11 @@ private:
     class MainWindow final : public juce::DocumentWindow
     {
     public:
-        explicit MainWindow(const juce::String& name)
+        MainWindow(const juce::String& name, std::string explicitVolume)
             : DocumentWindow(name, juce::Colour(0xff121218), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar(true);
-            setContentOwned(new MainComponent(), true);
+            setContentOwned(new MainComponent(std::move(explicitVolume)), true);
             setResizable(true, true);
             setResizeLimits(760, 480, 4096, 4096);
             centreWithSize(getWidth(), getHeight());
