@@ -74,3 +74,101 @@ endfunction()
 loopercat_core_test(params_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
+
+if(LOOPERCAT_BUILD_APP)
+
+# ----------------------------------------------------------------------------
+# felitronics-appkit — the family's shared app-side JUCE infrastructure
+# (brand, BrandHeader, VersionBadge, UpdateChecker). HYBRID consumption, the
+# family convention: a local sibling checkout wins for co-development,
+# otherwise the pinned public release is fetched — a fresh clone / CI is
+# self-contained.
+# ----------------------------------------------------------------------------
+include(FetchContent)
+set(LOOPERCAT_APPKIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../felitronics-appkit" CACHE PATH
+    "Local felitronics-appkit checkout (used if present); else the pinned release is fetched")
+set(LOOPERCAT_APPKIT_TAG "v0.7.0" CACHE STRING
+    "felitronics-appkit git tag to fetch when no local checkout is present")
+if(LOOPERCAT_APPKIT_DIR AND EXISTS "${LOOPERCAT_APPKIT_DIR}/CMakeLists.txt")
+    message(STATUS "felitronics-appkit: local checkout — ${LOOPERCAT_APPKIT_DIR}")
+    FetchContent_Declare(felitronics_appkit SOURCE_DIR "${LOOPERCAT_APPKIT_DIR}")
+else()
+    message(STATUS "felitronics-appkit: fetching ${LOOPERCAT_APPKIT_TAG} from GitHub")
+    FetchContent_Declare(felitronics_appkit
+        GIT_REPOSITORY https://github.com/darwinscat/felitronics-appkit.git
+        GIT_TAG        ${LOOPERCAT_APPKIT_TAG}
+        GIT_SHALLOW    TRUE)
+endif()
+FetchContent_MakeAvailable(felitronics_appkit)
+
+set(LOOPERCAT_JUCE_TAG "8.0.14" CACHE STRING "JUCE git tag")   # the family's pinned JUCE
+FetchContent_Declare(juce
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG        ${LOOPERCAT_JUCE_TAG}
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(juce)
+
+# Brand assets ship with felitronics-appkit; embedding is the consumer's job
+# (the appkit target stays include-path-only). BinaryData::catlogo_svg + the
+# Michroma wordmark font (OFL — license text lives next to the font upstream).
+juce_add_binary_data(LooperCatAssets
+    SOURCES
+        "${felitronics_appkit_SOURCE_DIR}/assets/catlogo.svg"
+        "${felitronics_appkit_SOURCE_DIR}/assets/Michroma-Regular.ttf")
+
+# ----------------------------------------------------------------------------
+# Configure-time build stamp for the version badge: short hash + dirty flag +
+# a UTC number. Deliberately simple for now — the always-fresh per-build
+# generator (the TabbyEQ pattern) arrives with packaging in Sprint 5.
+# ----------------------------------------------------------------------------
+find_package(Git QUIET)
+set(LOOPERCAT_GIT_HASH "unknown")
+set(LOOPERCAT_GIT_DIRTY 0)
+if(GIT_EXECUTABLE)
+    execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
+        OUTPUT_VARIABLE LOOPERCAT_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" status --porcelain
+        OUTPUT_VARIABLE _loopercat_status ERROR_QUIET)
+    if(NOT _loopercat_status STREQUAL "")
+        set(LOOPERCAT_GIT_DIRTY 1)
+    endif()
+endif()
+string(TIMESTAMP LOOPERCAT_BUILD_NUMBER "%Y%m%d%H%M%S" UTC)
+
+set(LOOPERCAT_BUILD_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+if(NOT LOOPERCAT_BUILD_ARCH)
+    set(LOOPERCAT_BUILD_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+string(REPLACE ";" "+" LOOPERCAT_BUILD_ARCH "${LOOPERCAT_BUILD_ARCH}")   # "arm64;x86_64" -> one token
+
+juce_add_gui_app(LooperCat
+    PRODUCT_NAME "LooperCat"
+    COMPANY_NAME "Darwin's Cat"
+    BUNDLE_ID    "com.darwinscat.loopercat")
+
+target_sources(LooperCat PRIVATE
+    app/Main.cpp
+    app/MainComponent.cpp)
+
+target_compile_definitions(LooperCat PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_VERSION="${PROJECT_VERSION}"
+    LOOPERCAT_GIT_HASH="${LOOPERCAT_GIT_HASH}"
+    LOOPERCAT_GIT_DIRTY=${LOOPERCAT_GIT_DIRTY}
+    LOOPERCAT_BUILD_NUMBER=${LOOPERCAT_BUILD_NUMBER}
+    LOOPERCAT_BUILD_OS="${CMAKE_SYSTEM_NAME}"
+    LOOPERCAT_BUILD_ARCH="${LOOPERCAT_BUILD_ARCH}")
+
+target_link_libraries(LooperCat PRIVATE
+    loopercat::core
+    felitronics::appkit                 # BrandHeader / VersionBadge / UpdateChecker (header-only; JUCE comes from us)
+    LooperCatAssets                     # embedded brand assets (cat logo + Michroma)
+    juce::juce_gui_basics
+    juce::juce_events
+    juce::juce_data_structures
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_lto_flags
+    juce::juce_recommended_warning_flags)
+
+endif()  # LOOPERCAT_BUILD_APP
