@@ -33,6 +33,7 @@ struct SlotRow
 {
     catalog::SlotInfo info;
     std::string wavFile; // on-pedal filename(s), comma-joined; empty when none
+    std::string wavPath; // absolute path of the first wav — what playback opens
 
     bool operator==(const SlotRow&) const = default;
 };
@@ -92,13 +93,15 @@ public:
             const std::string text = readFileBytes(volume::memoryPath(*found, 1));
             rc0::assertMemoryFile(text);
             for (auto& info : catalog::listSlots(text)) {
-                std::string files;
+                std::string files, firstPath;
                 for (const auto& name : volume::listSlotWavs(*found, info.slot)) {
-                    if (!files.empty())
+                    if (files.empty())
+                        firstPath = (volume::wavDir(*found, info.slot) / name).string();
+                    else
                         files += ", ";
                     files += name;
                 }
-                snapshot.slots.push_back({ std::move(info), std::move(files) });
+                snapshot.slots.push_back({ std::move(info), std::move(files), std::move(firstPath) });
             }
         } catch (const Error& e) {
             snapshot.error = e.what();

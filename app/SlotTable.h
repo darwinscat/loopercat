@@ -24,6 +24,12 @@ public:
 
     void setRows(std::vector<SlotRow> rows);
 
+    // Row index (0-based), fired on the message thread.
+    std::function<void(int)> onSlotSelected;  // selection moved
+    std::function<void(int)> onSlotActivated; // double-click: select AND play
+
+    void selectRow(int rowIndex) { table_.selectRow(rowIndex); }
+
     void resized() override;
 
     // Display formatting, kept as pure functions (and reused by tests-to-be
@@ -37,6 +43,8 @@ private:
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;
     void paintCell(juce::Graphics&, int row, int columnId, int width, int height, bool selected) override;
+    void selectedRowsChanged(int lastRowSelected) override;
+    void cellDoubleClicked(int row, int columnId, const juce::MouseEvent&) override;
 
     std::vector<SlotRow> rows_;
     juce::TableListBox table_ { {}, this };

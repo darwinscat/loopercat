@@ -74,6 +74,18 @@ int SlotTable::getNumRows()
     return static_cast<int>(rows_.size());
 }
 
+void SlotTable::selectedRowsChanged(int lastRowSelected)
+{
+    if (onSlotSelected && lastRowSelected >= 0)
+        onSlotSelected(lastRowSelected);
+}
+
+void SlotTable::cellDoubleClicked(int row, int, const juce::MouseEvent&)
+{
+    if (onSlotActivated)
+        onSlotActivated(row);
+}
+
 void SlotTable::paintRowBackground(juce::Graphics& g, int row, int, int, bool selected)
 {
     g.fillAll(selected ? kSelected : (row % 2 == 0 ? kRowEven : kRowOdd));
