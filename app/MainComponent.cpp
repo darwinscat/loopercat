@@ -3,8 +3,9 @@
 
 #include "MainComponent.h"
 
+#include "Strings.h"
+
 #include <felitronics/appkit/AudioSettingsPanel.h>
-#include <felitronics/appkit/TextPrompt.h>
 
 #include <BinaryData.h>
 
@@ -62,7 +63,7 @@ namespace
 
     juce::String trimmedName(const SlotRow& row)
     {
-        return juce::String(row.info.name).trimEnd();
+        return utf8(row.info.name).trimEnd();
     }
 } // namespace
 
@@ -92,6 +93,16 @@ MainComponent::MainComponent(std::string explicitVolume)
     table.onSlotSelected = [this](int row) { slotChosen(row, false); };
     table.onSlotActivated = [this](int row) { slotChosen(row, true); };
     table.onRowContextMenu = [this](int row, juce::Point<int> at) { showRowMenu(row, at); };
+    table.onRenameCommitted = [this](int row, juce::String newName) {
+        if (pedalBusy || static_cast<std::size_t>(row) >= snapshot.slots.size())
+            return;
+        const int slot = snapshot.slots[static_cast<std::size_t>(row)].info.slot;
+        worker.enqueue({ "Rename slot " + juce::String(slot),
+                         [name = newName.toStdString(), options = makeWriteOptions(),
+                          slot](const volume::fs::path& volumePath) {
+                             commands::rename(volumePath, slot, name, options);
+                         } });
+    };
     table.onWavDropped = [this](int row, juce::String path) {
         if (pedalBusy || static_cast<std::size_t>(row) >= snapshot.slots.size())
             return;
@@ -151,7 +162,7 @@ void MainComponent::updateStatusText()
         return;
     }
     if (!snapshot.error.empty()) {
-        status.setText(juce::String(snapshot.volume) + " — " + snapshot.error,
+        status.setText(utf8(snapshot.volume + " \xe2\x80\x94 " + snapshot.error),
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kErrorText);
         return;
@@ -159,12 +170,12 @@ void MainComponent::updateStatusText()
     int loaded = 0;
     for (const auto& row : snapshot.slots)
         loaded += row.info.hasAudio ? 1 : 0;
-    juce::String text = juce::String(snapshot.volume) + "  —  " + juce::String(loaded) + " of "
+    juce::String text = utf8(snapshot.volume + "  \xe2\x80\x94  ") + juce::String(loaded) + " of "
                       + juce::String(snapshot.slots.size()) + " slots hold a loop";
     if (pedalBusy)
-        text << "  ·  working…";
+        text << juce::String::fromUTF8("  \xc2\xb7  working\xe2\x80\xa6");
     if (deviceError.isNotEmpty())
-        text << "  ·  audio device: " << deviceError;
+        text << juce::String::fromUTF8("  \xc2\xb7  audio device: ") << deviceError;
     status.setText(text, juce::dontSendNotification);
     status.setColour(juce::Label::textColourId, kStatusText);
 }
@@ -181,7 +192,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     if (player.currentPath().isNotEmpty()) {
         bool stillThere = false;
         for (const auto& row : snapshot.slots)
-            stillThere = stillThere || juce::String(row.wavPath) == player.currentPath();
+            stillThere = stillThere || utf8(row.wavPath) == player.currentPath();
         if (!stillThere)
             player.clear();
     }
@@ -203,7 +214,7 @@ void MainComponent::slotChosen(int rowIndex, bool startPlaying)
         return;
     }
 
-    const juce::String path(row.wavPath);
+    const juce::String path = utf8(row.wavPath);
     if (path != player.currentPath()) {
         const juce::String title = juce::String(row.info.slot).paddedLeft('0', 2) + "  "
                                  + trimmedName(row);
@@ -232,37 +243,25 @@ void MainComponent::showRowMenu(int rowIndex, juce::Point<int> screenPosition)
     const juce::String name = trimmedName(row);
 
     juce::PopupMenu menu;
-    menu.addItem(1, "Rename…");
+    menu.addItem(1, juce::String::fromUTF8("Rename\xe2\x80\xa6"));
     menu.addItem(2, "One Shot", true, row.info.oneShot);
-    menu.addItem(3, occupied ? "Replace WAV…" : "Push WAV here…");
-    menu.addItem(4, "Pull to folder…", occupied);
+    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
+    menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     menu.addSeparator();
-    menu.addItem(5, "Clear slot…");
+    menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
     const bool oneShotNow = row.info.oneShot;
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
-        [this, slot, name, occupied, oneShotNow](int choice) {
+        [this, rowIndex, slot, name, occupied, oneShotNow](int choice) {
             switch (choice) {
-            case 1: renameSlot(slot, name); break;
+            case 1: table.startRenameEdit(rowIndex); break; // same in-place editor as double-click
             case 2: toggleOneShot(slot, oneShotNow); break;
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
             default: break;
             }
-        });
-}
-
-void MainComponent::renameSlot(int slot, const juce::String& currentName)
-{
-    felitronics::appkit::textPrompt(
-        "Rename slot " + juce::String(slot), currentName, [this, slot](juce::String value) {
-            worker.enqueue({ "Rename slot " + juce::String(slot),
-                             [name = value.toStdString(), options = makeWriteOptions(),
-                              slot](const volume::fs::path& volumePath) {
-                                 commands::rename(volumePath, slot, name, options);
-                             } });
         });
 }
 
@@ -324,7 +323,7 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
 void MainComponent::pullSlot(int slot)
 {
     fileChooser = std::make_unique<juce::FileChooser>(
-        "Pull slot " + juce::String(slot) + " to…",
+        "Pull slot " + juce::String(slot) + juce::String::fromUTF8(" to\xe2\x80\xa6"),
         juce::File::getSpecialLocation(juce::File::userMusicDirectory));
     fileChooser->launchAsync(juce::FileBrowserComponent::openMode
                                  | juce::FileBrowserComponent::canSelectDirectories,

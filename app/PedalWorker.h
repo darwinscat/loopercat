@@ -185,7 +185,7 @@ private:
                         throw Error("no pedal volume mounted");
                     job->work(*found);
                 } catch (const std::exception& e) {
-                    error = e.what();
+                    error = juce::String::fromUTF8(e.what()); // core messages carry typographic dashes
                 }
                 maybeDeliverSnapshot(scanOnce());
                 deliver([cb = onJobResult, d = job->description, error] {

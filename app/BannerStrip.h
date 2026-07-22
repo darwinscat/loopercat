@@ -5,6 +5,8 @@
 
 #include <loopercat/Commands.hpp>
 
+#include "Strings.h"
+
 #include <felitronics/appkit/Brand.h>
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -75,10 +77,11 @@ public:
         for (const auto& finding : findings_) {
             if (drawn >= kMaxLines - (total > kMaxLines ? 1 : 0))
                 break;
-            drawLine(finding.message, colourFor(finding.level));
+            drawLine(utf8(finding.message), colourFor(finding.level));
         }
         if (total > drawn)
-            drawLine("+" + juce::String(total - drawn) + " more…", juce::Colour(0xff8a8a92));
+            drawLine("+" + juce::String(total - drawn) + juce::String::fromUTF8(" more\xe2\x80\xa6"),
+                     juce::Colour(0xff8a8a92));
     }
 
     void mouseDown(const juce::MouseEvent&) override { dismissJobError(); }

@@ -30,8 +30,14 @@ public:
     std::function<void(int)> onSlotActivated;                       // double-click: select AND play
     std::function<void(int, juce::Point<int>)> onRowContextMenu;    // right-click (screen position)
     std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a row
+    std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
 
     void selectRow(int rowIndex) { table_.selectRow(rowIndex); }
+
+    // Inline rename: an editor right in the Name cell (double-click on the
+    // name does this too). Enter commits, Esc cancels, 12 printable ASCII
+    // enforced at the field.
+    void startRenameEdit(int rowIndex);
 
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
     void fileDragMove(const juce::StringArray& files, int x, int y) override;
@@ -56,9 +62,13 @@ private:
     void cellClicked(int row, int columnId, const juce::MouseEvent&) override;
 
     int rowAt(int x, int y);
+    void finishRenameEdit(bool commit);
 
     std::vector<SlotRow> rows_;
     int dragRow_ = -1; // row highlighted under a wav drag
+    int editingRow_ = -1;
+    juce::String editOriginal_;
+    std::unique_ptr<juce::TextEditor> nameEditor_;
     juce::TableListBox table_ { {}, this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SlotTable)

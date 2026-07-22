@@ -47,7 +47,6 @@ private:
     // Mutations: every action becomes a queued worker job with the standard
     // write options (backup root + timestamp under the app data dir).
     void showRowMenu(int rowIndex, juce::Point<int> screenPosition);
-    void renameSlot(int slot, const juce::String& currentName);
     void toggleOneShot(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
     void choosePushWav(int slot, bool slotOccupied);

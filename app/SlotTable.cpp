@@ -3,6 +3,8 @@
 
 #include "SlotTable.h"
 
+#include "Strings.h"
+
 #include <felitronics/appkit/Brand.h>
 
 #include <loopercat/Wav.hpp>
@@ -44,9 +46,63 @@ SlotTable::SlotTable()
 
 void SlotTable::setRows(std::vector<SlotRow> rows)
 {
+    finishRenameEdit(false); // rows may shift under the editor — never edit stale data
     rows_ = std::move(rows);
     table_.updateContent();
     table_.repaint();
+}
+
+// --- inline rename ---
+
+void SlotTable::startRenameEdit(int rowIndex)
+{
+    if (rowIndex < 0 || static_cast<std::size_t>(rowIndex) >= rows_.size() || !onRenameCommitted)
+        return;
+    finishRenameEdit(false);
+
+    const auto cell = table_.getCellPosition(kName, rowIndex, true);
+    if (cell.isEmpty())
+        return;
+    table_.scrollToEnsureRowIsOnscreen(rowIndex);
+
+    editingRow_ = rowIndex;
+    editOriginal_ = utf8(rows_[static_cast<std::size_t>(rowIndex)].info.name).trimEnd();
+
+    nameEditor_ = std::make_unique<juce::TextEditor>();
+    // The pedal's name constraints, enforced at the field: 12 chars, the
+    // printable ASCII range its display can show.
+    juce::String printableAscii;
+    for (juce::juce_wchar c = 0x20; c <= 0x7e; ++c)
+        printableAscii += juce::String::charToString(c);
+    nameEditor_->setInputRestrictions(rc0::kNameLength, printableAscii);
+    nameEditor_->setFont(juce::FontOptions(13.0f));
+    nameEditor_->setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff23232d));
+    nameEditor_->setColour(juce::TextEditor::textColourId, juce::Colours::white);
+    nameEditor_->setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff2a2a34));
+    nameEditor_->setColour(juce::TextEditor::focusedOutlineColourId,
+                           felitronics::appkit::brand::violet);
+    nameEditor_->setText(editOriginal_, juce::dontSendNotification);
+    nameEditor_->setSelectAllWhenFocused(true);
+    nameEditor_->onReturnKey = [this] { finishRenameEdit(true); };
+    nameEditor_->onEscapeKey = [this] { finishRenameEdit(false); };
+    nameEditor_->onFocusLost = [this] { finishRenameEdit(true); }; // Finder-style: click away commits
+
+    addAndMakeVisible(*nameEditor_);
+    nameEditor_->setBounds(cell.reduced(2, 1)); // table_ sits at (0,0), same coords
+    nameEditor_->grabKeyboardFocus();
+}
+
+void SlotTable::finishRenameEdit(bool commit)
+{
+    if (nameEditor_ == nullptr)
+        return;
+    // Move out first: removing the editor fires onFocusLost, which re-enters here.
+    const std::unique_ptr<juce::TextEditor> editor = std::move(nameEditor_);
+    const int row = editingRow_;
+    editingRow_ = -1;
+    const juce::String value = editor->getText().trim();
+    if (commit && value.isNotEmpty() && value != editOriginal_ && onRenameCommitted)
+        onRenameCommitted(row, value);
 }
 
 void SlotTable::resized()
@@ -80,8 +136,12 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
         onSlotSelected(lastRowSelected);
 }
 
-void SlotTable::cellDoubleClicked(int row, int, const juce::MouseEvent&)
+void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
 {
+    if (columnId == kName) { // double-click the name = edit it in place
+        startRenameEdit(row);
+        return;
+    }
     if (onSlotActivated)
         onSlotActivated(row);
 }
@@ -154,11 +214,11 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     juce::String text;
     switch (columnId) {
     case kSlot:     text = juce::String(r.info.slot); break;
-    case kName:     text = juce::String(r.info.name).trimEnd(); break;
+    case kName:     text = utf8(r.info.name).trimEnd(); break;
     case kDuration: text = loaded ? formatDuration(r.info.frames) : juce::String(); break;
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
     case kOneShot:  break; // drawn as a dot below
-    case kWavFile:  text = juce::String(r.wavFile); break;
+    case kWavFile:  text = utf8(r.wavFile); break;
     default:        break;
     }
 
