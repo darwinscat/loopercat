@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40"><title>Looper Cat</title><!-- The "ears" mark, chosen 2026-07-22. Felitronics mark formula: dark disc,
+violet outer ring, product motif in lilac (here: a ring-arrow loop with cat
+ears), orange core. This file is the one source of the mark geometry —
+app/LooperMark.h ports these coordinates verbatim. --><circle cx="20" cy="20" r="20" fill="#0b0b11"/><circle cx="20" cy="20" r="18.5" fill="none" stroke="#9778ff" stroke-width="2"/><g stroke="#b9a6ff" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M 15.56 29.52 A 10.5 10.5 0 1 1 24.44 29.52" stroke-width="1.8"/><path d="M 25.71 25.39 L 23.44 29.98 L 28.42 31.19" stroke-width="2"/><path d="M 27.16 12.32 L 27.50 7.01 L 23.07 9.96" stroke-width="1.8"/><path d="M 16.93 9.96 L 12.50 7.01 L 12.84 12.32" stroke-width="1.8"/></g><circle cx="20" cy="20" r="3.5" fill="#ff8a3d"/></svg>
