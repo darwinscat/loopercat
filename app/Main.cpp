@@ -61,6 +61,13 @@ private:
         content.refreshNow();
         if (selectSlot > 0) {
             content.selectSlot(selectSlot);
+            const auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();
+            const int markersFlag = args.indexOf("--markers");
+            if (markersFlag >= 0) { // "--markers <in>:<out>" in seconds
+                const juce::String spec = args[markersFlag + 1];
+                content.setMarkers(spec.upToFirstOccurrenceOf(":", false, false).getDoubleValue(),
+                                   spec.fromFirstOccurrenceOf(":", false, false).getDoubleValue());
+            }
             const auto deadline = juce::Time::getMillisecondCounterHiRes() + 15000;
             while (!content.playerReady() && juce::Time::getMillisecondCounterHiRes() < deadline)
                 juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
