@@ -54,7 +54,16 @@ struct PedalSnapshot
     std::vector<SlotRow> slots;              // all 99 when readable
     std::vector<commands::Finding> findings; // doctor report (health banners)
 
-    bool operator==(const PedalSnapshot&) const = default;
+    // freeBytes compares at the status line's display granularity (0.1 GB):
+    // byte-level drift from unrelated disk activity is not a change, and on a
+    // busy machine it turned every poll into a delivery (issue #16).
+    bool operator==(const PedalSnapshot& other) const
+    {
+        constexpr long long kFreeBytesBucket = 100'000'000; // 0.1 GB, the shown precision
+        return volume == other.volume && error == other.error && state == other.state
+            && freeBytes / kFreeBytesBucket == other.freeBytes / kFreeBytesBucket
+            && slots == other.slots && findings == other.findings;
+    }
 };
 
 class PedalWorker final : private juce::Thread
