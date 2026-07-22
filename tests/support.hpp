@@ -129,6 +129,10 @@ struct WavSpec {
     int frames = 1000;
     bool extraChunk = false;
     int truncateBy = 0;
+    // Fill the audio with the frame-index ramp instead of silence:
+    // left = frame - frames/2, right = -left (pcm16 stereo only). Injective
+    // over the whole file, so any played sample identifies its exact frame.
+    bool rampFill = false;
 };
 
 // A hand-assembled RIFF/WAVE buffer (helpers.js makeWav): RIFF + fmt(16) +
@@ -161,11 +165,26 @@ inline std::vector<unsigned char> syntheticWav(const WavSpec& spec = {})
         buf.insert(buf.end(), 26, 0);
     }
     ascii("data"); p32(dataSize);
-    buf.insert(buf.end(), static_cast<std::size_t>(dataSize), 0);
+    if (spec.rampFill) {
+        if (spec.tag != 1 || spec.bits != 16 || spec.channels != 2 || spec.frames > 65535)
+            throw loopercat::Error("rampFill supports pcm16 stereo up to 65535 frames");
+        const int center = spec.frames / 2;
+        for (int frame = 0; frame < spec.frames; ++frame) {
+            const int left = frame - center;
+            p16(left & 0xffff);
+            p16(-left & 0xffff);
+        }
+    } else {
+        buf.insert(buf.end(), static_cast<std::size_t>(dataSize), 0);
+    }
     if (spec.truncateBy > 0)
         buf.resize(buf.size() - static_cast<std::size_t>(spec.truncateBy));
     return buf;
 }
+
+// The ramp's expected float sample for a frame, as JUCE surfaces pcm16
+// (value / 32768). Mirror of the rampFill definition above.
+inline float rampSample(int frame, int frames) { return static_cast<float>(frame - frames / 2) / 32768.0f; }
 
 } // namespace testkit
 

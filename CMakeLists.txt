@@ -199,6 +199,27 @@ target_link_libraries(pedal_monitor_harness PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME pedal_monitor_harness COMMAND pedal_monitor_harness)
 
+# ----------------------------------------------------------------------------
+# The playback harness: the REAL AudioEngine pumped through its device
+# callback with a fake device — samples must match the frame-index ramp, so
+# it proves where the engine plays from (load, seek, loop wrap, run-dry).
+# ----------------------------------------------------------------------------
+juce_add_console_app(audio_engine_harness PRODUCT_NAME "audio_engine_harness")
+target_sources(audio_engine_harness PRIVATE tests/audio_engine_harness.cpp)
+target_compile_definitions(audio_engine_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(audio_engine_harness PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME audio_engine_harness COMMAND audio_engine_harness)
+
 endif()  # LOOPERCAT_BUILD_TESTS
 
 endif()  # LOOPERCAT_BUILD_APP
