@@ -1,0 +1,300 @@
+// Copyright (c) 2026 Darwin's Cat. Part of Looper Cat — see LICENSE.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// macOS implementation notes. Liveness is answered by the IORegistry (does an
+// IOMedia object with this BSD name still exist?), never by the mount table
+// or diskarbitrationd's cached view — both kept claiming a detached pedal was
+// present for hours in the 2026-07-22 incident. Termination push uses IOKit
+// general-interest notifications; unmount/eject go through DiskArbitration.
+
+#include "DeviceWatcher.h"
+
+#include <loopercat/Error.hpp>
+
+#include <DiskArbitration/DiskArbitration.h>
+#include <IOKit/IOBSD.h>
+#include <IOKit/IOKitLib.h>
+#include <IOKit/IOMessage.h>
+
+#include <dispatch/dispatch.h>
+#include <sys/mount.h>
+
+#include <map>
+#include <mutex>
+#include <string>
+#include <utility>
+
+namespace loopercat::app {
+
+namespace {
+
+    std::string cfToString(CFStringRef s)
+    {
+        if (s == nullptr)
+            return {};
+        char buf[256];
+        if (CFStringGetCString(s, buf, sizeof(buf), kCFStringEncodingUTF8))
+            return buf;
+        return {};
+    }
+
+    std::string dissenterMessage(DADissenterRef dissenter)
+    {
+        const std::string text = cfToString(DADissenterGetStatusString(dissenter));
+        if (!text.empty())
+            return text;
+        return "refused with status " + std::to_string(DADissenterGetStatus(dissenter));
+    }
+
+    // The statfs view of a path: which mount covers it, and what device (if
+    // any) that mount comes from.
+    struct MountRecord {
+        bool statOk = false;
+        bool isOwnMount = false;  // the path IS the mount point, not a plain dir
+        std::string from;         // f_mntfromname, e.g. "/dev/disk16s1"
+        std::string bsd;          // "disk16s1" when device-backed, else empty
+    };
+
+    MountRecord mountRecordFor(const std::filesystem::path& path)
+    {
+        MountRecord rec;
+        struct statfs sfs {};
+        if (statfs(path.c_str(), &sfs) != 0)
+            return rec;
+        rec.statOk = true;
+        std::error_code ec;
+        const auto canonical = std::filesystem::weakly_canonical(path, ec);
+        rec.isOwnMount = !ec && std::filesystem::path(sfs.f_mntonname) == canonical;
+        rec.from = sfs.f_mntfromname;
+        if (rec.from.rfind("/dev/", 0) == 0)
+            rec.bsd = rec.from.substr(5);
+        return rec;
+    }
+
+} // namespace
+
+struct DeviceWatcher::Impl {
+    explicit Impl(DeviceWatcher& o) : owner(o) {}
+
+    DeviceWatcher& owner;
+    dispatch_queue_t queue = nullptr;
+    DASessionRef session = nullptr;
+    IONotificationPortRef notifyPort = nullptr;
+
+    struct InterestCtx {
+        Impl* impl = nullptr;
+        std::string bsd;
+    };
+    struct Tracked {
+        io_object_t notification = IO_OBJECT_NULL;
+        InterestCtx* ctx = nullptr;
+        bool dead = false;
+    };
+
+    std::mutex mutex;
+    std::map<std::string, Tracked> tracked; // by BSD name; guarded by mutex
+    std::string currentBsd;                 // device behind the last live verdict
+
+    void deviceTerminated(const std::string& bsd)
+    {
+        std::function<void()> cb;
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            auto it = tracked.find(bsd);
+            if (it == tracked.end() || it->second.dead)
+                return;
+            it->second.dead = true;
+            // A stale termination for a device that no longer backs the
+            // pedal (fast unplug/replug cycles renumber the disk) must not
+            // ghost the fresh connection.
+            if (bsd == currentBsd)
+                cb = owner.onDeviceLost;
+        }
+        if (cb)
+            cb();
+    }
+
+    static void interestCallback(void* refcon, io_service_t, natural_t messageType, void*)
+    {
+        if (messageType != kIOMessageServiceIsTerminated)
+            return;
+        auto* ctx = static_cast<InterestCtx*>(refcon);
+        ctx->impl->deviceTerminated(ctx->bsd);
+    }
+
+    static void diskAppearedCallback(DADiskRef, void* context)
+    {
+        auto* impl = static_cast<Impl*>(context);
+        std::function<void()> cb;
+        {
+            const std::lock_guard<std::mutex> lock(impl->mutex);
+            cb = impl->owner.onDiskAppeared;
+        }
+        if (cb)
+            cb();
+    }
+
+    // Register for termination of `bsd` while we hold a live service ref.
+    // Registration failure only degrades push to poll — the next verdict()
+    // still consults the registry — so it is not an error.
+    void ensureInterest(const std::string& bsd, io_service_t service)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        currentBsd = bsd;
+        if (tracked.count(bsd) != 0)
+            return;
+        auto* ctx = new InterestCtx{ this, bsd };
+        io_object_t notification = IO_OBJECT_NULL;
+        const kern_return_t kr = IOServiceAddInterestNotification(
+            notifyPort, service, kIOGeneralInterest, &interestCallback, ctx, &notification);
+        if (kr != KERN_SUCCESS) {
+            delete ctx;
+            return;
+        }
+        tracked[bsd] = Tracked{ notification, ctx, false };
+    }
+
+    // --- unmount / eject plumbing ---
+
+    struct UnmountCtx {
+        std::function<void(bool, std::string)> done;
+        bool thenEjectWholeDisk = false;
+    };
+
+    static void ejectDone(DADiskRef, DADissenterRef dissenter, void* context)
+    {
+        auto* ctx = static_cast<UnmountCtx*>(context);
+        // The volume is already unmounted — that is the safety guarantee; a
+        // refused whole-disk eject is only worth a warning.
+        ctx->done(true, dissenter != nullptr
+                            ? "volume unmounted, but ejecting the disk was refused: "
+                                  + dissenterMessage(dissenter)
+                            : std::string{});
+        delete ctx;
+    }
+
+    static void unmountDone(DADiskRef disk, DADissenterRef dissenter, void* context)
+    {
+        auto* ctx = static_cast<UnmountCtx*>(context);
+        if (dissenter != nullptr) {
+            ctx->done(false, dissenterMessage(dissenter));
+            delete ctx;
+            return;
+        }
+        if (!ctx->thenEjectWholeDisk) {
+            ctx->done(true, {});
+            delete ctx;
+            return;
+        }
+        // Ejecting the whole disk drops the lingering device object as well —
+        // in the 2026-07-22 recovery that, not the unmount, was what let a
+        // fresh attach start from clean state.
+        if (DADiskRef whole = DADiskCopyWholeDisk(disk)) {
+            DADiskEject(whole, kDADiskEjectOptionDefault, &ejectDone, ctx);
+            CFRelease(whole);
+            return;
+        }
+        ctx->done(true, {});
+        delete ctx;
+    }
+
+    void startUnmount(const std::filesystem::path& volumePath, DADiskUnmountOptions options,
+                      bool thenEject, std::function<void(bool, std::string)> done)
+    {
+        const MountRecord rec = mountRecordFor(volumePath);
+        if (!rec.statOk || !rec.isOwnMount || rec.bsd.empty()) {
+            done(false, "not a device-backed mount: " + volumePath.string());
+            return;
+        }
+        DADiskRef disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, rec.from.c_str());
+        if (disk == nullptr) {
+            done(false, "cannot address disk " + rec.from);
+            return;
+        }
+        auto* ctx = new UnmountCtx{ std::move(done), thenEject };
+        DADiskUnmount(disk, options, &unmountDone, ctx);
+        CFRelease(disk);
+    }
+};
+
+DeviceWatcher::DeviceWatcher() : impl_(std::make_unique<Impl>(*this))
+{
+    impl_->queue = dispatch_queue_create("com.darwinscat.loopercat.devicewatcher",
+                                         DISPATCH_QUEUE_SERIAL);
+    impl_->session = DASessionCreate(kCFAllocatorDefault);
+    if (impl_->session == nullptr)
+        throw Error("cannot create a DiskArbitration session");
+    DASessionSetDispatchQueue(impl_->session, impl_->queue);
+    DARegisterDiskAppearedCallback(impl_->session, kDADiskDescriptionMatchVolumeMountable,
+                                   &Impl::diskAppearedCallback, impl_.get());
+
+    impl_->notifyPort = IONotificationPortCreate(kIOMainPortDefault);
+    if (impl_->notifyPort == nullptr)
+        throw Error("cannot create an IOKit notification port");
+    IONotificationPortSetDispatchQueue(impl_->notifyPort, impl_->queue);
+}
+
+DeviceWatcher::~DeviceWatcher()
+{
+    DAUnregisterCallback(impl_->session, reinterpret_cast<void*>(&Impl::diskAppearedCallback),
+                         impl_.get());
+    DASessionSetDispatchQueue(impl_->session, nullptr);
+    IONotificationPortDestroy(impl_->notifyPort); // also releases interest notifications
+    // Drain the queue so no callback can be mid-flight against freed contexts.
+    dispatch_sync_f(impl_->queue, nullptr, [](void*) {});
+    CFRelease(impl_->session);
+    dispatch_release(impl_->queue);
+    for (auto& [bsd, entry] : impl_->tracked)
+        delete entry.ctx;
+}
+
+lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePath)
+{
+    const MountRecord rec = mountRecordFor(volumePath);
+    // The caller just saw pedal content here; statfs failing now means the
+    // mount is being torn down under us — the device story is over either way.
+    if (!rec.statOk)
+        return lifecycle::Backing::gone;
+    // A plain directory (synthetic test volume, --volume pin) or a mount with
+    // no /dev backing (network share): no device to track, trusted as-is.
+    if (!rec.isOwnMount || rec.bsd.empty())
+        return lifecycle::Backing::untracked;
+
+    {
+        const std::lock_guard<std::mutex> lock(impl_->mutex);
+        auto it = impl_->tracked.find(rec.bsd);
+        if (it != impl_->tracked.end() && it->second.dead)
+            return lifecycle::Backing::gone;
+    }
+
+    // IOBSDNameMatching's dictionary is consumed by the lookup.
+    const io_service_t service = IOServiceGetMatchingService(
+        kIOMainPortDefault, IOBSDNameMatching(kIOMainPortDefault, 0, rec.bsd.c_str()));
+    if (service == IO_OBJECT_NULL) {
+        // The registry already dropped the media object: a ghost mount. Mark
+        // it so the verdict stays stable even if the registry state flaps.
+        const std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->tracked[rec.bsd].dead = true;
+        return lifecycle::Backing::gone;
+    }
+    impl_->ensureInterest(rec.bsd, service);
+    IOObjectRelease(service);
+    return lifecycle::Backing::live;
+}
+
+void DeviceWatcher::eject(const std::filesystem::path& volumePath,
+                          std::function<void(bool, std::string)> done)
+{
+    impl_->startUnmount(volumePath, kDADiskUnmountOptionDefault, true, std::move(done));
+}
+
+void DeviceWatcher::forceUnmount(const std::filesystem::path& volumePath,
+                                 std::function<void(bool, std::string)> done)
+{
+    // Force is safe by construction here: this path is only for ghosts, and
+    // nothing can flush to a device that is already gone. Ejecting the whole
+    // disk afterwards purges the stale device object too.
+    impl_->startUnmount(volumePath, kDADiskUnmountOptionForce, true, std::move(done));
+}
+
+} // namespace loopercat::app

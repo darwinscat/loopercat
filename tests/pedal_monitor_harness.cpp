@@ -15,6 +15,8 @@
 //      the post-job snapshot already carries the change
 //   5. a failing job surfaces its typed error and changes nothing
 //   6. the content goes    -> delivery drops the mounted state again
+//   7. a ghost mount (device watcher says GONE while the path still serves
+//      content) -> reported as ghost, mutations refused, bytes untouched
 //
 // A quiet volume between the steps must deliver NOTHING (change-gated).
 
@@ -29,6 +31,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 using namespace loopercat;
 namespace fs = std::filesystem;
@@ -45,6 +48,14 @@ void writeMemoryPair(const fs::path& volume, const std::string& text)
                           std::ios::binary);
         out.write(withTail.data(), static_cast<std::streamsize>(withTail.size()));
     }
+}
+
+std::string readTextFile(const fs::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
 }
 
 bool pumpUntil(const std::function<bool()>& condition, const int timeoutMs)
@@ -155,6 +166,50 @@ int main()
         return !deliveries.empty() && deliveries.back().slots.empty()
             && !deliveries.back().error.empty();
     }, 5000));
+
+    // 7. The ghost-mount gate (issue #17): a path that still serves pedal
+    // content while the device watcher says the device is GONE must be
+    // reported as a ghost, and a mutation against it must be REFUSED — the
+    // 2026-07-22 phantom "one-shot saved" replayed as a test. A fresh worker
+    // with a gone-verdict probe stands in for the dead USB device.
+    {
+        const fs::path ghostVolume =
+            fs::temp_directory_path() / ("loopercat-ghost-" + std::to_string(stamp));
+        fs::remove_all(ghostVolume);
+        fs::create_directories(ghostVolume / "ROLAND" / "WAVE");
+        writeMemoryPair(ghostVolume, testkit::syntheticMemoryText());
+
+        std::vector<PedalSnapshot> ghostDeliveries;
+        PedalWorker ghostWorker(ghostVolume.string(), [&ghostDeliveries](const PedalSnapshot& s) {
+            ghostDeliveries.push_back(s);
+        });
+        std::vector<std::pair<juce::String, juce::String>> ghostResults;
+        ghostWorker.onJobResult = [&ghostResults](juce::String description, juce::String error) {
+            ghostResults.emplace_back(std::move(description), std::move(error));
+        };
+        ghostWorker.setBackingProbe(
+            [](const volume::fs::path&) { return lifecycle::Backing::gone; });
+        ghostWorker.start();
+
+        CHECK(pumpUntil([&] { return !ghostDeliveries.empty(); }, 5000));
+        if (!ghostDeliveries.empty())
+            CHECK(ghostDeliveries.back().state == lifecycle::State::ghost);
+
+        ghostWorker.enqueue({ "Rename slot 7 into the void", 7,
+                              [](const volume::fs::path& volumePath) {
+                                  commands::rename(volumePath, 7, "Phantom",
+                                                   { .skipBackup = true });
+                              } });
+        CHECK(pumpUntil([&] { return !ghostResults.empty(); }, 5000));
+        if (!ghostResults.empty())
+            CHECK(ghostResults.back().second.contains("refusing to touch"));
+
+        // The write really was refused: the file on the ghost is untouched.
+        const std::string after = readTextFile(ghostVolume / "ROLAND" / "DATA" / "MEMORY1.RC0");
+        CHECK(after.find("Phantom") == std::string::npos);
+
+        fs::remove_all(ghostVolume);
+    }
 
     return testkit::summary("pedal_monitor_harness");
 }
