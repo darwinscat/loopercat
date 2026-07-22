@@ -18,7 +18,8 @@ namespace loopercat
 
 class SlotTable final : public juce::Component,
                         public juce::FileDragAndDropTarget,
-                        private juce::TableListBoxModel
+                        private juce::TableListBoxModel,
+                        private juce::Timer
 {
 public:
     SlotTable();
@@ -31,6 +32,7 @@ public:
     std::function<void(int, juce::Point<int>)> onRowContextMenu;    // right-click (screen position)
     std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a row
     std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
+    std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
 
     void selectRow(int rowIndex) { table_.selectRow(rowIndex); }
 
@@ -38,6 +40,9 @@ public:
     // name does this too). Enter commits, Esc cancels, 12 printable ASCII
     // enforced at the field.
     void startRenameEdit(int rowIndex);
+
+    // The slot a worker job is touching right now (0 = none): its row pulses.
+    void setBusySlot(int slot);
 
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
     void fileDragMove(const juce::StringArray& files, int x, int y) override;
@@ -63,9 +68,12 @@ private:
 
     int rowAt(int x, int y);
     void finishRenameEdit(bool commit);
+    void timerCallback() override;
 
     std::vector<SlotRow> rows_;
-    int dragRow_ = -1; // row highlighted under a wav drag
+    int dragRow_ = -1;  // row highlighted under a wav drag
+    int busySlot_ = 0;  // slot being mutated; its row pulses
+    float busyPhase_ = 0.0f;
     int editingRow_ = -1;
     juce::String editOriginal_;
     std::unique_ptr<juce::TextEditor> nameEditor_;

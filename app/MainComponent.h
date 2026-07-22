@@ -9,6 +9,7 @@
 #include "AppSettings.h"
 #include "AudioEngine.h"
 #include "BannerStrip.h"
+#include "PedalLight.h"
 #include "PedalWorker.h"
 #include "PlayerPane.h"
 #include "SlotTable.h"
@@ -62,6 +63,7 @@ private:
     UpdateCheck updateChecker { settings };
     felitronics::appkit::BrandHeader header;
     felitronics::appkit::VersionBadge badge;
+    PedalLight pedalLight;
     juce::Label status;
     juce::Label hint; // the empty-state prompt, shown while no pedal is mounted
     AudioEngine engine;

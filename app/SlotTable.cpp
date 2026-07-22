@@ -9,6 +9,8 @@
 
 #include <loopercat/Wav.hpp>
 
+#include <cmath>
+
 namespace loopercat
 {
 
@@ -146,10 +148,37 @@ void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&
         onSlotActivated(row);
 }
 
-void SlotTable::cellClicked(int row, int, const juce::MouseEvent& e)
+void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
 {
-    if (e.mods.isPopupMenu() && onRowContextMenu)
+    if (e.mods.isPopupMenu() && onRowContextMenu) {
         onRowContextMenu(row, e.getScreenPosition());
+        return;
+    }
+    // The One Shot cell IS the toggle — click flips it (reference web UI).
+    if (columnId == kOneShot && onOneShotToggled)
+        onOneShotToggled(row);
+}
+
+// --- per-row busy indication ---
+
+void SlotTable::setBusySlot(int slot)
+{
+    if (busySlot_ == slot)
+        return;
+    busySlot_ = slot;
+    busyPhase_ = 0.0f;
+    if (slot > 0)
+        startTimerHz(30);
+    else
+        stopTimer();
+    table_.repaint();
+}
+
+void SlotTable::timerCallback()
+{
+    busyPhase_ += 0.12f;
+    if (busySlot_ > 0)
+        table_.repaintRow(busySlot_ - 1); // rows are slots, 1:1
 }
 
 // --- wav drag-and-drop onto rows ---
@@ -197,11 +226,19 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
         }
 }
 
-void SlotTable::paintRowBackground(juce::Graphics& g, int row, int, int, bool selected)
+void SlotTable::paintRowBackground(juce::Graphics& g, int row, int width, int height, bool selected)
 {
     g.fillAll(selected ? kSelected : (row % 2 == 0 ? kRowEven : kRowOdd));
     if (row == dragRow_) // a wav hovers here — show the push target
         g.fillAll(felitronics::appkit::brand::violet.withAlpha(0.18f));
+    if (busySlot_ > 0 && row == busySlot_ - 1) {
+        // The working row: a breathing violet wash + a left edge bar.
+        const float pulse = 0.5f + 0.5f * std::sin(busyPhase_);
+        g.setColour(felitronics::appkit::brand::violet.withAlpha(0.10f + 0.14f * pulse));
+        g.fillRect(0, 0, width, height);
+        g.setColour(felitronics::appkit::brand::orange.withAlpha(0.5f + 0.5f * pulse));
+        g.fillRect(0, 0, 3, height);
+    }
 }
 
 void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, int height, bool)
@@ -225,11 +262,16 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     const auto area = juce::Rectangle<int>(0, 0, width, height).reduced(8, 0);
 
     if (columnId == kOneShot) {
+        // The cell is the toggle: filled = on, hollow = off (click flips it).
+        const float d = 7.0f;
+        const float x = static_cast<float>(area.getX()) + 2.0f;
+        const float y = (static_cast<float>(height) - d) * 0.5f;
         if (r.info.oneShot) {
-            const float d = 7.0f;
             g.setColour(felitronics::appkit::brand::orange);
-            g.fillEllipse(static_cast<float>(area.getX()) + 2.0f,
-                          (static_cast<float>(height) - d) * 0.5f, d, d);
+            g.fillEllipse(x, y, d, d);
+        } else {
+            g.setColour(kDim.withAlpha(0.55f));
+            g.drawEllipse(x, y, d, d, 1.2f);
         }
         return;
     }

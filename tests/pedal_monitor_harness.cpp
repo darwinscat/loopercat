@@ -72,7 +72,7 @@ int main()
     });
     std::vector<bool> busyEvents;
     std::vector<std::pair<juce::String, juce::String>> jobResults;
-    monitor.onBusy = [&busyEvents](bool busy) { busyEvents.push_back(busy); };
+    monitor.onBusy = [&busyEvents](bool busy, int) { busyEvents.push_back(busy); };
     monitor.onJobResult = [&jobResults](juce::String description, juce::String error) {
         jobResults.emplace_back(std::move(description), std::move(error));
     };
@@ -118,7 +118,7 @@ int main()
     // 4. A mutation goes through the SAME worker: busy brackets it, the
     // result reports success, and the fresh snapshot already carries the
     // change — no wait for the next poll.
-    monitor.enqueue({ "Rename slot 7",
+    monitor.enqueue({ "Rename slot 7", 7,
                       [](const volume::fs::path& volumePath) {
                           commands::rename(volumePath, 7, "Via Worker",
                                            { .skipBackup = true });
@@ -137,7 +137,7 @@ int main()
           && deliveries.back().slots.at(6).info.name == "Via Worker  ");
 
     // 5. A failing mutation surfaces its typed error and changes nothing.
-    monitor.enqueue({ "Rename slot 7 badly",
+    monitor.enqueue({ "Rename slot 7 badly", 7,
                       [](const volume::fs::path& volumePath) {
                           commands::rename(volumePath, 7, "ThirteenChars",
                                            { .skipBackup = true });

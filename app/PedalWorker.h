@@ -60,6 +60,7 @@ public:
     struct Job
     {
         juce::String description;                          // for the result banner
+        int slot = 0;                                      // affected slot (0 = none) — row busy indication
         std::function<void(const volume::fs::path&)> work; // runs on the worker, volume resolved fresh
     };
 
@@ -80,7 +81,7 @@ public:
         *alive_ = false; // message thread; queued deliveries become no-ops
     }
 
-    std::function<void(bool)> onBusy;                            // a job started/finished
+    std::function<void(bool, int)> onBusy;                       // (started/finished, affected slot or 0)
     std::function<void(juce::String, juce::String)> onJobResult; // (description, error; empty = ok)
 
     void start() { startThread(); }
@@ -177,7 +178,7 @@ private:
     {
         while (!threadShouldExit()) {
             if (auto job = popJob()) {
-                deliver([cb = onBusy] { if (cb) cb(true); });
+                deliver([cb = onBusy, slot = job->slot] { if (cb) cb(true, slot); });
                 juce::String error;
                 try {
                     const auto found = resolveVolume();
@@ -192,7 +193,7 @@ private:
                     if (cb)
                         cb(d, error);
                 });
-                deliver([cb = onBusy] { if (cb) cb(false); });
+                deliver([cb = onBusy, slot = job->slot] { if (cb) cb(false, slot); });
                 continue; // more queued work before the next poll
             }
             maybeDeliverSnapshot(scanOnce());

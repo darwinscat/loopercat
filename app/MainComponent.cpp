@@ -93,11 +93,17 @@ MainComponent::MainComponent(std::string explicitVolume)
     table.onSlotSelected = [this](int row) { slotChosen(row, false); };
     table.onSlotActivated = [this](int row) { slotChosen(row, true); };
     table.onRowContextMenu = [this](int row, juce::Point<int> at) { showRowMenu(row, at); };
+    table.onOneShotToggled = [this](int row) {
+        if (pedalBusy || static_cast<std::size_t>(row) >= snapshot.slots.size())
+            return;
+        const SlotRow& target = snapshot.slots[static_cast<std::size_t>(row)];
+        toggleOneShot(target.info.slot, target.info.oneShot);
+    };
     table.onRenameCommitted = [this](int row, juce::String newName) {
         if (pedalBusy || static_cast<std::size_t>(row) >= snapshot.slots.size())
             return;
         const int slot = snapshot.slots[static_cast<std::size_t>(row)].info.slot;
-        worker.enqueue({ "Rename slot " + juce::String(slot),
+        worker.enqueue({ "Rename slot " + juce::String(slot), slot,
                          [name = newName.toStdString(), options = makeWriteOptions(),
                           slot](const volume::fs::path& volumePath) {
                              commands::rename(volumePath, slot, name, options);
@@ -114,8 +120,9 @@ MainComponent::MainComponent(std::string explicitVolume)
     banners.onLayoutChange = [this] { resized(); };
 
     // Wired before start(): the worker reads these from its own thread.
-    worker.onBusy = [this](bool busy) {
+    worker.onBusy = [this](bool busy, int slot) {
         pedalBusy = busy;
+        table.setBusySlot(busy ? slot : 0);
         updateStatusText();
     };
     worker.onJobResult = [this](juce::String description, juce::String error) {
@@ -124,6 +131,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     };
 
     addAndMakeVisible(header);
+    addAndMakeVisible(pedalLight); // over the header's right side
     addAndMakeVisible(badge);
     addAndMakeVisible(status);
     addAndMakeVisible(hint);
@@ -197,6 +205,8 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
             player.clear();
     }
 
+    pedalLight.set(mounted, utf8(volume::fs::path(snapshot.volume).filename().string()));
+
     table.setRows(snapshot.slots);
     table.setVisible(mounted);
     player.setVisible(mounted);
@@ -269,6 +279,7 @@ void MainComponent::toggleOneShot(int slot, bool currentlyOn)
 {
     worker.enqueue({ juce::String(currentlyOn ? "Disable" : "Enable") + " One Shot on slot "
                          + juce::String(slot),
+                     slot,
                      [slot, on = !currentlyOn, options = makeWriteOptions()](
                          const volume::fs::path& volumePath) {
                          commands::setOneShot(volumePath, { slot }, on, options);
@@ -295,6 +306,7 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
     const auto enqueuePush = [this, slot, sourcePath](bool force) {
         worker.enqueue({ "Push " + juce::File(sourcePath).getFileName() + " to slot "
                              + juce::String(slot),
+                         slot,
                          [source = sourcePath.toStdString(), slot, force,
                           options = makeWriteOptions()](const volume::fs::path& volumePath) {
                              commands::push(volumePath, source, slot,
@@ -332,7 +344,7 @@ void MainComponent::pullSlot(int slot)
                                  if (dir == juce::File())
                                      return;
                                  worker.enqueue(
-                                     { "Pull slot " + juce::String(slot),
+                                     { "Pull slot " + juce::String(slot), slot,
                                        [slot, dest = dir.getFullPathName().toStdString()](
                                            const volume::fs::path& volumePath) {
                                            commands::pull(volumePath, { slot }, { .dest = dest });
@@ -357,7 +369,7 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
                 return;
             const auto options = makeWriteOptions();
             worker.enqueue(
-                { "Clear slot " + juce::String(slot),
+                { "Clear slot " + juce::String(slot), slot,
                   [slot, options,
                    trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
                       const volume::fs::path& volumePath) {
@@ -397,6 +409,7 @@ void MainComponent::resized()
     auto area = getLocalBounds();
     header.setBounds(area.removeFromTop(56));
     header.clickRight = juce::roundToInt(header.contentRight());
+    pedalLight.setBounds(getWidth() - 232, 0, 220, 56);
     status.setBounds(area.removeFromTop(28).reduced(12, 2));
     const int bannerHeight = banners.preferredHeight();
     banners.setBounds(area.removeFromTop(bannerHeight).reduced(12, 0));
