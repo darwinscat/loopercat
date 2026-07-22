@@ -296,6 +296,69 @@ inline std::vector<PullJob> pull(const fs::path& volume, const std::vector<int>&
     return jobs;
 }
 
+// --- trim ---
+
+struct TrimOptions {
+    fs::path trashRoot; // REQUIRED: the original wav lands here first (the undo)
+    WriteOptions write;
+};
+
+struct TrimResult {
+    fs::path trashedOriginal;
+    std::int64_t frames;
+    params::SlotParams slotParams;
+    WriteResult written;
+};
+
+// Cut a slot's loop down to [startFrame, endFrame): the slice is rewritten in
+// canonical form under the same on-pedal filename, the slot's boot-index
+// config is recomputed for the new length, and the ORIGINAL file moves to the
+// trash root first — trim is the one command that rewrites audio, so the
+// pre-trim take is always recoverable. Everything validates before the first
+// write: a failed trim leaves the volume exactly as it was.
+inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame,
+                       std::int64_t endFrame, const TrimOptions& options)
+{
+    if (options.trashRoot.empty() || options.write.stamp.empty())
+        throw Error("trim requires a trash root and a timestamp");
+
+    const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
+    if (files.empty())
+        throw Error("slot " + std::to_string(slot) + " has no audio to trim");
+    const fs::path source = volume::wavDir(volume, slot) / files.front();
+
+    const std::string raw = readFileBytes(source);
+    const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
+    const wav::Bytes slice = wav::trimmed(rawView, startFrame, endFrame); // validates the range
+    const wav::Info info = wav::readWavInfo(slice);
+    const params::SlotParams slotParams = params::computeSlotParams(info.frames);
+    const std::string memoryText = readMemory(volume);
+
+    // All checks passed — the writes begin. Trash copy first: the original
+    // must be safe before anything replaces it.
+    const fs::path trashDir = options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+    std::error_code ec;
+    fs::create_directories(trashDir, ec);
+    if (ec)
+        throw Error("cannot create " + trashDir.string());
+    TrimResult result { trashDir / files.front(), info.frames, slotParams, {} };
+    writeFileBytes(result.trashedOriginal, raw);
+
+    writeFileBytes(source,
+                   std::string_view(reinterpret_cast<const char*>(slice.data()), slice.size()));
+
+    std::string body = rc0::slotBody(memoryText, slot);
+    body = rc0::setField(body, "WavLen", info.frames);
+    body = rc0::setField(body, "MeasLen", slotParams.measures);
+    body = rc0::setField(body, "Measure", slotParams.measureField());
+    body = rc0::setField(body, "RecTmp", slotParams.tempoTenths);
+    body = rc0::setField(body, "Tempo", slotParams.tempoTenths);
+    body = rc0::setField(body, "LpLen", slotParams.measures);
+    result.written = writeMemoryPair(volume, rc0::replaceSlotBody(memoryText, slot, body),
+                                     options.write);
+    return result;
+}
+
 // --- clear ---
 
 struct ClearOptions {

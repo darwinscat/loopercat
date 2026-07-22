@@ -138,6 +138,39 @@ int main()
         CHECK(wav::canonicalize(once) == once);
     }
 
+    // --- trimmed: the canonical slice, byte-exact ---
+
+    {
+        // The ramp encodes each frame's index — the slice must carry exactly
+        // frames [100, 4200), regardless of any metadata chunk in front.
+        const auto source = syntheticWav({ .frames = 8000, .extraChunk = true, .rampFill = true });
+        const auto slice = wav::trimmed(source, 100, 4200);
+        const auto info = wav::readWavInfo(slice);
+        CHECK_EQ(info.frames, 4100);
+        CHECK_EQ(slice.size(), 44u + 4100 * 4);
+        int wrongFrames = 0;
+        for (int i = 0; i < 4100; ++i) {
+            const std::size_t at = 44 + static_cast<std::size_t>(i) * 4;
+            const int left = static_cast<std::int16_t>(slice[at] | (slice[at + 1] << 8));
+            if (left != (100 + i) - 8000 / 2)
+                ++wrongFrames;
+        }
+        CHECK_EQ(wrongFrames, 0);
+
+        // Full range == canonicalize; the slice math holds for float32's
+        // 8-byte frames too.
+        CHECK(wav::trimmed(source, 0, 8000) == wav::canonicalize(source));
+        const auto floatWav = syntheticWav({ .tag = 3, .bits = 32, .frames = 500 });
+        CHECK_EQ(wav::readWavInfo(wav::trimmed(floatWav, 200, 300)).frames, 100);
+        CHECK_EQ(wav::trimmed(floatWav, 200, 300).size(), 56u + 100 * 8);
+
+        // Rejection edges: inverted, empty, and out-of-file ranges.
+        CHECK_THROWS(wav::trimmed(source, 4200, 100), "bad frame range");
+        CHECK_THROWS(wav::trimmed(source, 100, 100), "bad frame range");
+        CHECK_THROWS(wav::trimmed(source, -1, 100), "bad frame range");
+        CHECK_THROWS(wav::trimmed(source, 0, 8001), "bad frame range");
+    }
+
     // --- pull naming, pinned to golden "technicalNames" ---
 
     for (const auto& entry : testkit::golden().at("technicalNames"))

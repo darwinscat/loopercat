@@ -112,16 +112,16 @@ inline Info readWavInfo(BytesView data)
              dataBytes / blockAlign, dataBytes };
 }
 
-// Rewrite a WAV into the pedal's own canonical shape: RIFF + fmt + data,
-// nothing else. The RC-5 rewrites non-canonical files (DAW metadata chunks)
-// during boot-time indexing; handing it an already-canonical file means it
-// never touches the upload. Header layout is copied byte-for-byte from files
-// the pedal normalized itself: float gets a 28-byte fmt body (cbSize=10,
-// extension zeroed), PCM the classic 16-byte one. Pinned by golden.json
-// "canonicalFloat32Header".
-inline Bytes canonicalize(BytesView data)
+// The canonical rewrite of a frame range [startFrame, endFrame): RIFF + fmt +
+// data, nothing else, holding exactly that slice of the audio. The full-file
+// canonicalize() below is the [0, frames) case; trim uses a real sub-range.
+inline Bytes trimmed(BytesView data, std::int64_t startFrame, std::int64_t endFrame)
 {
     const Info info = readWavInfo(data);
+    if (startFrame < 0 || endFrame > info.frames || startFrame >= endFrame)
+        throw Error("bad frame range [" + std::to_string(startFrame) + ", "
+                    + std::to_string(endFrame) + ") of " + std::to_string(info.frames)
+                    + " frames");
 
     std::int64_t offset = 12;
     std::int64_t dataStart = -1;
@@ -135,9 +135,10 @@ inline Bytes canonicalize(BytesView data)
         offset += 8 + chunkSize + (chunkSize % 2);
     }
 
+    const std::int64_t sliceBytes = (endFrame - startFrame) * info.blockAlign;
     const std::int64_t fmtBody = info.formatTag == 3 ? 28 : 16;
     const std::int64_t byteRate = std::int64_t{ info.sampleRate } * info.blockAlign;
-    const std::int64_t total = 12 + 8 + fmtBody + 8 + info.dataBytes;
+    const std::int64_t total = 12 + 8 + fmtBody + 8 + sliceBytes;
     if (total - 8 > 0xffffffffLL || byteRate > 0xffffffffLL)
         throw Error("file too large for a RIFF header");
 
@@ -169,11 +170,23 @@ inline Bytes canonicalize(BytesView data)
         for (int i = 0; i < 10; ++i)
             out.push_back(0);
     }
-    putAscii("data"); put32(info.dataBytes);
-    const auto src = static_cast<std::size_t>(dataStart);
+    putAscii("data"); put32(sliceBytes);
+    const auto src = static_cast<std::size_t>(dataStart + startFrame * info.blockAlign);
     out.insert(out.end(), data.begin() + static_cast<std::ptrdiff_t>(src),
-               data.begin() + static_cast<std::ptrdiff_t>(src + static_cast<std::size_t>(info.dataBytes)));
+               data.begin() + static_cast<std::ptrdiff_t>(src + static_cast<std::size_t>(sliceBytes)));
     return out;
+}
+
+// Rewrite a WAV into the pedal's own canonical shape: RIFF + fmt + data,
+// nothing else. The RC-5 rewrites non-canonical files (DAW metadata chunks)
+// during boot-time indexing; handing it an already-canonical file means it
+// never touches the upload. Header layout is copied byte-for-byte from files
+// the pedal normalized itself: float gets a 28-byte fmt body (cbSize=10,
+// extension zeroed), PCM the classic 16-byte one. Pinned by golden.json
+// "canonicalFloat32Header".
+inline Bytes canonicalize(BytesView data)
+{
+    return trimmed(data, 0, readWavInfo(data).frames);
 }
 
 // What we accept for upload. Roland documents 44.1 kHz stereo WAV at 16-bit,
