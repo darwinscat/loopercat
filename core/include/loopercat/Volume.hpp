@@ -109,6 +109,33 @@ inline bool isJunkName(std::string_view name)
         || name == "desktop.ini";
 }
 
+// Every junk file under the volume's ROLAND tree, recursively. macOS writes
+// AppleDouble sidecars onto FAT volumes even for xattr-free files (fresh
+// files get com.apple.provenance) — and the RC-5 chokes on them at boot.
+inline std::vector<fs::path> findJunk(const fs::path& volume)
+{
+    std::vector<fs::path> junk;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(volume / "ROLAND", ec), end; !ec && it != end;
+         it.increment(ec))
+        if (!it->is_directory(ec) && isJunkName(it->path().filename().string()))
+            junk.push_back(it->path());
+    return junk;
+}
+
+// Remove them. Every mutating command sweeps afterwards — a volume with any
+// sidecar left is one boot away from "LOOPER DATA READ ERR".
+inline std::vector<fs::path> sweepJunk(const fs::path& volume)
+{
+    const std::vector<fs::path> junk = findJunk(volume);
+    for (const auto& file : junk) {
+        std::error_code ec;
+        if (!fs::remove(file, ec) || ec)
+            throw Error("cannot remove junk file " + file.string());
+    }
+    return junk;
+}
+
 // Slot audio files (usually 0 or 1), junk filtered, sorted for determinism.
 // A missing slot directory is a normal empty slot, not an error.
 inline std::vector<std::string> listSlotWavs(const fs::path& volume, int slot)
