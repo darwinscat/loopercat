@@ -36,7 +36,7 @@ SlotTable::SlotTable()
     header.setColour(juce::TableHeaderComponent::outlineColourId, juce::Colour(0xff2a2a34));
     using Flags = juce::TableHeaderComponent::ColumnPropertyFlags;
     header.addColumn("#", kSlot, 40, 40, 40, Flags::notSortable);
-    header.addColumn("Name", kName, 220, 120, -1, Flags::notSortable);
+    header.addColumn("Name", kName, 132, 132, 132, Flags::notSortable); // 12 chars, fixed
     header.addColumn("Duration", kDuration, 84, 84, 84, Flags::notSortable);
     header.addColumn("Tempo", kTempo, 76, 76, 76, Flags::notSortable);
     header.addColumn("One Shot", kOneShot, 84, 84, 84, Flags::notSortable);
@@ -186,8 +186,16 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         return;
     }
     // The One Shot cell IS the toggle — click flips it (reference web UI).
-    if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0)
+    if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0) {
         onOneShotToggled(slotOfRow(row));
+        return;
+    }
+    // The empty-slot hint is a button: click opens the WAV chooser.
+    if (columnId == kWavFile && onEmptyWavCellClicked && slotOfRow(row) > 0) {
+        const SlotRow& r = rows_[static_cast<std::size_t>(row)];
+        if (!r.info.hasAudio && r.wavFile.empty())
+            onEmptyWavCellClicked(r.info.slot);
+    }
 }
 
 // --- per-row busy indication ---
@@ -288,7 +296,7 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kOneShot:  break; // drawn as a dot below
     case kWavFile:
         text = r.wavFile.empty() && !loaded
-                 ? juce::String::fromUTF8("\xe2\x80\x94 drop a WAV here")
+                 ? juce::String::fromUTF8("\xe2\x80\x94 drop a WAV here, or click to choose")
                  : utf8(r.wavFile);
         break;
     default:        break;
@@ -311,7 +319,10 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
         return;
     }
 
-    g.setColour(columnId == kSlot ? kDim : (loaded ? kText : kDim));
+    const bool isPickHint = columnId == kWavFile && !loaded && r.wavFile.empty();
+    g.setColour(isPickHint ? felitronics::appkit::brand::lilac.withAlpha(0.45f)
+                           : columnId == kSlot ? kDim
+                                               : (loaded ? kText : kDim));
     g.setFont(juce::FontOptions(13.0f));
     g.drawText(text, area, juce::Justification::centredLeft, true);
 }

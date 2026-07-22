@@ -110,6 +110,10 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             pushWav(slot, path, row->info.hasAudio);
     };
+    table.onEmptyWavCellClicked = [this](int slot) {
+        if (!pedalBusy && slotRowFor(slot) != nullptr)
+            choosePushWav(slot, false);
+    };
     player.onGear = [this] { openAudioSettings(); };
 
     // The toolbar (reference web UI parity): manual config backup, junk

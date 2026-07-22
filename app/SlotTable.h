@@ -34,6 +34,7 @@ public:
     std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a slot's row
     std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
     std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
+    std::function<void(int)> onEmptyWavCellClicked;                 // click the "drop a WAV here" hint
 
     void selectSlot(int slot);
 
