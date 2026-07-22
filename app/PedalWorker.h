@@ -48,6 +48,7 @@ struct PedalSnapshot
 {
     std::string volume;                      // mount path; empty = no pedal found
     std::string error;                       // non-empty = the volume is there but unreadable
+    long long freeBytes = 0;                 // available space on the volume
     std::vector<SlotRow> slots;              // all 99 when readable
     std::vector<commands::Finding> findings; // doctor report (health banners)
 
@@ -115,6 +116,12 @@ public:
         }
 
         snapshot.volume = found->string();
+        {
+            std::error_code ec;
+            const auto space = volume::fs::space(*found, ec);
+            if (!ec)
+                snapshot.freeBytes = static_cast<long long>(space.available);
+        }
         try {
             const std::string text = commands::readMemory(*found);
             for (auto& info : catalog::listSlots(text)) {

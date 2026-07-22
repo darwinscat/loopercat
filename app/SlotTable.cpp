@@ -56,6 +56,35 @@ void SlotTable::setRows(std::vector<SlotRow> rows)
 
 // --- inline rename ---
 
+int SlotTable::rowOfSlot(int slot) const
+{
+    for (std::size_t i = 0; i < rows_.size(); ++i)
+        if (rows_[i].info.slot == slot)
+            return static_cast<int>(i);
+    return -1;
+}
+
+int SlotTable::slotOfRow(int rowIndex) const
+{
+    return rowIndex >= 0 && static_cast<std::size_t>(rowIndex) < rows_.size()
+             ? rows_[static_cast<std::size_t>(rowIndex)].info.slot
+             : 0;
+}
+
+void SlotTable::selectSlot(int slot)
+{
+    const int row = rowOfSlot(slot);
+    if (row >= 0)
+        table_.selectRow(row);
+}
+
+void SlotTable::startRenameEditForSlot(int slot)
+{
+    const int row = rowOfSlot(slot);
+    if (row >= 0)
+        startRenameEdit(row);
+}
+
 void SlotTable::startRenameEdit(int rowIndex)
 {
     if (rowIndex < 0 || static_cast<std::size_t>(rowIndex) >= rows_.size() || !onRenameCommitted)
@@ -103,8 +132,9 @@ void SlotTable::finishRenameEdit(bool commit)
     const int row = editingRow_;
     editingRow_ = -1;
     const juce::String value = editor->getText().trim();
-    if (commit && value.isNotEmpty() && value != editOriginal_ && onRenameCommitted)
-        onRenameCommitted(row, value);
+    if (commit && value.isNotEmpty() && value != editOriginal_ && onRenameCommitted
+        && slotOfRow(row) > 0)
+        onRenameCommitted(slotOfRow(row), value);
 }
 
 void SlotTable::resized()
@@ -134,8 +164,8 @@ int SlotTable::getNumRows()
 
 void SlotTable::selectedRowsChanged(int lastRowSelected)
 {
-    if (onSlotSelected && lastRowSelected >= 0)
-        onSlotSelected(lastRowSelected);
+    if (onSlotSelected && slotOfRow(lastRowSelected) > 0)
+        onSlotSelected(slotOfRow(lastRowSelected));
 }
 
 void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
@@ -144,19 +174,20 @@ void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&
         startRenameEdit(row);
         return;
     }
-    if (onSlotActivated)
-        onSlotActivated(row);
+    if (onSlotActivated && slotOfRow(row) > 0)
+        onSlotActivated(slotOfRow(row));
 }
 
 void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
 {
-    if (e.mods.isPopupMenu() && onRowContextMenu) {
-        onRowContextMenu(row, e.getScreenPosition());
+    if (e.mods.isPopupMenu() && onSlotContextMenu) {
+        if (slotOfRow(row) > 0)
+            onSlotContextMenu(slotOfRow(row), e.getScreenPosition());
         return;
     }
     // The One Shot cell IS the toggle — click flips it (reference web UI).
-    if (columnId == kOneShot && onOneShotToggled)
-        onOneShotToggled(row);
+    if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0)
+        onOneShotToggled(slotOfRow(row));
 }
 
 // --- per-row busy indication ---
@@ -177,8 +208,8 @@ void SlotTable::setBusySlot(int slot)
 void SlotTable::timerCallback()
 {
     busyPhase_ += 0.12f;
-    if (busySlot_ > 0)
-        table_.repaintRow(busySlot_ - 1); // rows are slots, 1:1
+    if (busySlot_ > 0 && rowOfSlot(busySlot_) >= 0)
+        table_.repaintRow(rowOfSlot(busySlot_));
 }
 
 // --- wav drag-and-drop onto rows ---
@@ -217,11 +248,11 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
     const int row = rowAt(x, y);
     dragRow_ = -1;
     table_.repaint();
-    if (row < 0 || !onWavDropped)
+    if (slotOfRow(row) <= 0 || !onWavDropped)
         return;
     for (const auto& file : files)
         if (file.endsWithIgnoreCase(".wav")) {
-            onWavDropped(row, file);
+            onWavDropped(slotOfRow(row), file);
             return; // one wav per slot; the first one wins
         }
 }
@@ -231,7 +262,7 @@ void SlotTable::paintRowBackground(juce::Graphics& g, int row, int width, int he
     g.fillAll(selected ? kSelected : (row % 2 == 0 ? kRowEven : kRowOdd));
     if (row == dragRow_) // a wav hovers here — show the push target
         g.fillAll(felitronics::appkit::brand::violet.withAlpha(0.18f));
-    if (busySlot_ > 0 && row == busySlot_ - 1) {
+    if (busySlot_ > 0 && slotOfRow(row) == busySlot_) {
         // The working row: a breathing violet wash + a left edge bar.
         const float pulse = 0.5f + 0.5f * std::sin(busyPhase_);
         g.setColour(felitronics::appkit::brand::violet.withAlpha(0.10f + 0.14f * pulse));
@@ -255,7 +286,11 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kDuration: text = loaded ? formatDuration(r.info.frames) : juce::String(); break;
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
     case kOneShot:  break; // drawn as a dot below
-    case kWavFile:  text = utf8(r.wavFile); break;
+    case kWavFile:
+        text = r.wavFile.empty() && !loaded
+                 ? juce::String::fromUTF8("\xe2\x80\x94 drop a WAV here")
+                 : utf8(r.wavFile);
+        break;
     default:        break;
     }
 

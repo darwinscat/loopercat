@@ -13,6 +13,7 @@
 #include "PedalWorker.h"
 #include "PlayerPane.h"
 #include "SlotTable.h"
+#include "Toast.h"
 #include "UpdateCheck.h"
 
 //==============================================================================
@@ -41,13 +42,16 @@ public:
 
 private:
     void applySnapshot(const PedalSnapshot& snapshot);
-    void slotChosen(int rowIndex, bool startPlaying);
+    void slotChosen(int slot, bool startPlaying);
     void openAudioSettings();
     void updateStatusText();
+    void updateTableRows();
+    void updateToolbar();
+    const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
     // write options (backup root + timestamp under the app data dir).
-    void showRowMenu(int rowIndex, juce::Point<int> screenPosition);
+    void showSlotMenu(int slot, juce::Point<int> screenPosition);
     void toggleOneShot(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
     void choosePushWav(int slot, bool slotOccupied);
@@ -68,7 +72,11 @@ private:
     juce::Label hint; // the empty-state prompt, shown while no pedal is mounted
     AudioEngine engine;
     BannerStrip banners;
+    juce::TextButton backupButton { "Backup" };
+    juce::TextButton cleanButton { "Clean junk" };
+    juce::ToggleButton showEmptyToggle { "show empty slots" };
     SlotTable table;
+    Toast toast;
     PlayerPane player { engine };
     juce::String deviceError;
     juce::String jobError; // the last failed mutation, until dismissed/superseded
