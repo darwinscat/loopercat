@@ -30,10 +30,14 @@ public:
         // --snapshot <file.png>: render the main content offscreen and exit.
         // The headless proof that the window actually draws — no display
         // permissions involved; used by the DoD check and CI screenshots.
+        // --select <slot> additionally selects that slot (1..99) and waits
+        // for its waveform before rendering.
         const int snapshotFlag = args.indexOf("--snapshot");
         if (snapshotFlag >= 0) {
+            const int selectFlag = args.indexOf("--select");
+            const int slot = selectFlag >= 0 ? args[selectFlag + 1].getIntValue() : 0;
             setApplicationReturnValue(
-                writeSnapshot(args[snapshotFlag + 1], explicitVolume.toStdString()));
+                writeSnapshot(args[snapshotFlag + 1], explicitVolume.toStdString(), slot));
             quit();
             return;
         }
@@ -46,7 +50,8 @@ public:
     void systemRequestedQuit() override { quit(); }
 
 private:
-    static int writeSnapshot(const juce::String& path, const std::string& explicitVolume)
+    static int writeSnapshot(const juce::String& path, const std::string& explicitVolume,
+                             const int selectSlot)
     {
         if (path.isEmpty()) {
             std::cerr << "--snapshot requires a target file path\n";
@@ -54,6 +59,16 @@ private:
         }
         MainComponent content(explicitVolume);
         content.refreshNow();
+        if (selectSlot > 0) {
+            content.selectSlot(selectSlot);
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 15000;
+            while (!content.playerReady() && juce::Time::getMillisecondCounterHiRes() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+            if (!content.playerReady()) {
+                std::cerr << "waveform did not finish loading in time\n";
+                return 2;
+            }
+        }
         const juce::Image image =
             content.createComponentSnapshot(content.getLocalBounds(), false, 1.0f);
         const juce::File file = juce::File::getCurrentWorkingDirectory().getChildFile(path);

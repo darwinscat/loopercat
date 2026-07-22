@@ -153,11 +153,13 @@ juce_add_gui_app(LooperCat
 target_sources(LooperCat PRIVATE
     app/Main.cpp
     app/MainComponent.cpp
+    app/PlayerPane.cpp
     app/SlotTable.cpp)
 
 target_compile_definitions(LooperCat PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1        # the --snapshot path pumps the loop while a waveform builds
     LOOPERCAT_VERSION="${PROJECT_VERSION}"
     LOOPERCAT_GIT_HASH="${LOOPERCAT_GIT_HASH}"
     LOOPERCAT_GIT_DIRTY=${LOOPERCAT_GIT_DIRTY}
@@ -167,8 +169,9 @@ target_compile_definitions(LooperCat PRIVATE
 
 target_link_libraries(LooperCat PRIVATE
     loopercat::core
-    felitronics::appkit                 # BrandHeader / VersionBadge / UpdateChecker (header-only; JUCE comes from us)
+    felitronics::appkit                 # BrandHeader / VersionBadge / UpdateChecker / AudioSettingsPanel
     LooperCatAssets                     # embedded brand assets (cat logo + Michroma)
+    juce::juce_audio_utils              # playback chain, AudioThumbnail, device selector
     juce::juce_gui_basics
     juce::juce_events
     juce::juce_data_structures
