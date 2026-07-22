@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "PedalMonitor.h"
+#include "PedalWorker.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -17,6 +17,7 @@ namespace loopercat
 {
 
 class SlotTable final : public juce::Component,
+                        public juce::FileDragAndDropTarget,
                         private juce::TableListBoxModel
 {
 public:
@@ -25,10 +26,17 @@ public:
     void setRows(std::vector<SlotRow> rows);
 
     // Row index (0-based), fired on the message thread.
-    std::function<void(int)> onSlotSelected;  // selection moved
-    std::function<void(int)> onSlotActivated; // double-click: select AND play
+    std::function<void(int)> onSlotSelected;                        // selection moved
+    std::function<void(int)> onSlotActivated;                       // double-click: select AND play
+    std::function<void(int, juce::Point<int>)> onRowContextMenu;    // right-click (screen position)
+    std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a row
 
     void selectRow(int rowIndex) { table_.selectRow(rowIndex); }
+
+    bool isInterestedInFileDrag(const juce::StringArray& files) override;
+    void fileDragMove(const juce::StringArray& files, int x, int y) override;
+    void fileDragExit(const juce::StringArray& files) override;
+    void filesDropped(const juce::StringArray& files, int x, int y) override;
 
     void resized() override;
 
@@ -45,8 +53,12 @@ private:
     void paintCell(juce::Graphics&, int row, int columnId, int width, int height, bool selected) override;
     void selectedRowsChanged(int lastRowSelected) override;
     void cellDoubleClicked(int row, int columnId, const juce::MouseEvent&) override;
+    void cellClicked(int row, int columnId, const juce::MouseEvent&) override;
+
+    int rowAt(int x, int y);
 
     std::vector<SlotRow> rows_;
+    int dragRow_ = -1; // row highlighted under a wav drag
     juce::TableListBox table_ { {}, this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SlotTable)

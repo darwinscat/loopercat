@@ -29,6 +29,15 @@ public:
 
     juce::PropertiesFile* file() { return properties.getUserSettings(); }
 
+    // The app's data home (…/Darwin's Cat/LooperCat) — backups and the
+    // clear-command trash live under it.
+    juce::File dataDir()
+    {
+        auto* settings = file();
+        jassert(settings != nullptr); // storage parameters are set in the ctor
+        return settings->getFile().getParentDirectory();
+    }
+
 private:
     juce::ApplicationProperties properties;
 

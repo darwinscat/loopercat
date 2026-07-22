@@ -4,6 +4,7 @@
 #include "MainComponent.h"
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
+#include <felitronics/appkit/TextPrompt.h>
 
 #include <BinaryData.h>
 
@@ -58,6 +59,11 @@ namespace
         felitronics::appkit::AudioSettingsPanel panel;
         AppSettings& settings;
     };
+
+    juce::String trimmedName(const SlotRow& row)
+    {
+        return juce::String(row.info.name).trimEnd();
+    }
 } // namespace
 
 MainComponent::MainComponent(std::string explicitVolume)
@@ -65,7 +71,7 @@ MainComponent::MainComponent(std::string explicitVolume)
              BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize,
              "LooperCat", kProductUrl),
       badge(updateChecker, badgeConfig(), "App"),
-      monitor(std::move(explicitVolume), [this](const PedalSnapshot& s) { applySnapshot(s); })
+      worker(std::move(explicitVolume), [this](const PedalSnapshot& s) { applySnapshot(s); })
 {
     badge.setBrandTypeface(juce::Typeface::createSystemTypefaceFor(
         BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize));
@@ -85,12 +91,32 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     table.onSlotSelected = [this](int row) { slotChosen(row, false); };
     table.onSlotActivated = [this](int row) { slotChosen(row, true); };
+    table.onRowContextMenu = [this](int row, juce::Point<int> at) { showRowMenu(row, at); };
+    table.onWavDropped = [this](int row, juce::String path) {
+        if (pedalBusy || static_cast<std::size_t>(row) >= snapshot.slots.size())
+            return;
+        const SlotRow& target = snapshot.slots[static_cast<std::size_t>(row)];
+        pushWav(target.info.slot, path, target.info.hasAudio);
+    };
     player.onGear = [this] { openAudioSettings(); };
+
+    banners.onLayoutChange = [this] { resized(); };
+
+    // Wired before start(): the worker reads these from its own thread.
+    worker.onBusy = [this](bool busy) {
+        pedalBusy = busy;
+        updateStatusText();
+    };
+    worker.onJobResult = [this](juce::String description, juce::String error) {
+        jobError = error.isEmpty() ? juce::String() : description + ": " + error;
+        banners.setContent(snapshot.findings, jobError);
+    };
 
     addAndMakeVisible(header);
     addAndMakeVisible(badge);
     addAndMakeVisible(status);
     addAndMakeVisible(hint);
+    addAndMakeVisible(banners);
     addChildComponent(table);  // shown once a pedal is mounted
     addChildComponent(player); // likewise
 
@@ -99,12 +125,12 @@ MainComponent::MainComponent(std::string explicitVolume)
     applySnapshot({}); // the no-pedal state, until the first scan lands
     setSize(920, 680);
 
-    monitor.start();
+    worker.start();
 }
 
 void MainComponent::refreshNow()
 {
-    applySnapshot(monitor.scanOnce());
+    applySnapshot(worker.scanOnce());
 }
 
 void MainComponent::selectSlot(int slot)
@@ -117,29 +143,39 @@ bool MainComponent::playerReady() const
     return !engine.hasSource() || player.isThumbnailReady();
 }
 
+void MainComponent::updateStatusText()
+{
+    if (snapshot.volume.empty()) {
+        status.setText("No looper found", juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, kStatusText);
+        return;
+    }
+    if (!snapshot.error.empty()) {
+        status.setText(juce::String(snapshot.volume) + " — " + snapshot.error,
+                       juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, kErrorText);
+        return;
+    }
+    int loaded = 0;
+    for (const auto& row : snapshot.slots)
+        loaded += row.info.hasAudio ? 1 : 0;
+    juce::String text = juce::String(snapshot.volume) + "  —  " + juce::String(loaded) + " of "
+                      + juce::String(snapshot.slots.size()) + " slots hold a loop";
+    if (pedalBusy)
+        text << "  ·  working…";
+    if (deviceError.isNotEmpty())
+        text << "  ·  audio device: " << deviceError;
+    status.setText(text, juce::dontSendNotification);
+    status.setColour(juce::Label::textColourId, kStatusText);
+}
+
 void MainComponent::applySnapshot(const PedalSnapshot& latest)
 {
     snapshot = latest;
     const bool mounted = !snapshot.volume.empty() && snapshot.error.empty();
 
-    if (snapshot.volume.empty()) {
-        status.setText("No looper found", juce::dontSendNotification);
-        status.setColour(juce::Label::textColourId, kStatusText);
-    } else if (!snapshot.error.empty()) {
-        status.setText(juce::String(snapshot.volume) + " — " + snapshot.error,
-                       juce::dontSendNotification);
-        status.setColour(juce::Label::textColourId, kErrorText);
-    } else {
-        int loaded = 0;
-        for (const auto& row : snapshot.slots)
-            loaded += row.info.hasAudio ? 1 : 0;
-        juce::String text = juce::String(snapshot.volume) + "  —  " + juce::String(loaded)
-                          + " of " + juce::String(snapshot.slots.size()) + " slots hold a loop";
-        if (deviceError.isNotEmpty())
-            text << "  ·  audio device: " << deviceError;
-        status.setText(text, juce::dontSendNotification);
-        status.setColour(juce::Label::textColourId, kStatusText);
-    }
+    updateStatusText();
+    banners.setContent(snapshot.findings, jobError);
 
     // Drop the player when its file is no longer on the (still-)mounted pedal.
     if (player.currentPath().isNotEmpty()) {
@@ -170,11 +206,166 @@ void MainComponent::slotChosen(int rowIndex, bool startPlaying)
     const juce::String path(row.wavPath);
     if (path != player.currentPath()) {
         const juce::String title = juce::String(row.info.slot).paddedLeft('0', 2) + "  "
-                                 + juce::String(row.info.name).trimEnd();
+                                 + trimmedName(row);
         player.setSlot(juce::File(path), title, row.info.oneShot);
     }
     if (startPlaying && engine.hasSource() && !engine.isPlaying())
         engine.play();
+}
+
+// --- mutations ---
+
+commands::WriteOptions MainComponent::makeWriteOptions()
+{
+    const juce::String stamp = juce::Time::getCurrentTime().formatted("%Y-%m-%dT%H-%M-%S");
+    return { .backupRoot = settings.dataDir().getChildFile("backups").getFullPathName().toStdString(),
+             .stamp = stamp.toStdString() };
+}
+
+void MainComponent::showRowMenu(int rowIndex, juce::Point<int> screenPosition)
+{
+    if (pedalBusy || rowIndex < 0 || static_cast<std::size_t>(rowIndex) >= snapshot.slots.size())
+        return;
+    const SlotRow& row = snapshot.slots[static_cast<std::size_t>(rowIndex)];
+    const int slot = row.info.slot;
+    const bool occupied = row.info.hasAudio;
+    const juce::String name = trimmedName(row);
+
+    juce::PopupMenu menu;
+    menu.addItem(1, "Rename…");
+    menu.addItem(2, "One Shot", true, row.info.oneShot);
+    menu.addItem(3, occupied ? "Replace WAV…" : "Push WAV here…");
+    menu.addItem(4, "Pull to folder…", occupied);
+    menu.addSeparator();
+    menu.addItem(5, "Clear slot…");
+
+    const bool oneShotNow = row.info.oneShot;
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
+        [this, slot, name, occupied, oneShotNow](int choice) {
+            switch (choice) {
+            case 1: renameSlot(slot, name); break;
+            case 2: toggleOneShot(slot, oneShotNow); break;
+            case 3: choosePushWav(slot, occupied); break;
+            case 4: pullSlot(slot); break;
+            case 5: clearSlot(slot, name); break;
+            default: break;
+            }
+        });
+}
+
+void MainComponent::renameSlot(int slot, const juce::String& currentName)
+{
+    felitronics::appkit::textPrompt(
+        "Rename slot " + juce::String(slot), currentName, [this, slot](juce::String value) {
+            worker.enqueue({ "Rename slot " + juce::String(slot),
+                             [name = value.toStdString(), options = makeWriteOptions(),
+                              slot](const volume::fs::path& volumePath) {
+                                 commands::rename(volumePath, slot, name, options);
+                             } });
+        });
+}
+
+void MainComponent::toggleOneShot(int slot, bool currentlyOn)
+{
+    worker.enqueue({ juce::String(currentlyOn ? "Disable" : "Enable") + " One Shot on slot "
+                         + juce::String(slot),
+                     [slot, on = !currentlyOn, options = makeWriteOptions()](
+                         const volume::fs::path& volumePath) {
+                         commands::setOneShot(volumePath, { slot }, on, options);
+                     } });
+}
+
+void MainComponent::choosePushWav(int slot, bool slotOccupied)
+{
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Choose a WAV for slot " + juce::String(slot),
+        juce::File::getSpecialLocation(juce::File::userMusicDirectory), "*.wav");
+    fileChooser->launchAsync(juce::FileBrowserComponent::openMode
+                                 | juce::FileBrowserComponent::canSelectFiles,
+                             [this, slot, slotOccupied](const juce::FileChooser& chooser) {
+                                 const juce::File file = chooser.getResult();
+                                 if (file == juce::File())
+                                     return;
+                                 pushWav(slot, file.getFullPathName(), slotOccupied);
+                             });
+}
+
+void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotOccupied)
+{
+    const auto enqueuePush = [this, slot, sourcePath](bool force) {
+        worker.enqueue({ "Push " + juce::File(sourcePath).getFileName() + " to slot "
+                             + juce::String(slot),
+                         [source = sourcePath.toStdString(), slot, force,
+                          options = makeWriteOptions()](const volume::fs::path& volumePath) {
+                             commands::push(volumePath, source, slot,
+                                            { .force = force, .write = options });
+                         } });
+    };
+
+    if (!slotOccupied) {
+        enqueuePush(false);
+        return;
+    }
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::WarningIcon)
+            .withTitle("Replace slot " + juce::String(slot) + "?")
+            .withMessage("This slot already holds a loop. The current WAV will be replaced "
+                         "(a config backup is taken first).")
+            .withButton("Replace")
+            .withButton("Cancel"),
+        [enqueuePush](int button) {
+            if (button == 1)
+                enqueuePush(true);
+        });
+}
+
+void MainComponent::pullSlot(int slot)
+{
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Pull slot " + juce::String(slot) + " to…",
+        juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+    fileChooser->launchAsync(juce::FileBrowserComponent::openMode
+                                 | juce::FileBrowserComponent::canSelectDirectories,
+                             [this, slot](const juce::FileChooser& chooser) {
+                                 const juce::File dir = chooser.getResult();
+                                 if (dir == juce::File())
+                                     return;
+                                 worker.enqueue(
+                                     { "Pull slot " + juce::String(slot),
+                                       [slot, dest = dir.getFullPathName().toStdString()](
+                                           const volume::fs::path& volumePath) {
+                                           commands::pull(volumePath, { slot }, { .dest = dest });
+                                       } });
+                             });
+}
+
+void MainComponent::clearSlot(int slot, const juce::String& name)
+{
+    const juce::String label = name.isEmpty() ? juce::String(slot)
+                                              : juce::String(slot) + " (" + name + ")";
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::WarningIcon)
+            .withTitle("Clear slot " + label + "?")
+            .withMessage("The slot returns to factory state. Its audio moves to the app's "
+                         "trash folder first — nothing is destroyed outright.")
+            .withButton("Clear")
+            .withButton("Cancel"),
+        [this, slot](int button) {
+            if (button != 1)
+                return;
+            const auto options = makeWriteOptions();
+            worker.enqueue(
+                { "Clear slot " + juce::String(slot),
+                  [slot, options,
+                   trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                      const volume::fs::path& volumePath) {
+                      commands::clear(volumePath, { slot },
+                                      { .trashRoot = trash, .write = options });
+                  } });
+        });
 }
 
 void MainComponent::openAudioSettings()
@@ -208,6 +399,10 @@ void MainComponent::resized()
     header.setBounds(area.removeFromTop(56));
     header.clickRight = juce::roundToInt(header.contentRight());
     status.setBounds(area.removeFromTop(28).reduced(12, 2));
+    const int bannerHeight = banners.preferredHeight();
+    banners.setBounds(area.removeFromTop(bannerHeight).reduced(12, 0));
+    if (bannerHeight > 0)
+        area.removeFromTop(6);
     badge.setBounds(getWidth() - 122, getHeight() - 40, 110, 32);
     area.removeFromBottom(44); // the badge strip stays clear
     player.setBounds(area.removeFromBottom(150).reduced(12, 0));

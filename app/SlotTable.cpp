@@ -86,9 +86,62 @@ void SlotTable::cellDoubleClicked(int row, int, const juce::MouseEvent&)
         onSlotActivated(row);
 }
 
+void SlotTable::cellClicked(int row, int, const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu() && onRowContextMenu)
+        onRowContextMenu(row, e.getScreenPosition());
+}
+
+// --- wav drag-and-drop onto rows ---
+
+int SlotTable::rowAt(int x, int y)
+{
+    const auto inTable = table_.getLocalPoint(this, juce::Point<int>(x, y));
+    return table_.getRowContainingPosition(inTable.x, inTable.y);
+}
+
+bool SlotTable::isInterestedInFileDrag(const juce::StringArray& files)
+{
+    for (const auto& file : files)
+        if (file.endsWithIgnoreCase(".wav"))
+            return true;
+    return false;
+}
+
+void SlotTable::fileDragMove(const juce::StringArray&, int x, int y)
+{
+    const int row = rowAt(x, y);
+    if (row != dragRow_) {
+        dragRow_ = row;
+        table_.repaint();
+    }
+}
+
+void SlotTable::fileDragExit(const juce::StringArray&)
+{
+    dragRow_ = -1;
+    table_.repaint();
+}
+
+void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
+{
+    const int row = rowAt(x, y);
+    dragRow_ = -1;
+    table_.repaint();
+    if (row < 0 || !onWavDropped)
+        return;
+    for (const auto& file : files)
+        if (file.endsWithIgnoreCase(".wav")) {
+            onWavDropped(row, file);
+            return; // one wav per slot; the first one wins
+        }
+}
+
 void SlotTable::paintRowBackground(juce::Graphics& g, int row, int, int, bool selected)
 {
     g.fillAll(selected ? kSelected : (row % 2 == 0 ? kRowEven : kRowOdd));
+    if (row == dragRow_) // a wav hovers here — show the push target
+        g.fillAll(felitronics::appkit::brand::violet.withAlpha(0.18f));
 }
 
 void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, int height, bool)
