@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Darwin's Cat. Part of Looper Cat — see LICENSE.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Headless harness for the live-refresh contract: the REAL PedalMonitor
+// Headless harness for the live-refresh contract: the REAL PedalWorker
 // (worker thread + async delivery) driven against a scratch volume that
 // mounts, changes and unmounts under it. Proves the browser's rows follow
 // the filesystem without any UI present:
@@ -10,14 +10,17 @@
 //                             (explicit --volume semantics: a bad path is an
 //                             error to show, not a silent no-pedal)
 //   2. pedal content lands -> delivery with all 99 slots
-//   3. a slot is renamed   -> delivery with the new name (edit detection)
-//   4. the content goes    -> delivery drops the mounted state again
+//   3. a slot is renamed on disk -> delivery with the new name
+//   4. a mutation JOB runs on the same worker -> busy brackets, ok result,
+//      the post-job snapshot already carries the change
+//   5. a failing job surfaces its typed error and changes nothing
+//   6. the content goes    -> delivery drops the mounted state again
 //
 // A quiet volume between the steps must deliver NOTHING (change-gated).
 
 #include "support.hpp"
 
-#include "../app/PedalMonitor.h"
+#include "../app/PedalWorker.h"
 
 #include <loopercat/Rc0.hpp>
 
@@ -64,9 +67,15 @@ int main()
     fs::create_directories(volume); // the mount point exists; no pedal content yet
 
     std::vector<PedalSnapshot> deliveries;
-    PedalMonitor monitor(volume.string(), [&deliveries](const PedalSnapshot& s) {
+    PedalWorker monitor(volume.string(), [&deliveries](const PedalSnapshot& s) {
         deliveries.push_back(s);
     });
+    std::vector<bool> busyEvents;
+    std::vector<std::pair<juce::String, juce::String>> jobResults;
+    monitor.onBusy = [&busyEvents](bool busy, int) { busyEvents.push_back(busy); };
+    monitor.onJobResult = [&jobResults](juce::String description, juce::String error) {
+        jobResults.emplace_back(std::move(description), std::move(error));
+    };
     monitor.start();
 
     // 1. First delivery: the pinned path has no pedal content -> the error
@@ -106,7 +115,40 @@ int main()
             && deliveries.back().slots.at(41).info.name == "Live Refresh";
     }, 5000));
 
-    // 4. The content disappears (an unmount): the mounted state drops — no
+    // 4. A mutation goes through the SAME worker: busy brackets it, the
+    // result reports success, and the fresh snapshot already carries the
+    // change — no wait for the next poll.
+    monitor.enqueue({ "Rename slot 7", 7,
+                      [](const volume::fs::path& volumePath) {
+                          commands::rename(volumePath, 7, "Via Worker",
+                                           { .skipBackup = true });
+                      } });
+    CHECK(pumpUntil([&] { return !jobResults.empty(); }, 5000));
+    if (!jobResults.empty()) {
+        CHECK_EQ(jobResults.back().first, juce::String("Rename slot 7"));
+        CHECK_EQ(jobResults.back().second, juce::String());
+    }
+    CHECK(pumpUntil([&] { return busyEvents.size() >= 2; }, 5000));
+    if (busyEvents.size() >= 2) {
+        CHECK(busyEvents.front()); // true before…
+        CHECK(!busyEvents.back()); // …false after
+    }
+    CHECK(!deliveries.empty() && !deliveries.back().slots.empty()
+          && deliveries.back().slots.at(6).info.name == "Via Worker  ");
+
+    // 5. A failing mutation surfaces its typed error and changes nothing.
+    monitor.enqueue({ "Rename slot 7 badly", 7,
+                      [](const volume::fs::path& volumePath) {
+                          commands::rename(volumePath, 7, "ThirteenChars",
+                                           { .skipBackup = true });
+                      } });
+    CHECK(pumpUntil([&] { return jobResults.size() >= 2; }, 5000));
+    if (jobResults.size() >= 2)
+        CHECK(jobResults.back().second.contains("longer than 12"));
+    CHECK(!deliveries.empty() && !deliveries.back().slots.empty()
+          && deliveries.back().slots.at(6).info.name == "Via Worker  ");
+
+    // 6. The content disappears (an unmount): the mounted state drops — no
     // rows and no clean volume left standing.
     fs::remove_all(volume);
     CHECK(pumpUntil([&] {

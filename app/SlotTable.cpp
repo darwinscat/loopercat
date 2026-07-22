@@ -3,9 +3,13 @@
 
 #include "SlotTable.h"
 
+#include "Strings.h"
+
 #include <felitronics/appkit/Brand.h>
 
 #include <loopercat/Wav.hpp>
+
+#include <cmath>
 
 namespace loopercat
 {
@@ -32,7 +36,7 @@ SlotTable::SlotTable()
     header.setColour(juce::TableHeaderComponent::outlineColourId, juce::Colour(0xff2a2a34));
     using Flags = juce::TableHeaderComponent::ColumnPropertyFlags;
     header.addColumn("#", kSlot, 40, 40, 40, Flags::notSortable);
-    header.addColumn("Name", kName, 220, 120, -1, Flags::notSortable);
+    header.addColumn("Name", kName, 132, 132, 132, Flags::notSortable); // 12 chars, fixed
     header.addColumn("Duration", kDuration, 84, 84, 84, Flags::notSortable);
     header.addColumn("Tempo", kTempo, 76, 76, 76, Flags::notSortable);
     header.addColumn("One Shot", kOneShot, 84, 84, 84, Flags::notSortable);
@@ -44,9 +48,93 @@ SlotTable::SlotTable()
 
 void SlotTable::setRows(std::vector<SlotRow> rows)
 {
+    finishRenameEdit(false); // rows may shift under the editor — never edit stale data
     rows_ = std::move(rows);
     table_.updateContent();
     table_.repaint();
+}
+
+// --- inline rename ---
+
+int SlotTable::rowOfSlot(int slot) const
+{
+    for (std::size_t i = 0; i < rows_.size(); ++i)
+        if (rows_[i].info.slot == slot)
+            return static_cast<int>(i);
+    return -1;
+}
+
+int SlotTable::slotOfRow(int rowIndex) const
+{
+    return rowIndex >= 0 && static_cast<std::size_t>(rowIndex) < rows_.size()
+             ? rows_[static_cast<std::size_t>(rowIndex)].info.slot
+             : 0;
+}
+
+void SlotTable::selectSlot(int slot)
+{
+    const int row = rowOfSlot(slot);
+    if (row >= 0)
+        table_.selectRow(row);
+}
+
+void SlotTable::startRenameEditForSlot(int slot)
+{
+    const int row = rowOfSlot(slot);
+    if (row >= 0)
+        startRenameEdit(row);
+}
+
+void SlotTable::startRenameEdit(int rowIndex)
+{
+    if (rowIndex < 0 || static_cast<std::size_t>(rowIndex) >= rows_.size() || !onRenameCommitted)
+        return;
+    finishRenameEdit(false);
+
+    const auto cell = table_.getCellPosition(kName, rowIndex, true);
+    if (cell.isEmpty())
+        return;
+    table_.scrollToEnsureRowIsOnscreen(rowIndex);
+
+    editingRow_ = rowIndex;
+    editOriginal_ = utf8(rows_[static_cast<std::size_t>(rowIndex)].info.name).trimEnd();
+
+    nameEditor_ = std::make_unique<juce::TextEditor>();
+    // The pedal's name constraints, enforced at the field: 12 chars, the
+    // printable ASCII range its display can show.
+    juce::String printableAscii;
+    for (juce::juce_wchar c = 0x20; c <= 0x7e; ++c)
+        printableAscii += juce::String::charToString(c);
+    nameEditor_->setInputRestrictions(rc0::kNameLength, printableAscii);
+    nameEditor_->setFont(juce::FontOptions(13.0f));
+    nameEditor_->setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff23232d));
+    nameEditor_->setColour(juce::TextEditor::textColourId, juce::Colours::white);
+    nameEditor_->setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff2a2a34));
+    nameEditor_->setColour(juce::TextEditor::focusedOutlineColourId,
+                           felitronics::appkit::brand::violet);
+    nameEditor_->setText(editOriginal_, juce::dontSendNotification);
+    nameEditor_->setSelectAllWhenFocused(true);
+    nameEditor_->onReturnKey = [this] { finishRenameEdit(true); };
+    nameEditor_->onEscapeKey = [this] { finishRenameEdit(false); };
+    nameEditor_->onFocusLost = [this] { finishRenameEdit(true); }; // Finder-style: click away commits
+
+    addAndMakeVisible(*nameEditor_);
+    nameEditor_->setBounds(cell.reduced(2, 1)); // table_ sits at (0,0), same coords
+    nameEditor_->grabKeyboardFocus();
+}
+
+void SlotTable::finishRenameEdit(bool commit)
+{
+    if (nameEditor_ == nullptr)
+        return;
+    // Move out first: removing the editor fires onFocusLost, which re-enters here.
+    const std::unique_ptr<juce::TextEditor> editor = std::move(nameEditor_);
+    const int row = editingRow_;
+    editingRow_ = -1;
+    const juce::String value = editor->getText().trim();
+    if (commit && value.isNotEmpty() && value != editOriginal_ && onRenameCommitted
+        && slotOfRow(row) > 0)
+        onRenameCommitted(slotOfRow(row), value);
 }
 
 void SlotTable::resized()
@@ -76,19 +164,120 @@ int SlotTable::getNumRows()
 
 void SlotTable::selectedRowsChanged(int lastRowSelected)
 {
-    if (onSlotSelected && lastRowSelected >= 0)
-        onSlotSelected(lastRowSelected);
+    if (onSlotSelected && slotOfRow(lastRowSelected) > 0)
+        onSlotSelected(slotOfRow(lastRowSelected));
 }
 
-void SlotTable::cellDoubleClicked(int row, int, const juce::MouseEvent&)
+void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
 {
-    if (onSlotActivated)
-        onSlotActivated(row);
+    if (columnId == kName) { // double-click the name = edit it in place
+        startRenameEdit(row);
+        return;
+    }
+    if (onSlotActivated && slotOfRow(row) > 0)
+        onSlotActivated(slotOfRow(row));
 }
 
-void SlotTable::paintRowBackground(juce::Graphics& g, int row, int, int, bool selected)
+void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu() && onSlotContextMenu) {
+        if (slotOfRow(row) > 0)
+            onSlotContextMenu(slotOfRow(row), e.getScreenPosition());
+        return;
+    }
+    // The One Shot cell IS the toggle — click flips it (reference web UI).
+    if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0) {
+        onOneShotToggled(slotOfRow(row));
+        return;
+    }
+    // The empty-slot hint is a button: click opens the WAV chooser.
+    if (columnId == kWavFile && onEmptyWavCellClicked && slotOfRow(row) > 0) {
+        const SlotRow& r = rows_[static_cast<std::size_t>(row)];
+        if (!r.info.hasAudio && r.wavFile.empty())
+            onEmptyWavCellClicked(r.info.slot);
+    }
+}
+
+// --- per-row busy indication ---
+
+void SlotTable::setBusySlot(int slot)
+{
+    if (busySlot_ == slot)
+        return;
+    busySlot_ = slot;
+    busyPhase_ = 0.0f;
+    if (slot > 0)
+        startTimerHz(30);
+    else
+        stopTimer();
+    table_.repaint();
+}
+
+void SlotTable::timerCallback()
+{
+    busyPhase_ += 0.12f;
+    if (busySlot_ > 0 && rowOfSlot(busySlot_) >= 0)
+        table_.repaintRow(rowOfSlot(busySlot_));
+}
+
+// --- wav drag-and-drop onto rows ---
+
+int SlotTable::rowAt(int x, int y)
+{
+    const auto inTable = table_.getLocalPoint(this, juce::Point<int>(x, y));
+    return table_.getRowContainingPosition(inTable.x, inTable.y);
+}
+
+bool SlotTable::isInterestedInFileDrag(const juce::StringArray& files)
+{
+    for (const auto& file : files)
+        if (file.endsWithIgnoreCase(".wav"))
+            return true;
+    return false;
+}
+
+void SlotTable::fileDragMove(const juce::StringArray&, int x, int y)
+{
+    const int row = rowAt(x, y);
+    if (row != dragRow_) {
+        dragRow_ = row;
+        table_.repaint();
+    }
+}
+
+void SlotTable::fileDragExit(const juce::StringArray&)
+{
+    dragRow_ = -1;
+    table_.repaint();
+}
+
+void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
+{
+    const int row = rowAt(x, y);
+    dragRow_ = -1;
+    table_.repaint();
+    if (slotOfRow(row) <= 0 || !onWavDropped)
+        return;
+    for (const auto& file : files)
+        if (file.endsWithIgnoreCase(".wav")) {
+            onWavDropped(slotOfRow(row), file);
+            return; // one wav per slot; the first one wins
+        }
+}
+
+void SlotTable::paintRowBackground(juce::Graphics& g, int row, int width, int height, bool selected)
 {
     g.fillAll(selected ? kSelected : (row % 2 == 0 ? kRowEven : kRowOdd));
+    if (row == dragRow_) // a wav hovers here — show the push target
+        g.fillAll(felitronics::appkit::brand::violet.withAlpha(0.18f));
+    if (busySlot_ > 0 && slotOfRow(row) == busySlot_) {
+        // The working row: a breathing violet wash + a left edge bar.
+        const float pulse = 0.5f + 0.5f * std::sin(busyPhase_);
+        g.setColour(felitronics::appkit::brand::violet.withAlpha(0.10f + 0.14f * pulse));
+        g.fillRect(0, 0, width, height);
+        g.setColour(felitronics::appkit::brand::orange.withAlpha(0.5f + 0.5f * pulse));
+        g.fillRect(0, 0, 3, height);
+    }
 }
 
 void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, int height, bool)
@@ -101,27 +290,39 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     juce::String text;
     switch (columnId) {
     case kSlot:     text = juce::String(r.info.slot); break;
-    case kName:     text = juce::String(r.info.name).trimEnd(); break;
+    case kName:     text = utf8(r.info.name).trimEnd(); break;
     case kDuration: text = loaded ? formatDuration(r.info.frames) : juce::String(); break;
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
     case kOneShot:  break; // drawn as a dot below
-    case kWavFile:  text = juce::String(r.wavFile); break;
+    case kWavFile:
+        text = r.wavFile.empty() && !loaded
+                 ? juce::String::fromUTF8("\xe2\x80\x94 drop a WAV here, or click to choose")
+                 : utf8(r.wavFile);
+        break;
     default:        break;
     }
 
     const auto area = juce::Rectangle<int>(0, 0, width, height).reduced(8, 0);
 
     if (columnId == kOneShot) {
+        // The cell is the toggle: filled = on, hollow = off (click flips it).
+        const float d = 7.0f;
+        const float x = static_cast<float>(area.getX()) + 2.0f;
+        const float y = (static_cast<float>(height) - d) * 0.5f;
         if (r.info.oneShot) {
-            const float d = 7.0f;
             g.setColour(felitronics::appkit::brand::orange);
-            g.fillEllipse(static_cast<float>(area.getX()) + 2.0f,
-                          (static_cast<float>(height) - d) * 0.5f, d, d);
+            g.fillEllipse(x, y, d, d);
+        } else {
+            g.setColour(kDim.withAlpha(0.55f));
+            g.drawEllipse(x, y, d, d, 1.2f);
         }
         return;
     }
 
-    g.setColour(columnId == kSlot ? kDim : (loaded ? kText : kDim));
+    const bool isPickHint = columnId == kWavFile && !loaded && r.wavFile.empty();
+    g.setColour(isPickHint ? felitronics::appkit::brand::lilac.withAlpha(0.45f)
+                           : columnId == kSlot ? kDim
+                                               : (loaded ? kText : kDim));
     g.setFont(juce::FontOptions(13.0f));
     g.drawText(text, area, juce::Justification::centredLeft, true);
 }

@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "PedalMonitor.h"
+#include "PedalWorker.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -17,18 +17,39 @@ namespace loopercat
 {
 
 class SlotTable final : public juce::Component,
-                        private juce::TableListBoxModel
+                        public juce::FileDragAndDropTarget,
+                        private juce::TableListBoxModel,
+                        private juce::Timer
 {
 public:
     SlotTable();
 
     void setRows(std::vector<SlotRow> rows);
 
-    // Row index (0-based), fired on the message thread.
-    std::function<void(int)> onSlotSelected;  // selection moved
-    std::function<void(int)> onSlotActivated; // double-click: select AND play
+    // Callbacks carry SLOT NUMBERS (1..99), not row indexes — the visible
+    // rows may be a filtered subset (see the show-empty-slots toggle).
+    std::function<void(int)> onSlotSelected;                        // selection moved
+    std::function<void(int)> onSlotActivated;                       // double-click: select AND play
+    std::function<void(int, juce::Point<int>)> onSlotContextMenu;   // right-click (screen position)
+    std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a slot's row
+    std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
+    std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
+    std::function<void(int)> onEmptyWavCellClicked;                 // click the "drop a WAV here" hint
 
-    void selectRow(int rowIndex) { table_.selectRow(rowIndex); }
+    void selectSlot(int slot);
+
+    // Inline rename: an editor right in the Name cell (double-click on the
+    // name does this too). Enter commits, Esc cancels, 12 printable ASCII
+    // enforced at the field.
+    void startRenameEditForSlot(int slot);
+
+    // The slot a worker job is touching right now (0 = none): its row pulses.
+    void setBusySlot(int slot);
+
+    bool isInterestedInFileDrag(const juce::StringArray& files) override;
+    void fileDragMove(const juce::StringArray& files, int x, int y) override;
+    void fileDragExit(const juce::StringArray& files) override;
+    void filesDropped(const juce::StringArray& files, int x, int y) override;
 
     void resized() override;
 
@@ -45,8 +66,22 @@ private:
     void paintCell(juce::Graphics&, int row, int columnId, int width, int height, bool selected) override;
     void selectedRowsChanged(int lastRowSelected) override;
     void cellDoubleClicked(int row, int columnId, const juce::MouseEvent&) override;
+    void cellClicked(int row, int columnId, const juce::MouseEvent&) override;
+
+    int rowAt(int x, int y);
+    int rowOfSlot(int slot) const;
+    int slotOfRow(int rowIndex) const; // 0 when out of range
+    void startRenameEdit(int rowIndex);
+    void finishRenameEdit(bool commit);
+    void timerCallback() override;
 
     std::vector<SlotRow> rows_;
+    int dragRow_ = -1;  // row highlighted under a wav drag
+    int busySlot_ = 0;  // slot being mutated; its row pulses
+    float busyPhase_ = 0.0f;
+    int editingRow_ = -1;
+    juce::String editOriginal_;
+    std::unique_ptr<juce::TextEditor> nameEditor_;
     juce::TableListBox table_ { {}, this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SlotTable)
