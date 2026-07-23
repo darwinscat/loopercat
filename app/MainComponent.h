@@ -34,6 +34,7 @@ public:
     // programmatic slot selection, and "is the waveform drawn yet".
     void refreshNow();
     void selectSlot(int slot);
+    void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
     bool playerReady() const;
 
     void paint(juce::Graphics& g) override;

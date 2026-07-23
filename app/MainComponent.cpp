@@ -5,6 +5,8 @@
 
 #include "Strings.h"
 
+#include <loopercat/Wav.hpp>
+
 #include <felitronics/appkit/AudioSettingsPanel.h>
 
 #include <BinaryData.h>
@@ -115,6 +117,34 @@ MainComponent::MainComponent(std::string explicitVolume)
             choosePushWav(slot, false);
     };
     player.onGear = [this] { openAudioSettings(); };
+    player.onTrim = [this](int slot, juce::int64 inFrame, juce::int64 outFrame) {
+        if (pedalBusy || slotRowFor(slot) == nullptr)
+            return;
+        const double seconds = static_cast<double>(outFrame - inFrame) / wav::kSampleRate;
+        juce::AlertWindow::showAsync(
+            juce::MessageBoxOptions()
+                .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                .withTitle("Trim slot " + juce::String(slot) + "?")
+                .withMessage(juce::String::fromUTF8("The loop becomes the selected ")
+                             + juce::String(seconds, 1)
+                             + juce::String::fromUTF8(" s. The original WAV moves to the app's "
+                                                      "trash first \xe2\x80\x94 that is your undo."))
+                .withButton("Trim")
+                .withButton("Cancel"),
+            [this, slot, inFrame, outFrame](int button) {
+                if (button != 1)
+                    return;
+                const auto options = makeWriteOptions();
+                worker.enqueue(
+                    { "Trim slot " + juce::String(slot), slot,
+                      [slot, inFrame, outFrame, options,
+                       trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                          const volume::fs::path& volumePath) {
+                          commands::trim(volumePath, slot, inFrame, outFrame,
+                                         { .trashRoot = trash, .write = options });
+                      } });
+            });
+    };
 
     // The toolbar (reference web UI parity): manual config backup, junk
     // sweep, and the empty-slot view filter (persisted).
@@ -165,7 +195,10 @@ MainComponent::MainComponent(std::string explicitVolume)
                                    || description.startsWith("Enable")
                                    || description.startsWith("Disable")
                                    || description.startsWith("Push")
+                                   || description.startsWith("Trim")
                                    || description.startsWith("Clear");
+            if (description.startsWith("Trim"))
+                player.reload(); // same path, new bytes — fresh reader + thumbnail
             if (wroteToPedal)
                 note << ". Eject the volume and reboot the pedal to apply.";
             toast.show(note);
@@ -306,7 +339,7 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
     if (path != player.currentPath()) {
         const juce::String title = juce::String(row.info.slot).paddedLeft('0', 2) + "  "
                                  + trimmedName(row);
-        player.setSlot(juce::File(path), title, row.info.oneShot);
+        player.setSlot(row.info.slot, juce::File(path), title, row.info.oneShot, row.info.frames);
     }
     if (startPlaying && engine.hasSource() && !engine.isPlaying())
         engine.play();

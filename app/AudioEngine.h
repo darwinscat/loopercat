@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "SectionLoopSource.h"
+
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <memory>
@@ -36,6 +38,7 @@ public:
         deviceManager_.removeAudioCallback(this);
         player_.setSource(nullptr);
         transport_.setSource(nullptr);
+        sectionSource_.reset();
         readerSource_.reset();
         readAhead_.stopThread(2000);
     }
@@ -64,10 +67,12 @@ public:
         std::unique_ptr<juce::AudioFormatReader> reader(formats_.createReaderFor(file));
         if (reader == nullptr)
             return juce::Result::fail("cannot read " + file.getFullPathName());
-        const double sampleRate = reader->sampleRate;
+        sampleRate_ = reader->sampleRate;
+        fileFrames_ = reader->lengthInSamples;
         readerSource_ = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
         readerSource_->setLooping(looping_);
-        transport_.setSource(readerSource_.get(), kReadAheadSamples, &readAhead_, sampleRate);
+        sectionSource_ = std::make_unique<SectionLoopSource>(*readerSource_);
+        transport_.setSource(sectionSource_.get(), kReadAheadSamples, &readAhead_, sampleRate_);
         transport_.setPosition(0);
         return juce::Result::ok();
     }
@@ -76,6 +81,7 @@ public:
     {
         transport_.stop();
         transport_.setSource(nullptr);
+        sectionSource_.reset();
         readerSource_.reset();
     }
 
@@ -95,11 +101,31 @@ public:
     void togglePlay() { isPlaying() ? stop() : play(); }
 
     bool isPlaying() const { return transport_.isPlaying(); }
-    double positionSeconds() const { return transport_.getCurrentPosition(); }
-    double lengthSeconds() const { return transport_.getLengthInSeconds(); }
+
+    // With a section looping, the transport runs on the endless LINEAR
+    // stream (see SectionLoopSource) — fold it back to the audible position.
+    double positionSeconds() const
+    {
+        const double raw = transport_.getCurrentPosition();
+        if (sectionSource_ == nullptr || !sectionSource_->hasSection() || sampleRate_ <= 0)
+            return raw;
+        const auto linear = static_cast<juce::int64>(std::llround(raw * sampleRate_));
+        return static_cast<double>(SectionLoopSource::mapToSection(
+                   linear, framesFor(sectionStartSeconds_), framesFor(sectionEndSeconds_)))
+             / sampleRate_;
+    }
+
+    // The FILE length — the transport would report the endless linear stream
+    // while a section is active.
+    double lengthSeconds() const
+    {
+        return sampleRate_ > 0 ? static_cast<double>(fileFrames_) / sampleRate_ : 0.0;
+    }
 
     void setPosition(double seconds)
     {
+        // In section mode the target is an audible (file) position inside the
+        // section, which IS a valid linear position — identity in-range.
         transport_.setPosition(juce::jlimit(0.0, lengthSeconds(), seconds));
     }
 
@@ -113,6 +139,34 @@ public:
     }
 
     bool isLooping() const { return looping_; }
+
+    // Marker preview: loop the [start, end) second range seamlessly (the
+    // wrap happens under the buffering layer — see SectionLoopSource). If
+    // playback is outside the section it is pulled to the section start.
+    void setSection(double startSeconds, double endSeconds)
+    {
+        if (sectionSource_ == nullptr)
+            return;
+        const double audible = positionSeconds(); // BEFORE the bounds move
+        sectionStartSeconds_ = startSeconds;
+        sectionEndSeconds_ = endSeconds;
+        sectionSource_->setSection(framesFor(startSeconds), framesFor(endSeconds));
+        if (audible < startSeconds || audible >= endSeconds)
+            transport_.setPosition(startSeconds);
+        else
+            transport_.setPosition(audible); // re-anchor the linear stream at the audible spot
+    }
+
+    void clearSection()
+    {
+        if (sectionSource_ == nullptr || !sectionSource_->hasSection())
+            return;
+        const double audible = positionSeconds();
+        sectionSource_->clearSection();
+        transport_.setPosition(audible); // back to plain file coordinates
+    }
+
+    bool hasSection() const { return sectionSource_ != nullptr && sectionSource_->hasSection(); }
 
     // --- AudioIODeviceCallback: a thin delegate to the stock player chain ---
 
@@ -138,10 +192,19 @@ private:
 
     juce::AudioDeviceManager deviceManager_;
     juce::AudioFormatManager formats_;
+    juce::int64 framesFor(double seconds) const
+    {
+        return static_cast<juce::int64>(std::llround(seconds * sampleRate_));
+    }
+
     juce::TimeSliceThread readAhead_ { "LooperCat audio read-ahead" };
     juce::AudioSourcePlayer player_;
     juce::AudioTransportSource transport_;
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource_;
+    std::unique_ptr<SectionLoopSource> sectionSource_;
+    double sampleRate_ = 44100.0;
+    juce::int64 fileFrames_ = 0;
+    double sectionStartSeconds_ = 0.0, sectionEndSeconds_ = 0.0;
     bool looping_ = true;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)

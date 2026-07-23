@@ -301,6 +301,72 @@ int main()
         CHECK_EQ(volume::listSlotWavs(volume, 8).size(), 1u);
     }
 
+    // --- trim: canonical slice in place, original in trash, config recomputed ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+
+        // A 2-minute silent wav with marker bytes at known frames: frame F's
+        // first sample byte = 0xAB proves the slice offset end-to-end.
+        const int frames = 5292000;
+        auto bytes = testkit::syntheticWav({ .frames = frames });
+        const auto frameByte = [&](int frame) { return 44 + static_cast<std::size_t>(frame) * 4; };
+        bytes[frameByte(1000000)] = 0xab;     // inside the kept range -> lands at new frame 0
+        bytes[frameByte(3999999)] = 0xcd;     // the last kept frame
+        bytes[frameByte(4000001)] = 0xef;     // outside -> must vanish
+        fs::create_directories(volume::wavDir(volume, 4));
+        commands::writeFileBytes(volume::wavDir(volume, 4) / "take.wav",
+                                 std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                                                  bytes.size()));
+
+        const std::string originalBytes =
+            commands::readFileBytes(volume::wavDir(volume, 4) / "take.wav");
+
+        commands::TrimOptions options { .trashRoot = tmp.path / "trash",
+                                        .write = writeOpts(tmp.path, "trim-1") };
+        const auto result = commands::trim(volume, 4, 1000000, 4000000, options);
+
+        // Same filename, canonical header, exactly the requested 3M frames.
+        const std::string after = commands::readFileBytes(volume::wavDir(volume, 4) / "take.wav");
+        CHECK_EQ(after.size(), 44u + 3000000u * 4);
+        CHECK_EQ(static_cast<unsigned char>(after[44]), 0xab);                          // old frame 1000000
+        CHECK_EQ(static_cast<unsigned char>(after[44 + 2999999u * 4]), 0xcd);           // old frame 3999999
+        CHECK_EQ(result.frames, 3000000);
+
+        // The original is in the trash, byte-identical — the undo.
+        CHECK(commands::readFileBytes(result.trashedOriginal) == originalBytes);
+
+        // The slot's boot-index config matches the formula for the new length.
+        const auto expected = params::computeSlotParams(3000000);
+        const std::string body = rc0::slotBody(commands::readMemory(volume), 4);
+        CHECK_EQ(rc0::field(body, "WavLen"), 3000000);
+        CHECK_EQ(rc0::field(body, "MeasLen"), expected.measures);
+        CHECK_EQ(rc0::field(body, "Measure"), expected.measureField());
+        CHECK_EQ(rc0::field(body, "Tempo"), expected.tempoTenths);
+        CHECK(result.slotParams == expected);
+    }
+
+    // --- trim failures leave the volume byte-identical ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "take.wav", { .frames = 1323000 });
+        const auto before = volumeBytes(volume);
+        const commands::TrimOptions options { .trashRoot = tmp.path / "trash",
+                                              .write = writeOpts(tmp.path, "trim-2") };
+
+        CHECK_THROWS(commands::trim(volume, 4, 500, 100, options), "bad frame range");
+        CHECK_THROWS(commands::trim(volume, 4, 0, 1000, options), "too short");     // > 160 BPM
+        CHECK_THROWS(commands::trim(volume, 5, 0, 1000, options), "no audio to trim");
+        commands::TrimOptions noTrash { .write = writeOpts(tmp.path, "trim-3") };
+        CHECK_THROWS(commands::trim(volume, 4, 0, 1323000, noTrash), "trash root");
+
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(tmp.path / "trash"));
+    }
+
     // --- doctor ---
 
     {

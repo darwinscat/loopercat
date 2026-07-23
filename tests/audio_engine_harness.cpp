@@ -238,8 +238,49 @@ int main()
         CHECK(engine.positionSeconds() >= engine.lengthSeconds() - 0.05);
     }
 
+    // --- section preview: the marker loop wraps sample-exactly ---
+
+    {
+        engine.setLooping(false); // the section, not the file loop, must wrap
+        engine.setSection(0.25, 0.5); // frames [11025, 22050)
+        engine.setPosition(0.3);
+        engine.play();
+
+        const int sectionStart = kFrames / 4, sectionEnd = kFrames / 2;
+        int wraps = 0, outOfSection = 0, discontinuities = 0, previousFrame = -1;
+        const auto deadline = juce::Time::getMillisecondCounterHiRes() + 5000;
+        while (wraps < 2 && juce::Time::getMillisecondCounterHiRes() < deadline) {
+            pumpBlock(engine, left, right);
+            for (int i = 0; i < kBlock; ++i) {
+                const float s = left[static_cast<std::size_t>(i)];
+                if (juce::exactlyEqual(s, 0.0f))
+                    continue; // priming silence only — counted via discontinuity below
+                const int frame = frameOfSample(s);
+                if (frame < sectionStart || frame >= sectionEnd)
+                    ++outOfSection;
+                if (previousFrame >= 0) {
+                    if (previousFrame == sectionEnd - 1 && frame == sectionStart)
+                        ++wraps; // the seam, sample-adjacent
+                    else if (frame != previousFrame + 1)
+                        ++discontinuities;
+                }
+                previousFrame = frame;
+            }
+            juce::Thread::sleep(5);
+        }
+        CHECK(wraps >= 2);
+        CHECK_EQ(outOfSection, 0);
+        // The wrap seam must be gapless: the only allowed jumps are the wraps
+        // themselves; one initial jump from priming silence is tolerated.
+        CHECK(discontinuities <= 1);
+
+        engine.stop();
+        engine.clearSection();
+    }
+
     // --- play at the end starts over, not a dead click ---
 
+    engine.setPosition(engine.lengthSeconds()); // the precondition, explicit
     engine.play();
     {
         const int at = pumpUntilAudible(engine, left, right, 5000);
