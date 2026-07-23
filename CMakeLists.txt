@@ -75,6 +75,7 @@ loopercat_core_test(params_tests)
 loopercat_core_test(rc0_tests)
 loopercat_core_test(wav_tests)
 loopercat_core_test(volume_tests)
+loopercat_core_test(lifecycle_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
 
@@ -156,6 +157,7 @@ juce_add_gui_app(LooperCat
     ICON_SMALL   "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/loopercat-icon-32.png")
 
 target_sources(LooperCat PRIVATE
+    app/DeviceWatcher.cpp
     app/Main.cpp
     app/MainComponent.cpp
     app/PlayerPane.cpp
@@ -183,6 +185,13 @@ target_link_libraries(LooperCat PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags)
+
+if(APPLE)
+    # DeviceWatcher: IORegistry liveness + DiskArbitration unmount/eject.
+    target_link_libraries(LooperCat PRIVATE
+        "-framework DiskArbitration"
+        "-framework IOKit")
+endif()
 
 if(LOOPERCAT_BUILD_TESTS)
 

@@ -148,10 +148,17 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     // The toolbar (reference web UI parity): manual config backup, junk
     // sweep, and the empty-slot view filter (persisted).
-    for (auto* button : { &backupButton, &cleanButton }) {
+    for (auto* button : { &backupButton, &cleanButton, &ejectButton }) {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
         button->setEnabled(false);
     }
+    ejectButton.onClick = [this] {
+        // Release our own hold on the volume first: the read-ahead thread
+        // keeps the slot WAV open, and an open file dissents the unmount.
+        engine.stop();
+        player.clear();
+        worker.requestEject();
+    };
     backupButton.onClick = [this] {
         worker.enqueue({ "Backup configs", 0,
                          [options = makeWriteOptions()](const volume::fs::path& volumePath) {
@@ -179,6 +186,41 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     banners.onLayoutChange = [this] { resized(); };
 
+    // Device truth (issue #17). The watcher's async callbacks land on its own
+    // dispatch queue; they hop to the message thread under the uiAlive token
+    // and only then touch the worker — by destruction time they are no-ops.
+    deviceWatcher.onDeviceLost = [this, alive = uiAlive] {
+        juce::MessageManager::callAsync([this, alive] {
+            if (*alive)
+                worker.postDeviceLost();
+        });
+    };
+    deviceWatcher.onDiskAppeared = [this, alive = uiAlive] {
+        juce::MessageManager::callAsync([this, alive] {
+            if (*alive)
+                worker.pokeRescan();
+        });
+    };
+    worker.setBackingProbe(
+        [this](const volume::fs::path& path) { return deviceWatcher.verdict(path); });
+    worker.setEjectStarter([this](const std::string& volumePath) {
+        // Worker thread. The completion reports through the message thread.
+        deviceWatcher.eject(volumePath, [this, alive = uiAlive](bool unmounted, std::string message) {
+            juce::MessageManager::callAsync(
+                [this, alive, unmounted, note = utf8(message)] {
+                    if (!*alive)
+                        return;
+                    worker.postEjectFinished(unmounted);
+                    if (!unmounted) {
+                        jobError = "Eject: " + note;
+                        refreshBanners();
+                    } else if (note.isNotEmpty()) {
+                        toast.show(note);
+                    }
+                });
+        });
+    });
+
     // Wired before start(): the worker reads these from its own thread.
     worker.onBusy = [this](bool busy, int slot) {
         pedalBusy = busy;
@@ -188,7 +230,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     };
     worker.onJobResult = [this](juce::String description, juce::String error) {
         jobError = error.isEmpty() ? juce::String() : description + ": " + error;
-        banners.setContent(snapshot.findings, jobError);
+        refreshBanners();
         if (error.isEmpty()) {
             juce::String note = description + juce::String::fromUTF8(" \xe2\x80\x94 done");
             const bool wroteToPedal = description.startsWith("Rename")
@@ -213,6 +255,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     addAndMakeVisible(banners);
     addAndMakeVisible(backupButton);
     addAndMakeVisible(cleanButton);
+    addAndMakeVisible(ejectButton);
     addAndMakeVisible(showEmptyToggle);
     addChildComponent(table);  // shown once a pedal is mounted
     addChildComponent(player); // likewise
@@ -224,6 +267,11 @@ MainComponent::MainComponent(std::string explicitVolume)
     setSize(920, 680);
 
     worker.start();
+}
+
+MainComponent::~MainComponent()
+{
+    *uiAlive = false; // message thread; queued watcher completions become no-ops
 }
 
 void MainComponent::refreshNow()
@@ -263,13 +311,76 @@ void MainComponent::updateTableRows()
 
 void MainComponent::updateToolbar()
 {
-    const bool mounted = !snapshot.volume.empty() && snapshot.error.empty();
-    backupButton.setEnabled(mounted && !pedalBusy);
-    cleanButton.setEnabled(mounted && !pedalBusy);
+    const bool usable = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
+    backupButton.setEnabled(usable && !pedalBusy);
+    cleanButton.setEnabled(usable && !pedalBusy);
+    ejectButton.setEnabled(usable && !pedalBusy);
+}
+
+// The banner strip: lifecycle first (it explains everything below), then the
+// doctor findings, then the last failed job.
+void MainComponent::refreshBanners()
+{
+    std::vector<commands::Finding> shown = snapshot.findings;
+    switch (snapshot.state) {
+    case lifecycle::State::ghost:
+        shown.insert(shown.begin(),
+                     { commands::Level::error,
+                       "Pedal detached without eject \xe2\x80\x94 the volume was serving cached "
+                       "data and nothing reached the pedal. Cleaning up the stale mount\xe2\x80\xa6" });
+        break;
+    case lifecycle::State::ejected:
+        shown.insert(shown.begin(),
+                     { commands::Level::info,
+                       "Volume ejected \xe2\x80\x94 safe to disconnect the pedal." });
+        break;
+    case lifecycle::State::disconnected:
+    case lifecycle::State::connected:
+    case lifecycle::State::ejecting:
+        break;
+    }
+    banners.setContent(shown, jobError);
+}
+
+// A ghost cannot heal by itself: the stale mount blocks the next attach.
+// Force-unmount is safe by construction (nothing flushes to a dead device);
+// one attempt per episode, failures land on the banner line.
+void MainComponent::cleanUpGhostMount()
+{
+    deviceWatcher.forceUnmount(
+        snapshot.volume, [this, alive = uiAlive](bool ok, std::string message) {
+            juce::MessageManager::callAsync([this, alive, ok, note = utf8(message)] {
+                if (!*alive)
+                    return;
+                if (!ok) {
+                    jobError = "Ghost cleanup: " + note;
+                    refreshBanners();
+                }
+                worker.pokeRescan();
+            });
+        });
 }
 
 void MainComponent::updateStatusText()
 {
+    if (snapshot.state == lifecycle::State::ghost) {
+        status.setText(utf8(snapshot.volume + " \xe2\x80\x94 device detached (ghost mount)"),
+                       juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, kErrorText);
+        return;
+    }
+    if (snapshot.state == lifecycle::State::ejecting) {
+        status.setText(juce::String::fromUTF8("Ejecting\xe2\x80\xa6"), juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, kStatusText);
+        return;
+    }
+    if (snapshot.state == lifecycle::State::ejected) {
+        status.setText(juce::String::fromUTF8(
+                           "Ejected \xe2\x80\x94 safe to disconnect the pedal"),
+                       juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, kStatusText);
+        return;
+    }
     if (snapshot.volume.empty()) {
         status.setText("No looper found", juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
@@ -299,19 +410,35 @@ void MainComponent::updateStatusText()
 
 void MainComponent::applySnapshot(const PedalSnapshot& latest)
 {
+    const lifecycle::State previousState = snapshot.state;
     snapshot = latest;
-    const bool mounted = !snapshot.volume.empty() && snapshot.error.empty();
+    // "Mounted" means honestly connected — a ghost lists slots too, but they
+    // are page-cache fiction and nothing may play from or write to them.
+    const bool mounted = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
 
     updateStatusText();
-    banners.setContent(snapshot.findings, jobError);
+    refreshBanners();
 
-    // Drop the player when its file is no longer on the (still-)mounted pedal.
-    if (player.currentPath().isNotEmpty()) {
+    // Anything but connected drops playback: the reader would stream from a
+    // dead mount (ghost) or hold the volume open against an eject.
+    if (snapshot.state != lifecycle::State::connected) {
+        player.clear();
+    } else if (player.currentPath().isNotEmpty()) {
+        // Drop the player when its file is no longer on the mounted pedal.
         bool stillThere = false;
         for (const auto& row : snapshot.slots)
             stillThere = stillThere || utf8(row.wavPath) == player.currentPath();
         if (!stillThere)
             player.clear();
+    }
+
+    if (snapshot.state == lifecycle::State::ghost) {
+        if (!ghostCleanupStarted) {
+            ghostCleanupStarted = true;
+            cleanUpGhostMount();
+        }
+    } else if (previousState == lifecycle::State::ghost) {
+        ghostCleanupStarted = false; // the episode is over
     }
 
     pedalLight.set(mounted, utf8(volume::fs::path(snapshot.volume).filename().string()));
@@ -531,6 +658,7 @@ void MainComponent::resized()
     pedalLight.setBounds(getWidth() - 232, 0, 220, 56);
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
     showEmptyToggle.setBounds(statusRow.removeFromRight(150));
+    ejectButton.setBounds(statusRow.removeFromRight(70).reduced(2, 1));
     cleanButton.setBounds(statusRow.removeFromRight(92).reduced(2, 1));
     backupButton.setBounds(statusRow.removeFromRight(78).reduced(2, 1));
     status.setBounds(statusRow);

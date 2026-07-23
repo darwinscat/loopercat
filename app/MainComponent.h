@@ -8,6 +8,7 @@
 #include "AppSettings.h"
 #include "AudioEngine.h"
 #include "BannerStrip.h"
+#include "DeviceWatcher.h"
 #include "LooperMark.h"
 #include "PedalLight.h"
 #include "PedalWorker.h"
@@ -29,6 +30,7 @@ class MainComponent final : public juce::Component
 public:
     // `explicitVolume` pins the pedal path (--volume override); empty = autodetect.
     explicit MainComponent(std::string explicitVolume = {});
+    ~MainComponent() override;
 
     // The headless seams (--snapshot / --select): one synchronous scan+apply,
     // programmatic slot selection, and "is the waveform drawn yet".
@@ -48,6 +50,8 @@ private:
     void updateStatusText();
     void updateTableRows();
     void updateToolbar();
+    void refreshBanners(); // doctor findings + the lifecycle line + last job error
+    void cleanUpGhostMount();
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
@@ -75,6 +79,7 @@ private:
     BannerStrip banners;
     juce::TextButton backupButton { "Backup" };
     juce::TextButton cleanButton { "Clean junk" };
+    juce::TextButton ejectButton { "Eject" };
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     SlotTable table;
     Toast toast;
@@ -82,8 +87,14 @@ private:
     juce::String deviceError;
     juce::String jobError; // the last failed mutation, until dismissed/superseded
     bool pedalBusy = false;
+    bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     std::unique_ptr<juce::FileChooser> fileChooser; // the one live async chooser
     PedalSnapshot snapshot;
+    // Guards async device-watcher completions: they hop to the message thread
+    // and must become no-ops once destruction has begun (the worker may
+    // already be gone by the time a DiskArbitration callback lands).
+    std::shared_ptr<bool> uiAlive = std::make_shared<bool>(true);
+    app::DeviceWatcher deviceWatcher; // before the worker: its probe runs on the worker thread
     PedalWorker worker;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)

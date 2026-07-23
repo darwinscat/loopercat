@@ -5,6 +5,7 @@
 
 #include <loopercat/Catalog.hpp>
 #include <loopercat/Commands.hpp>
+#include <loopercat/Lifecycle.hpp>
 #include <loopercat/Volume.hpp>
 
 #include <juce_events/juce_events.h>
@@ -48,11 +49,21 @@ struct PedalSnapshot
 {
     std::string volume;                      // mount path; empty = no pedal found
     std::string error;                       // non-empty = the volume is there but unreadable
+    lifecycle::State state = lifecycle::State::disconnected; // the connection truth (issue #17)
     long long freeBytes = 0;                 // available space on the volume
     std::vector<SlotRow> slots;              // all 99 when readable
     std::vector<commands::Finding> findings; // doctor report (health banners)
 
-    bool operator==(const PedalSnapshot&) const = default;
+    // freeBytes compares at the status line's display granularity (0.1 GB):
+    // byte-level drift from unrelated disk activity is not a change, and on a
+    // busy machine it turned every poll into a delivery (issue #16).
+    bool operator==(const PedalSnapshot& other) const
+    {
+        constexpr long long kFreeBytesBucket = 100'000'000; // 0.1 GB, the shown precision
+        return volume == other.volume && error == other.error && state == other.state
+            && freeBytes / kFreeBytesBucket == other.freeBytes / kFreeBytesBucket
+            && slots == other.slots && findings == other.findings;
+    }
 };
 
 class PedalWorker final : private juce::Thread
@@ -85,6 +96,29 @@ public:
     std::function<void(bool, int)> onBusy;                       // (started/finished, affected slot or 0)
     std::function<void(juce::String, juce::String)> onJobResult; // (description, error; empty = ok)
 
+    // Wire the platform device-truth probe (DeviceWatcher::verdict) and the
+    // eject starter (DeviceWatcher::eject) before start(). Unset probe means
+    // "no device tracking on this platform" — every volume is trusted, which
+    // is the deliberate policy for the headless/test paths, not a fallback.
+    void setBackingProbe(std::function<lifecycle::Backing(const volume::fs::path&)> probe)
+    {
+        backingProbe_ = std::move(probe);
+    }
+    void setEjectStarter(std::function<void(const std::string& volumePath)> starter)
+    {
+        ejectStarter_ = std::move(starter);
+    }
+
+    // Lifecycle events from outside the worker. ANY THREAD. The machine
+    // itself is touched only on the worker thread; these queue and wake it.
+    void postDeviceLost() { postEvent(Event::deviceLost); }
+    void requestEject() { postEvent(Event::ejectRequested); }
+    void postEjectFinished(bool unmounted)
+    {
+        postEvent(unmounted ? Event::ejectFinishedOk : Event::ejectFinishedFail);
+    }
+    void pokeRescan() { notify(); } // e.g. a disk appeared — cut the poll wait short
+
     void start() { startThread(); }
 
     // Queue a mutation; the worker resolves the volume when the job runs and
@@ -116,6 +150,13 @@ public:
         }
 
         snapshot.volume = found->string();
+        // The single-observation truth: what backs this path right now. The
+        // worker loop refines it with lifecycle history (eject in flight,
+        // async device loss); the headless path renders it as-is.
+        const lifecycle::Backing backing =
+            backingProbe_ ? backingProbe_(*found) : lifecycle::Backing::untracked;
+        snapshot.state = backing == lifecycle::Backing::gone ? lifecycle::State::ghost
+                                                             : lifecycle::State::connected;
         {
             std::error_code ec;
             const auto space = volume::fs::space(*found, ec);
@@ -184,10 +225,17 @@ private:
     void run() override
     {
         while (!threadShouldExit()) {
+            applyPendingEvents();
             if (auto job = popJob()) {
                 deliver([cb = onBusy, slot = job->slot] { if (cb) cb(true, slot); });
                 juce::String error;
                 try {
+                    // The lifecycle gate: a ghost mount happily accepts writes
+                    // into page cache that can never reach the pedal — the
+                    // 2026-07-22 phantom "saved" toast. Only connected is honest.
+                    if (!machine_.writable())
+                        throw Error(std::string("pedal is ") + lifecycle::stateName(machine_.state())
+                                    + " — refusing to touch the volume");
                     const auto found = resolveVolume();
                     if (!found || !volume::looksLikePedal(*found))
                         throw Error("no pedal volume mounted");
@@ -195,7 +243,7 @@ private:
                 } catch (const std::exception& e) {
                     error = juce::String::fromUTF8(e.what()); // core messages carry typographic dashes
                 }
-                maybeDeliverSnapshot(scanOnce());
+                maybeDeliverSnapshot(scanAdvanced());
                 deliver([cb = onJobResult, d = job->description, error] {
                     if (cb)
                         cb(d, error);
@@ -203,8 +251,74 @@ private:
                 deliver([cb = onBusy, slot = job->slot] { if (cb) cb(false, slot); });
                 continue; // more queued work before the next poll
             }
-            maybeDeliverSnapshot(scanOnce());
-            wait(kPollIntervalMs); // enqueue() notifies
+            maybeDeliverSnapshot(scanAdvanced());
+            wait(kPollIntervalMs); // enqueue()/postEvent()/pokeRescan() notify
+        }
+    }
+
+    // One scan folded into the lifecycle machine. WORKER THREAD ONLY.
+    PedalSnapshot scanAdvanced()
+    {
+        PedalSnapshot snapshot = scanOnce();
+        if (snapshot.volume.empty())
+            machine_.pedalMissing();
+        else
+            // live-vs-untracked is already collapsed here; the machine treats
+            // them identically, so `live` stands in for both.
+            machine_.pedalSeen(snapshot.state == lifecycle::State::ghost
+                                   ? lifecycle::Backing::gone
+                                   : lifecycle::Backing::live);
+        snapshot.state = machine_.state();
+        lastVolume_ = snapshot.volume;
+        return snapshot;
+    }
+
+    enum class Event { deviceLost, ejectRequested, ejectFinishedOk, ejectFinishedFail };
+
+    void postEvent(Event event)
+    {
+        {
+            const juce::ScopedLock sl(queueLock_);
+            events_.push_back(event);
+        }
+        notify();
+    }
+
+    // Fold queued lifecycle events into the machine, in arrival order.
+    // WORKER THREAD ONLY. A protocol violation (e.g. an eject request racing
+    // a device loss) is surfaced on the banner line, not swallowed.
+    void applyPendingEvents()
+    {
+        std::deque<Event> events;
+        {
+            const juce::ScopedLock sl(queueLock_);
+            events.swap(events_);
+        }
+        for (const Event event : events) {
+            try {
+                switch (event) {
+                case Event::deviceLost:
+                    machine_.deviceLost();
+                    break;
+                case Event::ejectRequested:
+                    machine_.ejectRequested();
+                    if (!ejectStarter_)
+                        throw Error("eject requested but no eject starter is wired");
+                    ejectStarter_(lastVolume_);
+                    break;
+                case Event::ejectFinishedOk:
+                    machine_.ejectFinished(true);
+                    break;
+                case Event::ejectFinishedFail:
+                    machine_.ejectFinished(false);
+                    break;
+                }
+            } catch (const std::exception& e) {
+                deliver([cb = onJobResult, msg = juce::String::fromUTF8(e.what())] {
+                    if (cb)
+                        cb("Eject", msg);
+                });
+            }
         }
     }
 
@@ -214,9 +328,14 @@ private:
 
     const std::string explicitVolume_;
     const std::function<void(const PedalSnapshot&)> onSnapshot_;
+    std::function<lifecycle::Backing(const volume::fs::path&)> backingProbe_; // set before start()
+    std::function<void(const std::string&)> ejectStarter_;                    // set before start()
 
     juce::CriticalSection queueLock_;
     std::deque<Job> queue_;             // guarded by queueLock_
+    std::deque<Event> events_;          // guarded by queueLock_
+    lifecycle::Machine machine_;        // worker thread only
+    std::string lastVolume_;            // worker thread only
     std::optional<PedalSnapshot> last_; // worker thread only
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 
