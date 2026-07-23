@@ -25,7 +25,8 @@
 namespace loopercat
 {
 
-class MainComponent final : public juce::Component
+class MainComponent final : public juce::Component,
+                            private juce::Timer // polls for the pedal's normal-mode MIDI presence
 {
 public:
     // `explicitVolume` pins the pedal path (--volume override); empty = autodetect.
@@ -52,6 +53,7 @@ private:
     void updateToolbar();
     void refreshBanners(); // doctor findings + the lifecycle line + last job error
     void cleanUpGhostMount();
+    void timerCallback() override; // MIDI presence: the pedal visible outside STORAGE
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
@@ -88,6 +90,7 @@ private:
     juce::String jobError; // the last failed mutation, until dismissed/superseded
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
+    bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
     std::unique_ptr<juce::FileChooser> fileChooser; // the one live async chooser
     PedalSnapshot snapshot;
     // Guards async device-watcher completions: they hop to the message thread

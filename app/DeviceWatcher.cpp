@@ -17,16 +17,87 @@
 #include <IOKit/IOMessage.h>
 
 #include <dispatch/dispatch.h>
+#include <fcntl.h>
 #include <sys/mount.h>
+#include <unistd.h>
 
+#include <atomic>
+#include <chrono>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace loopercat::app {
 
 namespace {
+
+    // The factory volume label of the RC-5's mass-storage export (rc5cat).
+    // Auto-mount keys on it because an unmounted volume cannot be content-
+    // checked; a user-relabeled pedal just falls back to manual mounting.
+    constexpr const char* kPedalVolumeLabel = "BOSS RC-5";
+
+    // How long the OS automount gets before the watcher steps in.
+    constexpr int64_t kAutoMountGraceSeconds = 5;
+
+    // An I/O probe outstanding longer than this means the filesystem is
+    // wedged (the FSKit spin of 2026-07-22): the device story is over even
+    // though nothing ever returns an error.
+    constexpr auto kProbeStuckAfter = std::chrono::seconds(2);
+
+    // The uncached-read truth for one volume. Shared with the sacrificial
+    // probe threads so a stuck thread can never dangle into freed state; the
+    // threads are detached by design — a thread in uninterruptible disk wait
+    // cannot be joined, and abandoning it is the price of staying responsive.
+    // (A probe stuck at quit can still zombie the exiting process; that is
+    // the OS bug's residue, not something a userland app can fully escape.)
+    struct IoProbe {
+        std::mutex mutex;
+        int generation = 0; // stale probe threads may not report against a newer probe
+        bool inFlight = false;
+        std::chrono::steady_clock::time_point startedAt;
+        bool haveResult = false;
+        bool lastOk = false;
+        std::string file;
+    };
+
+    // Read a few bytes PAST the page cache. Success requires the actual
+    // device to answer — cached fiction cannot pass this.
+    bool uncachedReadWorks(const std::string& path)
+    {
+        const int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0)
+            return false;
+        ::fcntl(fd, F_NOCACHE, 1);
+        char buffer[4096];
+        const ssize_t got = ::read(fd, buffer, sizeof(buffer));
+        ::close(fd);
+        return got > 0;
+    }
+
+    void launchProbe(const std::shared_ptr<IoProbe>& probe, std::string file)
+    {
+        int generation = 0;
+        {
+            const std::lock_guard<std::mutex> lock(probe->mutex);
+            generation = ++probe->generation;
+            probe->inFlight = true;
+            probe->startedAt = std::chrono::steady_clock::now();
+            probe->file = file;
+        }
+        std::thread([probe, generation, target = std::move(file)] {
+            const bool ok = uncachedReadWorks(target);
+            const std::lock_guard<std::mutex> lock(probe->mutex);
+            if (probe->generation != generation)
+                return; // a newer probe owns the state now
+            probe->inFlight = false;
+            probe->haveResult = true;
+            probe->lastOk = ok;
+        }).detach();
+    }
 
     std::string cfToString(CFStringRef s)
     {
@@ -94,6 +165,11 @@ struct DeviceWatcher::Impl {
     std::mutex mutex;
     std::map<std::string, Tracked> tracked; // by BSD name; guarded by mutex
     std::string currentBsd;                 // device behind the last live verdict
+    std::set<std::string> mountAttempted;   // one auto-mount per attach; guarded by mutex
+    std::shared_ptr<IoProbe> ioProbe = std::make_shared<IoProbe>();
+    // Outlives Impl in dispatch_after contexts: those fire on the queue after
+    // the destructor's drain and must become no-ops, not use-after-frees.
+    std::shared_ptr<std::atomic<bool>> aliveFlag = std::make_shared<std::atomic<bool>>(true);
 
     void deviceTerminated(const std::string& bsd)
     {
@@ -122,7 +198,7 @@ struct DeviceWatcher::Impl {
         ctx->impl->deviceTerminated(ctx->bsd);
     }
 
-    static void diskAppearedCallback(DADiskRef, void* context)
+    static void diskAppearedCallback(DADiskRef disk, void* context)
     {
         auto* impl = static_cast<Impl*>(context);
         std::function<void()> cb;
@@ -132,6 +208,88 @@ struct DeviceWatcher::Impl {
         }
         if (cb)
             cb();
+        impl->considerAutoMount(disk);
+    }
+
+    // --- auto-mount: a pedal-labeled volume the OS never mounted ---
+
+    struct AutoMountCtx {
+        std::shared_ptr<std::atomic<bool>> alive;
+        Impl* impl = nullptr;
+        std::string bsd;
+    };
+
+    // True while the disk's description shows no volume path.
+    static bool isUnmounted(CFDictionaryRef description)
+    {
+        return CFDictionaryGetValue(description, kDADiskDescriptionVolumePathKey) == nullptr;
+    }
+
+    void considerAutoMount(DADiskRef disk)
+    {
+        const char* bsdName = DADiskGetBSDName(disk);
+        CFDictionaryRef description = bsdName != nullptr ? DADiskCopyDescription(disk) : nullptr;
+        if (description == nullptr)
+            return;
+        const std::string name = cfToString(static_cast<CFStringRef>(
+            CFDictionaryGetValue(description, kDADiskDescriptionVolumeNameKey)));
+        const auto* internal = static_cast<CFBooleanRef>(
+            CFDictionaryGetValue(description, kDADiskDescriptionDeviceInternalKey));
+        const bool candidate = isUnmounted(description) && name == kPedalVolumeLabel
+                            && (internal == nullptr || !CFBooleanGetValue(internal));
+        CFRelease(description);
+        {
+            // A fresh attach earns a fresh (single) auto-mount attempt.
+            const std::lock_guard<std::mutex> lock(mutex);
+            mountAttempted.erase(bsdName);
+        }
+        if (!candidate)
+            return;
+        auto* ctx = new AutoMountCtx{ aliveFlag, this, bsdName };
+        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, kAutoMountGraceSeconds * NSEC_PER_SEC),
+                         queue, ctx, &autoMountGraceFired);
+    }
+
+    static void autoMountGraceFired(void* context)
+    {
+        std::unique_ptr<AutoMountCtx> ctx(static_cast<AutoMountCtx*>(context));
+        if (!ctx->alive->load())
+            return;
+        Impl* impl = ctx->impl;
+        {
+            const std::lock_guard<std::mutex> lock(impl->mutex);
+            if (!impl->mountAttempted.insert(ctx->bsd).second)
+                return;
+        }
+        DADiskRef disk = DADiskCreateFromBSDName(kCFAllocatorDefault, impl->session,
+                                                 ctx->bsd.c_str());
+        if (disk == nullptr)
+            return;
+        CFDictionaryRef description = DADiskCopyDescription(disk);
+        // Description gone = the device left; a volume path = automount won
+        // after all. Either way there is nothing for us to do.
+        const bool stillWaiting = description != nullptr && isUnmounted(description);
+        if (description != nullptr)
+            CFRelease(description);
+        if (stillWaiting)
+            DADiskMount(disk, nullptr, kDADiskMountOptionDefault, &autoMountDone,
+                        new AutoMountCtx{ ctx->alive, impl, ctx->bsd });
+        CFRelease(disk);
+    }
+
+    static void autoMountDone(DADiskRef, DADissenterRef dissenter, void* context)
+    {
+        std::unique_ptr<AutoMountCtx> ctx(static_cast<AutoMountCtx*>(context));
+        if (!ctx->alive->load())
+            return;
+        std::function<void(bool, std::string)> cb;
+        {
+            const std::lock_guard<std::mutex> lock(ctx->impl->mutex);
+            cb = ctx->impl->owner.onAutoMountResult;
+        }
+        if (cb)
+            cb(dissenter == nullptr,
+               dissenter == nullptr ? std::string(kPedalVolumeLabel) : dissenterMessage(dissenter));
     }
 
     // Register for termination of `bsd` while we hold a live service ref.
@@ -236,6 +394,7 @@ DeviceWatcher::DeviceWatcher() : impl_(std::make_unique<Impl>(*this))
 
 DeviceWatcher::~DeviceWatcher()
 {
+    impl_->aliveFlag->store(false); // pending dispatch_after contexts become no-ops
     DAUnregisterCallback(impl_->session, reinterpret_cast<void*>(&Impl::diskAppearedCallback),
                          impl_.get());
     DASessionSetDispatchQueue(impl_->session, nullptr);
@@ -248,7 +407,8 @@ DeviceWatcher::~DeviceWatcher()
         delete entry.ctx;
 }
 
-lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePath)
+lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePath,
+                                          const std::filesystem::path& probeFile)
 {
     const MountRecord rec = mountRecordFor(volumePath);
     // The caller just saw pedal content here; statfs failing now means the
@@ -288,7 +448,37 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     }
     impl_->ensureInterest(rec.bsd, service);
     IOObjectRelease(service);
-    return lifecycle::Backing::live;
+
+    // The registry says live — but the registry kept a detached pedal's whole
+    // USB stack "active" (2026-07-23: leaving STORAGE pulls the medium, not
+    // the device). The final word is the uncached-read probe. Its result is
+    // one scan late by design: this call never waits on volume I/O.
+    const std::string target = probeFile.string();
+    bool gone = false;
+    bool launch = false;
+    {
+        const std::lock_guard<std::mutex> lock(impl_->ioProbe->mutex);
+        IoProbe& probe = *impl_->ioProbe;
+        const bool sameFile = probe.file == target;
+        if (probe.inFlight) {
+            const bool stuck =
+                std::chrono::steady_clock::now() - probe.startedAt > kProbeStuckAfter;
+            if (stuck) {
+                // Wedged on this volume = gone; stuck on a PREVIOUS volume =
+                // abandon that thread and start probing the new one.
+                gone = sameFile;
+                launch = !sameFile;
+            } else {
+                gone = sameFile && probe.haveResult && !probe.lastOk;
+            }
+        } else {
+            gone = sameFile && probe.haveResult && !probe.lastOk;
+            launch = true; // keep the verdict fresh (and recover if media returns)
+        }
+    }
+    if (launch)
+        launchProbe(impl_->ioProbe, target);
+    return gone ? lifecycle::Backing::gone : lifecycle::Backing::live;
 }
 
 void DeviceWatcher::eject(const std::filesystem::path& volumePath,

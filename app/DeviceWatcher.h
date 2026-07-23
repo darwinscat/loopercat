@@ -39,9 +39,16 @@ public:
     DeviceWatcher(const DeviceWatcher&) = delete;
     DeviceWatcher& operator=(const DeviceWatcher&) = delete;
 
-    // What backs `volumePath` right now. Never blocks on volume I/O — it
-    // reads the statfs mount record and the IORegistry, not the filesystem.
-    lifecycle::Backing verdict(const std::filesystem::path& volumePath);
+    // What backs `volumePath` right now. `probeFile` is a small file on the
+    // volume whose UNCACHED readability is the final word: the mount table,
+    // diskarbitrationd, and even the IORegistry all kept claiming a detached
+    // pedal was present (2026-07-22/23 incidents — the RC-5 leaving STORAGE
+    // keeps its whole USB stack registered and just pulls the medium), but
+    // only a real device can serve bytes past the page cache. The probe runs
+    // on a sacrificial thread with a timeout, so a wedged filesystem reads as
+    // gone instead of freezing the caller; this method itself never blocks.
+    lifecycle::Backing verdict(const std::filesystem::path& volumePath,
+                               const std::filesystem::path& probeFile);
 
     // Termination of the device behind the most recent live verdict.
     // Arbitrary thread. Set before the first verdict() call.
@@ -49,6 +56,11 @@ public:
 
     // A mountable disk appeared — worth rescanning immediately. Arbitrary thread.
     std::function<void()> onDiskAppeared;
+
+    // The watcher mounted (or failed to mount) a pedal-labeled volume that
+    // appeared and stayed unmounted through the grace period — the 2026-07-22
+    // aftermath showed the OS automount can simply not happen. Arbitrary thread.
+    std::function<void(bool ok, std::string message)> onAutoMountResult;
 
     // Unmount the volume, then eject its whole disk. `done(unmounted, message)`
     // fires on an arbitrary thread: `unmounted` is the safety-relevant fact;

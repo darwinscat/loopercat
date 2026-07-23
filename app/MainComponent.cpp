@@ -206,8 +206,24 @@ MainComponent::MainComponent(std::string explicitVolume)
                 worker.pokeRescan();
         });
     };
-    worker.setBackingProbe(
-        [this](const volume::fs::path& path) { return deviceWatcher.verdict(path); });
+    deviceWatcher.onAutoMountResult = [this, alive = uiAlive](bool ok, std::string message) {
+        juce::MessageManager::callAsync([this, alive, ok, note = utf8(message)] {
+            if (!*alive)
+                return;
+            if (ok) {
+                toast.show("Mounted " + note);
+                worker.pokeRescan();
+            } else {
+                jobError = "Mount: " + note;
+                refreshBanners();
+            }
+        });
+    };
+    worker.setBackingProbe([this](const volume::fs::path& path) {
+        // MEMORY1.RC0 is the probe target: small, always present on a real
+        // pedal, and its uncached readability is the device truth.
+        return deviceWatcher.verdict(path, volume::memoryPath(path, 1));
+    });
     worker.setEjectStarter([this](const std::string& volumePath) {
         // Worker thread. The completion reports through the message thread.
         deviceWatcher.eject(volumePath, [this, alive = uiAlive](bool unmounted, std::string message) {
@@ -272,6 +288,26 @@ MainComponent::MainComponent(std::string explicitVolume)
     setSize(920, 680);
 
     worker.start();
+    startTimer(2000); // MIDI presence poll — cheap device-list scan, message thread
+}
+
+// The pedal outside STORAGE is still visible — as a USB-MIDI device. Knowing
+// the difference between "no pedal at all" and "pedal here, wrong mode" turns
+// the empty state from a shrug into an instruction.
+void MainComponent::timerCallback()
+{
+    bool present = false;
+    for (const auto& device : juce::MidiInput::getAvailableDevices())
+        present = present || device.name.containsIgnoreCase("RC-5");
+    if (present == midiPedalPresent)
+        return;
+    midiPedalPresent = present;
+    hint.setText(midiPedalPresent
+                     ? juce::String::fromUTF8("RC-5 detected in normal mode \xe2\x80\x94 put the "
+                                              "pedal into STORAGE mode to browse loops")
+                     : juce::String("Connect your looper via USB and enter STORAGE mode"),
+                 juce::dontSendNotification);
+    updateStatusText();
 }
 
 MainComponent::~MainComponent()
@@ -387,7 +423,11 @@ void MainComponent::updateStatusText()
         return;
     }
     if (snapshot.volume.empty()) {
-        status.setText("No looper found", juce::dontSendNotification);
+        status.setText(midiPedalPresent
+                           ? juce::String::fromUTF8(
+                                 "RC-5 connected in normal mode \xe2\x80\x94 not in STORAGE")
+                           : juce::String("No looper found"),
+                       juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
         return;
     }
