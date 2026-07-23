@@ -214,8 +214,11 @@ MainComponent::MainComponent(std::string explicitVolume)
             }
         });
     };
-    worker.setBackingProbe(
-        [this](const volume::fs::path& path) { return deviceWatcher.verdict(path); });
+    worker.setBackingProbe([this](const volume::fs::path& path) {
+        // MEMORY1.RC0 is the probe target: small, always present on a real
+        // pedal, and its uncached readability is the device truth.
+        return deviceWatcher.verdict(path, volume::memoryPath(path, 1));
+    });
     worker.setEjectStarter([this](const std::string& volumePath) {
         // Worker thread. The completion reports through the message thread.
         deviceWatcher.eject(volumePath, [this, alive = uiAlive](bool unmounted, std::string message) {
