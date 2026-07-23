@@ -34,7 +34,12 @@ namespace
                  .gitDirty = LOOPERCAT_GIT_DIRTY,
                  .os = LOOPERCAT_BUILD_OS,
                  .arch = LOOPERCAT_BUILD_ARCH,
-                 .builder = "dev" };
+                 .builder = "dev",
+                 // The popover mirrors the window header: the ears, not the
+                 // family-default orbit the hook falls back to.
+                 .drawMark = [](juce::Graphics& g, float cx, float cy, float d) {
+                     ui::drawLoopMark(g, cx, cy, d);
+                 } };
     }
 
     // The audio-settings dialog content; persists the device choice when the
