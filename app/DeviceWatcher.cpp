@@ -19,14 +19,25 @@
 #include <dispatch/dispatch.h>
 #include <sys/mount.h>
 
+#include <atomic>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 
 namespace loopercat::app {
 
 namespace {
+
+    // The factory volume label of the RC-5's mass-storage export (rc5cat).
+    // Auto-mount keys on it because an unmounted volume cannot be content-
+    // checked; a user-relabeled pedal just falls back to manual mounting.
+    constexpr const char* kPedalVolumeLabel = "BOSS RC-5";
+
+    // How long the OS automount gets before the watcher steps in.
+    constexpr int64_t kAutoMountGraceSeconds = 5;
 
     std::string cfToString(CFStringRef s)
     {
@@ -94,6 +105,10 @@ struct DeviceWatcher::Impl {
     std::mutex mutex;
     std::map<std::string, Tracked> tracked; // by BSD name; guarded by mutex
     std::string currentBsd;                 // device behind the last live verdict
+    std::set<std::string> mountAttempted;   // one auto-mount per attach; guarded by mutex
+    // Outlives Impl in dispatch_after contexts: those fire on the queue after
+    // the destructor's drain and must become no-ops, not use-after-frees.
+    std::shared_ptr<std::atomic<bool>> aliveFlag = std::make_shared<std::atomic<bool>>(true);
 
     void deviceTerminated(const std::string& bsd)
     {
@@ -122,7 +137,7 @@ struct DeviceWatcher::Impl {
         ctx->impl->deviceTerminated(ctx->bsd);
     }
 
-    static void diskAppearedCallback(DADiskRef, void* context)
+    static void diskAppearedCallback(DADiskRef disk, void* context)
     {
         auto* impl = static_cast<Impl*>(context);
         std::function<void()> cb;
@@ -132,6 +147,88 @@ struct DeviceWatcher::Impl {
         }
         if (cb)
             cb();
+        impl->considerAutoMount(disk);
+    }
+
+    // --- auto-mount: a pedal-labeled volume the OS never mounted ---
+
+    struct AutoMountCtx {
+        std::shared_ptr<std::atomic<bool>> alive;
+        Impl* impl = nullptr;
+        std::string bsd;
+    };
+
+    // True while the disk's description shows no volume path.
+    static bool isUnmounted(CFDictionaryRef description)
+    {
+        return CFDictionaryGetValue(description, kDADiskDescriptionVolumePathKey) == nullptr;
+    }
+
+    void considerAutoMount(DADiskRef disk)
+    {
+        const char* bsdName = DADiskGetBSDName(disk);
+        CFDictionaryRef description = bsdName != nullptr ? DADiskCopyDescription(disk) : nullptr;
+        if (description == nullptr)
+            return;
+        const std::string name = cfToString(static_cast<CFStringRef>(
+            CFDictionaryGetValue(description, kDADiskDescriptionVolumeNameKey)));
+        const auto* internal = static_cast<CFBooleanRef>(
+            CFDictionaryGetValue(description, kDADiskDescriptionDeviceInternalKey));
+        const bool candidate = isUnmounted(description) && name == kPedalVolumeLabel
+                            && (internal == nullptr || !CFBooleanGetValue(internal));
+        CFRelease(description);
+        {
+            // A fresh attach earns a fresh (single) auto-mount attempt.
+            const std::lock_guard<std::mutex> lock(mutex);
+            mountAttempted.erase(bsdName);
+        }
+        if (!candidate)
+            return;
+        auto* ctx = new AutoMountCtx{ aliveFlag, this, bsdName };
+        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, kAutoMountGraceSeconds * NSEC_PER_SEC),
+                         queue, ctx, &autoMountGraceFired);
+    }
+
+    static void autoMountGraceFired(void* context)
+    {
+        std::unique_ptr<AutoMountCtx> ctx(static_cast<AutoMountCtx*>(context));
+        if (!ctx->alive->load())
+            return;
+        Impl* impl = ctx->impl;
+        {
+            const std::lock_guard<std::mutex> lock(impl->mutex);
+            if (!impl->mountAttempted.insert(ctx->bsd).second)
+                return;
+        }
+        DADiskRef disk = DADiskCreateFromBSDName(kCFAllocatorDefault, impl->session,
+                                                 ctx->bsd.c_str());
+        if (disk == nullptr)
+            return;
+        CFDictionaryRef description = DADiskCopyDescription(disk);
+        // Description gone = the device left; a volume path = automount won
+        // after all. Either way there is nothing for us to do.
+        const bool stillWaiting = description != nullptr && isUnmounted(description);
+        if (description != nullptr)
+            CFRelease(description);
+        if (stillWaiting)
+            DADiskMount(disk, nullptr, kDADiskMountOptionDefault, &autoMountDone,
+                        new AutoMountCtx{ ctx->alive, impl, ctx->bsd });
+        CFRelease(disk);
+    }
+
+    static void autoMountDone(DADiskRef, DADissenterRef dissenter, void* context)
+    {
+        std::unique_ptr<AutoMountCtx> ctx(static_cast<AutoMountCtx*>(context));
+        if (!ctx->alive->load())
+            return;
+        std::function<void(bool, std::string)> cb;
+        {
+            const std::lock_guard<std::mutex> lock(ctx->impl->mutex);
+            cb = ctx->impl->owner.onAutoMountResult;
+        }
+        if (cb)
+            cb(dissenter == nullptr,
+               dissenter == nullptr ? std::string(kPedalVolumeLabel) : dissenterMessage(dissenter));
     }
 
     // Register for termination of `bsd` while we hold a live service ref.
@@ -236,6 +333,7 @@ DeviceWatcher::DeviceWatcher() : impl_(std::make_unique<Impl>(*this))
 
 DeviceWatcher::~DeviceWatcher()
 {
+    impl_->aliveFlag->store(false); // pending dispatch_after contexts become no-ops
     DAUnregisterCallback(impl_->session, reinterpret_cast<void*>(&Impl::diskAppearedCallback),
                          impl_.get());
     DASessionSetDispatchQueue(impl_->session, nullptr);

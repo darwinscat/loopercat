@@ -50,6 +50,11 @@ public:
     // A mountable disk appeared — worth rescanning immediately. Arbitrary thread.
     std::function<void()> onDiskAppeared;
 
+    // The watcher mounted (or failed to mount) a pedal-labeled volume that
+    // appeared and stayed unmounted through the grace period — the 2026-07-22
+    // aftermath showed the OS automount can simply not happen. Arbitrary thread.
+    std::function<void(bool ok, std::string message)> onAutoMountResult;
+
     // Unmount the volume, then eject its whole disk. `done(unmounted, message)`
     // fires on an arbitrary thread: `unmounted` is the safety-relevant fact;
     // `message` carries the unmount dissent or a post-unmount eject warning.
