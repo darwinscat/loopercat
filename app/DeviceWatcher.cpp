@@ -260,22 +260,31 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     if (!rec.isOwnMount || rec.bsd.empty())
         return lifecycle::Backing::untracked;
 
-    {
-        const std::lock_guard<std::mutex> lock(impl_->mutex);
-        auto it = impl_->tracked.find(rec.bsd);
-        if (it != impl_->tracked.end() && it->second.dead)
-            return lifecycle::Backing::gone;
-    }
-
     // IOBSDNameMatching's dictionary is consumed by the lookup.
     const io_service_t service = IOServiceGetMatchingService(
         kIOMainPortDefault, IOBSDNameMatching(kIOMainPortDefault, 0, rec.bsd.c_str()));
     if (service == IO_OBJECT_NULL) {
-        // The registry already dropped the media object: a ghost mount. Mark
+        // The registry has no media object behind this mount: a ghost. Mark
         // it so the verdict stays stable even if the registry state flaps.
         const std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->tracked[rec.bsd].dead = true;
         return lifecycle::Backing::gone;
+    }
+    {
+        // A live registry entry under a name we hold as dead is a NEW device
+        // incarnation — macOS recycles disk numbers across unplug/replug
+        // cycles. Holding the grudge forever made every reconnect after an
+        // eject look like a ghost and kicked the fresh pedal right back out.
+        // Drop the stale tracking and bind to the new entry. (If the lookup
+        // returned the old entry mid-termination, the fresh interest fires
+        // terminated immediately and the next scan converges.)
+        const std::lock_guard<std::mutex> lock(impl_->mutex);
+        auto it = impl_->tracked.find(rec.bsd);
+        if (it != impl_->tracked.end() && it->second.dead) {
+            IOObjectRelease(it->second.notification);
+            delete it->second.ctx;
+            impl_->tracked.erase(it);
+        }
     }
     impl_->ensureInterest(rec.bsd, service);
     IOObjectRelease(service);
