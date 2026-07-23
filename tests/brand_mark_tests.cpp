@@ -173,6 +173,18 @@ int main()
         const auto atEar = headerImg.getPixelAt ((int) (mx + (27.33f - 20.0f) * hs),
                                                  (int) (my + (9.67f - 20.0f) * hs));
         CHECK (maxChannelDiff (atEar, felitronics::appkit::brand::lilac) < 80);  // header wears the ears
+
+        // The VersionBadge popover calls its Config::drawMark through this
+        // exact type-erased shape (no hover argument). The ears must survive
+        // the erasure — a signature drift here would silently fall back to
+        // the family orbit in the About popover.
+        const std::function<void (juce::Graphics&, float, float, float)> asBadgeDraws =
+            [] (juce::Graphics& g, float cx, float cy, float dd) { loopercat::ui::drawLoopMark (g, cx, cy, dd); };
+        const auto viaHook = render (size, juce::Colours::black, [&] (juce::Graphics& g) {
+            asBadgeDraws (g, c, c, d);
+        });
+        CHECK (maxChannelDiff (at (viaHook, 27.33f, 9.67f), lilac) < 60);   // ears through the hook
+        CHECK (maxChannelDiff (at (viaHook, 23.44f, 29.98f), lilac) < 60);  // chevron through the hook
     }
 
     return testkit::summary ("brand_mark_tests");
