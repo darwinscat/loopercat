@@ -147,10 +147,14 @@ if(NOT LOOPERCAT_BUILD_ARCH)
 endif()
 string(REPLACE ";" "+" LOOPERCAT_BUILD_ARCH "${LOOPERCAT_BUILD_ARCH}")   # "arm64;x86_64" -> one token
 
+# The app icon — the "ears" mark (art/icon/loopercat-mark.svg is the geometry
+# source; the PNGs are its renders). JUCE builds the .icns/.ico from these.
 juce_add_gui_app(LooperCat
     PRODUCT_NAME "LooperCat"
     COMPANY_NAME "Darwin's Cat"
-    BUNDLE_ID    "com.darwinscat.loopercat")
+    BUNDLE_ID    "com.darwinscat.loopercat"
+    ICON_BIG     "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/loopercat-icon-1024.png"
+    ICON_SMALL   "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/loopercat-icon-32.png")
 
 target_sources(LooperCat PRIVATE
     app/DeviceWatcher.cpp
@@ -232,6 +236,27 @@ target_link_libraries(audio_engine_harness PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME audio_engine_harness COMMAND audio_engine_harness)
+
+# ----------------------------------------------------------------------------
+# The brand-mark contract: the product mark must cover appkit's drawOrbit
+# completely (LooperBrandHeader overpaints it), touch nothing outside its
+# disc, and actually be the ears — pixel-level, against rendered images.
+# ----------------------------------------------------------------------------
+juce_add_console_app(brand_mark_tests PRODUCT_NAME "brand_mark_tests")
+target_sources(brand_mark_tests PRIVATE tests/brand_mark_tests.cpp)
+target_compile_definitions(brand_mark_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(brand_mark_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    LooperCatAssets
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME brand_mark_tests COMMAND brand_mark_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 

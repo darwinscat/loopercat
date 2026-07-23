@@ -3,13 +3,13 @@
 
 #pragma once
 
-#include <felitronics/appkit/BrandHeader.h>
 #include <felitronics/appkit/VersionBadge.h>
 
 #include "AppSettings.h"
 #include "AudioEngine.h"
 #include "BannerStrip.h"
 #include "DeviceWatcher.h"
+#include "LooperMark.h"
 #include "PedalLight.h"
 #include "PedalWorker.h"
 #include "PlayerPane.h"
@@ -70,7 +70,7 @@ private:
     // dies before anything it touches.
     AppSettings settings;
     UpdateCheck updateChecker { settings };
-    felitronics::appkit::BrandHeader header;
+    ui::LooperBrandHeader header;
     felitronics::appkit::VersionBadge badge;
     PedalLight pedalLight;
     juce::Label status;
