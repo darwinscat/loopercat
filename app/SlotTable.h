@@ -33,15 +33,17 @@ public:
     std::function<void(int, juce::Point<int>)> onSlotContextMenu;   // right-click (screen position)
     std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a slot's row
     std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
+    std::function<void(int, long long)> onTempoCommitted;           // inline edit finished with new tenths of BPM
     std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
     std::function<void(int)> onEmptyWavCellClicked;                 // click the "drop a WAV here" hint
 
     void selectSlot(int slot);
 
-    // Inline rename: an editor right in the Name cell (double-click on the
-    // name does this too). Enter commits, Esc cancels, 12 printable ASCII
-    // enforced at the field.
+    // Inline edits: an editor right in the cell (double-click does this too).
+    // Enter commits, Esc cancels; the field enforces the pedal's constraints
+    // (12 printable ASCII for names, digits and a dot for tempo).
     void startRenameEditForSlot(int slot);
+    void startTempoEditForSlot(int slot);
 
     // The slot a worker job is touching right now (0 = none): its row pulses.
     void setBusySlot(int slot);
@@ -59,7 +61,7 @@ public:
     static juce::String formatTempo(long long tenths);
 
 private:
-    enum Columns { kSlot = 1, kName, kDuration, kTempo, kOneShot, kWavFile };
+    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kOneShot, kWavFile };
 
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;
@@ -71,8 +73,8 @@ private:
     int rowAt(int x, int y);
     int rowOfSlot(int slot) const;
     int slotOfRow(int rowIndex) const; // 0 when out of range
-    void startRenameEdit(int rowIndex);
-    void finishRenameEdit(bool commit);
+    void startCellEdit(int rowIndex, int columnId);
+    void finishCellEdit(bool commit);
     void timerCallback() override;
 
     std::vector<SlotRow> rows_;
@@ -80,8 +82,9 @@ private:
     int busySlot_ = 0;  // slot being mutated; its row pulses
     float busyPhase_ = 0.0f;
     int editingRow_ = -1;
+    int editingColumn_ = 0;
     juce::String editOriginal_;
-    std::unique_ptr<juce::TextEditor> nameEditor_;
+    std::unique_ptr<juce::TextEditor> cellEditor_;
     juce::TableListBox table_ { {}, this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SlotTable)

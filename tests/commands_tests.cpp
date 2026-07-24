@@ -148,6 +148,51 @@ int main()
         CHECK_EQ(static_cast<int>(healed2.value()), 0x3d);
     }
 
+    // --- setTempo: the user's BPM lands in every tempo-shaped field ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+
+        // Give slot 5 indexed audio: exactly 60 s at 44.1 kHz.
+        {
+            std::string text = commands::readMemory(volume);
+            std::string body = rc0::slotBody(text, 5);
+            body = rc0::setField(body, "WavStat", 1);
+            body = rc0::setField(body, "WavLen", 44100LL * 60);
+            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 5, body),
+                                      { .skipBackup = true });
+        }
+
+        // 112.0 BPM over 60 s = 112 beats = 28 bars of 4/4; Measure carries
+        // the hardware-verified +7 offset.
+        commands::setTempo(volume, 5, 1120, { .skipBackup = true });
+        const std::string after = commands::readMemory(volume);
+        const std::string body = rc0::slotBody(after, 5);
+        CHECK_EQ(rc0::field(body, "Tempo"), 1120);
+        CHECK_EQ(rc0::field(body, "RecTmp"), 1120);
+        CHECK_EQ(rc0::field(body, "MeasLen"), 28);
+        CHECK_EQ(rc0::field(body, "Measure"), 35);
+        CHECK_EQ(catalog::readSlot(after, 5).measures, 28);
+
+        // A slot without indexed audio gets the tempo but keeps its measure
+        // fields untouched — there is no duration to derive bars from.
+        commands::setTempo(volume, 6, 905, { .skipBackup = true });
+        const std::string empty = rc0::slotBody(commands::readMemory(volume), 6);
+        CHECK_EQ(rc0::field(empty, "Tempo"), 905);
+        CHECK_EQ(rc0::field(empty, "RecTmp"), 905);
+        CHECK_EQ(rc0::field(empty, "MeasLen"), 0);
+        CHECK_EQ(rc0::field(empty, "Measure"), 0);
+
+        // Other slots stay byte-identical.
+        const std::string untouched = rc0::slotBody(commands::readMemory(volume), 7);
+        CHECK_EQ(untouched, rc0::slotBody(commands::readMemory(volume, 2), 7));
+
+        // The pedal's range is a hard wall, not a clamp.
+        CHECK_THROWS(commands::setTempo(volume, 5, 399, { .skipBackup = true }), "40.0-300.0");
+        CHECK_THROWS(commands::setTempo(volume, 5, 3001, { .skipBackup = true }), "40.0-300.0");
+    }
+
     // --- rename: the byte-invariant holds on disk ---
 
     {

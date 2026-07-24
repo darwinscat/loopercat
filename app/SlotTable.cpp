@@ -38,6 +38,7 @@ SlotTable::SlotTable()
     header.addColumn("#", kSlot, 40, 40, 40, Flags::notSortable);
     header.addColumn("Name", kName, 132, 132, 132, Flags::notSortable); // 12 chars, fixed
     header.addColumn("Duration", kDuration, 84, 84, 84, Flags::notSortable);
+    header.addColumn("Bars", kBars, 56, 56, 56, Flags::notSortable);
     header.addColumn("Tempo", kTempo, 76, 76, 76, Flags::notSortable);
     header.addColumn("One Shot", kOneShot, 84, 84, 84, Flags::notSortable);
     header.addColumn("WAV file", kWavFile, 300, 120, -1, Flags::notSortable);
@@ -48,13 +49,13 @@ SlotTable::SlotTable()
 
 void SlotTable::setRows(std::vector<SlotRow> rows)
 {
-    finishRenameEdit(false); // rows may shift under the editor — never edit stale data
+    finishCellEdit(false); // rows may shift under the editor — never edit stale data
     rows_ = std::move(rows);
     table_.updateContent();
     table_.repaint();
 }
 
-// --- inline rename ---
+// --- inline cell edits (name, tempo) ---
 
 int SlotTable::rowOfSlot(int slot) const
 {
@@ -82,59 +83,85 @@ void SlotTable::startRenameEditForSlot(int slot)
 {
     const int row = rowOfSlot(slot);
     if (row >= 0)
-        startRenameEdit(row);
+        startCellEdit(row, kName);
 }
 
-void SlotTable::startRenameEdit(int rowIndex)
+void SlotTable::startTempoEditForSlot(int slot)
 {
-    if (rowIndex < 0 || static_cast<std::size_t>(rowIndex) >= rows_.size() || !onRenameCommitted)
-        return;
-    finishRenameEdit(false);
+    const int row = rowOfSlot(slot);
+    if (row >= 0)
+        startCellEdit(row, kTempo);
+}
 
-    const auto cell = table_.getCellPosition(kName, rowIndex, true);
+void SlotTable::startCellEdit(int rowIndex, int columnId)
+{
+    if (rowIndex < 0 || static_cast<std::size_t>(rowIndex) >= rows_.size())
+        return;
+    if (columnId == kName ? !onRenameCommitted : !onTempoCommitted)
+        return;
+    finishCellEdit(false);
+
+    const auto cell = table_.getCellPosition(columnId, rowIndex, true);
     if (cell.isEmpty())
         return;
     table_.scrollToEnsureRowIsOnscreen(rowIndex);
 
+    const SlotRow& r = rows_[static_cast<std::size_t>(rowIndex)];
     editingRow_ = rowIndex;
-    editOriginal_ = utf8(rows_[static_cast<std::size_t>(rowIndex)].info.name).trimEnd();
+    editingColumn_ = columnId;
+    editOriginal_ = columnId == kName ? utf8(r.info.name).trimEnd()
+                                      : formatTempo(r.info.tempoTenths);
 
-    nameEditor_ = std::make_unique<juce::TextEditor>();
-    // The pedal's name constraints, enforced at the field: 12 chars, the
-    // printable ASCII range its display can show.
-    juce::String printableAscii;
-    for (juce::juce_wchar c = 0x20; c <= 0x7e; ++c)
-        printableAscii += juce::String::charToString(c);
-    nameEditor_->setInputRestrictions(rc0::kNameLength, printableAscii);
-    nameEditor_->setFont(juce::FontOptions(13.0f));
-    nameEditor_->setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff23232d));
-    nameEditor_->setColour(juce::TextEditor::textColourId, juce::Colours::white);
-    nameEditor_->setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff2a2a34));
-    nameEditor_->setColour(juce::TextEditor::focusedOutlineColourId,
+    cellEditor_ = std::make_unique<juce::TextEditor>();
+    if (columnId == kName) {
+        // The pedal's name constraints, enforced at the field: 12 chars, the
+        // printable ASCII range its display can show.
+        juce::String printableAscii;
+        for (juce::juce_wchar c = 0x20; c <= 0x7e; ++c)
+            printableAscii += juce::String::charToString(c);
+        cellEditor_->setInputRestrictions(rc0::kNameLength, printableAscii);
+    } else {
+        cellEditor_->setInputRestrictions(5, "0123456789."); // "300.0" is the widest legal value
+    }
+    cellEditor_->setFont(juce::FontOptions(13.0f));
+    cellEditor_->setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff23232d));
+    cellEditor_->setColour(juce::TextEditor::textColourId, juce::Colours::white);
+    cellEditor_->setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff2a2a34));
+    cellEditor_->setColour(juce::TextEditor::focusedOutlineColourId,
                            felitronics::appkit::brand::violet);
-    nameEditor_->setText(editOriginal_, juce::dontSendNotification);
-    nameEditor_->setSelectAllWhenFocused(true);
-    nameEditor_->onReturnKey = [this] { finishRenameEdit(true); };
-    nameEditor_->onEscapeKey = [this] { finishRenameEdit(false); };
-    nameEditor_->onFocusLost = [this] { finishRenameEdit(true); }; // Finder-style: click away commits
+    cellEditor_->setText(editOriginal_, juce::dontSendNotification);
+    cellEditor_->setSelectAllWhenFocused(true);
+    cellEditor_->onReturnKey = [this] { finishCellEdit(true); };
+    cellEditor_->onEscapeKey = [this] { finishCellEdit(false); };
+    cellEditor_->onFocusLost = [this] { finishCellEdit(true); }; // Finder-style: click away commits
 
-    addAndMakeVisible(*nameEditor_);
-    nameEditor_->setBounds(cell.reduced(2, 1)); // table_ sits at (0,0), same coords
-    nameEditor_->grabKeyboardFocus();
+    addAndMakeVisible(*cellEditor_);
+    cellEditor_->setBounds(cell.reduced(2, 1)); // table_ sits at (0,0), same coords
+    cellEditor_->grabKeyboardFocus();
 }
 
-void SlotTable::finishRenameEdit(bool commit)
+void SlotTable::finishCellEdit(bool commit)
 {
-    if (nameEditor_ == nullptr)
+    if (cellEditor_ == nullptr)
         return;
     // Move out first: removing the editor fires onFocusLost, which re-enters here.
-    const std::unique_ptr<juce::TextEditor> editor = std::move(nameEditor_);
+    const std::unique_ptr<juce::TextEditor> editor = std::move(cellEditor_);
     const int row = editingRow_;
+    const int column = editingColumn_;
     editingRow_ = -1;
+    editingColumn_ = 0;
     const juce::String value = editor->getText().trim();
-    if (commit && value.isNotEmpty() && value != editOriginal_ && onRenameCommitted
-        && slotOfRow(row) > 0)
+    if (!commit || value.isEmpty() || value == editOriginal_ || slotOfRow(row) <= 0)
+        return;
+    if (column == kName && onRenameCommitted) {
         onRenameCommitted(slotOfRow(row), value);
+    } else if (column == kTempo && onTempoCommitted) {
+        // Parse to tenths; range enforcement is the core's job — its typed
+        // error lands on the banner with the pedal's 40.0-300.0 wording.
+        const long long tenths = std::llround(value.getDoubleValue() * 10.0);
+        if (tenths > 0)
+            onTempoCommitted(slotOfRow(row), tenths);
+    }
 }
 
 void SlotTable::resized()
@@ -170,8 +197,8 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
 
 void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
 {
-    if (columnId == kName) { // double-click the name = edit it in place
-        startRenameEdit(row);
+    if (columnId == kName || columnId == kTempo) { // double-click = edit in place
+        startCellEdit(row, columnId);
         return;
     }
     if (onSlotActivated && slotOfRow(row) > 0)
@@ -292,6 +319,8 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kSlot:     text = juce::String(r.info.slot); break;
     case kName:     text = utf8(r.info.name).trimEnd(); break;
     case kDuration: text = loaded ? formatDuration(r.info.frames) : juce::String(); break;
+    case kBars:     text = loaded && r.info.measures > 0 ? juce::String(r.info.measures)
+                                                         : juce::String(); break;
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
     case kOneShot:  break; // drawn as a dot below
     case kWavFile:

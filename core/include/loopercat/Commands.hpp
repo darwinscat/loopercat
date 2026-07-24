@@ -21,6 +21,7 @@
 #include "Volume.hpp"
 #include "Wav.hpp"
 
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -172,6 +173,41 @@ inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& sl
         text = rc0::replaceSlotBody(text, slot, rc0::setField(body, "One", on ? 1 : 0));
     }
     return writeMemoryPair(volume, text, options);
+}
+
+// The pedal's supported tempo range, tenths of BPM (RC-5 display: 40.0–300.0).
+inline constexpr long long kTempoTenthsMin = 400;
+inline constexpr long long kTempoTenthsMax = 3000;
+
+// Assign a slot's true tempo. The pedal never analyzes audio — on import it
+// assumes a power-of-two bar count (#10 analysis, hardware-verified
+// 2026-07-24) — so a loop that isn't 16/32/64/… bars gets a wrong tempo and
+// the onboard rhythm drifts against the music. This writes the user's actual
+// BPM: Tempo and RecTmp in tenths, and for indexed audio the bar count that
+// follows from it — MeasLen = whole bars, Measure = MeasLen + 7 (the UI-enum
+// offset). Exact integer beats are not required by the firmware: the pedal's
+// own imports land at e.g. 511.91 beats after its rounding to tenths.
+// Bars assume 4/4 — every observed slot carries RHYTHM.Beat = 2 (4/4); other
+// signatures await a decoded Beat enum.
+inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTenths,
+                            const WriteOptions& options)
+{
+    if (tempoTenths < kTempoTenthsMin || tempoTenths > kTempoTenthsMax)
+        throw Error("tempo out of the pedal's 40.0-300.0 BPM range: "
+                    + std::to_string(tempoTenths / 10) + "." + std::to_string(tempoTenths % 10));
+    std::string text = readMemory(volume);
+    std::string body = rc0::slotBody(text, slot);
+    body = rc0::setField(body, "Tempo", tempoTenths);
+    body = rc0::setField(body, "RecTmp", tempoTenths);
+    if (rc0::field(body, "WavStat") == 1) {
+        const long long frames = rc0::field(body, "WavLen");
+        const double seconds = static_cast<double>(frames) / wav::kSampleRate;
+        const double beats = static_cast<double>(tempoTenths) / 10.0 * seconds / 60.0;
+        const long long bars = std::max(1LL, static_cast<long long>(std::llround(beats / 4.0)));
+        body = rc0::setField(body, "MeasLen", bars);
+        body = rc0::setField(body, "Measure", bars + 7);
+    }
+    return writeMemoryPair(volume, rc0::replaceSlotBody(text, slot, body), options);
 }
 
 // --- push ---
