@@ -150,9 +150,10 @@ MainComponent::MainComponent(std::string explicitVolume)
             });
     };
 
-    // The toolbar (reference web UI parity): manual config backup, junk
-    // sweep, and the empty-slot view filter (persisted).
-    for (auto* button : { &connectButton, &backupButton, &cleanButton, &disconnectButton }) {
+    // The toolbar carries only the primary story — Connect / Disconnect and
+    // the empty-slot view filter; service actions live in the Maintenance
+    // menu, About in the app menu (platform standard).
+    for (auto* button : { &connectButton, &disconnectButton }) {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
         button->setEnabled(false);
     }
@@ -175,17 +176,15 @@ MainComponent::MainComponent(std::string explicitVolume)
         player.clear();
         worker.requestEject();
     };
-    backupButton.onClick = [this] {
-        worker.enqueue({ "Backup configs", 0,
-                         [options = makeWriteOptions()](const volume::fs::path& volumePath) {
-                             commands::backup(volumePath, options.backupRoot, options.stamp);
-                         } });
-    };
-    cleanButton.onClick = [this] {
-        worker.enqueue({ "Clean junk", 0, [](const volume::fs::path& volumePath) {
-                             volume::sweepJunk(volumePath);
-                         } });
-    };
+    appMenu = std::make_unique<AppMenu>(AppMenu::Actions {
+        .about = [this] { showAbout(); },
+        .backup = [this] { runBackup(); },
+        .cleanJunk = [this] { runCleanJunk(); },
+        .maintenanceEnabled = [this] {
+            return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
+                && !pedalBusy;
+        } });
+
     showEmptyToggle.setColour(juce::ToggleButton::textColourId, kStatusText);
     showEmptyToggle.setColour(juce::ToggleButton::tickColourId,
                               felitronics::appkit::brand::violet);
@@ -301,8 +300,6 @@ MainComponent::MainComponent(std::string explicitVolume)
     addAndMakeVisible(hint);
     addAndMakeVisible(banners);
     addAndMakeVisible(connectButton);
-    addAndMakeVisible(backupButton);
-    addAndMakeVisible(cleanButton);
     addAndMakeVisible(disconnectButton);
     addAndMakeVisible(showEmptyToggle);
     addChildComponent(table);  // shown once a pedal is mounted
@@ -381,12 +378,40 @@ void MainComponent::updateTableRows()
 void MainComponent::updateToolbar()
 {
     const bool usable = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
-    backupButton.setEnabled(usable && !pedalBusy);
-    cleanButton.setEnabled(usable && !pedalBusy);
     disconnectButton.setEnabled(usable && !pedalBusy);
     // Connect: the pedal shows its MIDI face but no honest volume is up.
     connectButton.setEnabled(midiPedalPresent && !pedalBusy
                              && snapshot.state == lifecycle::State::disconnected);
+    if (appMenu != nullptr)
+        appMenu->menuItemsChanged(); // the Maintenance items follow the same gate
+}
+
+void MainComponent::runBackup()
+{
+    worker.enqueue({ "Backup configs", 0,
+                     [options = makeWriteOptions()](const volume::fs::path& volumePath) {
+                         commands::backup(volumePath, options.backupRoot, options.stamp);
+                     } });
+}
+
+void MainComponent::runCleanJunk()
+{
+    worker.enqueue({ "Clean junk", 0, [](const volume::fs::path& volumePath) {
+                         volume::sweepJunk(volumePath);
+                     } });
+}
+
+void MainComponent::showAbout()
+{
+    // The About popover is the badge's click handler; appkit keeps its
+    // showPopup() private, so the menu routes through the same public click
+    // path the mouse takes. TODO(appkit): expose showPopup() and drop the
+    // synthetic event.
+    const auto source = juce::Desktop::getInstance().getMainMouseSource();
+    const auto now = juce::Time::getCurrentTime();
+    const juce::MouseEvent event(source, {}, juce::ModifierKeys(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                 &badge, &badge, now, {}, now, 1, false);
+    badge.mouseUp(event);
 }
 
 // The banner strip: lifecycle first (it explains everything below), then the
@@ -735,8 +760,6 @@ void MainComponent::resized()
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
     showEmptyToggle.setBounds(statusRow.removeFromRight(150));
     disconnectButton.setBounds(statusRow.removeFromRight(104).reduced(2, 1));
-    cleanButton.setBounds(statusRow.removeFromRight(92).reduced(2, 1));
-    backupButton.setBounds(statusRow.removeFromRight(78).reduced(2, 1));
     connectButton.setBounds(statusRow.removeFromRight(84).reduced(2, 1));
     status.setBounds(statusRow);
     const int bannerHeight = banners.preferredHeight();
