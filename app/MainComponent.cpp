@@ -87,8 +87,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     status.setFont(juce::FontOptions(12.0f));
     status.setColour(juce::Label::textColourId, kStatusText);
 
-    hint.setText("Connect your looper via USB and enter STORAGE mode",
-                 juce::dontSendNotification);
+    hint.setText("Connect your looper via USB", juce::dontSendNotification);
     hint.setFont(juce::FontOptions(15.0f));
     hint.setColour(juce::Label::textColourId, kStatusText);
     hint.setJustificationType(juce::Justification::centred);
@@ -153,13 +152,25 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     // The toolbar (reference web UI parity): manual config backup, junk
     // sweep, and the empty-slot view filter (persisted).
-    for (auto* button : { &backupButton, &cleanButton, &ejectButton }) {
+    for (auto* button : { &connectButton, &backupButton, &cleanButton, &disconnectButton }) {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
         button->setEnabled(false);
     }
-    ejectButton.onClick = [this] {
+    connectButton.onClick = [this] {
+        // One sysex and the pedal walks itself into STORAGE (issue #22); the
+        // disk-appeared poke and the automount take it from there.
+        const juce::String error = pedallink::requestStorageMode(true);
+        if (error.isNotEmpty()) {
+            jobError = "Connect: " + error;
+            refreshBanners();
+            return;
+        }
+        toast.show(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"));
+    };
+    disconnectButton.onClick = [this] {
         // Release our own hold on the volume first: the read-ahead thread
         // keeps the slot WAV open, and an open file dissents the unmount.
+        // The eject completion then walks the pedal out of STORAGE.
         engine.stop();
         player.clear();
         worker.requestEject();
@@ -233,11 +244,26 @@ MainComponent::MainComponent(std::string explicitVolume)
                         return;
                     worker.postEjectFinished(unmounted);
                     if (!unmounted) {
-                        jobError = "Eject: " + note;
+                        jobError = "Disconnect: " + note;
                         refreshBanners();
-                    } else if (note.isNotEmpty()) {
-                        toast.show(note);
+                        return;
                     }
+                    if (note.isNotEmpty())
+                        toast.show(note);
+                    // The volume is safely ejected — now walk the pedal out
+                    // of STORAGE too, and close the lifecycle: the medium
+                    // story is over, which is exactly what deviceLost means.
+                    const juce::String exitError = pedallink::requestStorageMode(false);
+                    if (exitError.isNotEmpty()) {
+                        jobError = "Disconnect: volume ejected, but " + exitError
+                                 + juce::String::fromUTF8(
+                                       " \xe2\x80\x94 leave STORAGE on the pedal itself");
+                        refreshBanners();
+                        return;
+                    }
+                    worker.postDeviceLost();
+                    toast.show(juce::String::fromUTF8(
+                        "Pedal disconnected \xe2\x80\x94 back on the looper screen"));
                 });
         });
     });
@@ -274,9 +300,10 @@ MainComponent::MainComponent(std::string explicitVolume)
     addAndMakeVisible(status);
     addAndMakeVisible(hint);
     addAndMakeVisible(banners);
+    addAndMakeVisible(connectButton);
     addAndMakeVisible(backupButton);
     addAndMakeVisible(cleanButton);
-    addAndMakeVisible(ejectButton);
+    addAndMakeVisible(disconnectButton);
     addAndMakeVisible(showEmptyToggle);
     addChildComponent(table);  // shown once a pedal is mounted
     addChildComponent(player); // likewise
@@ -303,11 +330,12 @@ void MainComponent::timerCallback()
         return;
     midiPedalPresent = present;
     hint.setText(midiPedalPresent
-                     ? juce::String::fromUTF8("RC-5 detected in normal mode \xe2\x80\x94 put the "
-                                              "pedal into STORAGE mode to browse loops")
-                     : juce::String("Connect your looper via USB and enter STORAGE mode"),
+                     ? juce::String::fromUTF8("RC-5 detected \xe2\x80\x94 click Connect "
+                                              "to browse loops")
+                     : juce::String("Connect your looper via USB"),
                  juce::dontSendNotification);
     updateStatusText();
+    updateToolbar();
 }
 
 MainComponent::~MainComponent()
@@ -355,7 +383,10 @@ void MainComponent::updateToolbar()
     const bool usable = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
     backupButton.setEnabled(usable && !pedalBusy);
     cleanButton.setEnabled(usable && !pedalBusy);
-    ejectButton.setEnabled(usable && !pedalBusy);
+    disconnectButton.setEnabled(usable && !pedalBusy);
+    // Connect: the pedal shows its MIDI face but no honest volume is up.
+    connectButton.setEnabled(midiPedalPresent && !pedalBusy
+                             && snapshot.state == lifecycle::State::disconnected);
 }
 
 // The banner strip: lifecycle first (it explains everything below), then the
@@ -425,7 +456,7 @@ void MainComponent::updateStatusText()
     if (snapshot.volume.empty()) {
         status.setText(midiPedalPresent
                            ? juce::String::fromUTF8(
-                                 "RC-5 connected in normal mode \xe2\x80\x94 not in STORAGE")
+                                 "RC-5 on USB \xe2\x80\x94 ready to connect")
                            : juce::String("No looper found"),
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
@@ -703,9 +734,10 @@ void MainComponent::resized()
     pedalLight.setBounds(getWidth() - 232, 0, 220, 56);
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
     showEmptyToggle.setBounds(statusRow.removeFromRight(150));
-    ejectButton.setBounds(statusRow.removeFromRight(70).reduced(2, 1));
+    disconnectButton.setBounds(statusRow.removeFromRight(104).reduced(2, 1));
     cleanButton.setBounds(statusRow.removeFromRight(92).reduced(2, 1));
     backupButton.setBounds(statusRow.removeFromRight(78).reduced(2, 1));
+    connectButton.setBounds(statusRow.removeFromRight(84).reduced(2, 1));
     status.setBounds(statusRow);
     const int bannerHeight = banners.preferredHeight();
     banners.setBounds(area.removeFromTop(bannerHeight).reduced(12, 0));

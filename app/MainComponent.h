@@ -11,6 +11,7 @@
 #include "DeviceWatcher.h"
 #include "LooperMark.h"
 #include "PedalLight.h"
+#include "PedalLink.h"
 #include "PedalWorker.h"
 #include "PlayerPane.h"
 #include "SlotTable.h"
@@ -79,9 +80,10 @@ private:
     juce::Label hint; // the empty-state prompt, shown while no pedal is mounted
     AudioEngine engine;
     BannerStrip banners;
+    juce::TextButton connectButton { "Connect" };
     juce::TextButton backupButton { "Backup" };
     juce::TextButton cleanButton { "Clean junk" };
-    juce::TextButton ejectButton { "Eject" };
+    juce::TextButton disconnectButton { "Disconnect" };
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     SlotTable table;
     Toast toast;
