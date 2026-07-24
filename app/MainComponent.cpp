@@ -112,6 +112,15 @@ MainComponent::MainComponent(std::string explicitVolume)
                              commands::rename(volumePath, slot, name, options);
                          } });
     };
+    table.onTempoCommitted = [this](int slot, long long tenths) {
+        if (pedalBusy || slotRowFor(slot) == nullptr)
+            return;
+        worker.enqueue({ "Set tempo on slot " + juce::String(slot), slot,
+                         [slot, tenths, options = makeWriteOptions()](
+                             const volume::fs::path& volumePath) {
+                             commands::setTempo(volumePath, slot, tenths, options);
+                         } });
+    };
     table.onWavDropped = [this](int slot, juce::String path) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             pushWav(slot, path, row->info.hasAudio);
@@ -284,6 +293,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                                    || description.startsWith("Disable")
                                    || description.startsWith("Push")
                                    || description.startsWith("Trim")
+                                   || description.startsWith("Set tempo")
                                    || description.startsWith("Clear");
             if (description.startsWith("Trim"))
                 player.reload(); // same path, new bytes — fresh reader + thumbnail
@@ -594,6 +604,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     juce::PopupMenu menu;
     menu.addItem(1, juce::String::fromUTF8("Rename\xe2\x80\xa6"));
     menu.addItem(2, "One Shot", true, row.info.oneShot);
+    menu.addItem(6, juce::String::fromUTF8("Set tempo\xe2\x80\xa6"));
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     menu.addSeparator();
@@ -609,6 +620,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
+            case 6: table.startTempoEditForSlot(slot); break;
             default: break;
             }
         });

@@ -6,7 +6,9 @@
 //
 // Field semantics source: rc5cat lib/commands.js listSlots (WavStat=1 means
 // indexed audio, WavLen is the frame count, Tempo is tenths of BPM, One is
-// the One Shot flag).
+// the One Shot flag), plus the 2026-07-24 hardware analysis (#10): MeasLen is
+// the true bar count the pedal displays; the stored Measure field is
+// MeasLen + 7 (the first seven values are the UI's special modes).
 
 #pragma once
 
@@ -24,6 +26,7 @@ struct SlotInfo {
     long long frames;       // WavLen: sample frames at 44.1 kHz
     bool oneShot;           // One == 1
     long long tempoTenths;  // Tempo: tenths of BPM
+    long long measures;     // MeasLen: whole bars, as the pedal displays them
 
     bool operator==(const SlotInfo&) const = default;
 };
@@ -36,7 +39,8 @@ inline SlotInfo readSlot(std::string_view memoryText, int slot)
              rc0::field(body, "WavStat") == 1,
              rc0::field(body, "WavLen"),
              rc0::field(body, "One") == 1,
-             rc0::field(body, "Tempo") };
+             rc0::field(body, "Tempo"),
+             rc0::field(body, "MeasLen") };
 }
 
 inline std::vector<SlotInfo> listSlots(std::string_view memoryText)
