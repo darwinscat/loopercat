@@ -5,6 +5,7 @@
 
 #include <felitronics/appkit/VersionBadge.h>
 
+#include "AppMenu.h"
 #include "AppSettings.h"
 #include "AudioEngine.h"
 #include "BannerStrip.h"
@@ -55,6 +56,9 @@ private:
     void refreshBanners(); // doctor findings + the lifecycle line + last job error
     void cleanUpGhostMount();
     void timerCallback() override; // MIDI presence: the pedal visible outside STORAGE
+    void runBackup();
+    void runCleanJunk();
+    void showAbout();
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
@@ -81,8 +85,6 @@ private:
     AudioEngine engine;
     BannerStrip banners;
     juce::TextButton connectButton { "Connect" };
-    juce::TextButton backupButton { "Backup" };
-    juce::TextButton cleanButton { "Clean junk" };
     juce::TextButton disconnectButton { "Disconnect" };
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     SlotTable table;
@@ -99,6 +101,7 @@ private:
     // and must become no-ops once destruction has begun (the worker may
     // already be gone by the time a DiskArbitration callback lands).
     std::shared_ptr<bool> uiAlive = std::make_shared<bool>(true);
+    std::unique_ptr<AppMenu> appMenu; // after the components its actions touch
     app::DeviceWatcher deviceWatcher; // before the worker: its probe runs on the worker thread
     PedalWorker worker;
 
