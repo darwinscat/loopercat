@@ -3,9 +3,14 @@
 //
 // MEMORY*.RC0 model — byte-safe surgical editing.
 //
-// The RC-5's own parser is strict and every memory file carries a per-file
-// trailer after </database> (MEMORY1 ends with "8\0\0\0", MEMORY2 with
-// "9\0\0\0"; a wrong trailer triggers "LOOPER DATA READ ERR" on boot).
+// The RC-5's own parser is strict and every memory file carries a trailer
+// after </database>: "<generation>\0\0\0", where the generation byte is a
+// WRITE COUNTER, incremented as a raw byte with no decimal carry
+// ('8','9',':',';',…). The factory-fresh pair is MEMORY1="8", MEMORY2="9";
+// a save on the pedal stamps the freshly written bank one generation past
+// the other (observed live 2026-07-24: a pedal-side recording produced
+// MEMORY1=0x3a next to MEMORY2=0x39). A structurally broken trailer
+// triggers "LOOPER DATA READ ERR" on boot.
 // The invariant of this module: any byte we were not explicitly asked to
 // change is reproduced exactly. Files are handled as raw byte strings
 // (std::string carries arbitrary bytes) so the trailer and any non-ASCII
@@ -30,7 +35,9 @@ namespace loopercat::rc0 {
 inline constexpr int kSlotCount = 99;
 inline constexpr int kNameLength = 12;
 
-// Per-file trailer byte after "</database>": golden.json tailMarkers.
+// The factory-fresh generation pair (golden.json tailMarkers). The trailer
+// byte is really a write-generation counter — see setTailGeneration; this
+// pair is where a pedal starts counting and where a healed volume restarts.
 inline unsigned char tailMarkerFor(int fileNo)
 {
     switch (fileNo) {
@@ -380,15 +387,23 @@ inline std::optional<unsigned char> tailMarker(std::string_view text)
     return static_cast<unsigned char>(last4[0]);
 }
 
-inline std::string setTailMarker(std::string_view text, int fileNo)
+// Restamp the trailer with an explicit write generation. The document bytes
+// are untouched; a structurally unrecognized trailer is refused, never
+// silently rewritten.
+inline std::string setTailGeneration(std::string_view text, unsigned char generation)
 {
-    const unsigned char marker = tailMarkerFor(fileNo);
     if (!tailMarker(text).has_value())
         throw Error("unrecognized trailer after </database>; refusing to rewrite it");
     std::string out(text.substr(0, text.size() - 4));
-    out.push_back(static_cast<char>(marker));
+    out.push_back(static_cast<char>(generation));
     out.append("\0\0\0", 3);
     return out;
+}
+
+// The factory-pair stamp (fixtures and fresh volumes).
+inline std::string setTailMarker(std::string_view text, int fileNo)
+{
+    return setTailGeneration(text, tailMarkerFor(fileNo));
 }
 
 } // namespace loopercat::rc0

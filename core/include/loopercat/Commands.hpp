@@ -114,16 +114,34 @@ struct WriteResult {
 };
 
 // The mutation tail shared by every command: back up, write the SAME document
-// to both memory files with their own trailers, verify each byte-for-byte by
-// re-reading, sweep junk.
+// to both memory files, verify each byte-for-byte by re-reading, sweep junk.
+//
+// Trailers continue the pedal's own write-generation count instead of
+// rewinding it: both banks get the document stamped base+1 (MEMORY1) and
+// base+2 (MEMORY2) past the highest generation found on the volume — the
+// same shape as the factory pair 8/9. An unreadable bank cannot vote (the
+// write is what heals it); with neither readable the count restarts at the
+// factory pair. Plain max here: the wrap past 0xff is unobserved hardware
+// territory.
 inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text,
                                    const WriteOptions& options)
 {
     WriteResult result;
     if (!options.skipBackup)
         result.backedUp = backup(volume, options.backupRoot, options.stamp);
+    unsigned char base = 0x37; // one below '8': a fresh volume lands on the factory pair
     for (const int fileNo : { 1, 2 }) {
-        const std::string withTail = rc0::setTailMarker(text, fileNo);
+        try {
+            if (const auto marker =
+                    rc0::tailMarker(readFileBytes(volume::memoryPath(volume, fileNo))))
+                base = std::max(base, *marker);
+        } catch (const Error&) {
+            // unreadable bank: no generation to continue from
+        }
+    }
+    for (const int fileNo : { 1, 2 }) {
+        const std::string withTail =
+            rc0::setTailGeneration(text, static_cast<unsigned char>(base + fileNo));
         const fs::path path = volume::memoryPath(volume, fileNo);
         writeFileBytes(path, withTail);
         if (readFileBytes(path) != withTail)
@@ -450,31 +468,53 @@ inline std::vector<Finding> doctor(const fs::path& volume)
         findings.push_back({ Level::error,
                              "AppleDouble junk (pedal may refuse to boot): " + junk.string() });
 
+    const auto hexByte = [](unsigned char b) {
+        constexpr char digits[] = "0123456789abcdef";
+        return std::string { '0', 'x', digits[b >> 4], digits[b & 0xf] };
+    };
+
+    // Trailer bytes are write-generation counters, not fixed markers — any
+    // value is legal; only a structurally broken trailer is boot-fatal.
     std::map<int, std::string> texts;
+    std::map<int, unsigned char> generations;
     for (const int fileNo : { 1, 2 }) {
         try {
             texts[fileNo] = readMemory(volume, fileNo);
-            const auto marker = rc0::tailMarker(texts[fileNo]);
-            if (!marker || *marker != rc0::tailMarkerFor(fileNo)) {
-                constexpr char digits[] = "0123456789abcdef";
-                const std::string found =
-                    marker ? std::string { '0', 'x', digits[*marker >> 4], digits[*marker & 0xf] }
-                           : std::string("missing");
+            if (const auto marker = rc0::tailMarker(texts[fileNo]))
+                generations[fileNo] = *marker;
+            else
                 findings.push_back({ Level::error,
-                                     "MEMORY" + std::to_string(fileNo) + ".RC0 trailer marker is "
-                                         + found + " — causes LOOPER DATA READ ERR" });
-            }
+                                     "MEMORY" + std::to_string(fileNo) + ".RC0 trailer is "
+                                         "malformed \xe2\x80\x94 causes LOOPER DATA READ ERR" });
         } catch (const Error& e) {
             findings.push_back({ Level::error,
                                  "MEMORY" + std::to_string(fileNo) + ".RC0: " + e.what() });
         }
     }
 
+    if (generations.contains(1) && generations.contains(2)) {
+        // A healthy pair sits within one generation of itself (either order:
+        // the factory ships 8/9, a pedal-side save leaves e.g. 0x3a/0x39).
+        const auto delta = static_cast<unsigned char>(generations[1] - generations[2]);
+        if (delta != 0 && delta != 1 && delta != 0xff)
+            findings.push_back({ Level::warn,
+                                 "MEMORY write generations " + hexByte(generations[1]) + " / "
+                                     + hexByte(generations[2])
+                                     + " are more than one step apart \xe2\x80\x94 unexpected "
+                                       "state, consider a Backup before writing" });
+    }
+
     if (texts.contains(1) && texts.contains(2)
-        && rc0::splitFile(texts[1]).document != rc0::splitFile(texts[2]).document)
-        findings.push_back({ Level::warn,
-                             "MEMORY1 and MEMORY2 differ; the pedal will heal MEMORY2 from "
-                             "MEMORY1 on boot" });
+        && rc0::splitFile(texts[1]).document != rc0::splitFile(texts[2]).document) {
+        std::string generationNote;
+        if (generations.contains(1) && generations.contains(2))
+            generationNote = " (write generations " + hexByte(generations[1]) + " / "
+                           + hexByte(generations[2]) + ")";
+        findings.push_back({ Level::info,
+                             "MEMORY1 and MEMORY2 differ" + generationNote
+                                 + " \xe2\x80\x94 normal right after a save on the pedal; "
+                                   "a reboot reconciles the pair" });
+    }
 
     if (texts.contains(1)) {
         for (const auto& slot : catalog::listSlots(texts[1])) {

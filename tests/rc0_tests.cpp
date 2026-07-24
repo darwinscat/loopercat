@@ -169,11 +169,26 @@ int main()
         CHECK_EQ(rc0::splitFile(asMemory2).document, rc0::splitFile(FILE_TEXT).document);
     }
 
+    // The trailer byte is a write-generation counter (raw byte increment, no
+    // decimal carry) — hardware-observed 2026-07-24: a pedal-side save wrote
+    // 0x3a, one past '9'. Any generation must stamp and read back verbatim.
+    {
+        const std::string atPedalGeneration = rc0::setTailGeneration(FILE_TEXT, 0x3a);
+        CHECK_EQ(static_cast<int>(rc0::tailMarker(atPedalGeneration).value()), 0x3a);
+        CHECK_EQ(rc0::splitFile(atPedalGeneration).document, rc0::splitFile(FILE_TEXT).document);
+        // Wrapping and non-printable generations are bytes like any other.
+        CHECK_EQ(static_cast<int>(rc0::tailMarker(rc0::setTailGeneration(FILE_TEXT, 0x00)).value()),
+                 0x00);
+        CHECK_EQ(static_cast<int>(rc0::tailMarker(rc0::setTailGeneration(FILE_TEXT, 0xff)).value()),
+                 0xff);
+    }
+
     // An unrecognized trailer is reported and refused, never silently rewritten.
     {
         const std::string oddTail = rc0::splitFile(FILE_TEXT).document + "\nGARBAGE";
         CHECK(!rc0::tailMarker(oddTail).has_value());
         CHECK_THROWS(rc0::setTailMarker(oddTail, 1), "refusing");
+        CHECK_THROWS(rc0::setTailGeneration(oddTail, 0x3a), "refusing");
     }
 
     CHECK_THROWS(rc0::setTailMarker(FILE_TEXT, 3), "must be 1 or 2");

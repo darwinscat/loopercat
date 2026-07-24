@@ -94,11 +94,13 @@ int main()
             original, 7, rc0::setName(rc0::slotBody(original, 7), "New Name"));
         const auto result = commands::writeMemoryPair(volume, renamed, writeOpts(tmp.path));
 
-        // Both files carry the SAME document with their OWN trailers.
+        // Both files carry the SAME document, stamped one generation apart
+        // and PAST the factory pair 8/9 the volume started at — the write
+        // continues the pedal's generation count, never rewinds it.
         const std::string m1 = commands::readFileBytes(volume::memoryPath(volume, 1));
         const std::string m2 = commands::readFileBytes(volume::memoryPath(volume, 2));
-        CHECK_EQ(static_cast<int>(rc0::tailMarker(m1).value()), 0x38);
-        CHECK_EQ(static_cast<int>(rc0::tailMarker(m2).value()), 0x39);
+        CHECK_EQ(static_cast<int>(rc0::tailMarker(m1).value()), 0x3a);
+        CHECK_EQ(static_cast<int>(rc0::tailMarker(m2).value()), 0x3b);
         CHECK_EQ(rc0::splitFile(m1).document, rc0::splitFile(m2).document);
 
         // The backup holds the PRE-write bytes of both memory files.
@@ -116,6 +118,34 @@ int main()
         // skipBackup without roots works; missing roots without it fail fast.
         commands::writeMemoryPair(volume, renamed, { .skipBackup = true });
         CHECK_THROWS(commands::writeMemoryPair(volume, renamed, {}), "backup requires");
+    }
+
+    // --- writeMemoryPair continues the pedal's generation count ---
+
+    {
+        // The exact state a pedal-side recording leaves behind (observed on
+        // hardware 2026-07-24): the freshly saved bank one generation ahead.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const std::string text = commands::readMemory(volume);
+        commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                 rc0::setTailGeneration(text, 0x3a));
+        commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                 rc0::setTailGeneration(text, 0x39));
+
+        commands::writeMemoryPair(volume, text, { .skipBackup = true });
+        const auto m1 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 1)));
+        const auto m2 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 2)));
+        CHECK_EQ(static_cast<int>(m1.value()), 0x3b); // past the pedal's 0x3a...
+        CHECK_EQ(static_cast<int>(m2.value()), 0x3c); // ...never rewound to 8/9
+
+        // One unreadable bank cannot rewind the count either.
+        fs::remove(volume::memoryPath(volume, 2));
+        commands::writeMemoryPair(volume, text, { .skipBackup = true });
+        const auto healed1 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 1)));
+        const auto healed2 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 2)));
+        CHECK_EQ(static_cast<int>(healed1.value()), 0x3c);
+        CHECK_EQ(static_cast<int>(healed2.value()), 0x3d);
     }
 
     // --- rename: the byte-invariant holds on disk ---
@@ -392,19 +422,54 @@ int main()
         for (const auto& finding : findings)
             ++byLevel[finding.level];
         CHECK_EQ(byLevel[commands::Level::error], 1); // the junk
-        CHECK_EQ(byLevel[commands::Level::warn], 2);  // pair divergence + configured-but-empty
-        CHECK_EQ(byLevel[commands::Level::info], 1);  // the unindexed wav
+        CHECK_EQ(byLevel[commands::Level::warn], 1);  // configured-but-empty
+        CHECK_EQ(byLevel[commands::Level::info], 2);  // unindexed wav + pair divergence
+        // Divergence is a fact of life after a pedal-side save, not damage.
+        bool sawDivergence = false;
+        for (const auto& finding : findings)
+            sawDivergence = sawDivergence
+                || (finding.level == commands::Level::info
+                    && finding.message.find("normal right after a save") != std::string::npos);
+        CHECK(sawDivergence);
 
-        // A wrong trailer marker is an error finding.
+        // A pedal-recorded generation pair (e.g. 0x3a/0x39, hardware-observed
+        // 2026-07-24) is healthy — trailer values are counters, not constants.
+        {
+            const std::string text = commands::readMemory(volume, 1);
+            commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                     rc0::setTailGeneration(text, 0x3a));
+            commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                     rc0::setTailGeneration(text, 0x39));
+        }
+        for (const auto& finding : commands::doctor(volume))
+            CHECK(finding.message.find("trailer") == std::string::npos
+                  && finding.message.find("generations") == std::string::npos);
+
+        // Generations more than one step apart are flagged as unexpected.
+        {
+            const std::string text = commands::readMemory(volume, 1);
+            commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                     rc0::setTailGeneration(text, 0x35));
+        }
+        bool sawGap = false;
+        for (const auto& finding : commands::doctor(volume))
+            sawGap = sawGap
+                || (finding.level == commands::Level::warn
+                    && finding.message.find("more than one step apart") != std::string::npos);
+        CHECK(sawGap);
+
+        // A structurally broken trailer is the boot-fatal condition.
         {
             const std::string m2 = commands::readFileBytes(volume::memoryPath(volume, 2));
             commands::writeFileBytes(volume::memoryPath(volume, 2),
-                                     m2.substr(0, m2.size() - 4) + std::string("\x37\0\0\0", 4));
+                                     m2.substr(0, m2.size() - 4) + std::string("\x39\x01\0\0", 4));
         }
-        bool sawTrailer = false;
+        bool sawMalformed = false;
         for (const auto& finding : commands::doctor(volume))
-            sawTrailer = sawTrailer || finding.message.find("trailer marker") != std::string::npos;
-        CHECK(sawTrailer);
+            sawMalformed = sawMalformed
+                || (finding.level == commands::Level::error
+                    && finding.message.find("malformed") != std::string::npos);
+        CHECK(sawMalformed);
     }
 
     return testkit::summary("commands");
