@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include "MemorySettings.hpp"
 #include "Rc0.hpp"
 
 #include <string>
@@ -27,6 +28,7 @@ struct SlotInfo {
     bool oneShot;           // One == 1
     long long tempoTenths;  // Tempo: tenths of BPM
     long long measures;     // MeasLen: whole bars, as the pedal displays them
+    memsettings::Values settings; // Tier-1 memory settings (the editor panel)
 
     bool operator==(const SlotInfo&) const = default;
 };
@@ -40,7 +42,8 @@ inline SlotInfo readSlot(std::string_view memoryText, int slot)
              rc0::field(body, "WavLen"),
              rc0::field(body, "One") == 1,
              rc0::field(body, "Tempo"),
-             rc0::field(body, "MeasLen") };
+             rc0::field(body, "MeasLen"),
+             memsettings::read(body) };
 }
 
 inline std::vector<SlotInfo> listSlots(std::string_view memoryText)

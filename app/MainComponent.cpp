@@ -280,6 +280,8 @@ MainComponent::MainComponent(std::string explicitVolume)
     worker.onBusy = [this](bool busy, int slot) {
         pedalBusy = busy;
         table.setBusySlot(busy ? slot : 0);
+        if (settingsPanel != nullptr)
+            settingsPanel->setBusy(busy);
         updateStatusText();
         updateToolbar();
     };
@@ -294,6 +296,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                                    || description.startsWith("Push")
                                    || description.startsWith("Trim")
                                    || description.startsWith("Set tempo")
+                                   || description.startsWith("Memory settings")
                                    || description.startsWith("Clear");
             if (description.startsWith("Trim"))
                 player.reload(); // same path, new bytes — fresh reader + thumbnail
@@ -554,6 +557,16 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
 
     pedalLight.set(mounted, utf8(volume::fs::path(snapshot.volume).filename().string()));
 
+    // The open Memory Settings editor follows the pedal truth: fresh values
+    // after every scan, and it may not outlive its slot's mount.
+    if (settingsPanel != nullptr) {
+        const SlotRow* row = mounted ? slotRowFor(settingsPanel->slot()) : nullptr;
+        if (row != nullptr)
+            settingsPanel->setValues(row->info.settings);
+        else if (settingsDialog != nullptr)
+            settingsDialog->exitModalState(0);
+    }
+
     updateTableRows();
     updateToolbar();
     table.setVisible(mounted);
@@ -605,6 +618,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     menu.addItem(1, juce::String::fromUTF8("Rename\xe2\x80\xa6"));
     menu.addItem(2, "One Shot", true, row.info.oneShot);
     menu.addItem(6, juce::String::fromUTF8("Set tempo\xe2\x80\xa6"));
+    menu.addItem(7, juce::String::fromUTF8("Memory Settings\xe2\x80\xa6"));
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     menu.addSeparator();
@@ -621,9 +635,42 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
             case 6: table.startTempoEditForSlot(slot); break;
+            case 7: showMemorySettings(slot); break;
             default: break;
             }
         });
+}
+
+void MainComponent::showMemorySettings(int slot)
+{
+    const SlotRow* row = slotRowFor(slot);
+    if (row == nullptr)
+        return;
+    if (settingsDialog != nullptr)
+        settingsDialog->exitModalState(0); // one live editor at a time
+
+    auto panel = std::make_unique<MemorySettingsPanel>(slot, row->info.settings);
+    panel->onEdit = [this](int forSlot, memsettings::Edits edits, juce::String description) {
+        if (pedalBusy || slotRowFor(forSlot) == nullptr)
+            return;
+        worker.enqueue({ description, forSlot,
+                         [forSlot, edits, options = makeWriteOptions()](
+                             const volume::fs::path& volumePath) {
+                             commands::setMemorySettings(volumePath, forSlot, edits, options);
+                         } });
+    };
+    panel->setBusy(pedalBusy);
+    settingsPanel = panel.get();
+
+    const juce::String name = trimmedName(*row);
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(panel.release());
+    options.dialogTitle = juce::String::fromUTF8("Memory Settings \xe2\x80\x94 slot ")
+                        + juce::String(slot) + (name.isEmpty() ? "" : " (" + name + ")");
+    options.dialogBackgroundColour = kBackground;
+    options.escapeKeyTriggersCloseButton = true;
+    options.resizable = false;
+    settingsDialog = options.launchAsync();
 }
 
 void MainComponent::toggleOneShot(int slot, bool currentlyOn)

@@ -44,6 +44,8 @@ int main()
         CHECK_EQ(s.frames, 0);
         CHECK(!s.oneShot);
         CHECK_EQ(s.tempoTenths, 1200);
+        // Tier-1 memory settings ride along (synthetic body values).
+        CHECK((s.settings == memsettings::Values { false, 100, 50, false, 100 }));
     }
 
     // The slot with audio.

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "MainComponent.h"
+#include "MemorySettingsPanel.h"
+
+#include <loopercat/Commands.hpp>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -50,6 +53,19 @@ public:
     void systemRequestedQuit() override { quit(); }
 
 private:
+    static int writePng(const juce::Image& image, const juce::String& path)
+    {
+        const juce::File file = juce::File::getCurrentWorkingDirectory().getChildFile(path);
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        if (out.failedToOpen() || !juce::PNGImageFormat().writeImageToStream(image, out)) {
+            std::cerr << "cannot write snapshot to " << file.getFullPathName() << "\n";
+            return 2;
+        }
+        std::cout << "snapshot: " << file.getFullPathName() << "\n";
+        return 0;
+    }
+
     static int writeSnapshot(const juce::String& path, const std::string& explicitVolume,
                              const int selectSlot)
     {
@@ -57,6 +73,31 @@ private:
             std::cerr << "--snapshot requires a target file path\n";
             return 2;
         }
+
+        // --settings <slot>: render the Memory Settings panel for that slot
+        // instead of the main window — the editor's own headless proof.
+        {
+            const auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();
+            const int settingsFlag = args.indexOf("--settings");
+            if (settingsFlag >= 0) {
+                if (explicitVolume.empty()) {
+                    std::cerr << "--settings requires --volume\n";
+                    return 2;
+                }
+                try {
+                    const std::string text = commands::readMemory(explicitVolume);
+                    const int slot = args[settingsFlag + 1].getIntValue();
+                    MemorySettingsPanel panel(slot,
+                                              memsettings::read(rc0::slotBody(text, slot)));
+                    return writePng(
+                        panel.createComponentSnapshot(panel.getLocalBounds(), false, 1.0f), path);
+                } catch (const std::exception& e) {
+                    std::cerr << e.what() << "\n";
+                    return 2;
+                }
+            }
+        }
+
         MainComponent content(explicitVolume);
         content.refreshNow();
         if (selectSlot > 0) {
@@ -76,17 +117,8 @@ private:
                 return 2;
             }
         }
-        const juce::Image image =
-            content.createComponentSnapshot(content.getLocalBounds(), false, 1.0f);
-        const juce::File file = juce::File::getCurrentWorkingDirectory().getChildFile(path);
-        file.deleteFile();
-        juce::FileOutputStream out(file);
-        if (out.failedToOpen() || !juce::PNGImageFormat().writeImageToStream(image, out)) {
-            std::cerr << "cannot write snapshot to " << file.getFullPathName() << "\n";
-            return 2;
-        }
-        std::cout << "snapshot: " << file.getFullPathName() << "\n";
-        return 0;
+        return writePng(content.createComponentSnapshot(content.getLocalBounds(), false, 1.0f),
+                        path);
     }
 
 private:

@@ -214,6 +214,58 @@ inline std::string setField(std::string_view body, std::string_view tag, long lo
     return out;
 }
 
+// --- section-scoped fields ---
+//
+// A slot body is fixed sections (<NAME>, <TRACK1>, <MASTER>, <RHYTHM>) and
+// tag names are NOT unique across them: <Level> lives in both MASTER and
+// RHYTHM (docs/pedal-settings.md). Field surgery on any ambiguous tag must be
+// scoped to its section — the unscoped field/setField refuse ambiguity by
+// design (theOneField), so this is the only correct path to such fields.
+
+namespace detail {
+
+    struct SectionRegion {
+        std::size_t bodyStart; // one past '>' of the opening tag
+        std::size_t bodyEnd;   // offset of '<' of the closing tag
+    };
+
+    inline SectionRegion sectionRegion(std::string_view body, std::string_view section)
+    {
+        const std::string open = "<" + std::string(section) + ">";
+        const std::string close = "</" + std::string(section) + ">";
+        const auto start = body.find(open);
+        if (start == std::string_view::npos)
+            throw Error("missing <" + std::string(section) + "> section");
+        if (body.find(open, start + 1) != std::string_view::npos)
+            throw Error("<" + std::string(section) + "> occurs more than once");
+        const auto end = body.find(close, start);
+        if (end == std::string_view::npos)
+            throw Error("unterminated <" + std::string(section) + "> section");
+        return { start + open.size(), end };
+    }
+
+} // namespace detail
+
+inline long long sectionField(std::string_view body, std::string_view section,
+                              std::string_view tag)
+{
+    const auto region = detail::sectionRegion(body, section);
+    return field(body.substr(region.bodyStart, region.bodyEnd - region.bodyStart), tag);
+}
+
+inline std::string setSectionField(std::string_view body, std::string_view section,
+                                   std::string_view tag, long long value)
+{
+    const auto region = detail::sectionRegion(body, section);
+    std::string out;
+    out.reserve(body.size());
+    out.append(body.substr(0, region.bodyStart));
+    out.append(setField(body.substr(region.bodyStart, region.bodyEnd - region.bodyStart),
+                        tag, value));
+    out.append(body.substr(region.bodyEnd));
+    return out;
+}
+
 // --- slot names: 12 chars stored as decimal char codes in <C01>..<C12> ---
 
 inline std::string encodeName(std::string_view name)

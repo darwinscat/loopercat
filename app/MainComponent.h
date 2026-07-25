@@ -11,6 +11,7 @@
 #include "BannerStrip.h"
 #include "DeviceWatcher.h"
 #include "LooperMark.h"
+#include "MemorySettingsPanel.h"
 #include "PedalLight.h"
 #include "PedalLink.h"
 #include "PedalWorker.h"
@@ -64,6 +65,7 @@ private:
     // Mutations: every action becomes a queued worker job with the standard
     // write options (backup root + timestamp under the app data dir).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
+    void showMemorySettings(int slot);
     void toggleOneShot(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
     void choosePushWav(int slot, bool slotOccupied);
@@ -96,6 +98,10 @@ private:
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
     std::unique_ptr<juce::FileChooser> fileChooser; // the one live async chooser
+    // The one live Memory Settings dialog; SafePointers because the window
+    // owns itself (deleteWhenDismissed) and dies on close/escape/unmount.
+    juce::Component::SafePointer<juce::DialogWindow> settingsDialog;
+    juce::Component::SafePointer<MemorySettingsPanel> settingsPanel;
     PedalSnapshot snapshot;
     // Guards async device-watcher completions: they hop to the message thread
     // and must become no-ops once destruction has begun (the worker may

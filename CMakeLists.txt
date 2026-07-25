@@ -79,6 +79,7 @@ loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
+loopercat_core_test(memory_settings_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 
@@ -161,6 +162,7 @@ target_sources(LooperCat PRIVATE
     app/DeviceWatcher.cpp
     app/Main.cpp
     app/MainComponent.cpp
+    app/MemorySettingsPanel.cpp
     app/PlayerPane.cpp
     app/SlotTable.cpp)
 

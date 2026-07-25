@@ -16,6 +16,7 @@
 
 #include "Catalog.hpp"
 #include "Error.hpp"
+#include "MemorySettings.hpp"
 #include "Params.hpp"
 #include "Rc0.hpp"
 #include "Volume.hpp"
@@ -208,6 +209,20 @@ inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTen
         body = rc0::setField(body, "Measure", bars + 7);
     }
     return writeMemoryPair(volume, rc0::replaceSlotBody(text, slot, body), options);
+}
+
+// Apply Tier-1 memory settings edits to one slot (issue #30). The field
+// model and validation live in memsettings; this adds only the write
+// discipline.
+inline WriteResult setMemorySettings(const fs::path& volume, int slot,
+                                     const memsettings::Edits& edits,
+                                     const WriteOptions& options)
+{
+    const std::string text = readMemory(volume);
+    const std::string body = rc0::slotBody(text, slot);
+    return writeMemoryPair(volume,
+                           rc0::replaceSlotBody(text, slot, memsettings::apply(body, edits)),
+                           options);
 }
 
 // --- push ---
