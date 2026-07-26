@@ -75,9 +75,10 @@ JUCE and felitronics-appkit are fetched automatically; the app lands in
 
 BOSS RC-5, developed and verified against a single real unit on firmware
 Ver 1.10 build 0050 (the current official release). The format layer
-is pinned by conformance tests against values captured from live hardware
-(rc5cat's golden fixtures). Other RC-series pedals share ancestry but are
-untested — backups run before every write either way.
+is pinned by conformance tests against values captured from live hardware —
+the golden fixtures checked in at `fixtures/golden.json`, shared lineage with
+[rc5cat](https://github.com/AliceLafox/rc5cat). Other RC-series pedals share
+ancestry but are untested — backups run before every write either way.
 
 ## License
 

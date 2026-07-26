@@ -110,5 +110,6 @@ back. A dedicated known-issues page with the full story ships with v0.9.
 
 Developed and verified against a single real BOSS RC-5, firmware **Ver 1.10
 build 0050** — the current official release (DEC 2023). The file-format layer
-is pinned by conformance tests against values captured from that unit
-([rc5cat](https://github.com/AliceLafox/rc5cat)'s golden fixtures).
+is pinned by conformance tests against values captured from that unit — the
+golden fixtures checked in at `fixtures/golden.json`, shared lineage with
+[rc5cat](https://github.com/AliceLafox/rc5cat).
