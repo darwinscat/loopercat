@@ -24,12 +24,15 @@ Built on the RC-5 file-format knowledge of
   picker. No copying files around just to hear what's in slot 37.
 - **Edit.** Inline rename, one-shot toggle, tempo and bars, trim with a gapless
   preview of the cut, clear a slot, drag one slot onto another to swap them.
-- **Move audio.** Push a WAV into any slot (converted to the pedal's canonical
-  float32 format), pull any loop out as a standard WAV.
+- **Move audio.** Push a WAV into an empty slot or replace an occupied one
+  (converted to the pedal's canonical float32 format; the old loop goes to the
+  app's trash first), pull any loop out as a standard WAV.
 - **Stay safe.** Config backups before every mutation, write-generation counters
   matching the pedal's own discipline, junk-file hygiene (macOS AppleDouble
   droppings), a doctor that checks card consistency — and honest ghost detection
   with automatic cleanup when the pedal leaves without saying goodbye.
+
+The whole map, feature by feature: [docs/guide.md](docs/guide.md).
 
 ## Why your tempo looks weird (and what we do about it)
 
@@ -70,7 +73,8 @@ JUCE and felitronics-appkit are fetched automatically; the app lands in
 
 ## Supported hardware
 
-BOSS RC-5, developed and verified against a single real unit. The format layer
+BOSS RC-5, developed and verified against a single real unit on firmware
+Ver 1.10 build 0050 (the current official release). The format layer
 is pinned by conformance tests against values captured from live hardware
 (rc5cat's golden fixtures). Other RC-series pedals share ancestry but are
 untested — backups run before every write either way.
