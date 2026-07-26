@@ -670,5 +670,43 @@ int main()
         CHECK(sawMalformed);
     }
 
+    // --- family guard at the door (issue #35): a foreign card refuses to open ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        // Re-flag the pair as an RC-500 card: identical structure, foreign
+        // root name — the header shape from the boss-rc500-editor template
+        // quoted in issue #35. This is exactly what a healthy RC-500 card
+        // looks like to a byte parser.
+        const std::string rc5Header = "<database name=\"RC-5\" revision=\"0\">";
+        for (const int fileNo : { 1, 2 }) {
+            std::string text = commands::readFileBytes(volume::memoryPath(volume, fileNo));
+            text.replace(text.find(rc5Header), rc5Header.size(),
+                         "<database name=\"RC-500\" revision=\"0\">");
+            commands::writeFileBytes(volume::memoryPath(volume, fileNo), text);
+        }
+        const auto before = volumeBytes(volume);
+
+        // Reading refuses by name — the honest message, not "broken card".
+        CHECK_THROWS(commands::readMemory(volume), "RC-500");
+
+        // A mutation refuses BEFORE anything is written: every byte on the
+        // volume identical, and not even a backup directory appeared.
+        CHECK_THROWS(commands::rename(volume, 1, "Hijack", writeOpts(tmp.path)), "RC-500");
+        CHECK_THROWS(commands::setTempo(volume, 1, 1200, writeOpts(tmp.path)), "RC-500");
+        CHECK_THROWS(commands::swap(volume, 1, 2, writeOpts(tmp.path)), "RC-500");
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(tmp.path / "backups"));
+
+        // The doctor names the family too, instead of diagnosing damage.
+        bool named = false;
+        for (const auto& finding : commands::doctor(volume))
+            named = named
+                || (finding.level == commands::Level::error
+                    && finding.message.find("RC-500") != std::string::npos);
+        CHECK(named);
+    }
+
     return testkit::summary("commands");
 }
