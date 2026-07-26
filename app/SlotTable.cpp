@@ -10,9 +10,17 @@
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
+#include <type_traits>
 
 namespace loopercat
 {
+
+// The drop side of the swap gesture is discovered by dynamic_cast from
+// Component* inside DragAndDropContainer, and that cast only sees an
+// accessible (public) base. Private inheritance compiles fine and silently
+// drops every row on the floor.
+static_assert(std::is_convertible_v<SlotTable*, juce::DragAndDropTarget*>,
+              "SlotTable must inherit juce::DragAndDropTarget publicly");
 
 namespace
 {

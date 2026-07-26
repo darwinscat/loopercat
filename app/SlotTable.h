@@ -19,7 +19,7 @@ namespace loopercat
 class SlotTable final : public juce::Component,
                         public juce::FileDragAndDropTarget,
                         public juce::DragAndDropContainer, // row drags stay inside the table
-                        private juce::DragAndDropTarget,
+                        public juce::DragAndDropTarget,    // public: found by dynamic_cast, like FileDragAndDropTarget
                         private juce::TableListBoxModel,
                         private juce::Timer
 {
