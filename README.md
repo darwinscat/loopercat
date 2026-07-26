@@ -6,6 +6,8 @@ download WAVs — while the app drives the pedal's STORAGE mode for you.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
+![The slot table and the player with a connected RC-5](docs/images/main-window.png)
+
 Part of the **Felitronics** family by [Darwin's Cat](https://darwinscat.com).
 Built on the RC-5 file-format knowledge of
 [rc5cat](https://github.com/AliceLafox/rc5cat).
