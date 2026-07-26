@@ -125,6 +125,15 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             pushWav(slot, path, row->info.hasAudio);
     };
+    table.onSwapRequested = [this](int from, int to) {
+        if (pedalBusy || slotRowFor(from) == nullptr || slotRowFor(to) == nullptr)
+            return;
+        worker.enqueue({ "Swap slots " + juce::String(from) + " and " + juce::String(to), from,
+                         [from, to, options = makeWriteOptions()](
+                             const volume::fs::path& volumePath) {
+                             commands::swap(volumePath, from, to, options);
+                         } });
+    };
     table.onEmptyWavCellClicked = [this](int slot) {
         if (!pedalBusy && slotRowFor(slot) != nullptr)
             choosePushWav(slot, false);
@@ -294,7 +303,8 @@ MainComponent::MainComponent(std::string explicitVolume)
                                    || description.startsWith("Push")
                                    || description.startsWith("Trim")
                                    || description.startsWith("Set tempo")
-                                   || description.startsWith("Clear");
+                                   || description.startsWith("Clear")
+                                   || description.startsWith("Swap");
             if (description.startsWith("Trim"))
                 player.reload(); // same path, new bytes — fresh reader + thumbnail
             if (wroteToPedal)

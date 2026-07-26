@@ -233,18 +233,33 @@ void SlotTable::setBusySlot(int slot)
         return;
     busySlot_ = slot;
     busyPhase_ = 0.0f;
-    if (slot > 0)
+    updateTimerState();
+    table_.repaint();
+}
+
+void SlotTable::updateTimerState()
+{
+    if (busySlot_ > 0 || rowDragActive_)
         startTimerHz(30);
     else
         stopTimer();
-    table_.repaint();
 }
 
 void SlotTable::timerCallback()
 {
-    busyPhase_ += 0.12f;
-    if (busySlot_ > 0 && rowOfSlot(busySlot_) >= 0)
-        table_.repaintRow(rowOfSlot(busySlot_));
+    if (busySlot_ > 0) {
+        busyPhase_ += 0.12f;
+        if (rowOfSlot(busySlot_) >= 0)
+            table_.repaintRow(rowOfSlot(busySlot_));
+    }
+    if (rowDragActive_) {
+        // Near an edge the content scrolls under a stationary mouse: keep
+        // scrolling and keep the target highlight honest between drag events.
+        auto* viewport = table_.getViewport();
+        const auto inViewport = viewport->getLocalPoint(this, rowDragPosition_);
+        viewport->autoScroll(inViewport.x, inViewport.y, 24, 8);
+        updateSwapTarget();
+    }
 }
 
 // --- wav drag-and-drop onto rows ---
@@ -292,10 +307,77 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
         }
 }
 
+// --- row drag: the swap gesture ---
+
+// The description of a dragged row carries its SLOT number — the visible rows
+// may be a filtered subset. Empty description = the row is not draggable
+// (swap not wired, a job running, or an editor open under the mouse).
+juce::var SlotTable::getDragSourceDescription(const juce::SparseSet<int>& selectedRows)
+{
+    if (!onSwapRequested || busySlot_ > 0 || cellEditor_ != nullptr || selectedRows.size() != 1)
+        return {};
+    const int slot = slotOfRow(selectedRows[0]);
+    return slot > 0 ? juce::var(slot) : juce::var();
+}
+
+bool SlotTable::isInterestedInDragSource(const SourceDetails& details)
+{
+    // Only our own row drags; file drags arrive via FileDragAndDropTarget.
+    return details.description.isInt() && details.sourceComponent != nullptr
+        && isParentOf(details.sourceComponent);
+}
+
+void SlotTable::updateSwapTarget()
+{
+    const int row = rowAt(rowDragPosition_.x, rowDragPosition_.y);
+    const int target = slotOfRow(row) > 0 && slotOfRow(row) != rowDragSourceSlot_ ? row : -1;
+    if (target != dragRow_) {
+        dragRow_ = target;
+        table_.repaint();
+    }
+}
+
+void SlotTable::itemDragEnter(const SourceDetails& details)
+{
+    rowDragActive_ = true;
+    rowDragSourceSlot_ = static_cast<int>(details.description);
+    rowDragPosition_ = details.localPosition;
+    updateSwapTarget();
+    updateTimerState(); // the timer drives edge autoscroll while the drag lasts
+}
+
+void SlotTable::itemDragMove(const SourceDetails& details)
+{
+    rowDragPosition_ = details.localPosition;
+    updateSwapTarget();
+}
+
+void SlotTable::itemDragExit(const SourceDetails&)
+{
+    rowDragActive_ = false;
+    rowDragSourceSlot_ = 0;
+    dragRow_ = -1;
+    updateTimerState();
+    table_.repaint();
+}
+
+void SlotTable::itemDropped(const SourceDetails& details)
+{
+    const int source = static_cast<int>(details.description);
+    const int target = slotOfRow(rowAt(details.localPosition.x, details.localPosition.y));
+    rowDragActive_ = false;
+    rowDragSourceSlot_ = 0;
+    dragRow_ = -1;
+    updateTimerState();
+    table_.repaint();
+    if (onSwapRequested && source > 0 && target > 0 && target != source)
+        onSwapRequested(source, target);
+}
+
 void SlotTable::paintRowBackground(juce::Graphics& g, int row, int width, int height, bool selected)
 {
     g.fillAll(selected ? kSelected : (row % 2 == 0 ? kRowEven : kRowOdd));
-    if (row == dragRow_) // a wav hovers here — show the push target
+    if (row == dragRow_) // a drag hovers here — the push or swap target
         g.fillAll(felitronics::appkit::brand::violet.withAlpha(0.18f));
     if (busySlot_ > 0 && slotOfRow(row) == busySlot_) {
         // The working row: a breathing violet wash + a left edge bar.

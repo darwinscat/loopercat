@@ -18,6 +18,8 @@ namespace loopercat
 
 class SlotTable final : public juce::Component,
                         public juce::FileDragAndDropTarget,
+                        public juce::DragAndDropContainer, // row drags stay inside the table
+                        private juce::DragAndDropTarget,
                         private juce::TableListBoxModel,
                         private juce::Timer
 {
@@ -32,6 +34,7 @@ public:
     std::function<void(int)> onSlotActivated;                       // double-click: select AND play
     std::function<void(int, juce::Point<int>)> onSlotContextMenu;   // right-click (screen position)
     std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a slot's row
+    std::function<void(int, int)> onSwapRequested;                  // row dragged onto a row: (from, to) trade places
     std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
     std::function<void(int, long long)> onTempoCommitted;           // inline edit finished with new tenths of BPM
     std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
@@ -69,6 +72,15 @@ private:
     void selectedRowsChanged(int lastRowSelected) override;
     void cellDoubleClicked(int row, int columnId, const juce::MouseEvent&) override;
     void cellClicked(int row, int columnId, const juce::MouseEvent&) override;
+    juce::var getDragSourceDescription(const juce::SparseSet<int>& selectedRows) override;
+
+    // Internal row drag (the swap gesture). File drags use the interface above.
+    bool isInterestedInDragSource(const SourceDetails&) override;
+    void itemDragEnter(const SourceDetails&) override;
+    void itemDragMove(const SourceDetails&) override;
+    void itemDragExit(const SourceDetails&) override;
+    void itemDropped(const SourceDetails&) override;
+    void updateSwapTarget();
 
     int rowAt(int x, int y);
     int rowOfSlot(int slot) const;
@@ -76,9 +88,13 @@ private:
     void startCellEdit(int rowIndex, int columnId);
     void finishCellEdit(bool commit);
     void timerCallback() override;
+    void updateTimerState(); // one timer serves the busy pulse and drag autoscroll
 
     std::vector<SlotRow> rows_;
-    int dragRow_ = -1;  // row highlighted under a wav drag
+    int dragRow_ = -1;  // row highlighted under a drag (wav file or row swap)
+    bool rowDragActive_ = false;         // an internal row drag is over the table
+    int rowDragSourceSlot_ = 0;          // the slot being dragged (its own row never highlights)
+    juce::Point<int> rowDragPosition_;   // its last position, for edge autoscroll
     int busySlot_ = 0;  // slot being mutated; its row pulses
     float busyPhase_ = 0.0f;
     int editingRow_ = -1;
