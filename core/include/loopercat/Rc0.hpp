@@ -126,11 +126,92 @@ namespace detail {
 
 } // namespace detail
 
-// A structurally sound memory file: exactly the 99 distinct <mem id="0..98">
-// entries (the reference counts distinct ids the same way).
+// --- family guard (issue #35) ---
+//
+// Every RC-series pedal exports the same ROLAND/DATA card layout, and the
+// RC-500's MEMORY*.RC0 is near-identical to ours: the same 99 <mem id="0..98">
+// entries, the same <NAME>/C01..C12 block, the same TRACK1 field names — close
+// enough to parse cleanly here while its numbers obey different arithmetic
+// (the RC-5's `Measure = MeasLen + 7` does not hold there, and its audio is
+// two-track). Mutating such a card with RC-5 semantics is data corruption, so
+// a foreign card is refused at the door, by name. The one honest discriminator
+// is the root element's name attribute: the RC-5 writes
+// `<database name="RC-5" revision="0">` (hardware dumps, mirrored by the test
+// fixtures), the RC-500 writes `name="RC-500"` plus a <TRACK2> section per
+// memory (the boss-rc500-editor template, quoted in issue #35).
+
+// The family this whole app speaks. The root opener must carry exactly these
+// bytes as its name attribute — no case folding, no whitespace forgiveness:
+// the pedal's XML is machine-written, so any variant is foreign or damaged.
+inline constexpr std::string_view kFamilyName = "RC-5";
+
+// The root element opener and the exact attribute shape the pedal writes.
+inline constexpr std::string_view kDatabaseOpen = "<database";
+inline constexpr std::string_view kNameAttribute = " name=\"";
+
+// The XML declaration that may precede the root opener (the pedal writes one).
+inline constexpr std::string_view kXmlDeclOpen = "<?xml";
+inline constexpr std::string_view kXmlDeclClose = "?>";
+
+// A second track section: written per memory by the two-track RC family
+// (RC-500 template, issue #35), never by the RC-5.
+inline constexpr std::string_view kTrack2Open = "<TRACK2>";
+
+// Refuse any document whose root element does not identify as RC-5.
+//
+// The name attribute is read from the ROOT opener only, and the root opener
+// must be the first element of the document (only the XML declaration and
+// whitespace may precede it) — scanning any further would let a comment or a
+// memory body vouch for a foreign root.
+inline void assertRc5Family(std::string_view document)
+{
+    std::size_t at = 0;
+    if (document.starts_with(kXmlDeclOpen)) {
+        const auto declClose = document.find(kXmlDeclClose);
+        if (declClose == std::string_view::npos)
+            throw Error("not an RC0 memory file: unterminated XML declaration");
+        at = declClose + kXmlDeclClose.size();
+    }
+    while (at < document.size()
+           && (document[at] == '\n' || document[at] == '\r' || document[at] == '\t'
+               || document[at] == ' '))
+        ++at;
+    // The tag name must end right after "<database": a space (attributes
+    // follow) or '>' — anything else is a different element wearing a prefix.
+    const std::size_t afterTag = at + kDatabaseOpen.size();
+    if (document.compare(at, kDatabaseOpen.size(), kDatabaseOpen) != 0
+        || afterTag >= document.size()
+        || (document[afterTag] != ' ' && document[afterTag] != '>'))
+        throw Error("not an RC0 memory file: no <database ...> root element");
+    const auto openerClose = document.find('>', at);
+    if (openerClose == std::string_view::npos)
+        throw Error("not an RC0 memory file: unterminated <database ...> opener");
+    const std::string_view opener = document.substr(at, openerClose + 1 - at);
+    const auto nameAt = opener.find(kNameAttribute);
+    if (nameAt == std::string_view::npos)
+        throw Error("not an RC0 memory file: the <database ...> root has no name attribute");
+    const auto valueBegin = nameAt + kNameAttribute.size();
+    const auto valueClose = opener.find('"', valueBegin);
+    if (valueClose == std::string_view::npos)
+        throw Error("not an RC0 memory file: unterminated name attribute in the root element");
+    const std::string_view family = opener.substr(valueBegin, valueClose - valueBegin);
+    if (family != kFamilyName)
+        throw Error("this is an \"" + std::string(family) + "\" card, not an RC-5 \xe2\x80\x94 "
+                    "LooperCat only speaks RC-5");
+    // Belt and braces: a two-track section outs a foreign card even when the
+    // header lies about the family.
+    if (document.find(kTrack2Open) != std::string_view::npos)
+        throw Error("this card carries <TRACK2> sections \xe2\x80\x94 a two-track RC-series "
+                    "memory, not an RC-5; LooperCat only speaks RC-5");
+}
+
+// A structurally sound memory file: the RC-5 family header (the guard above),
+// then exactly the 99 distinct <mem id="0..98"> entries (the reference counts
+// distinct ids the same way).
 inline void assertMemoryFile(std::string_view text)
 {
     const auto document = splitFile(text).document;
+    assertRc5Family(document);
     std::set<long long> seen;
     static constexpr std::string_view kOpen = "<mem id=\"";
     std::size_t from = 0;
