@@ -442,6 +442,159 @@ int main()
         CHECK(!fs::exists(tmp.path / "trash"));
     }
 
+    // --- swap: two memories trade places wholesale ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV");                          // pedal-recorded shape
+        putWav(volume, 7, "nice-take.wav", { .frames = 8820 }); // app-pushed shape
+        {
+            // Distinct configs so every travelling field is observable.
+            std::string text = commands::readMemory(volume);
+            std::string three = rc0::slotBody(text, 3);
+            three = rc0::setField(three, "WavStat", 1);
+            three = rc0::setField(three, "WavLen", 4410);
+            three = rc0::setField(three, "One", 1);
+            three = rc0::setName(three, "Part A");
+            text = rc0::replaceSlotBody(text, 3, three);
+            std::string seven = rc0::slotBody(text, 7);
+            seven = rc0::setField(seven, "WavStat", 1);
+            seven = rc0::setField(seven, "WavLen", 8820);
+            seven = rc0::setName(seven, "Part B");
+            text = rc0::replaceSlotBody(text, 7, seven);
+            commands::writeMemoryPair(volume, text, { .skipBackup = true });
+        }
+        const std::string before = commands::readMemory(volume);
+        const std::string wav3 = commands::readFileBytes(volume::wavDir(volume, 3) / "003_1.WAV");
+        const std::string wav7 =
+            commands::readFileBytes(volume::wavDir(volume, 7) / "nice-take.wav");
+
+        commands::swap(volume, 3, 7, writeOpts(tmp.path));
+
+        // The whole bodies traded places; every other slot is byte-identical.
+        const std::string after = commands::readMemory(volume);
+        CHECK(rc0::slotBody(after, 3) == rc0::slotBody(before, 7));
+        CHECK(rc0::slotBody(after, 7) == rc0::slotBody(before, 3));
+        CHECK_EQ(rc0::decodeName(rc0::slotBody(after, 3)), "Part B      ");
+        CHECK_EQ(rc0::field(rc0::slotBody(after, 7), "One"), 1);
+        int changedOtherSlots = 0;
+        for (int slot = 1; slot <= rc0::kSlotCount; ++slot)
+            if (slot != 3 && slot != 7 && rc0::slotBody(after, slot) != rc0::slotBody(before, slot))
+                ++changedOtherSlots;
+        CHECK_EQ(changedOtherSlots, 0);
+
+        // The audio traded addresses byte-identically. The pedal-recorded
+        // technical name follows its new folder; the human name travels as is.
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 3) / "nice-take.wav") == wav7);
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 7) / "007_1.WAV") == wav3);
+        CHECK(!fs::exists(volume / "ROLAND" / "WAVE" / commands::kSwapParkName));
+        CHECK(commands::doctor(volume).empty()); // config and audio agree everywhere
+
+        // Swapping back restores the document and the audio exactly (only the
+        // write generations keep counting).
+        commands::swap(volume, 3, 7, writeOpts(tmp.path, "stamp-2"));
+        CHECK(rc0::splitFile(commands::readMemory(volume)).document
+              == rc0::splitFile(before).document);
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 3) / "003_1.WAV") == wav3);
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 7) / "nice-take.wav") == wav7);
+    }
+
+    // --- swap with an empty slot degenerates into a move ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 12, "012_1.WAV");
+        {
+            std::string text = commands::readMemory(volume);
+            std::string body = rc0::slotBody(text, 12);
+            body = rc0::setField(body, "WavStat", 1);
+            body = rc0::setField(body, "WavLen", 4410);
+            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 12, body),
+                                      { .skipBackup = true });
+        }
+        const std::string before = commands::readMemory(volume);
+
+        commands::swap(volume, 12, 15, writeOpts(tmp.path));
+        CHECK(!fs::exists(volume::wavDir(volume, 12)));
+        CHECK(volume::listSlotWavs(volume, 15) == std::vector<std::string> { "015_1.WAV" });
+        const std::string after = commands::readMemory(volume);
+        CHECK_EQ(rc0::field(rc0::slotBody(after, 15), "WavStat"), 1);
+        CHECK_EQ(rc0::field(rc0::slotBody(after, 12), "WavStat"), 0);
+        CHECK(rc0::slotBody(after, 12) == rc0::slotBody(before, 15));
+        CHECK(commands::doctor(volume).empty());
+
+        // And back: the other direction of the move.
+        commands::swap(volume, 15, 12, writeOpts(tmp.path, "stamp-2"));
+        CHECK(volume::listSlotWavs(volume, 12) == std::vector<std::string> { "012_1.WAV" });
+        CHECK(!fs::exists(volume::wavDir(volume, 15)));
+        CHECK(rc0::splitFile(commands::readMemory(volume)).document
+              == rc0::splitFile(before).document);
+    }
+
+    // --- swap refusals: typed errors before anything moves ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const auto pristine = volumeBytes(volume);
+        CHECK_THROWS(commands::swap(volume, 5, 5, writeOpts(tmp.path)), "different");
+        CHECK_THROWS(commands::swap(volume, 0, 5, writeOpts(tmp.path)), "out of range");
+        CHECK_THROWS(commands::swap(volume, 5, 100, writeOpts(tmp.path)), "out of range");
+        CHECK(volumeBytes(volume) == pristine);
+
+        // A leftover park folder from an interrupted swap blocks the next one
+        // (occupied<->occupied needs the temp address) — and doctor points at it.
+        putWav(volume, 2, "a.wav");
+        putWav(volume, 4, "b.wav");
+        fs::create_directories(volume / "ROLAND" / "WAVE" / commands::kSwapParkName);
+        CHECK_THROWS(commands::swap(volume, 2, 4, writeOpts(tmp.path, "stamp-2")),
+                     "interrupted swap");
+        CHECK_EQ(volume::listSlotWavs(volume, 2).front(), "a.wav");
+        CHECK_EQ(volume::listSlotWavs(volume, 4).front(), "b.wav");
+        bool sawParked = false;
+        for (const auto& finding : commands::doctor(volume))
+            sawParked = sawParked
+                || (finding.level == commands::Level::error
+                    && finding.message.find(commands::kSwapParkName) != std::string::npos);
+        CHECK(sawParked);
+    }
+
+    // --- a failed config write moves the audio back ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV");
+        putWav(volume, 7, "take.wav", { .frames = 8820 });
+        const auto before = volumeBytes(volume);
+
+        // First bank unwritable: the write fails before any config byte lands;
+        // the rollback must leave the volume byte-identical.
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
+                        fs::perm_options::replace);
+        CHECK_THROWS(commands::swap(volume, 3, 7, { .skipBackup = true }), "cannot write");
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
+                        fs::perm_options::replace);
+        CHECK(volumeBytes(volume) == before);
+
+        // Second bank unwritable: MEMORY1 already carries the swapped config —
+        // the audio still comes home, and the half-written pair is not silent:
+        // doctor reports the divergence.
+        fs::permissions(volume::memoryPath(volume, 2), fs::perms::owner_read,
+                        fs::perm_options::replace);
+        CHECK_THROWS(commands::swap(volume, 3, 7, { .skipBackup = true }), "cannot write");
+        fs::permissions(volume::memoryPath(volume, 2), fs::perms::owner_all,
+                        fs::perm_options::replace);
+        CHECK_EQ(volume::listSlotWavs(volume, 3).front(), "003_1.WAV");
+        CHECK_EQ(volume::listSlotWavs(volume, 7).front(), "take.wav");
+        bool sawDiverged = false;
+        for (const auto& finding : commands::doctor(volume))
+            sawDiverged = sawDiverged || finding.message.find("differ") != std::string::npos;
+        CHECK(sawDiverged);
+    }
+
     // --- doctor ---
 
     {

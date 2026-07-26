@@ -484,6 +484,101 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
     return result;
 }
 
+// --- swap ---
+
+// The temporary address used while two occupied slots trade WAVE folders;
+// 8.3-safe, so even an interrupted swap leaves a name FAT tooling can show.
+inline constexpr const char* kSwapParkName = "SWAP_TMP";
+
+// The audio half of a swap: the two slots' WAVE folders trade addresses by
+// rename — metadata-only on FAT, so no audio bytes rewrite and loop length
+// does not matter. Either folder may be absent (an empty slot): the swap then
+// degenerates into a move. A pedal-recorded take is named after its folder
+// (004_1/004_1.WAV); that technical name follows the move, exactly as if the
+// pedal had recorded at the new address. Other filenames travel unchanged.
+// The whole operation is its own inverse: running it again puts all back.
+inline void swapSlotAudio(const fs::path& volume, int slotA, int slotB)
+{
+    const auto move = [](const fs::path& from, const fs::path& to) {
+        std::error_code ec;
+        fs::rename(from, to, ec);
+        if (ec)
+            throw Error("cannot move " + from.string() + " to " + to.string() + ": "
+                        + ec.message());
+    };
+    const fs::path dirA = volume::wavDir(volume, slotA);
+    const fs::path dirB = volume::wavDir(volume, slotB);
+    std::error_code ec;
+    const bool hasA = fs::exists(dirA, ec);
+    const bool hasB = fs::exists(dirB, ec);
+    if (hasA && hasB) {
+        const fs::path parked = dirA.parent_path() / kSwapParkName;
+        if (fs::exists(parked, ec))
+            throw Error("an interrupted swap left " + parked.string()
+                        + " behind; restore that audio to its slot first");
+        move(dirA, parked);
+        move(dirB, dirA);
+        move(parked, dirB);
+    } else if (hasA) {
+        move(dirA, dirB);
+    } else if (hasB) {
+        move(dirB, dirA);
+    }
+    const auto retitle = [&](int fromSlot, int toSlot) {
+        const fs::path home = volume::wavDir(volume, toSlot);
+        std::error_code existsEc;
+        if (fs::exists(home / (volume::slotDirName(fromSlot) + ".WAV"), existsEc))
+            move(home / (volume::slotDirName(fromSlot) + ".WAV"),
+                 home / (volume::slotDirName(toSlot) + ".WAV"));
+    };
+    if (hasB)
+        retitle(slotB, slotA); // B's take now lives at A's address
+    if (hasA)
+        retitle(slotA, slotB);
+}
+
+// Exchange two memories wholesale (issue #32): the name, every TRACK1/MASTER/
+// RHYTHM setting, and the audio all trade places — so "collect the parts of
+// one song into consecutive slots" is a few drags. The <mem id> wrappers stay
+// put: ids number document POSITIONS, only bodies travel. Discipline order:
+// backup first (nothing has moved yet if it fails), then the audio, then the
+// memory pair; a failed config write moves the audio back, so a failed swap
+// leaves the volume as it was.
+inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
+                        const WriteOptions& options)
+{
+    if (slotA == slotB)
+        throw Error("swap needs two different slots, got slot " + std::to_string(slotA)
+                    + " twice");
+    const std::string text = readMemory(volume);
+    const std::string bodyA = rc0::slotBody(text, slotA); // validates the range too
+    const std::string bodyB = rc0::slotBody(text, slotB);
+    const std::string swapped =
+        rc0::replaceSlotBody(rc0::replaceSlotBody(text, slotA, bodyB), slotB, bodyA);
+
+    std::optional<BackupResult> backedUp;
+    if (!options.skipBackup)
+        backedUp = backup(volume, options.backupRoot, options.stamp);
+    WriteOptions afterBackup = options;
+    afterBackup.skipBackup = true; // taken above, before anything moved
+
+    swapSlotAudio(volume, slotA, slotB);
+    try {
+        WriteResult result = writeMemoryPair(volume, swapped, afterBackup);
+        result.backedUp = std::move(backedUp);
+        return result;
+    } catch (const Error& writeError) {
+        try {
+            swapSlotAudio(volume, slotA, slotB); // its own inverse: audio back home
+        } catch (const Error& undoError) {
+            throw Error(std::string(writeError.what())
+                        + "; undoing the audio move then failed: " + undoError.what()
+                        + " — restore from the backup");
+        }
+        throw;
+    }
+}
+
 // --- doctor ---
 
 enum class Level { info, warn, error };
@@ -503,6 +598,16 @@ inline std::vector<Finding> doctor(const fs::path& volume)
     for (const auto& junk : volume::findJunk(volume))
         findings.push_back({ Level::error,
                              "AppleDouble junk (pedal may refuse to boot): " + junk.string() });
+
+    {
+        std::error_code ec;
+        const fs::path parked = volume / "ROLAND" / "WAVE" / kSwapParkName;
+        if (fs::exists(parked, ec))
+            findings.push_back({ Level::error,
+                                 "interrupted swap: " + parked.string()
+                                     + " holds parked slot audio \xe2\x80\x94 restore it to its "
+                                       "slot before the next write" });
+    }
 
     const auto hexByte = [](unsigned char b) {
         constexpr char digits[] = "0123456789abcdef";
