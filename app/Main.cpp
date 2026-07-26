@@ -15,7 +15,13 @@ class LooperCatApplication final : public juce::JUCEApplication
 public:
     const juce::String getApplicationName() override { return "LooperCat"; }
     const juce::String getApplicationVersion() override { return LOOPERCAT_VERSION; }
-    bool moreThanOneInstanceAllowed() override { return false; }
+    // One window per user — except the headless --snapshot seam: a CI or
+    // verification run must render and exit even while a windowed instance
+    // is open, not silently forward its arguments to that window.
+    bool moreThanOneInstanceAllowed() override
+    {
+        return getCommandLineParameters().contains("--snapshot");
+    }
 
     void initialise(const juce::String&) override
     {
