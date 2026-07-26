@@ -1,6 +1,6 @@
 # Looper Cat 🐾
 
-**See inside your looper.** LooperCat is a macOS companion app for the BOSS RC-5:
+**See inside your looper.** LooperCat is a companion app for the BOSS RC-5:
 browse all 99 memory slots, listen to loops, rename, trim, re-tempo, upload and
 download WAVs — while the app drives the pedal's STORAGE mode for you.
 
@@ -35,9 +35,11 @@ Built on the RC-5 file-format knowledge of
 
 When you import a WAV through the card, the RC-5 assumes the loop is a
 power-of-two number of measures — 16, 32, 64… — so any other loop gets a wrong
-tempo, and the onboard rhythm drifts against the actual music. LooperCat shows
-the real arithmetic (the Bars column) so the pedal's guess is at least legible;
-writing tempo-true metadata on upload is next on the roadmap (#26, #28).
+tempo, and the onboard rhythm drifts against the actual music. LooperCat makes
+the arithmetic visible — the Bars column — and editable: set the true tempo and
+bars on any slot, and the pedal's rhythm finally agrees with the music.
+Automatic tempo-true upload (the right numbers written the moment a WAV lands)
+is next on the roadmap (#26, #28).
 
 ## The STORAGE story
 
@@ -50,9 +52,10 @@ protocol notes live in [docs/midi-protocol](docs/midi-protocol/).
 
 ## Install
 
-Grab the DMG from [Releases](../../releases), drag LooperCat to Applications,
-plug the RC-5 in over USB, press **Connect**. Universal binary (Apple silicon +
-Intel).
+macOS first: grab the DMG from [Releases](../../releases), drag LooperCat to
+Applications, plug the RC-5 in over USB, press **Connect**. Universal binary
+(Apple silicon + Intel). A Windows build is planned once the macOS release
+settles.
 
 ## Building from source
 
@@ -67,7 +70,7 @@ JUCE and felitronics-appkit are fetched automatically; the app lands in
 
 ## Supported hardware
 
-BOSS RC-5, developed and verified against a v1-firmware unit. The format layer
+BOSS RC-5, developed and verified against a single real unit. The format layer
 is pinned by conformance tests against values captured from live hardware
 (rc5cat's golden fixtures). Other RC-series pedals share ancestry but are
 untested — backups run before every write either way.
