@@ -37,7 +37,9 @@ after the flip.
 - [ ] Hardware QA matrix: every mutation × (empty slot / occupied / slot 99 /
       full card), Connect/Disconnect cycles, yank drills, wedge recovery.
 - [ ] #35: family guard — a non-RC-5 card is recognized and refused with an
-      honest banner, hands-off otherwise (found by Alisa's docs audit).
+      honest banner, hands-off otherwise. **Release blocker** (Alisa's audit):
+      a real RC-500 MEMORY1.RC0 parses clean — same 99-slot dialect; the
+      `<database name>` attribute is the discriminator.
 - [ ] Long-session soak: hours-connected stability, poll cadence, memory.
 - [ ] Error copy pass: every banner/toast reads as an instruction, not a log.
 - [ ] Known-issues doc for the macOS FSKit fragility (wedges, ghost mounts)

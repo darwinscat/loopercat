@@ -114,8 +114,9 @@ is pinned by conformance tests against values captured from that unit — the
 golden fixtures checked in at `fixtures/golden.json`, shared lineage with
 [rc5cat](https://github.com/AliceLafox/rc5cat).
 
-Other RC-series pedals (RC-500, RC-505, RC-10R…) are **not supported**: they
-export a card that looks the same at the top level but speaks a different
-data dialect. Today the app cannot yet tell a foreign card apart at the door
-(#35 adds that guard) — until then, don't connect one and expect anything but
-error banners.
+Other RC-series pedals (RC-500, RC-505, RC-10R…) are **not supported** — and
+the danger is that a foreign card does not fail loudly. An RC-500 card has
+the same top-level structure (99 memories, the same field names) and reads
+cleanly, so the app would *look* like it works — right up until a write lands
+RC-5 arithmetic in a card that means something else by it. Until the family
+guard ships (#35), connect nothing but an RC-5.

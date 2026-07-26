@@ -78,9 +78,10 @@ Ver 1.10 build 0050 (the current official release). The format layer
 is pinned by conformance tests against values captured from live hardware —
 the golden fixtures checked in at `fixtures/golden.json`, shared lineage with
 [rc5cat](https://github.com/AliceLafox/rc5cat). Other RC-series pedals
-(RC-500, RC-505…) are **not supported**: their cards look alike at the top
-level but speak a different data dialect — don't point the app at one. A
-guard that recognizes and refuses foreign cards is on the release path (#35).
+(RC-500, RC-505…) are **not supported**: their cards look alike — alike
+enough to *seem* to work — but speak a different data dialect, so don't point
+the app at one. A guard that recognizes and refuses foreign cards is on the
+release path (#35).
 
 ## License
 
