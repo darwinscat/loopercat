@@ -79,9 +79,9 @@ is pinned by conformance tests against values captured from live hardware —
 the golden fixtures checked in at `fixtures/golden.json`, shared lineage with
 [rc5cat](https://github.com/AliceLafox/rc5cat). Other RC-series pedals
 (RC-500, RC-505…) are **not supported**: their cards look alike — alike
-enough to *seem* to work — but speak a different data dialect, so don't point
-the app at one. A guard that recognizes and refuses foreign cards is on the
-release path (#35).
+enough to *seem* to work — but speak a different data dialect, so LooperCat
+checks who it is talking to and refuses a foreign card with an honest message
+instead of guessing (#35).
 
 ## License
 
