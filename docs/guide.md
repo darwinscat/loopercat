@@ -113,3 +113,9 @@ build 0050** — the current official release (DEC 2023). The file-format layer
 is pinned by conformance tests against values captured from that unit — the
 golden fixtures checked in at `fixtures/golden.json`, shared lineage with
 [rc5cat](https://github.com/AliceLafox/rc5cat).
+
+Other RC-series pedals (RC-500, RC-505, RC-10R…) are **not supported**: they
+export a card that looks the same at the top level but speaks a different
+data dialect. Today the app cannot yet tell a foreign card apart at the door
+(#35 adds that guard) — until then, don't connect one and expect anything but
+error banners.

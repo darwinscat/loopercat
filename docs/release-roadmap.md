@@ -36,6 +36,8 @@ after the flip.
 
 - [ ] Hardware QA matrix: every mutation × (empty slot / occupied / slot 99 /
       full card), Connect/Disconnect cycles, yank drills, wedge recovery.
+- [ ] #35: family guard — a non-RC-5 card is recognized and refused with an
+      honest banner, hands-off otherwise (found by Alisa's docs audit).
 - [ ] Long-session soak: hours-connected stability, poll cadence, memory.
 - [ ] Error copy pass: every banner/toast reads as an instruction, not a log.
 - [ ] Known-issues doc for the macOS FSKit fragility (wedges, ghost mounts)
