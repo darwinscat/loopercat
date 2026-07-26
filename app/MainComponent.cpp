@@ -128,6 +128,13 @@ MainComponent::MainComponent(std::string explicitVolume)
     table.onSwapRequested = [this](int from, int to) {
         if (pedalBusy || slotRowFor(from) == nullptr || slotRowFor(to) == nullptr)
             return;
+        // Grabbing a row selected it, and selection starts reading its whole
+        // wav for the waveform — while the FSKit msdos volume serves one
+        // request at a time, so the swap's own I/O would sit behind that read
+        // until it runs dry (observed live 2026-07-26). Release the bulk
+        // read before writing; paced playback reads are harmless.
+        if (!player.isThumbnailReady())
+            player.clear();
         worker.enqueue({ "Swap slots " + juce::String(from) + " and " + juce::String(to), from,
                          [from, to, options = makeWriteOptions()](
                              const volume::fs::path& volumePath) {

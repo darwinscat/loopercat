@@ -387,6 +387,8 @@ void SlotTable::paintRowBackground(juce::Graphics& g, int row, int width, int he
     g.fillAll(selected ? kSelected : (row % 2 == 0 ? kRowEven : kRowOdd));
     if (row == dragRow_) // a drag hovers here — the push or swap target
         g.fillAll(felitronics::appkit::brand::violet.withAlpha(0.18f));
+    if (rowDragActive_ && slotOfRow(row) == rowDragSourceSlot_)
+        g.fillAll(kRowOdd.withAlpha(0.6f)); // the grabbed row: its ghost dims in place
     if (busySlot_ > 0 && slotOfRow(row) == busySlot_) {
         // The working row: a breathing violet wash + a left edge bar.
         const float pulse = 0.5f + 0.5f * std::sin(busyPhase_);
@@ -421,7 +423,19 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     default:        break;
     }
 
-    const auto area = juce::Rectangle<int>(0, 0, width, height).reduced(8, 0);
+    auto area = juce::Rectangle<int>(0, 0, width, height).reduced(8, 0);
+    const bool lifted = rowDragActive_ && r.info.slot == rowDragSourceSlot_;
+
+    if (columnId == kSlot) {
+        // The grip: rows are draggable — say so at the left edge, louder on
+        // the one being dragged right now.
+        g.setColour(kDim.withAlpha(lifted ? 0.95f : 0.4f));
+        const float cy = static_cast<float>(height) * 0.5f;
+        for (const float dx : { 3.0f, 7.0f })
+            for (const float dy : { -5.0f, 0.0f, 5.0f })
+                g.fillEllipse(dx, cy + dy - 1.0f, 2.0f, 2.0f);
+        area.removeFromLeft(6);
+    }
 
     if (columnId == kOneShot) {
         // The cell is the toggle: filled = on, hollow = off (click flips it).
@@ -439,9 +453,12 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     }
 
     const bool isPickHint = columnId == kWavFile && !loaded && r.wavFile.empty();
-    g.setColour(isPickHint ? felitronics::appkit::brand::lilac.withAlpha(0.45f)
-                           : columnId == kSlot ? kDim
-                                               : (loaded ? kText : kDim));
+    juce::Colour cellColour = isPickHint ? felitronics::appkit::brand::lilac.withAlpha(0.45f)
+                                         : columnId == kSlot ? kDim
+                                                             : (loaded ? kText : kDim);
+    if (lifted)
+        cellColour = cellColour.withMultipliedAlpha(0.45f); // the ghost's text dims with it
+    g.setColour(cellColour);
     g.setFont(juce::FontOptions(13.0f));
     g.drawText(text, area, juce::Justification::centredLeft, true);
 }
