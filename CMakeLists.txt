@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.22)
 # rc5cat JS and Swift suites. `-DLOOPERCAT_BUILD_APP=OFF` configures core-only
 # (no JUCE fetch) and runs the conformance suites via `ctest`.
 # ----------------------------------------------------------------------------
-project(LooperCat VERSION 0.1.0 LANGUAGES C CXX)   # C: juce_graphics compiles Sheenbidi (.c)
+project(LooperCat VERSION 0.9.0 LANGUAGES C CXX)   # C: juce_graphics compiles Sheenbidi (.c)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
