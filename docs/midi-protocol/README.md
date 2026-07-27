@@ -41,4 +41,6 @@ an RQ1 sweep is future work under #9.
 
 - `2026-07-24-handshake.mmon` — Tone Studio launch: RQ1 of the storage
   register, DT1 write `01`, the pedal's ack and ready announcement.
-  Pedal firmware: unrecorded (TODO next capture); app: BOSS TONE STUDIO for RC.
+  Pedal firmware: Ver 1.10 build 0050 (read off the unit 2026-07-26 via the
+  SETUP-held power-on display; same unit, unchanged since the capture); app:
+  BOSS TONE STUDIO for RC.

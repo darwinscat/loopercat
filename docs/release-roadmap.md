@@ -8,14 +8,19 @@ order between milestones mostly is not.
 
 Working today, all hardware-checkpointed: slot browser with live refresh,
 playback with waveform + markers, the full mutation set (rename, one-shot,
-tempo+bars, push/pull, trim with gapless preview, clear), config backups,
+tempo+bars, push/pull, trim with gapless preview, clear, drag-to-swap), config backups,
 junk hygiene, device-truth lifecycle (ghost detection, auto-cleanup,
 auto-mount), **Connect/Disconnect driving the pedal over cracked sysex**, the
 write-generation discipline, native menu bar, About. Format knowledge that
 does not exist anywhere else in public: the storage-mode register, the
 trailer generation counter, the import-tempo arithmetic.
 
-## M1 — Feature-complete core
+## M1 — Feature-complete core → moved to v1.x
+
+**Scope decision (2026-07-26): the first release ships the current feature
+set.** Everything in "Where we are" is hardware-checkpointed and complete on
+its own; the items below move out of v0.9 and become the first feature release
+after the flip.
 
 - [ ] #26 remainder: BPM field in the push flow (filename prefill).
 - [ ] #28: audio tempo detection via felitronics-core#57 (LoopTempo).
@@ -31,6 +36,10 @@ trailer generation counter, the import-tempo arithmetic.
 
 - [ ] Hardware QA matrix: every mutation × (empty slot / occupied / slot 99 /
       full card), Connect/Disconnect cycles, yank drills, wedge recovery.
+- [ ] #35: family guard — a non-RC-5 card is recognized and refused with an
+      honest banner, hands-off otherwise. **Release blocker** (Alisa's audit):
+      a real RC-500 MEMORY1.RC0 parses clean — same 99-slot dialect; the
+      `<database name>` attribute is the discriminator.
 - [ ] Long-session soak: hours-connected stability, poll cadence, memory.
 - [ ] Error copy pass: every banner/toast reads as an instruction, not a log.
 - [ ] Known-issues doc for the macOS FSKit fragility (wedges, ghost mounts)
@@ -69,7 +78,7 @@ trailer generation counter, the import-tempo arithmetic.
 
 ## Release criteria (v1.0)
 
-1. Every M1 feature hardware-checkpointed; zero known data-loss paths.
+1. Every shipped feature hardware-checkpointed; zero known data-loss paths.
 2. A fresh Mac (no dev tools) installs the DMG and browses a pedal in under
    a minute — including the Connect button doing the STORAGE dance for them.
 3. The doctor never cries wolf on a healthy pedal-written card.
