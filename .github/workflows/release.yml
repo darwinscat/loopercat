@@ -1,0 +1,102 @@
+# LooperCat release — cut on pushing a clean vX.Y.Z tag. Builds the universal
+# Release app on the family's self-hosted mac (the Developer ID keychain and
+# the notary profile live there — the orbitcab pattern), gates on ctest, then
+# signs + notarizes + staples a DMG and publishes a DRAFT GitHub Release:
+# publishing is a human decision, the pipeline only prepares it.
+#
+# Required on this repo: secret MACOS_APP_IDENTITY (the codesign identity
+# name), secret KCH_PWD (the runner keychain password), var NOTARY_PROFILE
+# (the notarytool keychain profile). The release is created with the built-in
+# GITHUB_TOKEN.
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 120
+    steps:
+      # Only CLEAN vX.Y.Z tags may publish: the in-app update check treats
+      # every published release as authoritative and parses semver out of the
+      # tag, so a suffixed tag must never become the /releases/latest answer.
+      - name: Gate — the tag must be clean semver (vX.Y.Z)
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' is not a clean vX.Y.Z release tag — refusing to publish."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Gate — the tag must match the CMake project version
+        run: |
+          CMAKE_VER="$(sed -nE 's/^project\(LooperCat VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)"
+          if [ "v${CMAKE_VER}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::CMakeLists.txt says ${CMAKE_VER} but the tag is ${GITHUB_REF_NAME} — bump the project version first."
+            exit 1
+          fi
+
+      - name: Configure (Release; universal — the CMake default arches)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test (all suites)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Sign, package, notarize, staple
+        env:
+          APP_ID:  ${{ secrets.MACOS_APP_IDENTITY }}
+          NOTARY:  ${{ vars.NOTARY_PROFILE }}
+          KCH_PWD: ${{ secrets.KCH_PWD }}
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          APP="$(find build -type d -name 'LooperCat.app' -path '*LooperCat_artefacts*' | head -1)"
+          [ -n "$APP" ] || { echo "::error::LooperCat.app not found under build/"; exit 1; }
+
+          # Let codesign use the signing key without a GUI prompt — without
+          # this a self-hosted run dies with errSecInternalComponent.
+          KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+          security unlock-keychain -p "$KCH_PWD" "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCH_PWD" "$KEYCHAIN" >/dev/null
+
+          # The app: hardened runtime, no extra entitlements — playback-only
+          # (no capture, no mic; the pedal is a USB volume, not an input).
+          codesign --force --options runtime --timestamp --sign "$APP_ID" "$APP"
+          codesign --verify --strict --verbose=1 "$APP"
+
+          # A plain honest DMG: the app and an Applications shortcut.
+          mkdir -p dist/stage
+          cp -R "$APP" dist/stage/
+          ln -s /Applications dist/stage/Applications
+          DMG="dist/LooperCat-${VER}-macOS.dmg"
+          hdiutil create -volname "LooperCat ${VER}" -srcfolder dist/stage -ov -format UDZO "$DMG"
+          codesign --force --timestamp --sign "$APP_ID" "$DMG"
+
+          # Notarizing the DMG covers the nested app; stapling the DMG makes
+          # it install offline. The app itself validates its ticket online on
+          # first run — the standard DMG story.
+          xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY" --wait
+          xcrun stapler staple "$DMG"
+          spctl --assess --type open --context context:primary-signature -v "$DMG"
+
+          (cd dist && shasum -a 256 "$(basename "$DMG")" > SHA256SUMS)
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+
+      - name: Create the DRAFT GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "LooperCat ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "$DMG" dist/SHA256SUMS
