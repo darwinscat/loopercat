@@ -14,6 +14,21 @@ using namespace loopercat;
 
 static const std::string FILE_TEXT = testkit::syntheticMemoryText();
 
+// The canonical RC-5 root opener, exactly as hardware writes it (mirrored by
+// syntheticMemoryText). The family-guard tests swap it for foreign variants.
+static const std::string RC5_HEADER = "<database name=\"RC-5\" revision=\"0\">";
+
+// FILE_TEXT with the root opener replaced — everything else stays byte-valid,
+// so any refusal is attributable to the header alone.
+static std::string withHeader(const std::string& header)
+{
+    std::string text = FILE_TEXT;
+    const auto at = text.find(RC5_HEADER);
+    if (at == std::string::npos)
+        throw loopercat::Error("test fixture: canonical header not found");
+    return text.replace(at, RC5_HEADER.size(), header);
+}
+
 static std::string section(const std::string& body, const std::string& tag)
 {
     const auto open = body.find("<" + tag + ">");
@@ -45,6 +60,83 @@ int main()
 
     CHECK_THROWS(rc0::slotBody(FILE_TEXT, 0), "out of range");
     CHECK_THROWS(rc0::slotBody(FILE_TEXT, 100), "out of range");
+
+    // --- family guard (issue #35): a foreign RC-series card is refused by name ---
+
+    // An RC-500 card is byte-plausible RC-5: same 99 mems, same field names.
+    // Only the root name attribute gives it away (header shape from the
+    // boss-rc500-editor template quoted in issue #35) — the refusal must name
+    // the intruder, not report a "broken" card.
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database name=\"RC-500\" revision=\"0\">")),
+                 "RC-500");
+
+    // The header claims RC-5 but a two-track section is present: the card
+    // lies about its family, and <TRACK2> outs it.
+    {
+        std::string liar = FILE_TEXT;
+        const auto at = liar.find("</TRACK1>");
+        CHECK(at != std::string::npos);
+        liar.insert(at + std::string("</TRACK1>").size(),
+                    "\n<TRACK2>\n\t<Rev>0</Rev>\n</TRACK2>");
+        CHECK_THROWS(rc0::assertMemoryFile(liar), "TRACK2");
+    }
+
+    // A root with no name attribute at all is not an RC0 memory file.
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database revision=\"0\">")), "not an RC0");
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database>")), "not an RC0");
+
+    // Exact bytes only: trailing space, case folding, single quotes and an
+    // empty name are all foreign — the pedal's XML is machine-written.
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database name=\"RC-5 \" revision=\"0\">")),
+                 "not an RC-5");
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database name=\"rc-5\" revision=\"0\">")),
+                 "not an RC-5");
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database name=\"\" revision=\"0\">")),
+                 "not an RC-5");
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database NAME=\"RC-5\" revision=\"0\">")),
+                 "not an RC0");
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database name='RC-5' revision=\"0\">")),
+                 "not an RC0");
+
+    // A tag that merely BEGINS with "database" is not the root we trust.
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<databaseX name=\"RC-5\" revision=\"0\">")),
+                 "not an RC0");
+
+    // The attribute is read from the ROOT opener only: an RC-5-flavored tag
+    // buried in a memory body cannot vouch for an RC-500 root.
+    {
+        std::string smuggled = withHeader("<database name=\"RC-500\" revision=\"0\">");
+        const auto at = smuggled.find("<mem id=\"0\">");
+        CHECK(at != std::string::npos);
+        smuggled.insert(at + std::string("<mem id=\"0\">").size(), "<database name=\"RC-5\">");
+        CHECK_THROWS(rc0::assertMemoryFile(smuggled), "RC-500");
+    }
+
+    // Nor can a comment smuggle the opener in front of the real root: only
+    // the XML declaration and whitespace may precede <database. The pedal
+    // never writes comments, so a commented prelude is foreign either way.
+    {
+        const std::string comment = "\n<!-- <database name=\"RC-5\" revision=\"0\"> -->";
+        std::string commented = withHeader("<database name=\"RC-500\" revision=\"0\">");
+        const std::string decl = "<?xml version=\"1.0\" encoding=\"utf-8\"?>";
+        commented.insert(commented.find(decl) + decl.size(), comment);
+        CHECK_THROWS(rc0::assertMemoryFile(commented), "not an RC0");
+        std::string commentedRc5 = FILE_TEXT;
+        commentedRc5.insert(commentedRc5.find(decl) + decl.size(), comment);
+        CHECK_THROWS(rc0::assertMemoryFile(commentedRc5), "not an RC0");
+    }
+
+    // Arbitrary bytes before the declaration are no prelude we accept.
+    CHECK_THROWS(rc0::assertMemoryFile("GARBAGE" + FILE_TEXT), "not an RC0");
+
+    // Pinned decision: the guard checks the ROOT OPENER, not the declaration —
+    // a declaration-less document whose first element is the canonical RC-5
+    // root still parses (splitFile/assertMemoryFile never required the
+    // declaration before the guard existed either).
+    {
+        std::string noDecl = FILE_TEXT.substr(FILE_TEXT.find(RC5_HEADER));
+        rc0::assertMemoryFile(noDecl);
+    }
 
     // --- fields ---
 
