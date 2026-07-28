@@ -19,7 +19,9 @@ permissions:
 
 jobs:
   release:
-    runs-on: [self-hosted, macOS]
+    # Pinned to the STUDIO runner while it is the only build Mac with the
+    # dcat-signing keychain; drop the `studio` label once M5 is equipped too.
+    runs-on: [self-hosted, macOS, studio]
     timeout-minutes: 120
     steps:
       # Only CLEAN vX.Y.Z tags may publish: the in-app update check treats
@@ -62,9 +64,12 @@ jobs:
           APP="$(find build -type d -name 'LooperCat.app' -path '*LooperCat_artefacts*' | head -1)"
           [ -n "$APP" ] || { echo "::error::LooperCat.app not found under build/"; exit 1; }
 
-          # Let codesign use the signing key without a GUI prompt — without
-          # this a self-hosted run dies with errSecInternalComponent.
-          KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+          # The suite's dedicated signing keychain (holds only the Developer ID
+          # identities; same password on every build Mac = the org KCH_PWD).
+          # Unlock + partition-list so codesign works without a GUI prompt —
+          # without this a self-hosted run dies with errSecInternalComponent.
+          KEYCHAIN="$HOME/Library/Keychains/dcat-signing.keychain-db"
+          [ -f "$KEYCHAIN" ] || { echo "::error::no dcat-signing keychain on this runner — run setup-dcat-signing.sh here first"; exit 1; }
           security unlock-keychain -p "$KCH_PWD" "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCH_PWD" "$KEYCHAIN" >/dev/null
 
