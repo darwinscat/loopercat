@@ -19,7 +19,9 @@ permissions:
 
 jobs:
   release:
-    runs-on: [self-hosted, macOS]
+    # Pinned to the STUDIO runner while it is the only build Mac with the
+    # dcat-signing keychain; drop the `studio` label once M5 is equipped too.
+    runs-on: [self-hosted, macOS, studio]
     timeout-minutes: 120
     steps:
       # Only CLEAN vX.Y.Z tags may publish: the in-app update check treats
