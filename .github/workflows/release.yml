@@ -71,11 +71,21 @@ jobs:
           KEYCHAIN="$HOME/Library/Keychains/dcat-signing.keychain-db"
           [ -f "$KEYCHAIN" ] || { echo "::error::no dcat-signing keychain on this runner — run setup-dcat-signing.sh here first"; exit 1; }
           security unlock-keychain -p "$KCH_PWD" "$KEYCHAIN"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCH_PWD" "$KEYCHAIN" >/dev/null
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCH_PWD" "$KEYCHAIN" >/dev/null
+          # The job session carries its own keychain view: pin the search list
+          # and make the signing keychain the default while codesign runs —
+          # the interactive session signs fine without this, the runner job
+          # dies with errSecInternalComponent (seen on the v0.9.0 attempts).
+          security list-keychains -d user -s login.keychain-db "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          # Diagnostics for the log — what this job actually sees:
+          security list-keychains
+          security default-keychain
+          security find-identity -v -p codesigning "$KEYCHAIN"
 
           # The app: hardened runtime, no extra entitlements — playback-only
           # (no capture, no mic; the pedal is a USB volume, not an input).
-          codesign --force --options runtime --timestamp --sign "$APP_ID" "$APP"
+          codesign --keychain "$KEYCHAIN" --force --options runtime --timestamp --sign "$APP_ID" "$APP"
           codesign --verify --strict --verbose=1 "$APP"
 
           # A plain honest DMG: the app and an Applications shortcut.
@@ -84,7 +94,11 @@ jobs:
           ln -s /Applications dist/stage/Applications
           DMG="dist/LooperCat-${VER}-macOS.dmg"
           hdiutil create -volname "LooperCat ${VER}" -srcfolder dist/stage -ov -format UDZO "$DMG"
-          codesign --force --timestamp --sign "$APP_ID" "$DMG"
+          codesign --keychain "$KEYCHAIN" --force --timestamp --sign "$APP_ID" "$DMG"
+
+          # The notary profile lives in the login keychain (where
+          # store-credentials wrote it) — restore the default before notarytool.
+          security default-keychain -s login.keychain-db
 
           # Notarizing the DMG covers the nested app; stapling the DMG makes
           # it install offline. The app itself validates its ticket online on
