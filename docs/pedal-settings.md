@@ -76,7 +76,8 @@ checkpoint per enum to pin the value maps):
 - Playback shaping: **Reverse**, **Play level**, **Pan**, **Start/Stop
   modes** — "how does this loop behave live" without touching the pedal menu.
 - The drums: **Rhythm on/off, Pattern, Kit, Beat, Variation, Level** — the
-  scrolling a one-line pedal display 57 times.
+  "what should the rhythm play" ask. Picking a groove per memory from a table
+  beats scrolling a one-line pedal display 57 times.
 
 **Tier 2 — quality of life:** count-ins (`RecCount`/`PlayCount`), recording
 behavior (`DubMode`, `RecAction`, `AutoRec`), drum `Reverb`/`Tone`, `Fill`,
