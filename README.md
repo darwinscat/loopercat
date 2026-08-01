@@ -8,9 +8,9 @@ download WAVs — while the app drives the pedal's STORAGE mode for you.
 
 ![The slot table and the player with a connected RC-5](docs/images/main-window.png)
 
-Part of the **Felitronics** family by [Darwin's Cat](https://darwinscat.com).
-Built on the RC-5 file-format knowledge of
-[rc5cat](https://github.com/AliceLafox/rc5cat).
+Part of the [Felitronics](https://darwinscat.com/felitronics) family by
+[Darwin's Cat](https://darwinscat.com). Built on the RC-5 file-format
+knowledge of [rc5cat](https://github.com/AliceLafox/rc5cat).
 
 > **Beta.** Everything below is verified against real hardware, and every write
 > runs behind automatic backups — but treat v0.x like the beta it is.
@@ -94,3 +94,6 @@ combination is distribution-safe.
 LooperCat is an independent project: not affiliated with, endorsed, or
 sponsored by any hardware manufacturer; all trademarks belong to their
 respective owners. "BOSS RC-5" is used nominatively to state compatibility.
+
+Bugs and wishes → [issues](../../issues); everything else →
+[band@darwinscat.com](mailto:band@darwinscat.com).

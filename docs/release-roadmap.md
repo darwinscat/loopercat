@@ -45,6 +45,7 @@ after the flip.
 - [ ] Known-issues doc for the macOS FSKit fragility (wedges, ghost mounts)
       with the app's mitigations — users will hit it; the app should look
       smarter than the OS, and the doc proves it is deliberate.
+- [ ] Crew review over core/ before the flip.
 
 ## M3 — Packaging (the original Sprint 5)
 
