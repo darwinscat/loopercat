@@ -123,17 +123,27 @@ inline std::vector<fs::path> findJunk(const fs::path& volume)
     return junk;
 }
 
-// Remove them. Every mutating command sweeps afterwards — a volume with any
-// sidecar left is one boot away from "LOOPER DATA READ ERR".
-inline std::vector<fs::path> sweepJunk(const fs::path& volume)
+struct SweepResult {
+    std::vector<fs::path> removed;
+    std::vector<fs::path> failed; // junk that would not delete — still on the volume
+};
+
+// Remove them, best-effort. Every mutating command sweeps AFTER its real
+// write has already succeeded, so a sidecar that will not delete is reported
+// in `failed`, never thrown — an exception here would mislabel a completed
+// write as a failure (and a swap would falsely un-swap its audio over a
+// locked .DS_Store). A volume with any sidecar left is still one boot away
+// from "LOOPER DATA READ ERR"; surfacing `failed` is the caller's job, and
+// doctor() reports every remaining sidecar as an error regardless.
+inline SweepResult sweepJunk(const fs::path& volume)
 {
-    const std::vector<fs::path> junk = findJunk(volume);
-    for (const auto& file : junk) {
+    SweepResult result;
+    for (const auto& file : findJunk(volume)) {
         std::error_code ec;
-        if (!fs::remove(file, ec) || ec)
-            throw Error("cannot remove junk file " + file.string());
+        fs::remove(file, ec);
+        (ec ? result.failed : result.removed).push_back(file);
     }
-    return junk;
+    return result;
 }
 
 // Slot audio files (usually 0 or 1), junk filtered, sorted for determinism.

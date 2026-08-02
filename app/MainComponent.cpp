@@ -424,7 +424,13 @@ void MainComponent::runBackup()
 void MainComponent::runCleanJunk()
 {
     worker.enqueue({ "Clean junk", 0, [](const volume::fs::path& volumePath) {
-                         volume::sweepJunk(volumePath);
+                         // Mutations treat a sweep survivor as a warning; this
+                         // action's one job IS the sweep, so a survivor is the
+                         // job failing and says so.
+                         const volume::SweepResult sweep = volume::sweepJunk(volumePath);
+                         if (!sweep.failed.empty())
+                             throw Error("cannot remove junk file "
+                                         + sweep.failed.front().string());
                      } });
 }
 
@@ -676,9 +682,12 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                              + juce::String(slot),
                          slot,
                          [source = sourcePath.toStdString(), slot, force,
-                          options = makeWriteOptions()](const volume::fs::path& volumePath) {
+                          options = makeWriteOptions(),
+                          trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                             const volume::fs::path& volumePath) {
                              commands::push(volumePath, source, slot,
-                                            { .force = force, .write = options });
+                                            { .force = force, .trashRoot = trash,
+                                              .write = options });
                          } });
     };
 
@@ -690,8 +699,9 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
         juce::MessageBoxOptions()
             .withIconType(juce::MessageBoxIconType::WarningIcon)
             .withTitle("Replace slot " + juce::String(slot) + "?")
-            .withMessage("This slot already holds a loop. The current WAV will be replaced "
-                         "(a config backup is taken first).")
+            .withMessage(juce::String::fromUTF8(
+                "This slot already holds a loop. The current WAV moves to the app's trash "
+                "first \xe2\x80\x94 that is your undo."))
             .withButton("Replace")
             .withButton("Cancel"),
         [enqueuePush](int button) {
