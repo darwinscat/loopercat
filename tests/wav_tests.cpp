@@ -40,6 +40,63 @@ std::vector<unsigned char> fromBase64(const std::string& b64)
     return out;
 }
 
+// Hand-assembled RIFF containers for attacking the parser: each chunk is an
+// id, a DECLARED size, and the actual body bytes — declared and actual may
+// deliberately disagree, modeling truncated and hostile files.
+struct RawChunk {
+    std::string id;
+    std::uint32_t declared;
+    std::vector<unsigned char> body;
+};
+
+std::vector<unsigned char> rawRiff(const std::vector<RawChunk>& chunks)
+{
+    std::vector<unsigned char> buf;
+    const auto ascii = [&buf](std::string_view s) {
+        for (const char c : s)
+            buf.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p32 = [&buf](std::uint32_t v) {
+        for (int shift = 0; shift < 32; shift += 8)
+            buf.push_back(static_cast<unsigned char>((v >> shift) & 0xffu));
+    };
+    ascii("RIFF");
+    p32(0); // patched below once the total is known
+    ascii("WAVE");
+    for (const auto& chunk : chunks) {
+        ascii(chunk.id);
+        p32(chunk.declared);
+        buf.insert(buf.end(), chunk.body.begin(), chunk.body.end());
+    }
+    const auto riffSize = static_cast<std::uint32_t>(buf.size() - 8);
+    for (int i = 0; i < 4; ++i)
+        buf[4 + static_cast<std::size_t>(i)]
+            = static_cast<unsigned char>((riffSize >> (8 * i)) & 0xffu);
+    return buf;
+}
+
+// A well-formed 16-byte fmt body — pcm16 stereo 44.1k unless overridden.
+std::vector<unsigned char> fmtBody(int tag = 1, int channels = 2, int blockAlign = 4,
+                                   int bits = 16)
+{
+    std::vector<unsigned char> b;
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](int v) {
+        p16(v & 0xffff);
+        p16((v >> 16) & 0xffff);
+    };
+    p16(tag);
+    p16(channels);
+    p32(44100);
+    p32(44100 * blockAlign);
+    p16(blockAlign);
+    p16(bits);
+    return b;
+}
+
 } // namespace
 
 int main()
@@ -81,6 +138,61 @@ int main()
     }
 
     CHECK_THROWS(wav::readWavInfo(syntheticWav({ .tag = 2 })), "unsupported");
+
+    // --- crafted buffers: refuse loudly, never read out of bounds ---
+    // (crew review 2026-08-01, #2 and #3 — the main import path parses
+    // untrusted files)
+
+    {
+        const std::vector<unsigned char> pad(24, 0);
+        const std::vector<unsigned char> fmt = fmtBody();
+
+        // fmt at EOF: a declared 16-byte body with zero bytes behind it must
+        // be an explicit error, not an out-of-bounds read of the fmt fields.
+        CHECK_THROWS(wav::readWavInfo(rawRiff({ { "JUNK", 24, pad }, { "fmt ", 16, {} } })),
+                     "truncated");
+
+        // fmt body cut mid-field.
+        CHECK_THROWS(wav::readWavInfo(rawRiff({ { "JUNK", 24, pad },
+                                                { "fmt ", 16, std::vector<unsigned char>(10, 0) } })),
+                     "truncated");
+
+        // ANY chunk claiming more than the file holds — junk chunks included
+        // (a silent stop-scanning would hide real truncation).
+        CHECK_THROWS(wav::readWavInfo(rawRiff({ { "fmt ", 16, fmt },
+                                                { "data", 8, std::vector<unsigned char>(8, 0) },
+                                                { "LIST", 100, {} } })),
+                     "truncated");
+
+        // Exactly one fmt and one data chunk: duplicates are ambiguous —
+        // sizing frames by one data chunk while slicing audio from another
+        // would be silent wrong audio — so both cases are refused outright.
+        CHECK_THROWS(wav::readWavInfo(rawRiff({ { "fmt ", 16, fmt },
+                                                { "fmt ", 16, fmt },
+                                                { "data", 8, std::vector<unsigned char>(8, 0) } })),
+                     "more than one fmt");
+        CHECK_THROWS(wav::readWavInfo(rawRiff({ { "fmt ", 16, fmt },
+                                                { "data", 400, std::vector<unsigned char>(400, 0) },
+                                                { "data", 8, std::vector<unsigned char>(8, 0) } })),
+                     "more than one data");
+
+        // blockAlign must agree with channels * bytes-per-sample: every frame
+        // count divides by it.
+        CHECK_THROWS(wav::readWavInfo(rawRiff({ { "fmt ", 16, fmtBody(1, 2, 3, 16) },
+                                                { "data", 12, std::vector<unsigned char>(12, 0) } })),
+                     "does not match");
+
+        // fmt shorter than its 16 mandatory bytes.
+        CHECK_THROWS(wav::readWavInfo(rawRiff({ { "JUNK", 24, pad },
+                                                { "fmt ", 8, std::vector<unsigned char>(8, 0) } })),
+                     "malformed fmt");
+
+        // The control: the same hand-built shape, well-formed, parses.
+        const auto ok = wav::readWavInfo(rawRiff({ { "fmt ", 16, fmt },
+                                                   { "data", 400, std::vector<unsigned char>(400, 0) } }));
+        CHECK_EQ(ok.frames, 100);
+        CHECK_EQ(ok.format(), "pcm16");
+    }
 
     // --- upload validation ---
 

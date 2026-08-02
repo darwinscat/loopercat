@@ -82,7 +82,18 @@ inline Info readWavInfo(BytesView data)
     while (offset + 8 <= size) {
         const auto o = static_cast<std::size_t>(offset);
         const std::int64_t chunkSize = detail::u32(data, o + 4);
+        // Every chunk body must lie inside the buffer BEFORE anything reads
+        // from it: a crafted or truncated size field must become an explicit
+        // error, never an out-of-bounds read.
+        if (offset + 8 + chunkSize > size)
+            throw Error("truncated file: chunk at offset " + std::to_string(offset) + " claims "
+                        + std::to_string(chunkSize) + " bytes, file has "
+                        + std::to_string(size - offset - 8) + " left");
         if (detail::chunkIdIs(data, o, "fmt ")) {
+            // One fmt, one data — a file with duplicates is ambiguous (which
+            // one would the pedal index?), so it is refused, not guessed at.
+            if (haveFmt)
+                throw Error("malformed file: more than one fmt chunk");
             if (chunkSize < 16)
                 throw Error("malformed fmt chunk");
             fmtTag = static_cast<int>(detail::u16(data, o + 8));
@@ -92,9 +103,8 @@ inline Info readWavInfo(BytesView data)
             bitsPerSample = static_cast<int>(detail::u16(data, o + 22));
             haveFmt = true;
         } else if (detail::chunkIdIs(data, o, "data")) {
-            if (offset + 8 + chunkSize > size)
-                throw Error("truncated file: data chunk claims " + std::to_string(chunkSize)
-                            + " bytes, file has " + std::to_string(size - offset - 8));
+            if (dataBytes >= 0)
+                throw Error("malformed file: more than one data chunk");
             dataBytes = chunkSize;
         }
         offset += 8 + chunkSize + (chunkSize % 2);
@@ -107,6 +117,14 @@ inline Info readWavInfo(BytesView data)
         throw Error("unsupported WAVE format tag " + std::to_string(fmtTag));
     if (blockAlign == 0)
         throw Error("malformed fmt chunk: blockAlign is 0");
+    // The frame count below divides by blockAlign — it must agree with the
+    // sample layout the fmt chunk itself declares, or every frame number in
+    // the app (durations, trim ranges, slice copies) is a lie.
+    if (channels <= 0 || bitsPerSample % 8 != 0
+        || blockAlign != channels * (bitsPerSample / 8))
+        throw Error("malformed fmt chunk: blockAlign " + std::to_string(blockAlign)
+                    + " does not match " + std::to_string(channels) + " channel(s) at "
+                    + std::to_string(bitsPerSample) + " bits per sample");
 
     return { fmtTag, channels, static_cast<int>(sampleRate), bitsPerSample, blockAlign,
              dataBytes / blockAlign, dataBytes };
