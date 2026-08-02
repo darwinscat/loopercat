@@ -148,6 +148,11 @@ if(NOT LOOPERCAT_BUILD_ARCH)
 endif()
 string(REPLACE ";" "+" LOOPERCAT_BUILD_ARCH "${LOOPERCAT_BUILD_ARCH}")   # "arm64;x86_64" -> one token
 
+# Who built this binary, shown as the version-badge flavor. Defaults to "dev"
+# (a workstation build); the release workflow stamps "release" so a shipped
+# DMG never wears the dev badge (hardware QA 2026-08-01, setup note).
+set(LOOPERCAT_BUILDER "dev" CACHE STRING "Builder flavor shown in the version badge")
+
 # The app icon — the "ears" mark (art/icon/loopercat-mark.svg is the geometry
 # source; the PNGs are its renders). JUCE builds the .icns/.ico from these.
 juce_add_gui_app(LooperCat
@@ -173,7 +178,8 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_GIT_DIRTY=${LOOPERCAT_GIT_DIRTY}
     LOOPERCAT_BUILD_NUMBER=${LOOPERCAT_BUILD_NUMBER}
     LOOPERCAT_BUILD_OS="${CMAKE_SYSTEM_NAME}"
-    LOOPERCAT_BUILD_ARCH="${LOOPERCAT_BUILD_ARCH}")
+    LOOPERCAT_BUILD_ARCH="${LOOPERCAT_BUILD_ARCH}"
+    LOOPERCAT_BUILDER="${LOOPERCAT_BUILDER}")
 
 target_link_libraries(LooperCat PRIVATE
     loopercat::core

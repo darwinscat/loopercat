@@ -6,8 +6,14 @@
 //
 //   - every write backs up first, writes BOTH memory files with their own
 //     trailers, verifies by re-read, sweeps AppleDouble junk
-//   - a failed push leaves the volume byte-identical (validate-then-write)
-//   - clear never destroys audio without the trash copy landing first
+//   - a failed push leaves the volume byte-identical (validate-then-write,
+//     the full config document included — a field-broken slot pushes nothing)
+//   - neither clear nor a forced push destroys audio without the trash copy
+//     landing first; trim preserves the slot's tempo (QA-4)
+//   - a write-phase failure never costs audio: the trash copy survives and
+//     the memory pair stays untouched (fault injection)
+//   - a sweep survivor is a warning on a SUCCESSFUL write, never a "failure"
+//     that would roll a completed swap back
 //   - rename touches nothing but the name; the byte-invariant holds on disk
 //   - pull renames technical names, disambiguates duplicates, refuses to
 //     overwrite without force
@@ -113,6 +119,7 @@ int main()
 
         // Junk is gone — the sidecar next to the memory files included.
         CHECK_EQ(result.swept.size(), 2u);
+        CHECK(result.sweepFailed.empty());
         CHECK(volume::findJunk(volume).empty());
 
         // skipBackup without roots works; missing roots without it fail fast.
@@ -263,13 +270,25 @@ int main()
         CHECK_EQ(rc0::field(body, "One"), 1);
         CHECK_EQ(rc0::decodeName(body), "My Song     ");
 
-        // Occupied slot: refused without force, replaced with it.
+        // Occupied slot: refused without force; force without a trash root is
+        // refused too — the replaced take must have somewhere safe to go.
         CHECK_THROWS(commands::push(volume, source, 9, { .write = writeOpts(tmp.path, "stamp-2") }),
                      "already has audio");
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .force = true, .write = writeOpts(tmp.path, "stamp-2") }),
+                     "trash root");
+        CHECK_EQ(volume::listSlotWavs(volume, 9).size(), 1u);
+
+        // Forced replace: the old take lands in the trash byte-identical —
+        // push never deletes audio outright.
         const auto forced = commands::push(volume, source, 9,
-                                           { .force = true, .write = writeOpts(tmp.path, "stamp-3") });
+                                           { .force = true, .trashRoot = tmp.path / "trash",
+                                             .write = writeOpts(tmp.path, "stamp-3") });
         CHECK_EQ(volume::listSlotWavs(volume, 9).size(), 1u);
         CHECK(forced.configured);
+        CHECK_EQ(forced.trashed.size(), 1u);
+        CHECK(commands::readFileBytes(forced.trashed.front()) == pushed);
+        CHECK(forced.trashed.front().string().find("stamp-3") != std::string::npos);
     }
 
     // --- push failure leaves the volume byte-identical ---
@@ -304,6 +323,35 @@ int main()
                      "longer than 12");
 
         CHECK(volumeBytes(volume) == before);
+    }
+
+    // --- a field-broken slot pushes NOTHING (crew review #4) ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        // Break slot 5's <Tempo> opening tag in both banks — a structurally
+        // valid document whose slot cannot be edited. The config document is
+        // built and validated BEFORE the audio phase, so this must fail with
+        // the volume untouched (it used to throw only after the wav landed).
+        for (const int fileNo : { 1, 2 }) {
+            const std::string text = commands::readFileBytes(volume::memoryPath(volume, fileNo));
+            std::string body = rc0::slotBody(text, 5);
+            body.replace(body.find("<Tempo>"), std::string("<Tempo>").size(), "<Tmpo->");
+            commands::writeFileBytes(volume::memoryPath(volume, fileNo),
+                                     rc0::replaceSlotBody(text, 5, body));
+        }
+        const auto before = volumeBytes(volume);
+
+        const auto ok = testkit::syntheticWav({ .frames = 1323000 });
+        const fs::path source = tmp.path / "ok.wav";
+        commands::writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(ok.data()),
+                                                          ok.size()));
+        CHECK_THROWS(commands::push(volume, source, 5, { .write = writeOpts(tmp.path) }),
+                     "occurs 0 times");
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(volume::wavDir(volume, 5)));
+        CHECK(!fs::exists(tmp.path / "backups"));
     }
 
     // --- pull: smart naming, duplicates, overwrite protection ---
@@ -412,14 +460,54 @@ int main()
         // The original is in the trash, byte-identical — the undo.
         CHECK(commands::readFileBytes(result.trashedOriginal) == originalBytes);
 
-        // The slot's boot-index config matches the formula for the new length.
-        const auto expected = params::computeSlotParams(3000000);
+        // Trim preserves the slot's tempo (QA-4): Tempo/RecTmp keep their
+        // 120.0 BPM, and only the length fields follow the new duration —
+        // 3000000 frames = 68.03 s = 136.05 beats at 120 BPM = 34 bars of
+        // 4/4 (rounded), Measure carrying the +7 offset. The pedal's
+        // power-of-two import formula would have written a different tempo —
+        // asserted different, to pin the OLD bug.
         const std::string body = rc0::slotBody(commands::readMemory(volume), 4);
         CHECK_EQ(rc0::field(body, "WavLen"), 3000000);
-        CHECK_EQ(rc0::field(body, "MeasLen"), expected.measures);
-        CHECK_EQ(rc0::field(body, "Measure"), expected.measureField());
-        CHECK_EQ(rc0::field(body, "Tempo"), expected.tempoTenths);
-        CHECK(result.slotParams == expected);
+        CHECK_EQ(rc0::field(body, "Tempo"), 1200);
+        CHECK_EQ(rc0::field(body, "RecTmp"), 1200);
+        CHECK_EQ(rc0::field(body, "MeasLen"), 34);
+        CHECK_EQ(rc0::field(body, "Measure"), 41);
+        CHECK_EQ(rc0::field(body, "LpLen"), 34);
+        CHECK((result.slotParams == params::SlotParams { 34, 1200 }));
+        CHECK(params::computeSlotParams(3000000).tempoTenths != 1200);
+    }
+
+    // --- trim after Set tempo: the user's BPM survives the cut (QA-4) ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 5, "take.wav", { .frames = 2646000 }); // 60 s
+        {
+            std::string text = commands::readMemory(volume);
+            std::string body = rc0::slotBody(text, 5);
+            body = rc0::setField(body, "WavStat", 1);
+            body = rc0::setField(body, "WavLen", 2646000);
+            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 5, body),
+                                      { .skipBackup = true });
+        }
+        commands::setTempo(volume, 5, 1120, { .skipBackup = true }); // the TRUE 112.0 BPM
+
+        commands::trim(volume, 5, 0, 1323000,
+                       { .trashRoot = tmp.path / "trash",
+                         .write = { .stamp = "qa4", .skipBackup = true } });
+
+        // 30 s at the KEPT 112.0 BPM = 56 beats = 14 bars. The hardware QA
+        // run caught trim re-running the import formula here (16 bars at
+        // 128.0 BPM for this length) — overwriting the tempo the user had
+        // just corrected.
+        const std::string body = rc0::slotBody(commands::readMemory(volume), 5);
+        CHECK_EQ(rc0::field(body, "Tempo"), 1120);
+        CHECK_EQ(rc0::field(body, "RecTmp"), 1120);
+        CHECK_EQ(rc0::field(body, "WavLen"), 1323000);
+        CHECK_EQ(rc0::field(body, "MeasLen"), 14);
+        CHECK_EQ(rc0::field(body, "Measure"), 21);
+        CHECK_EQ(rc0::field(body, "LpLen"), 14);
     }
 
     // --- trim failures leave the volume byte-identical ---
@@ -433,12 +521,24 @@ int main()
                                               .write = writeOpts(tmp.path, "trim-2") };
 
         CHECK_THROWS(commands::trim(volume, 4, 500, 100, options), "bad frame range");
-        CHECK_THROWS(commands::trim(volume, 4, 0, 1000, options), "too short");     // > 160 BPM
         CHECK_THROWS(commands::trim(volume, 5, 0, 1000, options), "no audio to trim");
         commands::TrimOptions noTrash { .write = writeOpts(tmp.path, "trim-3") };
         CHECK_THROWS(commands::trim(volume, 4, 0, 1323000, noTrash), "trash root");
 
         CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(tmp.path / "trash"));
+
+        // A slot whose config carries a nonsense tempo is refused before any
+        // write — deriving a bar count from garbage would cement it.
+        {
+            const std::string text = commands::readMemory(volume);
+            const std::string broken = rc0::setField(rc0::slotBody(text, 4), "Tempo", 9999);
+            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 4, broken),
+                                      { .skipBackup = true });
+        }
+        const auto corrupted = volumeBytes(volume);
+        CHECK_THROWS(commands::trim(volume, 4, 0, 1323000, options), "broken config");
+        CHECK(volumeBytes(volume) == corrupted);
         CHECK(!fs::exists(tmp.path / "trash"));
     }
 
@@ -593,6 +693,120 @@ int main()
         for (const auto& finding : commands::doctor(volume))
             sawDiverged = sawDiverged || finding.message.find("differ") != std::string::npos;
         CHECK(sawDiverged);
+    }
+
+    // --- a locked sidecar cannot un-swap a successful swap (crew review #5) ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV");
+        putWav(volume, 7, "take.wav", { .frames = 8820 });
+        const fs::path lockedDir = volume / "ROLAND" / "WAVE" / "LOCKED";
+        fs::create_directories(lockedDir);
+        commands::writeFileBytes(lockedDir / ".DS_Store", "junk");
+        fs::permissions(lockedDir, fs::perms::owner_read | fs::perms::owner_exec,
+                        fs::perm_options::replace);
+
+        const std::string before = commands::readMemory(volume);
+        const auto result = commands::swap(volume, 3, 7, { .skipBackup = true });
+        fs::permissions(lockedDir, fs::perms::owner_all, fs::perm_options::replace);
+
+        // The write SUCCEEDED and stays: config and audio both swapped. The
+        // sidecar that would not delete is a warning in the result — treating
+        // it as a write failure used to move the audio back over an already
+        // swapped memory pair, silently diverging config from audio.
+        const std::string after = commands::readMemory(volume);
+        CHECK(rc0::slotBody(after, 3) == rc0::slotBody(before, 7));
+        CHECK(rc0::slotBody(after, 7) == rc0::slotBody(before, 3));
+        CHECK_EQ(volume::listSlotWavs(volume, 3).front(), "take.wav");
+        CHECK_EQ(volume::listSlotWavs(volume, 7).front(), "007_1.WAV");
+        CHECK_EQ(result.sweepFailed.size(), 1u);
+        CHECK(fs::exists(lockedDir / ".DS_Store"));
+    }
+
+    // --- write-phase fault injection: a failed write never costs audio ---
+    // (crew review #14 — the trap the unreproduced QA-5 waits behind)
+
+    // push --force with an unwritable MEMORY1: the audio phase completed,
+    // the config write failed — the old take sits in the trash, the new one
+    // in the slot, and the memory pair is byte-untouched. Nothing lost.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 9, "old.wav");
+        const std::string oldBytes =
+            commands::readFileBytes(volume::wavDir(volume, 9) / "old.wav");
+        const std::string m1 = commands::readFileBytes(volume::memoryPath(volume, 1));
+        const std::string m2 = commands::readFileBytes(volume::memoryPath(volume, 2));
+
+        const auto wavBytes = testkit::syntheticWav({ .frames = 1323000 });
+        const fs::path source = tmp.path / "new.wav";
+        commands::writeFileBytes(source,
+                                 std::string_view(reinterpret_cast<const char*>(wavBytes.data()),
+                                                  wavBytes.size()));
+
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
+                        fs::perm_options::replace);
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .force = true, .trashRoot = tmp.path / "trash",
+                                      .write = { .stamp = "fi-push", .skipBackup = true } }),
+                     "cannot write");
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
+                        fs::perm_options::replace);
+
+        CHECK(commands::readFileBytes(tmp.path / "trash" / "fi-push" / "009_1" / "old.wav")
+              == oldBytes);
+        CHECK_EQ(volume::listSlotWavs(volume, 9).front(), "new.wav");
+        CHECK(commands::readFileBytes(volume::memoryPath(volume, 1)) == m1);
+        CHECK(commands::readFileBytes(volume::memoryPath(volume, 2)) == m2);
+    }
+
+    // trim with an unwritable MEMORY1: the original is already safe in the
+    // trash and the slot holds the slice — recoverable, honestly reported.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "take.wav", { .frames = 1323000 });
+        const std::string original =
+            commands::readFileBytes(volume::wavDir(volume, 4) / "take.wav");
+        const std::string m1 = commands::readFileBytes(volume::memoryPath(volume, 1));
+
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
+                        fs::perm_options::replace);
+        CHECK_THROWS(commands::trim(volume, 4, 0, 661500,
+                                    { .trashRoot = tmp.path / "trash",
+                                      .write = { .stamp = "fi-trim", .skipBackup = true } }),
+                     "cannot write");
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
+                        fs::perm_options::replace);
+
+        CHECK(commands::readFileBytes(tmp.path / "trash" / "fi-trim" / "004_1" / "take.wav")
+              == original);
+        CHECK(commands::readFileBytes(volume::memoryPath(volume, 1)) == m1);
+    }
+
+    // clear with an unwritable MEMORY1: the audio left the slot but its
+    // trash copy landed first — the take survives the failed command.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 6, "gone.wav");
+        const std::string original =
+            commands::readFileBytes(volume::wavDir(volume, 6) / "gone.wav");
+
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
+                        fs::perm_options::replace);
+        CHECK_THROWS(commands::clear(volume, { 6 },
+                                     { .trashRoot = tmp.path / "trash",
+                                       .write = { .stamp = "fi-clear", .skipBackup = true } }),
+                     "cannot write");
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
+                        fs::perm_options::replace);
+
+        CHECK(commands::readFileBytes(tmp.path / "trash" / "fi-clear" / "006_1" / "gone.wav")
+              == original);
+        CHECK(volume::listSlotWavs(volume, 6).empty());
     }
 
     // --- doctor ---

@@ -112,10 +112,14 @@ struct WriteOptions {
 struct WriteResult {
     std::optional<BackupResult> backedUp;
     std::vector<fs::path> swept;
+    std::vector<fs::path> sweepFailed; // junk still on the volume — a warning, the write succeeded
 };
 
 // The mutation tail shared by every command: back up, write the SAME document
 // to both memory files, verify each byte-for-byte by re-reading, sweep junk.
+// The sweep is best-effort and runs after the pair write has succeeded: a
+// locked sidecar lands in sweepFailed, it never turns the completed write
+// into a reported failure.
 //
 // Trailers continue the pedal's own write-generation count instead of
 // rewinding it: both banks get the document stamped base+1 (MEMORY1) and
@@ -149,7 +153,9 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
             throw Error("verification failed: MEMORY" + std::to_string(fileNo)
                         + ".RC0 read back differently");
     }
-    result.swept = volume::sweepJunk(volume);
+    volume::SweepResult sweep = volume::sweepJunk(volume);
+    result.swept = std::move(sweep.removed);
+    result.sweepFailed = std::move(sweep.failed);
     return result;
 }
 
@@ -179,6 +185,19 @@ inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& sl
 inline constexpr long long kTempoTenthsMin = 400;
 inline constexpr long long kTempoTenthsMax = 3000;
 
+// Whole 4/4 bars a true tempo spans over a frame count, minimum one bar.
+// Shared by setTempo and trim: both write a bar count that FOLLOWS from the
+// tempo in the config, instead of re-running the pedal's power-of-two import
+// guess (which would overwrite a user-set tempo — hardware QA 2026-08-01,
+// QA-4). Bars assume 4/4 — every observed slot carries RHYTHM.Beat = 2 (4/4);
+// other signatures await a decoded Beat enum.
+inline long long barsFromTempo(long long tempoTenths, std::int64_t frames)
+{
+    const double seconds = static_cast<double>(frames) / wav::kSampleRate;
+    const double beats = static_cast<double>(tempoTenths) / 10.0 * seconds / 60.0;
+    return std::max(1LL, static_cast<long long>(std::llround(beats / params::kBeatsPerMeasure)));
+}
+
 // Assign a slot's true tempo. The pedal never analyzes audio — on import it
 // assumes a power-of-two bar count (#10 analysis, hardware-verified
 // 2026-07-24) — so a loop that isn't 16/32/64/… bars gets a wrong tempo and
@@ -200,12 +219,9 @@ inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTen
     body = rc0::setField(body, "Tempo", tempoTenths);
     body = rc0::setField(body, "RecTmp", tempoTenths);
     if (rc0::field(body, "WavStat") == 1) {
-        const long long frames = rc0::field(body, "WavLen");
-        const double seconds = static_cast<double>(frames) / wav::kSampleRate;
-        const double beats = static_cast<double>(tempoTenths) / 10.0 * seconds / 60.0;
-        const long long bars = std::max(1LL, static_cast<long long>(std::llround(beats / 4.0)));
+        const long long bars = barsFromTempo(tempoTenths, rc0::field(body, "WavLen"));
         body = rc0::setField(body, "MeasLen", bars);
-        body = rc0::setField(body, "Measure", bars + 7);
+        body = rc0::setField(body, "Measure", bars + params::kMeasureFieldOffset);
     }
     return writeMemoryPair(volume, rc0::replaceSlotBody(text, slot, body), options);
 }
@@ -216,7 +232,9 @@ struct PushOptions {
     std::optional<std::string> name; // also rename the slot
     bool oneShot = false;
     bool writeConfig = true;         // false = drop the file only, let the pedal index it on boot
-    bool force = false;              // replace existing slot audio
+    bool force = false;              // replace existing slot audio (it moves to trashRoot first)
+    fs::path trashRoot;              // REQUIRED with force on an occupied slot: the replaced
+                                     // audio lands here — it is never deleted outright
     WriteOptions write;
 };
 
@@ -225,13 +243,18 @@ struct PushResult {
     fs::path dest;
     bool configured;
     std::optional<params::SlotParams> slotParams;
+    std::vector<fs::path> trashed;   // where the replaced audio went (force only)
     std::optional<WriteResult> written;
 };
 
 // Upload a wav into a slot: canonicalize (what the pedal's boot indexer would
 // do anyway — handing it a pre-normalized file means it never touches the
-// upload), validate EVERYTHING before the first write (a failed push must
-// leave the pedal exactly as it was), then write audio + config.
+// upload), then validate EVERYTHING — the audio AND the slot's full new
+// config document — before the first write: a failed push must leave the
+// pedal exactly as it was, and a slot whose config cannot be edited must
+// fail while the volume is still untouched, not after the audio landed.
+// Replacing occupied audio moves the old wav into the trash root first,
+// clear-style — push never destroys a take.
 inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot,
                        const PushOptions& options)
 {
@@ -241,11 +264,27 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     const wav::Info info = wav::assertUploadable(wav::readWavInfo(wavBytes));
 
     if (options.name)
-        rc0::encodeName(*options.name); // validates; the value is applied below
+        rc0::encodeName(*options.name); // validates; applied in the document below
+
     std::optional<params::SlotParams> slotParams;
-    if (options.writeConfig)
+    std::string newDocument;
+    if (options.writeConfig) {
         slotParams = params::computeSlotParams(info.frames);
-    const std::string memoryText = options.writeConfig ? readMemory(volume) : std::string();
+        const std::string memoryText = readMemory(volume);
+        std::string body = rc0::slotBody(memoryText, slot);
+        body = rc0::setField(body, "WavStat", 1);
+        body = rc0::setField(body, "WavLen", info.frames);
+        body = rc0::setField(body, "MeasLen", slotParams->measures);
+        body = rc0::setField(body, "Measure", slotParams->measureField());
+        body = rc0::setField(body, "RecTmp", slotParams->tempoTenths);
+        body = rc0::setField(body, "Tempo", slotParams->tempoTenths);
+        body = rc0::setField(body, "LpLen", slotParams->measures);
+        if (options.oneShot)
+            body = rc0::setField(body, "One", 1);
+        if (options.name)
+            body = rc0::setName(body, *options.name);
+        newDocument = rc0::replaceSlotBody(memoryText, slot, body);
+    }
 
     const std::vector<std::string> existing = volume::listSlotWavs(volume, slot);
     if (!existing.empty() && !options.force) {
@@ -255,38 +294,43 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
         throw Error("slot " + std::to_string(slot) + " already has audio (" + files
                     + "); pass force to replace");
     }
+    if (!existing.empty() && (options.trashRoot.empty() || options.write.stamp.empty()))
+        throw Error("replacing slot " + std::to_string(slot)
+                    + " requires a trash root and a timestamp — the current audio moves to the"
+                      " trash, it is never deleted outright");
 
+    // All checks passed — the writes begin. The replaced audio's safety net
+    // comes first: copy into the trash, remove from the slot only after the
+    // copy landed.
     const fs::path dir = volume::wavDir(volume, slot);
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec)
         throw Error("cannot create " + dir.string());
-    for (const auto& old : existing)
+    PushResult result { info, dir / wavPath.filename(), false, slotParams, {}, std::nullopt };
+    for (const auto& old : existing) {
+        const fs::path trashDir =
+            options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+        fs::create_directories(trashDir, ec);
+        if (ec)
+            throw Error("cannot create " + trashDir.string());
+        copyContent(dir / old, trashDir / old);
+        result.trashed.push_back(trashDir / old);
         if (!fs::remove(dir / old, ec) || ec)
             throw Error("cannot remove " + (dir / old).string());
-    PushResult result { info, dir / wavPath.filename(), false, slotParams, std::nullopt };
+    }
     writeFileBytes(result.dest,
                    std::string_view(reinterpret_cast<const char*>(wavBytes.data()), wavBytes.size()));
 
     if (!options.writeConfig) {
+        // Best-effort sweep; survivors keep the volume boot-risky, and
+        // doctor() reports each one — this drop-only path has no write
+        // report to attach them to.
         volume::sweepJunk(volume);
         return result;
     }
 
-    std::string body = rc0::slotBody(memoryText, slot);
-    body = rc0::setField(body, "WavStat", 1);
-    body = rc0::setField(body, "WavLen", info.frames);
-    body = rc0::setField(body, "MeasLen", slotParams->measures);
-    body = rc0::setField(body, "Measure", slotParams->measureField());
-    body = rc0::setField(body, "RecTmp", slotParams->tempoTenths);
-    body = rc0::setField(body, "Tempo", slotParams->tempoTenths);
-    body = rc0::setField(body, "LpLen", slotParams->measures);
-    if (options.oneShot)
-        body = rc0::setField(body, "One", 1);
-    if (options.name)
-        body = rc0::setName(body, *options.name);
-    result.written = writeMemoryPair(volume, rc0::replaceSlotBody(memoryText, slot, body),
-                                     options.write);
+    result.written = writeMemoryPair(volume, newDocument, options.write);
     result.configured = true;
     return result;
 }
@@ -360,16 +404,20 @@ struct TrimOptions {
 struct TrimResult {
     fs::path trashedOriginal;
     std::int64_t frames;
-    params::SlotParams slotParams;
+    params::SlotParams slotParams; // what the config now carries: kept tempo + derived bars
     WriteResult written;
 };
 
 // Cut a slot's loop down to [startFrame, endFrame): the slice is rewritten in
-// canonical form under the same on-pedal filename, the slot's boot-index
-// config is recomputed for the new length, and the ORIGINAL file moves to the
-// trash root first — trim is the one command that rewrites audio, so the
-// pre-trim take is always recoverable. Everything validates before the first
-// write: a failed trim leaves the volume exactly as it was.
+// canonical form under the same on-pedal filename, and the ORIGINAL file
+// moves to the trash root first — trim is the one command that rewrites
+// audio, so the pre-trim take is always recoverable. The slot's tempo is
+// PRESERVED: trim changes length, not speed, so only the length fields and
+// the bar count that follows from the kept tempo are rewritten (hardware QA
+// 2026-08-01, QA-4: recomputing via the pedal's power-of-two import formula
+// overwrote a user-set true tempo). Everything — the slice AND the full new
+// config document — validates before the first write: a failed trim leaves
+// the volume exactly as it was.
 inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame,
                        std::int64_t endFrame, const TrimOptions& options)
 {
@@ -385,8 +433,20 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
     const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
     const wav::Bytes slice = wav::trimmed(rawView, startFrame, endFrame); // validates the range
     const wav::Info info = wav::readWavInfo(slice);
-    const params::SlotParams slotParams = params::computeSlotParams(info.frames);
+
     const std::string memoryText = readMemory(volume);
+    std::string body = rc0::slotBody(memoryText, slot);
+    const long long tempoTenths = rc0::field(body, "Tempo");
+    if (tempoTenths < kTempoTenthsMin || tempoTenths > kTempoTenthsMax)
+        throw Error("slot " + std::to_string(slot) + " carries tempo "
+                    + std::to_string(tempoTenths) + " tenths, outside the pedal's 40.0-300.0 BPM"
+                      " range — not trimming a slot with a broken config");
+    const long long bars = barsFromTempo(tempoTenths, info.frames);
+    body = rc0::setField(body, "WavLen", info.frames);
+    body = rc0::setField(body, "MeasLen", bars);
+    body = rc0::setField(body, "Measure", bars + params::kMeasureFieldOffset);
+    body = rc0::setField(body, "LpLen", bars);
+    const std::string newDocument = rc0::replaceSlotBody(memoryText, slot, body);
 
     // All checks passed — the writes begin. Trash copy first: the original
     // must be safe before anything replaces it.
@@ -395,21 +455,14 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
     fs::create_directories(trashDir, ec);
     if (ec)
         throw Error("cannot create " + trashDir.string());
-    TrimResult result { trashDir / files.front(), info.frames, slotParams, {} };
+    TrimResult result { trashDir / files.front(), info.frames,
+                        { static_cast<int>(bars), static_cast<int>(tempoTenths) }, {} };
     writeFileBytes(result.trashedOriginal, raw);
 
     writeFileBytes(source,
                    std::string_view(reinterpret_cast<const char*>(slice.data()), slice.size()));
 
-    std::string body = rc0::slotBody(memoryText, slot);
-    body = rc0::setField(body, "WavLen", info.frames);
-    body = rc0::setField(body, "MeasLen", slotParams.measures);
-    body = rc0::setField(body, "Measure", slotParams.measureField());
-    body = rc0::setField(body, "RecTmp", slotParams.tempoTenths);
-    body = rc0::setField(body, "Tempo", slotParams.tempoTenths);
-    body = rc0::setField(body, "LpLen", slotParams.measures);
-    result.written = writeMemoryPair(volume, rc0::replaceSlotBody(memoryText, slot, body),
-                                     options.write);
+    result.written = writeMemoryPair(volume, newDocument, options.write);
     return result;
 }
 

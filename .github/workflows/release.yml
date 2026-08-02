@@ -45,7 +45,9 @@ jobs:
           fi
 
       - name: Configure (Release; universal — the CMake default arches)
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        # LOOPERCAT_BUILDER stamps the version-badge flavor: a shipped DMG
+        # says "release", never the default "dev" of a workstation build.
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DLOOPERCAT_BUILDER=release
 
       - name: Build
         run: cmake --build build -j
