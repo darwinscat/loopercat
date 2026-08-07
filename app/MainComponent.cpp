@@ -187,8 +187,7 @@ MainComponent::MainComponent(std::string explicitVolume)
         // disk-appeared poke and the automount take it from there.
         const juce::String error = pedallink::requestStorageMode(true);
         if (error.isNotEmpty()) {
-            jobError = "Connect: " + error;
-            refreshBanners();
+            banners.showError(banners::Source::connection, "Connect: " + error);
             return;
         }
         toast.show(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"));
@@ -249,8 +248,10 @@ MainComponent::MainComponent(std::string explicitVolume)
                 toast.show("Mounted " + note);
                 worker.pokeRescan();
             } else {
-                jobError = "Mount: " + note;
-                refreshBanners();
+                banners.showError(banners::Source::connection,
+                                  "The pedal's card would not mount (" + note
+                                      + juce::String::fromUTF8(") \xe2\x80\x94 unplug the USB "
+                                                               "cable, then plug it back."));
             }
         });
     };
@@ -268,8 +269,12 @@ MainComponent::MainComponent(std::string explicitVolume)
                         return;
                     worker.postEjectFinished(unmounted);
                     if (!unmounted) {
-                        jobError = "Disconnect: " + note;
-                        refreshBanners();
+                        juce::String text = juce::String::fromUTF8(
+                            "The volume would not eject \xe2\x80\x94 something is still using "
+                            "the card. Press Disconnect again in a moment.");
+                        if (note.isNotEmpty())
+                            text << " (" << note << ")";
+                        banners.showError(banners::Source::connection, text);
                         return;
                     }
                     if (note.isNotEmpty())
@@ -279,10 +284,12 @@ MainComponent::MainComponent(std::string explicitVolume)
                     // story is over, which is exactly what deviceLost means.
                     const juce::String exitError = pedallink::requestStorageMode(false);
                     if (exitError.isNotEmpty()) {
-                        jobError = "Disconnect: volume ejected, but " + exitError
-                                 + juce::String::fromUTF8(
-                                       " \xe2\x80\x94 leave STORAGE on the pedal itself");
-                        refreshBanners();
+                        banners.showError(
+                            banners::Source::connection,
+                            "Volume ejected, but the exit call did not reach the pedal ("
+                                + exitError
+                                + juce::String::fromUTF8(") \xe2\x80\x94 leave STORAGE on the "
+                                                         "pedal itself."));
                         return;
                     }
                     worker.postDeviceLost();
@@ -300,24 +307,25 @@ MainComponent::MainComponent(std::string explicitVolume)
         updateToolbar();
     };
     worker.onJobResult = [this](juce::String description, juce::String error) {
-        jobError = error.isEmpty() ? juce::String() : description + ": " + error;
-        refreshBanners();
-        if (error.isEmpty()) {
-            juce::String note = description + juce::String::fromUTF8(" \xe2\x80\x94 done");
-            const bool wroteToPedal = description.startsWith("Rename")
-                                   || description.startsWith("Enable")
-                                   || description.startsWith("Disable")
-                                   || description.startsWith("Push")
-                                   || description.startsWith("Trim")
-                                   || description.startsWith("Set tempo")
-                                   || description.startsWith("Clear")
-                                   || description.startsWith("Swap");
-            if (description.startsWith("Trim"))
-                player.reload(); // same path, new bytes — fresh reader + thumbnail
-            if (wroteToPedal)
-                note << ". Eject the volume and reboot the pedal to apply.";
-            toast.show(note);
+        if (error.isNotEmpty()) {
+            banners.showError(banners::Source::job, description + ": " + error);
+            return;
         }
+        banners.clearJobError(); // a later mutation succeeded — the story moved on
+        juce::String note = description + juce::String::fromUTF8(" \xe2\x80\x94 done");
+        const bool wroteToPedal = description.startsWith("Rename")
+                               || description.startsWith("Enable")
+                               || description.startsWith("Disable")
+                               || description.startsWith("Push")
+                               || description.startsWith("Trim")
+                               || description.startsWith("Set tempo")
+                               || description.startsWith("Clear")
+                               || description.startsWith("Swap");
+        if (description.startsWith("Trim"))
+            player.reload(); // same path, new bytes — fresh reader + thumbnail
+        if (wroteToPedal)
+            note << ". Eject the volume and reboot the pedal to apply.";
+        toast.show(note);
     };
 
     addAndMakeVisible(header);
@@ -447,31 +455,6 @@ void MainComponent::showAbout()
     badge.mouseUp(event);
 }
 
-// The banner strip: lifecycle first (it explains everything below), then the
-// doctor findings, then the last failed job.
-void MainComponent::refreshBanners()
-{
-    std::vector<commands::Finding> shown = snapshot.findings;
-    switch (snapshot.state) {
-    case lifecycle::State::ghost:
-        shown.insert(shown.begin(),
-                     { commands::Level::error,
-                       "Pedal detached without eject \xe2\x80\x94 the volume was serving cached "
-                       "data and nothing reached the pedal. Cleaning up the stale mount\xe2\x80\xa6" });
-        break;
-    case lifecycle::State::ejected:
-        shown.insert(shown.begin(),
-                     { commands::Level::info,
-                       "Volume ejected \xe2\x80\x94 safe to disconnect the pedal." });
-        break;
-    case lifecycle::State::disconnected:
-    case lifecycle::State::connected:
-    case lifecycle::State::ejecting:
-        break;
-    }
-    banners.setContent(shown, jobError);
-}
-
 // A ghost cannot heal by itself: the stale mount blocks the next attach.
 // Force-unmount is safe by construction (nothing flushes to a dead device);
 // one attempt per episode, failures land on the banner line.
@@ -483,8 +466,11 @@ void MainComponent::cleanUpGhostMount()
                 if (!*alive)
                     return;
                 if (!ok) {
-                    jobError = "Ghost cleanup: " + note;
-                    refreshBanners();
+                    banners.showError(banners::Source::connection,
+                                      "Could not clear the stale mount (" + note
+                                          + juce::String::fromUTF8(
+                                                ") \xe2\x80\x94 unplug the pedal's USB cable, "
+                                                "then plug it back."));
                 }
                 worker.pokeRescan();
             });
@@ -551,7 +537,9 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     const bool mounted = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
 
     updateStatusText();
-    refreshBanners();
+    // The strip's model applies its recovery policy here too: an honest
+    // (re)mount clears the connection-error lane (issue #3).
+    banners.scan(snapshot.state, snapshot.findings);
 
     // Anything but connected drops playback: the reader would stream from a
     // dead mount (ghost) or hold the volume open against an eject.
