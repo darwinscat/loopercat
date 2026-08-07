@@ -25,6 +25,24 @@ namespace
     const juce::Colour kStatusText { 0xff8a8a92 };
     const juce::Colour kErrorText { 0xffff8a3d }; // brand orange: attention, not alarm
 
+    // One timer, two paces: the MIDI presence poll idles at 2 s; while a
+    // connect attempt or the post-disconnect hold is live it runs at
+    // supervision pace so the resend clock and the hold expiry stay honest.
+    constexpr int kMidiPollIntervalMs = 2000;
+    constexpr int kSuperviseTickMs = 250;
+
+    // How long Connect stays held after a disconnect: the pedal re-boots its
+    // MIDI face on leaving STORAGE, and a frame sent into that window is
+    // silently lost (issue #2 — a click after a short pause always worked).
+    constexpr std::int64_t kReenumerateHoldMs = 2500;
+
+    // The supervision clock: milliseconds, monotonic since app start (the
+    // 32-bit counter would wrap under a long-running session).
+    std::int64_t nowMs()
+    {
+        return static_cast<std::int64_t>(juce::Time::getMillisecondCounterHiRes());
+    }
+
     felitronics::appkit::VersionBadge::Config badgeConfig()
     {
         return { .productName = "LooperCat",
@@ -182,16 +200,7 @@ MainComponent::MainComponent(std::string explicitVolume)
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
         button->setEnabled(false);
     }
-    connectButton.onClick = [this] {
-        // One sysex and the pedal walks itself into STORAGE (issue #22); the
-        // disk-appeared poke and the automount take it from there.
-        const juce::String error = pedallink::requestStorageMode(true);
-        if (error.isNotEmpty()) {
-            banners.showError(banners::Source::connection, "Connect: " + error);
-            return;
-        }
-        toast.show(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"));
-    };
+    connectButton.onClick = [this] { startConnectAttempt(); };
     disconnectButton.onClick = [this] {
         // Release our own hold on the volume first: the read-ahead thread
         // keeps the slot WAV open, and an open file dissents the unmount.
@@ -236,8 +245,12 @@ MainComponent::MainComponent(std::string explicitVolume)
     };
     deviceWatcher.onDiskAppeared = [this, alive = uiAlive] {
         juce::MessageManager::callAsync([this, alive] {
-            if (*alive)
-                worker.pokeRescan();
+            if (!*alive)
+                return;
+            // The pedal surrendered the medium — the attempt stops resending;
+            // the mount + scan pipeline reports its own failures from here.
+            connectAttempt.diskAppeared();
+            worker.pokeRescan();
         });
     };
     deviceWatcher.onAutoMountResult = [this, alive = uiAlive](bool ok, std::string message) {
@@ -248,6 +261,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                 toast.show("Mounted " + note);
                 worker.pokeRescan();
             } else {
+                endConnectAttempt(); // the attempt's outcome is this banner
                 banners.showError(banners::Source::connection,
                                   "The pedal's card would not mount (" + note
                                       + juce::String::fromUTF8(") \xe2\x80\x94 unplug the USB "
@@ -292,6 +306,12 @@ MainComponent::MainComponent(std::string explicitVolume)
                                                          "pedal itself."));
                         return;
                     }
+                    // Leaving STORAGE re-boots the pedal's MIDI face; hold
+                    // Connect until it is honestly back (issue #2) — the
+                    // presence poll re-discovers it at supervision pace.
+                    midiPedalPresent = false;
+                    connectHoldUntilMs = nowMs() + kReenumerateHoldMs;
+                    startTimer(kSuperviseTickMs);
                     worker.postDeviceLost();
                     toast.show(juce::String::fromUTF8(
                         "Pedal disconnected \xe2\x80\x94 back on the looper screen"));
@@ -347,13 +367,30 @@ MainComponent::MainComponent(std::string explicitVolume)
     setSize(920, 680);
 
     worker.start();
-    startTimer(2000); // MIDI presence poll — cheap device-list scan, message thread
+    startTimer(kMidiPollIntervalMs); // presence poll — cheap device-list scan, message thread
+}
+
+void MainComponent::timerCallback()
+{
+    pollMidiPresence();
+    tickConnectAttempt();
+
+    // The hold expires on its own clock; re-enable Connect the moment it
+    // does, not at the next presence flip.
+    if (connectHoldUntilMs != 0 && nowMs() >= connectHoldUntilMs) {
+        connectHoldUntilMs = 0;
+        updateToolbar();
+    }
+    // Supervision pace only while something is being supervised.
+    if (!connectAttempt.active() && connectHoldUntilMs == 0
+        && getTimerInterval() != kMidiPollIntervalMs)
+        startTimer(kMidiPollIntervalMs);
 }
 
 // The pedal outside STORAGE is still visible — as a USB-MIDI device. Knowing
 // the difference between "no pedal at all" and "pedal here, wrong mode" turns
 // the empty state from a shrug into an instruction.
-void MainComponent::timerCallback()
+void MainComponent::pollMidiPresence()
 {
     bool present = false;
     for (const auto& device : juce::MidiInput::getAvailableDevices())
@@ -368,6 +405,71 @@ void MainComponent::timerCallback()
                  juce::dontSendNotification);
     updateStatusText();
     updateToolbar();
+}
+
+// One sysex asks the pedal into STORAGE (issue #22); the attempt machine
+// supervises what used to be fire-and-forget (issue #2): a frame sent while
+// the pedal's MIDI side is still re-enumerating is silently lost, and a
+// pedal playing a loop keeps the medium — both used to mean "Connecting…"
+// forever, with nothing said.
+void MainComponent::startConnectAttempt()
+{
+    connectAttempt.begin(nowMs());
+    sendEnterStorage();
+    toast.show(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"));
+    startTimer(kSuperviseTickMs);
+    updateStatusText();
+    updateToolbar();
+}
+
+// A failed send is not fatal mid-attempt: the lost-frame window is exactly
+// why the attempt retries. The budget turns a persistent miss into the
+// honest give-up banner.
+void MainComponent::sendEnterStorage()
+{
+    lastConnectSendError = pedallink::requestStorageMode(true);
+}
+
+void MainComponent::tickConnectAttempt()
+{
+    if (!connectAttempt.active())
+        return;
+    switch (connectAttempt.tick(nowMs())) {
+    case connect::Action::none:
+        return;
+    case connect::Action::sendFrame:
+        sendEnterStorage();
+        return;
+    case connect::Action::giveUp:
+        banners.showError(
+            banners::Source::connection,
+            lastConnectSendError.isEmpty()
+                ? juce::String("The pedal did not hand over its card. If a loop is playing "
+                               "or recording, stop it, then press Connect again.")
+                : "Could not reach the pedal (" + lastConnectSendError
+                      + juce::String::fromUTF8(") \xe2\x80\x94 check the USB cable, "
+                                               "then try again."));
+        updateStatusText();
+        updateToolbar();
+        return;
+    }
+}
+
+// The attempt resolved outside the machine: the volume is honestly up, or
+// the mount reported its own failure. Idempotent — connected snapshots keep
+// arriving. The timer falls back to poll pace on its next tick.
+void MainComponent::endConnectAttempt()
+{
+    if (!connectAttempt.active())
+        return;
+    connectAttempt.finish();
+    updateStatusText();
+    updateToolbar();
+}
+
+bool MainComponent::connectHoldActive() const
+{
+    return connectHoldUntilMs != 0 && nowMs() < connectHoldUntilMs;
 }
 
 MainComponent::~MainComponent()
@@ -414,9 +516,12 @@ void MainComponent::updateToolbar()
 {
     const bool usable = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
     disconnectButton.setEnabled(usable && !pedalBusy);
-    // Connect: the pedal shows its MIDI face but no honest volume is up.
+    // Connect: the pedal shows its MIDI face, no honest volume is up, no
+    // attempt is already running, and the post-disconnect hold has passed
+    // (the re-enumerating MIDI side eats frames — issue #2).
     connectButton.setEnabled(midiPedalPresent && !pedalBusy
-                             && snapshot.state == lifecycle::State::disconnected);
+                             && snapshot.state == lifecycle::State::disconnected
+                             && !connectAttempt.active() && !connectHoldActive());
     if (appMenu != nullptr)
         appMenu->menuItemsChanged(); // the Maintenance items follow the same gate
 }
@@ -497,6 +602,12 @@ void MainComponent::updateStatusText()
         status.setColour(juce::Label::textColourId, kStatusText);
         return;
     }
+    if (connectAttempt.active() && snapshot.volume.empty()) {
+        status.setText(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"),
+                       juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, kStatusText);
+        return;
+    }
     if (snapshot.volume.empty()) {
         status.setText(midiPedalPresent
                            ? juce::String::fromUTF8(
@@ -535,6 +646,11 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     // "Mounted" means honestly connected — a ghost lists slots too, but they
     // are page-cache fiction and nothing may play from or write to them.
     const bool mounted = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
+
+    // The volume is up — the connect attempt (if one ran) met its goal. This
+    // also settles a by-hand STORAGE entry racing a clicked Connect.
+    if (snapshot.state == lifecycle::State::connected)
+        endConnectAttempt();
 
     updateStatusText();
     // The strip's model applies its recovery policy here too: an honest

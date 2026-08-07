@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <loopercat/Connect.hpp>
+
 #include <felitronics/appkit/VersionBadge.h>
 
 #include "AppMenu.h"
@@ -28,7 +30,7 @@ namespace loopercat
 {
 
 class MainComponent final : public juce::Component,
-                            private juce::Timer // polls for the pedal's normal-mode MIDI presence
+                            private juce::Timer // MIDI presence poll + connect supervision clock
 {
 public:
     // `explicitVolume` pins the pedal path (--volume override); empty = autodetect.
@@ -54,7 +56,17 @@ private:
     void updateTableRows();
     void updateToolbar();
     void cleanUpGhostMount();
-    void timerCallback() override; // MIDI presence: the pedal visible outside STORAGE
+    void timerCallback() override; // presence poll, attempt ticks, hold expiry, cadence
+    void pollMidiPresence();       // the pedal visible outside STORAGE
+
+    // The supervised Connect (issue #2): the attempt machine owns the
+    // retry/give-up policy, these own the clock, the MIDI send and the UI.
+    void startConnectAttempt();
+    void sendEnterStorage();
+    void tickConnectAttempt();
+    void endConnectAttempt();
+    bool connectHoldActive() const;
+
     void runBackup();
     void runCleanJunk();
     void showAbout();
@@ -93,6 +105,9 @@ private:
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
+    connect::Attempt connectAttempt;  // the supervised Connect (issue #2)
+    juce::String lastConnectSendError; // last enter-storage send result — the honest give-up
+    std::int64_t connectHoldUntilMs = 0; // Connect held while the pedal re-boots its MIDI face
     std::unique_ptr<juce::FileChooser> fileChooser; // the one live async chooser
     PedalSnapshot snapshot;
     // Guards async device-watcher completions: they hop to the message thread
