@@ -52,11 +52,13 @@ int main()
     // --- layout paths ---
 
     {
+        // fs::path comparisons, not strings: the layout must hold under both
+        // native separators (Windows renders these with backslashes).
         const fs::path v = "/Volumes/BOSS RC-5";
-        CHECK_EQ(volume::dataDir(v).string(), "/Volumes/BOSS RC-5/ROLAND/DATA");
-        CHECK_EQ(volume::wavDir(v, 7).string(), "/Volumes/BOSS RC-5/ROLAND/WAVE/007_1");
-        CHECK_EQ(volume::memoryPath(v, 1).string(), "/Volumes/BOSS RC-5/ROLAND/DATA/MEMORY1.RC0");
-        CHECK_EQ(volume::memoryPath(v, 2).string(), "/Volumes/BOSS RC-5/ROLAND/DATA/MEMORY2.RC0");
+        CHECK_EQ(volume::dataDir(v), fs::path("/Volumes/BOSS RC-5/ROLAND/DATA"));
+        CHECK_EQ(volume::wavDir(v, 7), fs::path("/Volumes/BOSS RC-5/ROLAND/WAVE/007_1"));
+        CHECK_EQ(volume::memoryPath(v, 1), fs::path("/Volumes/BOSS RC-5/ROLAND/DATA/MEMORY1.RC0"));
+        CHECK_EQ(volume::memoryPath(v, 2), fs::path("/Volumes/BOSS RC-5/ROLAND/DATA/MEMORY2.RC0"));
         CHECK_THROWS(volume::memoryPath(v, 3), "must be 1 or 2");
     }
 

@@ -697,6 +697,12 @@ int main()
 
     // --- a locked sidecar cannot un-swap a successful swap (crew review #5) ---
 
+    // POSIX-only: the injection removes write permission from the sidecar's
+    // parent directory, which denies the delete. A Windows read-only
+    // directory attribute does not deny child deletion, so there is no
+    // equivalent lever there — the behavior under test is platform-free,
+    // the injection mechanism is not.
+#ifndef _WIN32
     {
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
@@ -724,6 +730,7 @@ int main()
         CHECK_EQ(result.sweepFailed.size(), 1u);
         CHECK(fs::exists(lockedDir / ".DS_Store"));
     }
+#endif // !_WIN32
 
     // --- write-phase fault injection: a failed write never costs audio ---
     // (crew review #14 — the trap the unreproduced QA-5 waits behind)
