@@ -59,6 +59,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         -Wconversion -Wsign-conversion -Wfloat-equal -Wshadow -Wcast-align
         -Wzero-as-null-pointer-constant -Wunreachable-code -Wswitch-enum -Wextra-semi
         $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wshorten-64-to-32;-Wimplicit-float-conversion;-Wconditional-uninitialized;-Wconstant-conversion;-Wbool-conversion>)
+elseif(MSVC)
+    # /W4 without /WX for now: the Windows gate (issue #5) starts by proving
+    # the suites build and pass; warning-parity with the Clang set comes once
+    # the first green run shows what MSVC actually flags.
+    set(LOOPERCAT_STRICT_FLAGS /W4 /permissive-)
 endif()
 
 function(loopercat_core_test name)

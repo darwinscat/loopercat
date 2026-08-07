@@ -1,0 +1,26 @@
+# Core conformance on Windows — the portability gate behind the Windows port
+# (issue #5). The core is OS-free by design (header-only C++20, std::filesystem);
+# this job keeps it that way with MSVC long before the app-side port lands.
+# The macOS story is covered by the release lane and local development.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  core-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure (core only, no JUCE)
+        run: cmake -B build -DLOOPERCAT_BUILD_APP=OFF
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test (all core suites)
+        run: ctest --test-dir build -C Release --output-on-failure
