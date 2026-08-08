@@ -53,7 +53,6 @@ private:
     void updateStatusText();
     void updateTableRows();
     void updateToolbar();
-    void refreshBanners(); // doctor findings + the lifecycle line + last job error
     void cleanUpGhostMount();
     void timerCallback() override; // MIDI presence: the pedal visible outside STORAGE
     void runBackup();
@@ -91,7 +90,6 @@ private:
     Toast toast;
     PlayerPane player { engine };
     juce::String deviceError;
-    juce::String jobError; // the last failed mutation, until dismissed/superseded
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
