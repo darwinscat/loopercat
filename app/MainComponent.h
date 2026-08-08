@@ -17,6 +17,7 @@
 #include "PedalLink.h"
 #include "PedalWorker.h"
 #include "PlayerPane.h"
+#include "QuitGate.h"
 #include "SlotTable.h"
 #include "Toast.h"
 #include "UpdateCheck.h"
@@ -43,6 +44,12 @@ public:
     void selectSlot(int slot);
     void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
     bool playerReady() const;
+
+    // Quit is Disconnect (issue #1): while the volume is held, release it
+    // first. Returns false when nothing holds the quit; otherwise starts (or
+    // joins) the release and fires `done` exactly once — on the eject
+    // completion or at the time bound, whichever lands first.
+    bool beginQuitDisconnect(std::function<void()> done);
 
     void paint(juce::Graphics& g) override;
     void resized() override;
@@ -110,6 +117,7 @@ private:
     std::int64_t connectHoldUntilMs = 0; // Connect held while the pedal re-boots its MIDI face
     std::unique_ptr<juce::FileChooser> fileChooser; // the one live async chooser
     PedalSnapshot snapshot;
+    QuitGate quitGate; // quit-is-Disconnect (issue #1): decision + exactly-once exit
     // Guards async device-watcher completions: they hop to the message thread
     // and must become no-ops once destruction has begun (the worker may
     // already be gone by the time a DiskArbitration callback lands).

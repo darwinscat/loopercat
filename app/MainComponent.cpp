@@ -43,6 +43,12 @@ namespace
         return static_cast<std::int64_t>(juce::Time::getMillisecondCounterHiRes());
     }
 
+    // How long a quit waits for the release before leaving anyway: a busy or
+    // wedged volume must not hold the exit hostage (issue #1) — past the
+    // bound the pedal simply stays in STORAGE, as an unsupervised quit left
+    // it before.
+    constexpr int kQuitReleaseBoundMs = 5000;
+
     felitronics::appkit::VersionBadge::Config badgeConfig()
     {
         return { .productName = "LooperCat",
@@ -289,6 +295,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                         if (note.isNotEmpty())
                             text << " (" << note << ")";
                         banners.showError(banners::Source::connection, text);
+                        quitGate.finish(); // a refused eject must not hold the exit
                         return;
                     }
                     if (note.isNotEmpty())
@@ -304,6 +311,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                                 + exitError
                                 + juce::String::fromUTF8(") \xe2\x80\x94 leave STORAGE on the "
                                                          "pedal itself."));
+                        quitGate.finish(); // the volume is safe — the exit may proceed
                         return;
                     }
                     // Leaving STORAGE re-boots the pedal's MIDI face; hold
@@ -315,6 +323,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                     worker.postDeviceLost();
                     toast.show(juce::String::fromUTF8(
                         "Pedal disconnected \xe2\x80\x94 back on the looper screen"));
+                    quitGate.finish(); // the pedal is walking home — quit may proceed
                 });
         });
     });
@@ -475,6 +484,34 @@ bool MainComponent::connectHoldActive() const
 MainComponent::~MainComponent()
 {
     *uiAlive = false; // message thread; queued watcher completions become no-ops
+}
+
+// Quit is Disconnect (issue #1). A mutation in flight still finishes first:
+// the eject is queued behind it on the worker, and the worker's shutdown
+// join is generous — the time bound only abandons the WAIT, never the write.
+bool MainComponent::beginQuitDisconnect(std::function<void()> done)
+{
+    switch (quitGate.request(snapshot.state, std::move(done))) {
+    case QuitGate::Plan::quitNow:
+        return false;
+    case QuitGate::Plan::alreadyPending:
+        return true;
+    case QuitGate::Plan::startDisconnect:
+        // The Disconnect button's own path: drop our hold on the volume (the
+        // read-ahead thread keeps the slot WAV open), then eject; the eject
+        // completion walks the pedal out of STORAGE and finishes the gate.
+        engine.stop();
+        player.clear();
+        worker.requestEject();
+        break;
+    case QuitGate::Plan::joinEject:
+        break; // the in-flight eject's completion resolves the gate
+    }
+    juce::Timer::callAfterDelay(kQuitReleaseBoundMs, [this, alive = uiAlive] {
+        if (*alive)
+            quitGate.finish();
+    });
+    return true;
 }
 
 void MainComponent::refreshNow()

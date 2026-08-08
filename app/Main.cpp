@@ -53,7 +53,20 @@ public:
     }
 
     void shutdown() override { mainWindow = nullptr; }
-    void systemRequestedQuit() override { quit(); }
+
+    // Quit is Disconnect (issue #1): while the app holds the pedal's volume,
+    // release it and walk the pedal out of STORAGE first. MainComponent
+    // bounds the wait, so a busy or wedged volume can never hold the exit
+    // hostage. The close button, Cmd-Q and system-initiated quit (logout,
+    // shutdown) all funnel through here.
+    void systemRequestedQuit() override
+    {
+        if (mainWindow != nullptr && mainWindow->beginQuitDisconnect([] {
+                juce::JUCEApplication::getInstance()->quit();
+            }))
+            return; // the release (or its time bound) resumes the quit
+        quit();
+    }
 
 private:
     static int writeSnapshot(const juce::String& path, const std::string& explicitVolume,
@@ -103,7 +116,9 @@ private:
             : DocumentWindow(name, juce::Colour(0xff121218), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar(true);
-            setContentOwned(new MainComponent(std::move(explicitVolume)), true);
+            auto* main = new MainComponent(std::move(explicitVolume));
+            content = main;
+            setContentOwned(main, true);
             setResizable(true, true);
             setResizeLimits(760, 480, 4096, 4096);
             centreWithSize(getWidth(), getHeight());
@@ -115,7 +130,14 @@ private:
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
 
+        bool beginQuitDisconnect(std::function<void()> done)
+        {
+            return content->beginQuitDisconnect(std::move(done));
+        }
+
     private:
+        MainComponent* content = nullptr; // owned via setContentOwned
+
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
     };
 
