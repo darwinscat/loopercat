@@ -185,11 +185,22 @@ juce_add_gui_app(LooperCat
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>")
 
 target_sources(LooperCat PRIVATE
-    app/DeviceWatcher.cpp
     app/Main.cpp
     app/MainComponent.cpp
     app/PlayerPane.cpp
     app/SlotTable.cpp)
+
+# One DeviceWatcher interface, one backend per platform (issue #5): IOKit +
+# DiskArbitration on macOS; the phase-0 Windows backend (untracked verdicts,
+# real DeviceIoControl eject). A new platform must bring a backend — there
+# is deliberately no portable fallback to compile against.
+if(APPLE)
+    target_sources(LooperCat PRIVATE app/DeviceWatcherMac.cpp)
+elseif(WIN32)
+    target_sources(LooperCat PRIVATE app/DeviceWatcherWin.cpp)
+else()
+    message(FATAL_ERROR "no DeviceWatcher backend for this platform")
+endif()
 
 target_compile_definitions(LooperCat PRIVATE
     JUCE_WEB_BROWSER=0
