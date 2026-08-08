@@ -40,6 +40,17 @@ jobs:
       - name: Build the app
         run: cmake --build build --config Release --target LooperCat
 
+      # The exe must run on a machine with no VC++ redistributable: a
+      # dynamic-CRT import in the exe means the static-runtime setting
+      # regressed and a clean user machine would refuse to start it.
+      - name: Assert static CRT (no VCRUNTIME import)
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("build/LooperCat_artefacts/Release/LooperCat.exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -match "VCRUNTIME140") { throw "dynamic CRT leaked into the exe" }
+          Write-Output "static CRT confirmed"
+
       - name: Upload the unsigned dev artifact
         uses: actions/upload-artifact@v6
         with:
