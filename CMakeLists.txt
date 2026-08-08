@@ -26,6 +26,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)   # for clangd / IDE
 
+# Static CRT on Windows: the default /MD binary needs the VC++ redistributable
+# installed, and a clean user machine greets that with "VCRUNTIME140.dll not
+# found" — the Windows cousin of the deployment-target trap (#11). One
+# standalone exe, no install-time dependencies. Applies to every target in
+# the build (JUCE included) — mixing runtimes is a link-time mess.
+if(WIN32)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS build archs" FORCE)
 endif()
