@@ -13,12 +13,31 @@ fills. No trips through the pedal's SETUP menu.
 **Disconnect** is the same trip backwards: playback stops, the volume is
 unmounted politely, and the pedal returns to the looper screen on its own.
 
-Two things worth knowing:
+Four things worth knowing:
 
 - If you put the pedal into STORAGE by hand (SETUP → USB → STORAGE), LooperCat
   picks the volume up just the same — Connect is a convenience, not a gate.
 - While in STORAGE the pedal is a card reader, not a looper. Disconnect to
   play the pedal again.
+- **Connect needs an idle pedal.** The firmware will not hand over the card
+  while a loop is playing or recording. LooperCat re-sends the request a
+  couple of times, then says so plainly on a banner — stop the loop on the
+  pedal, then press Connect again.
+- Right after a Disconnect the pedal re-boots its USB side for a couple of
+  seconds; Connect stays disabled until the pedal is properly back on the
+  bus. Quitting the app while connected also disconnects first — the pedal
+  walks itself back to the looper screen.
+
+### The first Connect on macOS
+
+The first time the card mounts, macOS asks whether LooperCat may access
+files on a removable volume. That volume is the pedal's card — LooperCat
+reads and writes nothing else — so allow it. The question is asked once.
+
+If you clicked **Don't Allow** by mistake, every later Connect will mount the
+card and then show nothing. The switch lives in **System Settings → Privacy &
+Security → Files & Folders → LooperCat → Removable Volumes**: turn it on,
+then Connect again.
 
 ## The slot table
 
