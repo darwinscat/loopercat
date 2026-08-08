@@ -47,15 +47,22 @@ public:
     // Fold one scan in: the lifecycle state it reported and the doctor
     // findings, replaced wholesale. Recovery policy lives here — an honest
     // (re)mount or a clean eject closes the connection story and takes its
-    // error line with it. ejecting -> connected is an eject REFUSAL: the
-    // line explaining why the disconnect failed must survive it.
+    // error line with it. The clean eject is observed either as `ejected`,
+    // or — when the walk-out coalesces eject-finished with device-lost
+    // between two scans, which the app-driven disconnect always does — as
+    // ejecting -> disconnected; from ejecting the machine reaches
+    // disconnected through a successful eject only (hardware find,
+    // 2026-08-08). ejecting -> connected is an eject REFUSAL and
+    // ejecting -> ghost a mid-eject yank: both keep the line explaining them.
     void scan(lifecycle::State state, std::vector<commands::Finding> findings)
     {
         const bool remounted = state == lifecycle::State::connected
                             && state_ != lifecycle::State::connected
                             && state_ != lifecycle::State::ejecting;
         const bool ejectedCleanly =
-            state == lifecycle::State::ejected && state_ != lifecycle::State::ejected;
+            (state == lifecycle::State::ejected && state_ != lifecycle::State::ejected)
+            || (state == lifecycle::State::disconnected
+                && state_ == lifecycle::State::ejecting);
         if (remounted || ejectedCleanly)
             connectionError_.reset();
         state_ = state;
