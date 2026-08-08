@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
 
+# The oldest macOS the app runs on. Must be set BEFORE project(). Without it
+# CMake stamps the BUILD HOST's OS version into the binary as the minimum —
+# the v0.9.0 DMG built on a macOS 26 runner refused to launch anywhere older
+# (issue #11, the crossed-out icon in Finder). 11.0 = Big Sur, JUCE 8's
+# supported floor and the first arm64 macOS, so one target covers both slices
+# of the universal binary.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version" FORCE)
+endif()
+
 # ----------------------------------------------------------------------------
 # Looper Cat — companion app for hardware loopers (v1: BOSS RC-5). Felitronics
 # line, by Darwin's Cat.
@@ -10,7 +20,7 @@ cmake_minimum_required(VERSION 3.22)
 # rc5cat JS and Swift suites. `-DLOOPERCAT_BUILD_APP=OFF` configures core-only
 # (no JUCE fetch) and runs the conformance suites via `ctest`.
 # ----------------------------------------------------------------------------
-project(LooperCat VERSION 0.9.0 LANGUAGES C CXX)   # C: juce_graphics compiles Sheenbidi (.c)
+project(LooperCat VERSION 0.9.1 LANGUAGES C CXX)   # C: juce_graphics compiles Sheenbidi (.c)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -168,7 +178,11 @@ juce_add_gui_app(LooperCat
     COMPANY_NAME "Darwin's Cat"
     BUNDLE_ID    "com.darwinscat.loopercat"
     ICON_BIG     "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/loopercat-icon-1024.png"
-    ICON_SMALL   "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/loopercat-icon-32.png")
+    ICON_SMALL   "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/loopercat-icon-32.png"
+    # The Mach-O minos gates the loader; this plist key is what Finder reads
+    # to say "requires macOS ${CMAKE_OSX_DEPLOYMENT_TARGET}" in words instead
+    # of a crossed-out icon (issue #11).
+    PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>")
 
 target_sources(LooperCat PRIVATE
     app/DeviceWatcher.cpp
