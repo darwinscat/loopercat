@@ -108,6 +108,37 @@ int main()
         CHECK(!anyLineContains(m, "would not eject"));
     }
 
+    // --- the coalesced clean eject (hardware find, 2026-08-08): the
+    // app-driven disconnect posts eject-finished and device-lost in one
+    // batch, so scans jump ejecting -> disconnected without ever observing
+    // `ejected` — recovery must fire on that transition too ---
+
+    {
+        Model m;
+        m.scan(State::connected, {});
+        m.scan(State::ejecting, {});
+        m.showError(Source::connection, "The volume would not eject");
+        m.scan(State::connected, {}); // the refusal — line stays
+        CHECK(anyLineContains(m, "would not eject"));
+        m.scan(State::ejecting, {});
+        m.scan(State::disconnected, {}); // success, ejected coalesced away
+        CHECK(!anyLineContains(m, "would not eject"));
+    }
+
+    // --- but a yank mid-eject is NOT recovery: ejecting -> ghost keeps the
+    // line, and so does the ghost's own later collapse to disconnected ---
+
+    {
+        Model m;
+        m.scan(State::connected, {});
+        m.scan(State::ejecting, {});
+        m.showError(Source::connection, "The volume would not eject");
+        m.scan(State::ghost, {}); // cable pulled while the eject hung
+        CHECK(anyLineContains(m, "would not eject"));
+        m.scan(State::disconnected, {}); // ghost -> disconnected: still no recovery
+        CHECK(anyLineContains(m, "would not eject"));
+    }
+
     // --- one line per lane, latest wins ---
 
     {
