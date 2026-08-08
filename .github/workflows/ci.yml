@@ -1,7 +1,10 @@
-# Core conformance on Windows — the portability gate behind the Windows port
-# (issue #5). The core is OS-free by design (header-only C++20, std::filesystem);
-# this job keeps it that way with MSVC long before the app-side port lands.
-# The macOS story is covered by the release lane and local development.
+# The Windows lanes behind the port (issue #5). The core is OS-free by
+# design (header-only C++20, std::filesystem); core-windows keeps it that
+# way with MSVC on every push. app-windows builds the full JUCE app with the
+# phase-0 DeviceWatcher backend and publishes the unsigned dev artifact —
+# the proof the app tier compiles and links on Windows long before signing
+# and hardware QA. The macOS story is covered by the release lane and local
+# development.
 name: CI
 
 on:
@@ -24,3 +27,22 @@ jobs:
 
       - name: Test (all core suites)
         run: ctest --test-dir build -C Release --output-on-failure
+
+  app-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure (app, no test tier)
+        run: cmake -B build -DLOOPERCAT_BUILD_TESTS=OFF
+
+      - name: Build the app
+        run: cmake --build build --config Release --target LooperCat
+
+      - name: Upload the unsigned dev artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: LooperCat-windows-dev-unsigned
+          path: build/LooperCat_artefacts/Release/
+          if-no-files-found: error
