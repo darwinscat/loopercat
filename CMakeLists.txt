@@ -77,6 +77,7 @@ function(loopercat_core_test name)
 endfunction()
 
 loopercat_core_test(banner_tests)
+loopercat_core_test(connect_tests)
 loopercat_core_test(params_tests)
 loopercat_core_test(rc0_tests)
 loopercat_core_test(wav_tests)
