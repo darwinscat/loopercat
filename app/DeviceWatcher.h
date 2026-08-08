@@ -14,9 +14,8 @@
 // loopercat::DeviceWatcher — the platform device-truth source behind the
 // lifecycle machine (issue #17), and the eject/cleanup arm. One interface,
 // one backend per platform: DeviceWatcherMac.cpp (IOKit + DiskArbitration,
-// described below) and DeviceWatcherWin.cpp (phase 0 of issue #5: untracked
-// verdicts — the worker's trust-the-volume policy — plus a real
-// DeviceIoControl eject so Disconnect works).
+// described below) and DeviceWatcherWin.cpp (WM_DEVICECHANGE push, an
+// uncached FILE_FLAG_NO_BUFFERING probe, DeviceIoControl eject — issue #5).
 //
 // verdict() answers what backs a volume path RIGHT NOW: a live external
 // device, a dead one (the mount serves page cache — a ghost), or no device

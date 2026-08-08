@@ -191,9 +191,9 @@ target_sources(LooperCat PRIVATE
     app/SlotTable.cpp)
 
 # One DeviceWatcher interface, one backend per platform (issue #5): IOKit +
-# DiskArbitration on macOS; the phase-0 Windows backend (untracked verdicts,
-# real DeviceIoControl eject). A new platform must bring a backend — there
-# is deliberately no portable fallback to compile against.
+# DiskArbitration on macOS; WM_DEVICECHANGE + uncached probe + DeviceIoControl
+# eject on Windows. A new platform must bring a backend — there is
+# deliberately no portable fallback to compile against.
 if(APPLE)
     target_sources(LooperCat PRIVATE app/DeviceWatcherMac.cpp)
 elseif(WIN32)
