@@ -4,13 +4,16 @@
 // MEMORY*.RC0 model — byte-safe surgical editing.
 //
 // The RC-5's own parser is strict and every memory file carries a trailer
-// after </database>: "<generation>\0\0\0", where the generation byte is a
-// WRITE COUNTER, incremented as a raw byte with no decimal carry
-// ('8','9',':',';',…). The factory-fresh pair is MEMORY1="8", MEMORY2="9";
-// a save on the pedal stamps the freshly written bank one generation past
-// the other (observed live 2026-07-24: a pedal-side recording produced
-// MEMORY1=0x3a next to MEMORY2=0x39). A structurally broken trailer
-// triggers "LOOPER DATA READ ERR" on boot.
+// after </database>: "\n" plus a 4-byte little-endian WRITE COUNTER. The
+// factory-fresh pair is MEMORY1=0x38, MEMORY2=0x39; a save on the pedal
+// stamps the freshly written bank one generation past the other (observed
+// live 2026-07-24: a pedal-side recording produced 0x3a next to 0x39).
+// The counter is a full uint32, not a byte: field files from a fw 1.10
+// (build 0050) pedal carried SYSTEM 0x0524/0x0525 and MEMORY
+// 0x3e65736e/0x3e65736f — pairs consecutive as 32-bit values, high bytes
+// nowhere near zero (2026-08-09). The pedal never validates the VALUE —
+// it increments whatever it finds; only a structurally broken trailer
+// (wrong shape after </database>) triggers "LOOPER DATA READ ERR" on boot.
 // The invariant of this module: any byte we were not explicitly asked to
 // change is reproduced exactly. Files are handled as raw byte strings
 // (std::string carries arbitrary bytes) so the trailer and any non-ASCII
@@ -24,6 +27,7 @@
 #include "Error.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
@@ -36,13 +40,13 @@ inline constexpr int kSlotCount = 99;
 inline constexpr int kNameLength = 12;
 
 // The factory-fresh generation pair (golden.json tailMarkers). The trailer
-// byte is really a write-generation counter — see setTailGeneration; this
+// is really a write-generation counter — see setTailGeneration; this
 // pair is where a pedal starts counting and where a healed volume restarts.
-inline unsigned char tailMarkerFor(int fileNo)
+inline std::uint32_t tailMarkerFor(int fileNo)
 {
     switch (fileNo) {
-    case 1: return 0x38; // '8'
-    case 2: return 0x39; // '9'
+    case 1: return 0x38;
+    case 2: return 0x39;
     default: throw Error("fileNo must be 1 or 2, got " + std::to_string(fileNo));
     }
 }
@@ -456,28 +460,31 @@ inline std::string factorySlotBody(int slot)
 
 // --- trailer ---
 
-// The trailer byte if the tail ends with <byte> 0 0 0, otherwise no value.
-inline std::optional<unsigned char> tailMarker(std::string_view text)
+// The write-generation counter if the tail has the pedal's shape — exactly
+// "\n" plus 4 bytes, decoded little-endian — otherwise no value. Every
+// observed firmware writes this shape (SYSTEM and MEMORY alike); the VALUE
+// is never judged here, the pedal itself accepts and increments any of it.
+inline std::optional<std::uint32_t> tailMarker(std::string_view text)
 {
     const auto tail = splitFile(text).tail;
-    if (tail.size() < 4)
+    if (tail.size() != 5 || tail[0] != '\n')
         return std::nullopt;
-    const auto last4 = std::string_view(tail).substr(tail.size() - 4);
-    if (last4[1] != '\0' || last4[2] != '\0' || last4[3] != '\0')
-        return std::nullopt;
-    return static_cast<unsigned char>(last4[0]);
+    std::uint32_t generation = 0;
+    for (std::size_t i = 4; i >= 1; --i)
+        generation = (generation << 8) | static_cast<unsigned char>(tail[i]);
+    return generation;
 }
 
 // Restamp the trailer with an explicit write generation. The document bytes
 // are untouched; a structurally unrecognized trailer is refused, never
 // silently rewritten.
-inline std::string setTailGeneration(std::string_view text, unsigned char generation)
+inline std::string setTailGeneration(std::string_view text, std::uint32_t generation)
 {
     if (!tailMarker(text).has_value())
         throw Error("unrecognized trailer after </database>; refusing to rewrite it");
     std::string out(text.substr(0, text.size() - 4));
-    out.push_back(static_cast<char>(generation));
-    out.append("\0\0\0", 3);
+    for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<char>((generation >> (8 * i)) & 0xff));
     return out;
 }
 

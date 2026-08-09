@@ -22,6 +22,7 @@
 #include "Wav.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -124,17 +125,17 @@ struct WriteResult {
 // Trailers continue the pedal's own write-generation count instead of
 // rewinding it: both banks get the document stamped base+1 (MEMORY1) and
 // base+2 (MEMORY2) past the highest generation found on the volume — the
-// same shape as the factory pair 8/9. An unreadable bank cannot vote (the
-// write is what heals it); with neither readable the count restarts at the
-// factory pair. Plain max here: the wrap past 0xff is unobserved hardware
-// territory.
+// same shape as the factory pair 0x38/0x39. An unreadable bank cannot vote
+// (the write is what heals it); with neither readable the count restarts at
+// the factory pair. The counter is a uint32 (field pedals sit far past one
+// byte — see Rc0.hpp); plain max and natural wrap at 2^32.
 inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text,
                                    const WriteOptions& options)
 {
     WriteResult result;
     if (!options.skipBackup)
         result.backedUp = backup(volume, options.backupRoot, options.stamp);
-    unsigned char base = 0x37; // one below '8': a fresh volume lands on the factory pair
+    std::uint32_t base = 0x37; // one below the factory pair: a fresh volume lands on 0x38/0x39
     for (const int fileNo : { 1, 2 }) {
         try {
             if (const auto marker =
@@ -146,7 +147,7 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
     }
     for (const int fileNo : { 1, 2 }) {
         const std::string withTail =
-            rc0::setTailGeneration(text, static_cast<unsigned char>(base + fileNo));
+            rc0::setTailGeneration(text, base + static_cast<std::uint32_t>(fileNo));
         const fs::path path = volume::memoryPath(volume, fileNo);
         writeFileBytes(path, withTail);
         if (readFileBytes(path) != withTail)
@@ -662,15 +663,20 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                                        "slot before the next write" });
     }
 
-    const auto hexByte = [](unsigned char b) {
+    const auto hexGeneration = [](std::uint32_t v) {
         constexpr char digits[] = "0123456789abcdef";
-        return std::string { '0', 'x', digits[b >> 4], digits[b & 0xf] };
+        std::string s;
+        do {
+            s.insert(s.begin(), digits[v & 0xf]);
+            v >>= 4;
+        } while (v != 0);
+        return "0x" + s;
     };
 
-    // Trailer bytes are write-generation counters, not fixed markers — any
-    // value is legal; only a structurally broken trailer is boot-fatal.
+    // Trailers are write-generation counters, not fixed markers — any value
+    // is legal; only a structurally broken trailer is boot-fatal.
     std::map<int, std::string> texts;
-    std::map<int, unsigned char> generations;
+    std::map<int, std::uint32_t> generations;
     for (const int fileNo : { 1, 2 }) {
         try {
             texts[fileNo] = readMemory(volume, fileNo);
@@ -688,12 +694,14 @@ inline std::vector<Finding> doctor(const fs::path& volume)
 
     if (generations.contains(1) && generations.contains(2)) {
         // A healthy pair sits within one generation of itself (either order:
-        // the factory ships 8/9, a pedal-side save leaves e.g. 0x3a/0x39).
-        const auto delta = static_cast<unsigned char>(generations[1] - generations[2]);
-        if (delta != 0 && delta != 1 && delta != 0xff)
+        // the factory ships 0x38/0x39, a pedal-side save leaves e.g.
+        // 0x3a/0x39), and the distance is mod-2^32 — the pair stays healthy
+        // across the counter wrap.
+        const std::uint32_t delta = generations[1] - generations[2];
+        if (delta != 0 && delta != 1 && delta != 0xffffffffu)
             findings.push_back({ Level::warn,
-                                 "MEMORY write generations " + hexByte(generations[1]) + " / "
-                                     + hexByte(generations[2])
+                                 "MEMORY write generations " + hexGeneration(generations[1]) + " / "
+                                     + hexGeneration(generations[2])
                                      + " are more than one step apart \xe2\x80\x94 unexpected "
                                        "state, consider a Backup before writing" });
     }
@@ -702,8 +710,8 @@ inline std::vector<Finding> doctor(const fs::path& volume)
         && rc0::splitFile(texts[1]).document != rc0::splitFile(texts[2]).document) {
         std::string generationNote;
         if (generations.contains(1) && generations.contains(2))
-            generationNote = " (write generations " + hexByte(generations[1]) + " / "
-                           + hexByte(generations[2]) + ")";
+            generationNote = " (write generations " + hexGeneration(generations[1]) + " / "
+                           + hexGeneration(generations[2]) + ")";
         findings.push_back({ Level::info,
                              "MEMORY1 and MEMORY2 differ" + generationNote
                                  + " \xe2\x80\x94 normal right after a save on the pedal; "

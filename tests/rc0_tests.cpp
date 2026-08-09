@@ -275,12 +275,42 @@ int main()
                  0xff);
     }
 
-    // An unrecognized trailer is reported and refused, never silently rewritten.
+    // The counter is a little-endian uint32, not a byte-plus-padding: field
+    // files from a fw 1.10 (build 0050) pedal carried SYSTEM 0x0524/0x0525
+    // and MEMORY 0x3e65736e/0x3e65736f — pairs consecutive as 32-bit values,
+    // high bytes nowhere near zero (2026-08-09). A tail that a byte-wide
+    // reading would call malformed must decode, stamp and round-trip.
     {
-        const std::string oddTail = rc0::splitFile(FILE_TEXT).document + "\nGARBAGE";
-        CHECK(!rc0::tailMarker(oddTail).has_value());
-        CHECK_THROWS(rc0::setTailMarker(oddTail, 1), "refusing");
-        CHECK_THROWS(rc0::setTailGeneration(oddTail, 0x3a), "refusing");
+        const std::string fieldSystem = rc0::setTailGeneration(FILE_TEXT, 0x0524);
+        CHECK_EQ(rc0::tailMarker(fieldSystem).value(), 0x0524u);
+        const std::string tail(fieldSystem.substr(fieldSystem.size() - 4));
+        CHECK_EQ(static_cast<int>(static_cast<unsigned char>(tail[0])), 0x24); // LE on disk
+        CHECK_EQ(static_cast<int>(static_cast<unsigned char>(tail[1])), 0x05);
+        CHECK_EQ(static_cast<int>(static_cast<unsigned char>(tail[2])), 0x00);
+        CHECK_EQ(static_cast<int>(static_cast<unsigned char>(tail[3])), 0x00);
+        CHECK_EQ(rc0::splitFile(fieldSystem).document, rc0::splitFile(FILE_TEXT).document);
+
+        const std::string fieldMemory = rc0::setTailGeneration(FILE_TEXT, 0x3e65736fu);
+        CHECK_EQ(rc0::tailMarker(fieldMemory).value(), 0x3e65736fu);
+
+        // One step past a byte boundary carries into the second byte instead
+        // of wrapping back to zero.
+        const std::string carried = rc0::setTailGeneration(FILE_TEXT, 0xffu + 1);
+        CHECK_EQ(rc0::tailMarker(carried).value(), 0x100u);
+    }
+
+    // An unrecognized trailer is reported and refused, never silently
+    // rewritten. Structure is the pedal's shape — "\n" plus exactly 4 bytes;
+    // anything longer, shorter, or without the newline is not ours to stamp.
+    {
+        const std::string document = rc0::splitFile(FILE_TEXT).document;
+        for (const std::string& tail : { std::string("\nGARBAGE"), std::string("\n8\0", 3),
+                                         std::string("8\0\0\0", 4), std::string() }) {
+            const std::string oddTail = document + tail;
+            CHECK(!rc0::tailMarker(oddTail).has_value());
+            CHECK_THROWS(rc0::setTailMarker(oddTail, 1), "refusing");
+            CHECK_THROWS(rc0::setTailGeneration(oddTail, 0x3a), "refusing");
+        }
     }
 
     CHECK_THROWS(rc0::setTailMarker(FILE_TEXT, 3), "must be 1 or 2");
