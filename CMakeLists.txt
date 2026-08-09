@@ -199,6 +199,17 @@ target_sources(LooperCat PRIVATE
     app/PlayerPane.cpp
     app/SlotTable.cpp)
 
+# JUCE's two-entry icns renders as noise in Sequoia's Launchpad (see
+# art/icon/make-icns.sh); overwrite it with a full iconutil-built set.
+# Runs at build time, so it lands before the release workflow signs the app.
+if(APPLE)
+    add_custom_command(TARGET LooperCat POST_BUILD
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/make-icns.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/art/icon/loopercat-icon-1024.png"
+                "$<TARGET_BUNDLE_CONTENT_DIR:LooperCat>/Resources/AppIcon.icns"
+        COMMENT "Rebuilding AppIcon.icns with the full iconset")
+endif()
+
 # One DeviceWatcher interface, one backend per platform (issue #5): IOKit +
 # DiskArbitration on macOS; WM_DEVICECHANGE + uncached probe + DeviceIoControl
 # eject on Windows. A new platform must bring a backend — there is
