@@ -50,6 +50,12 @@ public:
 
     // Set the preview volume (0..100) — the fader follows and the gain applies.
     void setVolume(double percent);
+
+    int currentSlot() const { return slot_; }
+
+    // Close every handle on the loaded WAV (reader, read-ahead, thumbnail
+    // source) but keep the pane's state, so reload() can bring it back.
+    void releaseFile();
     std::function<void(int, juce::int64, juce::int64)> onTrim;       // (slot, inFrame, outFrame)
 
     void paint(juce::Graphics& g) override;

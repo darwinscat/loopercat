@@ -85,6 +85,7 @@ private:
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
     void toggleOneShot(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
+    void releasePlayerIfHolding(int slotA, int slotB);
     void choosePushWav(int slot, bool slotOccupied);
     void pullSlot(int slot);
     void clearSlot(int slot, const juce::String& name);
