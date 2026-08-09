@@ -732,7 +732,10 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
         return;
     const SlotRow& row = *found;
 
-    if (!row.info.hasAudio || row.wavPath.empty()) {
+    // Deliberately not gated on WavStat: the database lags behind the folder
+    // until the pedal's boot-time indexing, and listening to the file is a
+    // read-only act — a WAV that is there is a WAV you can hear.
+    if (row.wavPath.empty()) {
         player.clear(); // an empty slot: nothing to listen to
         return;
     }
