@@ -136,6 +136,13 @@ void PlayerPane::reload()
     applyFile(file);
 }
 
+void PlayerPane::releaseFile()
+{
+    engine_.unload();
+    thumbnail_.setSource(nullptr);
+    updateTransportRow();
+}
+
 void PlayerPane::clear()
 {
     engine_.unload();

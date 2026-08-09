@@ -159,6 +159,7 @@ MainComponent::MainComponent(std::string explicitVolume)
         // read before writing; paced playback reads are harmless.
         if (!player.isThumbnailReady())
             player.clear();
+        releasePlayerIfHolding(from, to); // the swap renames their folders (issue #26)
         worker.enqueue({ "Swap slots " + juce::String(from) + " and " + juce::String(to), from,
                          [from, to, options = makeWriteOptions()](
                              const volume::fs::path& volumePath) {
@@ -194,6 +195,9 @@ MainComponent::MainComponent(std::string explicitVolume)
                 if (button != 1)
                     return;
                 const auto options = makeWriteOptions();
+                // Keep the pane's state: the completion path reload()s the
+                // trimmed bytes into the same slot view.
+                player.releaseFile();
                 worker.enqueue(
                     { "Trim slot " + juce::String(slot), slot,
                       [slot, inFrame, outFrame, options,
@@ -825,9 +829,21 @@ void MainComponent::choosePushWav(int slot, bool slotOccupied)
                              });
 }
 
+// Windows locks open files: a mutation that renames, deletes or rewrites a
+// slot's WAV cannot proceed while the preview holds it open — the app blocks
+// its own write with "Access is denied" (observed live on hardware,
+// issue #26). macOS never minded, so release on every platform alike.
+void MainComponent::releasePlayerIfHolding(int slotA, int slotB)
+{
+    const int held = player.currentSlot();
+    if (held == slotA || held == slotB)
+        player.clear();
+}
+
 void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotOccupied)
 {
     const auto enqueuePush = [this, slot, sourcePath](bool force) {
+        releasePlayerIfHolding(slot, slot); // a replace rewrites the WAV under preview (issue #26)
         worker.enqueue({ "Push " + juce::File(sourcePath).getFileName() + " to slot "
                              + juce::String(slot),
                          slot,
@@ -902,6 +918,7 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
             return;
         const bool useTrash = choice == 1;
         const auto options = makeWriteOptions();
+        releasePlayerIfHolding(slot, slot); // the clear moves or deletes its WAV (issue #26)
         worker.enqueue(
             { juce::String("Clear slot ") + juce::String(slot), slot,
               [slot, options, useTrash,
