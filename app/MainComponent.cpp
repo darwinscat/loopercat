@@ -625,10 +625,24 @@ void MainComponent::cleanUpGhostMount()
         });
 }
 
+// The volume as a human names it: Explorer says "BOSS RC-5 (D:)", and a bare
+// "D:\" says nothing about whose card is up. Mac mount paths already carry
+// the label as their last segment, so only Windows needs the lookup.
+juce::String MainComponent::volumeDisplayName() const
+{
+    const juce::String path = utf8(snapshot.volume);
+#if JUCE_WINDOWS
+    const juce::String label = juce::File(path).getVolumeLabel();
+    if (label.isNotEmpty())
+        return label + " (" + path.trimCharactersAtEnd("\\") + ")";
+#endif
+    return path;
+}
+
 void MainComponent::updateStatusText()
 {
     if (snapshot.state == lifecycle::State::ghost) {
-        status.setText(utf8(snapshot.volume + " \xe2\x80\x94 device detached (ghost mount)"),
+        status.setText(volumeDisplayName() + juce::String::fromUTF8(" \xe2\x80\x94 device detached (ghost mount)"),
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kErrorText);
         return;
@@ -661,7 +675,7 @@ void MainComponent::updateStatusText()
         return;
     }
     if (!snapshot.error.empty()) {
-        status.setText(utf8(snapshot.volume + " \xe2\x80\x94 " + snapshot.error),
+        status.setText(volumeDisplayName() + juce::String::fromUTF8(" \xe2\x80\x94 ") + utf8(snapshot.error),
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kErrorText);
         return;
@@ -669,7 +683,7 @@ void MainComponent::updateStatusText()
     int loaded = 0;
     for (const auto& row : snapshot.slots)
         loaded += row.info.hasAudio ? 1 : 0;
-    juce::String text = utf8(snapshot.volume + "  \xe2\x80\x94  ") + juce::String(loaded) + " of "
+    juce::String text = volumeDisplayName() + juce::String::fromUTF8("  \xe2\x80\x94  ") + juce::String(loaded) + " of "
                       + juce::String(snapshot.slots.size()) + " slots hold a loop";
     if (snapshot.freeBytes > 0)
         text << juce::String::fromUTF8("  \xc2\xb7  ")
@@ -722,7 +736,12 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         ghostCleanupStarted = false; // the episode is over
     }
 
+#if JUCE_WINDOWS
+    // "D:\" has no filename to show — the light wears the volume label.
+    pedalLight.set(mounted, juce::File(utf8(snapshot.volume)).getVolumeLabel());
+#else
     pedalLight.set(mounted, utf8(volume::fs::path(snapshot.volume).filename().string()));
+#endif
 
     updateTableRows();
     updateToolbar();
