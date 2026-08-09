@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -106,7 +107,7 @@ inline std::string syntheticSlotBody(const std::string& name = "Memory 00")
     return s;
 }
 
-inline std::string syntheticMemoryText(unsigned char tailMarker = 0x38, int slots = 99)
+inline std::string syntheticMemoryText(std::uint32_t tailMarker = 0x38, int slots = 99)
 {
     std::string xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<database name=\"RC-5\" revision=\"0\">\n";
     for (int i = 0; i < slots; ++i) {
@@ -116,8 +117,8 @@ inline std::string syntheticMemoryText(unsigned char tailMarker = 0x38, int slot
     }
     xml += "</database>";
     xml += "\n";
-    xml.push_back(static_cast<char>(tailMarker));
-    xml.append("\0\0\0", 3);
+    for (int i = 0; i < 4; ++i) // little-endian uint32 write counter (theory: rc0.js)
+        xml.push_back(static_cast<char>((tailMarker >> (8 * i)) & 0xff));
     return xml;
 }
 

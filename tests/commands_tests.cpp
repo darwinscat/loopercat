@@ -155,6 +155,47 @@ int main()
         CHECK_EQ(static_cast<int>(healed2.value()), 0x3d);
     }
 
+    // --- writeMemoryPair carries the count past a byte, never rewinds it ---
+
+    {
+        // A pedal that has saved its way to the top of the first byte. A
+        // byte-wide continuation would wrap the fresh stamps back to
+        // 0x00/0x01 — rewinding the count and desyncing the pair from the
+        // pedal's own next save. The uint32 counter carries instead.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const std::string text = commands::readMemory(volume);
+        commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                 rc0::setTailGeneration(text, 0xffu));
+        commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                 rc0::setTailGeneration(text, 0xfeu));
+
+        commands::writeMemoryPair(volume, text, { .skipBackup = true });
+        const auto m1 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 1)));
+        const auto m2 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 2)));
+        CHECK_EQ(m1.value(), 0x100u);
+        CHECK_EQ(m2.value(), 0x101u);
+    }
+
+    // --- rename works on a card whose counters sit far past one byte ---
+
+    {
+        // The user-facing path of the same theory: a fw 1.10 field pedal
+        // (MEMORY pair 0x3e65736e/0x3e65736f) must rename, not refuse.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const std::string text = commands::readMemory(volume);
+        commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                 rc0::setTailGeneration(text, 0x3e65736fu));
+        commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                 rc0::setTailGeneration(text, 0x3e65736eu));
+
+        commands::rename(volume, 2, "Field Test", { .skipBackup = true });
+        const std::string m1 = commands::readFileBytes(volume::memoryPath(volume, 1));
+        CHECK_EQ(rc0::decodeName(rc0::slotBody(m1, 2)), "Field Test  ");
+        CHECK_EQ(rc0::tailMarker(m1).value(), 0x3e657370u); // count continued, not rewound
+    }
+
     // --- setTempo: the user's BPM lands in every tempo-shaped field ---
 
     {
@@ -877,11 +918,25 @@ int main()
                     && finding.message.find("more than one step apart") != std::string::npos);
         CHECK(sawGap);
 
-        // A structurally broken trailer is the boot-fatal condition.
+        // A counter past one byte is a pedal that has simply saved a lot —
+        // field files at fw 1.10 carried MEMORY 0x3e65736e/0x3e65736f
+        // (2026-08-09). The pair is healthy: no trailer or generation noise.
+        {
+            const std::string text = commands::readMemory(volume, 1);
+            commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                     rc0::setTailGeneration(text, 0x3e65736fu));
+            commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                     rc0::setTailGeneration(text, 0x3e65736eu));
+        }
+        for (const auto& finding : commands::doctor(volume))
+            CHECK(finding.message.find("trailer") == std::string::npos
+                  && finding.message.find("generations") == std::string::npos);
+
+        // A structurally broken trailer is the boot-fatal condition: the
+        // shape is gone (tail cut short), not merely the value unfamiliar.
         {
             const std::string m2 = commands::readFileBytes(volume::memoryPath(volume, 2));
-            commands::writeFileBytes(volume::memoryPath(volume, 2),
-                                     m2.substr(0, m2.size() - 4) + std::string("\x39\x01\0\0", 4));
+            commands::writeFileBytes(volume::memoryPath(volume, 2), m2.substr(0, m2.size() - 2));
         }
         bool sawMalformed = false;
         for (const auto& finding : commands::doctor(volume))
