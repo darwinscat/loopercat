@@ -170,6 +170,12 @@ MainComponent::MainComponent(std::string explicitVolume)
             choosePushWav(slot, false);
     };
     player.onGear = [this] { openAudioSettings(); };
+    player.onVolumeChanged = [this](double percent) {
+        if (auto* file = settings.file())
+            file->setValue("previewVolume", percent);
+    };
+    if (auto* file = settings.file())
+        player.setVolume(file->getDoubleValue("previewVolume", 100.0));
     player.onTrim = [this](int slot, juce::int64 inFrame, juce::int64 outFrame) {
         if (pedalBusy || slotRowFor(slot) == nullptr)
             return;

@@ -41,6 +41,17 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     loopButton_.setColour(juce::ToggleButton::tickColourId, felitronics::appkit::brand::violet);
     loopButton_.onClick = [this] { engine_.setLooping(loopButton_.getToggleState()); };
 
+    volumeSlider_.setRange(0.0, 100.0, 1.0);
+    volumeSlider_.setValue(100.0, juce::dontSendNotification);
+    volumeSlider_.setColour(juce::Slider::trackColourId, felitronics::appkit::brand::violet);
+    volumeSlider_.setColour(juce::Slider::thumbColourId, felitronics::appkit::brand::lilac);
+    volumeSlider_.setColour(juce::Slider::backgroundColourId, juce::Colour(0xff1e1e26));
+    volumeSlider_.onValueChange = [this] {
+        engine_.setGain(static_cast<float>(volumeSlider_.getValue() / 100.0));
+        if (onVolumeChanged)
+            onVolumeChanged(volumeSlider_.getValue());
+    };
+
     trimButton_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2a2440));
     trimButton_.setColour(juce::TextButton::textColourOffId, felitronics::appkit::brand::lilac);
     trimButton_.onClick = [this] {
@@ -64,6 +75,7 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
 
     addAndMakeVisible(playButton_);
     addAndMakeVisible(loopButton_);
+    addAndMakeVisible(volumeSlider_);
     addChildComponent(trimButton_);  // appear with active markers
     addChildComponent(resetButton_);
     addAndMakeVisible(gearButton_);
@@ -74,6 +86,13 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
 PlayerPane::~PlayerPane()
 {
     thumbnail_.removeChangeListener(this);
+}
+
+void PlayerPane::setVolume(double percent)
+{
+    // Through the slider so the fader, the engine gain and the persistence
+    // callback stay one path.
+    volumeSlider_.setValue(juce::jlimit(0.0, 100.0, percent), juce::sendNotificationSync);
 }
 
 void PlayerPane::setSlot(int slot, const juce::File& wav, const juce::String& title, bool oneShot,
@@ -225,8 +244,29 @@ void PlayerPane::paint(juce::Graphics& g)
     g.setFont(juce::FontOptions(13.0f));
     if (title_.isNotEmpty()) {
         g.setColour(kText);
-        g.drawText(title_, row.withTrimmedLeft(150).withTrimmedRight(420),
+        g.drawText(title_, row.withTrimmedLeft(244).withTrimmedRight(420),
                    juce::Justification::centredLeft, true);
+    }
+
+    if (!volumeIconArea_.isEmpty()) {
+        // The speaker glyph: says "volume" where a bare slider says nothing.
+        const auto icon = volumeIconArea_.toFloat();
+        const float cx = icon.getX() + 3.0f, cy = icon.getCentreY();
+        juce::Path speaker;
+        speaker.startNewSubPath(cx, cy - 2.5f);
+        speaker.lineTo(cx + 3.0f, cy - 2.5f);
+        speaker.lineTo(cx + 7.0f, cy - 6.0f);
+        speaker.lineTo(cx + 7.0f, cy + 6.0f);
+        speaker.lineTo(cx + 3.0f, cy + 2.5f);
+        speaker.lineTo(cx, cy + 2.5f);
+        speaker.closeSubPath();
+        g.setColour(kDim);
+        g.fillPath(speaker);
+        juce::Path arc;
+        arc.addCentredArc(cx + 8.0f, cy, 3.5f, 3.5f, 0.0f,
+                          juce::MathConstants<float>::pi * 0.25f,
+                          juce::MathConstants<float>::pi * 0.75f, true);
+        g.strokePath(arc, juce::PathStrokeType(1.2f));
     }
     if (engine_.hasSource()) {
         // Selection readout: what the pedal would derive for the trimmed
@@ -304,6 +344,8 @@ void PlayerPane::resized()
     playButton_.setBounds(row.removeFromLeft(46));
     row.removeFromLeft(8);
     loopButton_.setBounds(row.removeFromLeft(64));
+    volumeIconArea_ = row.removeFromLeft(16);
+    volumeSlider_.setBounds(row.removeFromLeft(84).reduced(0, 3));
     gearButton_.setBounds(row.removeFromRight(24).reduced(0, 1));
     row.removeFromRight(96); // the time readout, drawn in paint()
     trimButton_.setBounds(row.removeFromRight(58).reduced(2, 0));
