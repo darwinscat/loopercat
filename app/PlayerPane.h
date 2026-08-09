@@ -81,6 +81,7 @@ private:
     juce::TextButton playButton_;
     juce::ToggleButton loopButton_ { "Loop" };
     juce::Slider volumeSlider_ { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
+    juce::Rectangle<int> volumeIconArea_; // the speaker glyph, drawn in paint()
     juce::TextButton trimButton_ { "Trim" };
     juce::TextButton resetButton_ { "Reset" };
     felitronics::appkit::brand::GearButton gearButton_;
