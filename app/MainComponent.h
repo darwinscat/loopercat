@@ -60,6 +60,7 @@ private:
     void slotChosen(int slot, bool startPlaying);
     void openAudioSettings();
     void updateStatusText();
+    juce::String volumeDisplayName() const;
     void updateTableRows();
     void updateToolbar();
     void cleanUpGhostMount();
