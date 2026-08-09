@@ -46,6 +46,10 @@ public:
     bool isThumbnailReady() const { return thumbnail_.isFullyLoaded(); }
 
     std::function<void()> onGear;                                    // open the audio-settings dialog
+    std::function<void(double)> onVolumeChanged;                     // preview volume moved (0..100)
+
+    // Set the preview volume (0..100) — the fader follows and the gain applies.
+    void setVolume(double percent);
     std::function<void(int, juce::int64, juce::int64)> onTrim;       // (slot, inFrame, outFrame)
 
     void paint(juce::Graphics& g) override;
@@ -76,6 +80,7 @@ private:
 
     juce::TextButton playButton_;
     juce::ToggleButton loopButton_ { "Loop" };
+    juce::Slider volumeSlider_ { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     juce::TextButton trimButton_ { "Trim" };
     juce::TextButton resetButton_ { "Reset" };
     felitronics::appkit::brand::GearButton gearButton_;

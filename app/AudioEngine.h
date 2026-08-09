@@ -140,6 +140,10 @@ public:
 
     bool isLooping() const { return looping_; }
 
+    // Preview gain, 1.0 = unity. Applies to the monitor output only — the
+    // pedal's own per-memory level is a database field, not this.
+    void setGain(float gain) { transport_.setGain(gain); }
+
     // Marker preview: loop the [start, end) second range seamlessly (the
     // wrap happens under the buffering layer — see SectionLoopSource). If
     // playback is outside the section it is pulled to the section start.
