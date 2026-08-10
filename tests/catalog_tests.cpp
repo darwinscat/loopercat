@@ -57,14 +57,17 @@ int main()
         CHECK_EQ(s.frames, 0);
         CHECK(!s.oneShot);
         CHECK_EQ(s.tempoTenths, 1200);
+        CHECK_EQ(s.recTempoTenths, 1200); // untouched: plays at its own tempo
     }
 
-    // The slot with audio.
+    // The slot with audio — Tempo was edited away from RecTmp, the state
+    // where the pedal time-stretches on playback.
     {
         const auto& s = slots.at(6);
         CHECK(s.hasAudio);
         CHECK_EQ(s.frames, 6860867);
         CHECK_EQ(s.tempoTenths, 987);
+        CHECK_EQ(s.recTempoTenths, 1200);
         CHECK(!s.oneShot);
     }
 
