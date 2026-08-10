@@ -39,6 +39,20 @@ card and then show nothing. The switch lives in **System Settings → Privacy &
 Security → Files & Folders → LooperCat → Removable Volumes**: turn it on,
 then Connect again.
 
+### The first run on Windows
+
+LooperCat for Windows is a single portable exe inside the release zip — no
+installer, no admin rights: unzip anywhere and run. Settings live in your
+user profile; beyond that the pedal's card is all it ever touches.
+
+The builds are not code-signed yet, so the first launch of a downloaded exe
+meets SmartScreen: click **More info → Run anyway**. Signed builds are on the
+roadmap; until then that one extra click is the whole ceremony.
+
+Connect works the same as on the Mac — one press, the pedal walks itself into
+STORAGE, the card comes up on a drive letter. There is no access prompt:
+Windows has no removable-volume permission gate.
+
 ## The slot table
 
 All 99 memory slots in one table: name, duration, bars, tempo, one-shot flag,

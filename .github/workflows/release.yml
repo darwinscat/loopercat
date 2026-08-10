@@ -1,8 +1,10 @@
-# LooperCat release — cut on pushing a clean vX.Y.Z tag. Builds the universal
-# Release app on the family's self-hosted mac (the Developer ID keychain and
-# the notary profile live there — the orbitcab pattern), gates on ctest, then
-# signs + notarizes + staples a DMG and publishes a DRAFT GitHub Release:
-# publishing is a human decision, the pipeline only prepares it.
+# LooperCat release — cut on pushing a clean vX.Y.Z tag. Two build lanes feed
+# one draft: the family's self-hosted mac signs + notarizes + staples a DMG
+# (the Developer ID keychain and the notary profile live there — the orbitcab
+# pattern), windows-latest builds the portable zip (unsigned until the code
+# signing certificate story lands — the guide says so), and a publish job
+# collects both under one SHA256SUMS into a DRAFT GitHub Release: publishing
+# is a human decision, the pipeline only prepares it.
 #
 # Required on this repo: secret MACOS_APP_IDENTITY (the codesign identity
 # name), secret KCH_PWD (the runner keychain password), var NOTARY_PROFILE
@@ -18,11 +20,9 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    # Pinned to the STUDIO runner while it is the only build Mac with the
-    # dcat-signing keychain; drop the `studio` label once M5 is equipped too.
-    runs-on: [self-hosted, macOS, studio]
-    timeout-minutes: 120
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Only CLEAN vX.Y.Z tags may publish: the in-app update check treats
       # every published release as authoritative and parses semver out of the
@@ -44,8 +44,17 @@ jobs:
             exit 1
           fi
 
+  macos:
+    needs: gate
+    # Pinned to the STUDIO runner while it is the only build Mac with the
+    # dcat-signing keychain; drop the `studio` label once M5 is equipped too.
+    runs-on: [self-hosted, macOS, studio]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
       - name: Configure (Release; universal — the CMake default arches)
-        # LOOPERCAT_BUILDER stamps the version-badge flavor: a shipped DMG
+        # LOOPERCAT_BUILDER stamps the version-badge flavor: a shipped build
         # says "release", never the default "dev" of a workstation build.
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DLOOPERCAT_BUILDER=release
 
@@ -109,15 +118,81 @@ jobs:
           xcrun stapler staple "$DMG"
           spctl --assess --type open --context context:primary-signature -v "$DMG"
 
-          (cd dist && shasum -a 256 "$(basename "$DMG")" > SHA256SUMS)
-          echo "DMG=$DMG" >> "$GITHUB_ENV"
+      - name: Hand the DMG to the publish job
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-macos
+          path: dist/LooperCat-*-macOS.dmg
+          if-no-files-found: error
+
+  windows:
+    needs: gate
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure (Release flavor badge)
+        run: cmake -B build -DLOOPERCAT_BUILDER=release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test (all suites)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # The exe must run on a machine with no VC++ redistributable: a
+      # dynamic-CRT import in the exe means the static-runtime setting
+      # regressed and a clean user machine would refuse to start it.
+      - name: Assert static CRT (no VCRUNTIME import)
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("build/LooperCat_artefacts/Release/LooperCat.exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -match "VCRUNTIME140") { throw "dynamic CRT leaked into the exe" }
+          Write-Output "static CRT confirmed"
+
+      - name: Package the portable zip
+        shell: pwsh
+        run: |
+          $ver = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path "build/LooperCat_artefacts/Release/LooperCat.exe" `
+                           -DestinationPath "dist/LooperCat-$ver-Windows.zip"
+
+      - name: Hand the zip to the publish job
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-windows
+          path: dist/LooperCat-*-Windows.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Collect both lanes
+        uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      # One SHA256SUMS across every asset — the mac story had per-file sums
+      # in the same file; two lanes just mean two lines.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum LooperCat-* > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create the DRAFT GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
             --draft \
             --title "LooperCat ${GITHUB_REF_NAME}" \
             --generate-notes \
-            "$DMG" dist/SHA256SUMS
+            dist/LooperCat-* dist/SHA256SUMS
