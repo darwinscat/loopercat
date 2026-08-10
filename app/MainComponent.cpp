@@ -820,7 +820,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     juce::PopupMenu menu;
     menu.addItem(1, juce::String::fromUTF8("Rename\xe2\x80\xa6"));
     menu.addItem(2, "One Shot", true, row.info.oneShot);
-    menu.addItem(7, "Count-In", true, row.info.countIn);
+    menu.addItem(7, "Play Count-In", true, row.info.countIn);
     menu.addItem(6, juce::String::fromUTF8("Set tempo\xe2\x80\xa6"));
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
@@ -858,7 +858,7 @@ void MainComponent::toggleOneShot(int slot, bool currentlyOn)
 
 void MainComponent::toggleCountIn(int slot, bool currentlyOn)
 {
-    worker.enqueue({ juce::String(currentlyOn ? "Disable" : "Enable") + " Count-In on slot "
+    worker.enqueue({ juce::String(currentlyOn ? "Disable" : "Enable") + " Play Count-In on slot "
                          + juce::String(slot),
                      slot,
                      [slot, on = !currentlyOn, options = makeWriteOptions()](

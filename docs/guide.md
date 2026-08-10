@@ -74,6 +74,11 @@ rolling, and the gear opens the audio-output settings (pick your interface).
 - **Rename** — right in the name cell, or right-click → **Rename…**.
 - **One Shot** — the flag in the row, or the context-menu toggle: play once
   and stop instead of looping.
+- **Play Count-In** — the second flag: the pedal plays one measure of click
+  at the slot's tempo, then the track with no drums over the music — a
+  backing track becomes stage-ready in one tap. The name is the pedal's own
+  **PLAY COUNT**; its separate REC COUNT (a count-in before recording) is a
+  different setting and is not touched.
 - **Set tempo…** — enter the loop's true tempo and LooperCat writes the
   pedal's tempo fields coherently — tempo and measure count together, the
   arithmetic the pedal itself skips on import. The Bars column shows the
