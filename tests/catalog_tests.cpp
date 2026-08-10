@@ -28,8 +28,9 @@ int main()
         body9 = rc0::setField(body9, "One", 1);
         text = rc0::replaceSlotBody(text, 9, body9);
 
-        // Slot 11: the full count-in preset. Slot 12: a near-miss — rhythm on
-        // with a count-in but the factory pattern, which is NOT the preset.
+        // Slot 11: a count over a silenced rhythm (how this app writes it).
+        // Slot 12: a count over a rhythm that plays a pattern — the pedal
+        // sounds both. Slot 13: a rhythm playing with no count at all.
         std::string body11 = rc0::slotBody(text, 11);
         body11 = rc0::setField(body11, "State", rc0::kRhythmStateOn);
         body11 = rc0::setField(body11, "PlayCount", rc0::kRhythmPlayCount1Meas);
@@ -39,7 +40,13 @@ int main()
         std::string body12 = rc0::slotBody(text, 12);
         body12 = rc0::setField(body12, "State", rc0::kRhythmStateOn);
         body12 = rc0::setField(body12, "PlayCount", rc0::kRhythmPlayCount1Meas);
+        body12 = rc0::setField(body12, "Pattern", 11);
         text = rc0::replaceSlotBody(text, 12, body12);
+
+        std::string body13 = rc0::slotBody(text, 13);
+        body13 = rc0::setField(body13, "State", rc0::kRhythmStateOn);
+        body13 = rc0::setField(body13, "Pattern", 11);
+        text = rc0::replaceSlotBody(text, 13, body13);
     }
 
     const auto slots = catalog::listSlots(text);
@@ -78,10 +85,11 @@ int main()
         CHECK(!s.hasAudio);
     }
 
-    // Count-in is the full triple or nothing: an untouched slot and a
-    // near-miss (real pattern instead of Blank) must both read false.
+    // The indicator answers "will a count be heard", so a groove alongside
+    // the count does not hide it, and a groove without one is not a count.
     CHECK(slots.at(10).countIn);
-    CHECK(!slots.at(11).countIn);
+    CHECK(slots.at(11).countIn);
+    CHECK(!slots.at(12).countIn);
     CHECK(!slots.at(0).countIn);
 
     // readSlot agrees with listSlots.
