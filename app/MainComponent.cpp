@@ -896,8 +896,8 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     const juce::String name = trimmedName(row);
 
     // Operations only: the things done TO a slot. Its settings live in the
-    // panel now (and on the row's pills), so this menu stopped being a second
-    // copy of them.
+    // panel now (and the two lamp columns still flip on click), so this menu
+    // stopped being a second copy of them.
     juce::PopupMenu menu;
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
@@ -911,7 +911,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
         file->saveIfNeeded();
         toast.show(juce::String::fromUTF8(
             "Name, tempo, One Shot and Play Count-In moved to Slot settings (\xe2\x8c\x98I) "
-            "\xe2\x80\x94 the row's pills still switch the last two."));
+            "\xe2\x80\x94 the One Shot and Play Count-In cells still switch them."));
     }
 
     menu.showMenuAsync(

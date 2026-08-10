@@ -9,7 +9,7 @@
 
 //==============================================================================
 // loopercat::SlotTable — the slot browser: one row per memory slot (number,
-// name, duration, bars, tempo, the behaviour pills, on-pedal wav file). Rows with
+// name, duration, bars, tempo, One Shot, Count-In, on-pedal wav file). Rows with
 // audio carry the full text colour; empty slots stay dim so a loaded pedal
 // reads at a glance.
 //==============================================================================
@@ -63,14 +63,7 @@ public:
     static juce::String formatTempo(long long tenths);
 
 private:
-    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kFlags, kWavFile };
-
-    // The behaviour column is a strip of pills, one per setting a slot can
-    // carry, so a new setting costs a pill instead of a column. They stay
-    // clickable exactly where the One Shot and Count-In cells were clickable:
-    // the panel is these settings' new home, not a toll gate on the way in.
-    enum class Flag { oneShot, countIn };
-    static juce::Rectangle<int> pillBounds(Flag flag, int cellHeight);
+    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kOneShot, kCountIn, kWavFile };
 
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;
