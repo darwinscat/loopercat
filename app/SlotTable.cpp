@@ -49,7 +49,9 @@ SlotTable::SlotTable()
     header.addColumn("Bars", kBars, 56, 56, 56, Flags::notSortable);
     header.addColumn("Tempo", kTempo, 76, 76, 76, Flags::notSortable);
     header.addColumn("One Shot", kOneShot, 84, 84, 84, Flags::notSortable);
-    header.addColumn("Count-In", kCountIn, 84, 84, 84, Flags::notSortable);
+    // "Play Count-In", not bare "Count-In": the pedal also has a REC COUNT,
+    // and the name says which one this is (and that we know the difference).
+    header.addColumn("Play Count-In", kCountIn, 104, 104, 104, Flags::notSortable);
     header.addColumn("WAV file", kWavFile, 300, 120, -1, Flags::notSortable);
     header.setStretchToFitActive(true);
 
