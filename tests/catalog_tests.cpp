@@ -27,6 +27,19 @@ int main()
         std::string body9 = rc0::slotBody(text, 9);
         body9 = rc0::setField(body9, "One", 1);
         text = rc0::replaceSlotBody(text, 9, body9);
+
+        // Slot 11: the full count-in preset. Slot 12: a near-miss — rhythm on
+        // with a count-in but the factory pattern, which is NOT the preset.
+        std::string body11 = rc0::slotBody(text, 11);
+        body11 = rc0::setField(body11, "State", rc0::kRhythmStateOn);
+        body11 = rc0::setField(body11, "PlayCount", rc0::kRhythmPlayCount1Meas);
+        body11 = rc0::setField(body11, "Pattern", rc0::kRhythmPatternBlank);
+        text = rc0::replaceSlotBody(text, 11, body11);
+
+        std::string body12 = rc0::slotBody(text, 12);
+        body12 = rc0::setField(body12, "State", rc0::kRhythmStateOn);
+        body12 = rc0::setField(body12, "PlayCount", rc0::kRhythmPlayCount1Meas);
+        text = rc0::replaceSlotBody(text, 12, body12);
     }
 
     const auto slots = catalog::listSlots(text);
@@ -64,6 +77,12 @@ int main()
         CHECK(s.oneShot);
         CHECK(!s.hasAudio);
     }
+
+    // Count-in is the full triple or nothing: an untouched slot and a
+    // near-miss (real pattern instead of Blank) must both read false.
+    CHECK(slots.at(10).countIn);
+    CHECK(!slots.at(11).countIn);
+    CHECK(!slots.at(0).countIn);
 
     // readSlot agrees with listSlots.
     CHECK(catalog::readSlot(text, 7) == slots.at(6));

@@ -9,7 +9,7 @@
 
 //==============================================================================
 // loopercat::SlotTable — the read-only slot browser: one row per memory slot
-// (number, name, duration, tempo, One Shot, on-pedal wav file). Rows with
+// (number, name, duration, tempo, One Shot, Count-In, on-pedal wav file). Rows with
 // audio carry the full text colour; empty slots stay dim so a loaded pedal
 // reads at a glance.
 //==============================================================================
@@ -38,6 +38,7 @@ public:
     std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
     std::function<void(int, long long)> onTempoCommitted;           // inline edit finished with new tenths of BPM
     std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
+    std::function<void(int)> onCountInToggled;                      // click on the Count-In cell
     std::function<void(int)> onEmptyWavCellClicked;                 // click the "drop a WAV here" hint
 
     void selectSlot(int slot);
@@ -64,7 +65,7 @@ public:
     static juce::String formatTempo(long long tenths);
 
 private:
-    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kOneShot, kWavFile };
+    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kOneShot, kCountIn, kWavFile };
 
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;

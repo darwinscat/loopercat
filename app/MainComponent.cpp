@@ -4,6 +4,7 @@
 #include "MainComponent.h"
 
 #include "Strings.h"
+#include "WavImport.h"
 
 #include <loopercat/Wav.hpp>
 
@@ -138,6 +139,10 @@ MainComponent::MainComponent(std::string explicitVolume)
     table.onOneShotToggled = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             toggleOneShot(slot, row->info.oneShot);
+    };
+    table.onCountInToggled = [this](int slot) {
+        if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
+            toggleCountIn(slot, row->info.countIn);
     };
     table.onRenameCommitted = [this](int slot, juce::String newName) {
         if (pedalBusy || slotRowFor(slot) == nullptr)
@@ -815,6 +820,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     juce::PopupMenu menu;
     menu.addItem(1, juce::String::fromUTF8("Rename\xe2\x80\xa6"));
     menu.addItem(2, "One Shot", true, row.info.oneShot);
+    menu.addItem(7, "Count-In", true, row.info.countIn);
     menu.addItem(6, juce::String::fromUTF8("Set tempo\xe2\x80\xa6"));
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
@@ -822,9 +828,10 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
     const bool oneShotNow = row.info.oneShot;
+    const bool countInNow = row.info.countIn;
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
-        [this, slot, name, occupied, oneShotNow](int choice) {
+        [this, slot, name, occupied, oneShotNow, countInNow](int choice) {
             switch (choice) {
             case 1: table.startRenameEditForSlot(slot); break; // same in-place editor as double-click
             case 2: toggleOneShot(slot, oneShotNow); break;
@@ -832,6 +839,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
             case 6: table.startTempoEditForSlot(slot); break;
+            case 7: toggleCountIn(slot, countInNow); break;
             default: break;
             }
         });
@@ -845,6 +853,17 @@ void MainComponent::toggleOneShot(int slot, bool currentlyOn)
                      [slot, on = !currentlyOn, options = makeWriteOptions()](
                          const volume::fs::path& volumePath) {
                          commands::setOneShot(volumePath, { slot }, on, options);
+                     } });
+}
+
+void MainComponent::toggleCountIn(int slot, bool currentlyOn)
+{
+    worker.enqueue({ juce::String(currentlyOn ? "Disable" : "Enable") + " Count-In on slot "
+                         + juce::String(slot),
+                     slot,
+                     [slot, on = !currentlyOn, options = makeWriteOptions()](
+                         const volume::fs::path& volumePath) {
+                         commands::setCountIn(volumePath, { slot }, on, options);
                      } });
 }
 
@@ -881,13 +900,32 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
         worker.enqueue({ "Push " + juce::File(sourcePath).getFileName() + " to slot "
                              + juce::String(slot),
                          slot,
-                         [source = sourcePath.toStdString(), slot, force,
+                         [source = sourcePath, slot, force,
                           options = makeWriteOptions(),
+                          importTmp = settings.dataDir().getChildFile("import-tmp"),
                           trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
                              const volume::fs::path& volumePath) {
-                             commands::push(volumePath, source, slot,
-                                            { .force = force, .trashRoot = trash,
-                                              .write = options });
+                             // DAW exports arrive as anything — convert off the
+                             // message thread, on this worker, before the push
+                             // (issue #20). The temp conversion dies with the job.
+                             wavimport::Prepared prepared;
+                             const juce::Result ok =
+                                 wavimport::prepare(juce::File(source), importTmp, prepared);
+                             if (ok.failed())
+                                 throw Error(ok.getErrorMessage().toStdString());
+                             try {
+                                 commands::push(volumePath,
+                                                prepared.file.getFullPathName().toStdString(),
+                                                slot,
+                                                { .force = force, .trashRoot = trash,
+                                                  .write = options });
+                             } catch (...) {
+                                 if (prepared.converted)
+                                     prepared.file.deleteFile();
+                                 throw;
+                             }
+                             if (prepared.converted)
+                                 prepared.file.deleteFile();
                          } });
     };
 

@@ -84,6 +84,7 @@ private:
     // write options (backup root + timestamp under the app data dir).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
     void toggleOneShot(int slot, bool currentlyOn);
+    void toggleCountIn(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
     void releasePlayerIfHolding(int slotA, int slotB);
     void choosePushWav(int slot, bool slotOccupied);

@@ -197,7 +197,8 @@ target_sources(LooperCat PRIVATE
     app/Main.cpp
     app/MainComponent.cpp
     app/PlayerPane.cpp
-    app/SlotTable.cpp)
+    app/SlotTable.cpp
+    app/WavImport.cpp)
 
 # JUCE's two-entry icns renders as noise in Sequoia's Launchpad (see
 # art/icon/make-icns.sh); overwrite it with a full iconutil-built set.
@@ -296,6 +297,26 @@ target_link_libraries(audio_engine_harness PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME audio_engine_harness COMMAND audio_engine_harness)
+
+# ----------------------------------------------------------------------------
+# Import conversion (issue #20): theory tests for wavimport::prepare — the
+# pedal-ready pass-through, the DAW extensible-header case, resampling, mono
+# duplication, and the refusals.
+# ----------------------------------------------------------------------------
+juce_add_console_app(wav_import_tests PRODUCT_NAME "wav_import_tests")
+target_sources(wav_import_tests PRIVATE tests/wav_import_tests.cpp app/WavImport.cpp)
+target_compile_definitions(wav_import_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(wav_import_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME wav_import_tests COMMAND wav_import_tests)
 
 # ----------------------------------------------------------------------------
 # The brand-mark contract: the product mark must cover appkit's drawOrbit
