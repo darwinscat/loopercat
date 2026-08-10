@@ -8,8 +8,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 //==============================================================================
-// loopercat::SlotTable — the read-only slot browser: one row per memory slot
-// (number, name, duration, tempo, One Shot, Count-In, on-pedal wav file). Rows with
+// loopercat::SlotTable — the slot browser: one row per memory slot (number,
+// name, duration, bars, tempo, the behaviour pills, on-pedal wav file). Rows with
 // audio carry the full text colour; empty slots stay dim so a loaded pedal
 // reads at a glance.
 //==============================================================================
@@ -43,11 +43,9 @@ public:
 
     void selectSlot(int slot);
 
-    // Inline edits: an editor right in the cell (double-click does this too).
-    // Enter commits, Esc cancels; the field enforces the pedal's constraints
-    // (12 printable ASCII for names, digits and a dot for tempo).
-    void startRenameEditForSlot(int slot);
-    void startTempoEditForSlot(int slot);
+    // Inline edits live on double-click (name, tempo): an editor right in the
+    // cell. Enter commits, Esc cancels; the field enforces the pedal's
+    // constraints — 12 printable ASCII for names, digits and a dot for tempo.
 
     // The slot a worker job is touching right now (0 = none): its row pulses.
     void setBusySlot(int slot);
@@ -65,7 +63,14 @@ public:
     static juce::String formatTempo(long long tenths);
 
 private:
-    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kOneShot, kCountIn, kWavFile };
+    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kFlags, kWavFile };
+
+    // The behaviour column is a strip of pills, one per setting a slot can
+    // carry, so a new setting costs a pill instead of a column. They stay
+    // clickable exactly where the One Shot and Count-In cells were clickable:
+    // the panel is these settings' new home, not a toll gate on the way in.
+    enum class Flag { oneShot, countIn };
+    static juce::Rectangle<int> pillBounds(Flag flag, int cellHeight);
 
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;

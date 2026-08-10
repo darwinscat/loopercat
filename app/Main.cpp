@@ -37,7 +37,8 @@ public:
         // The headless proof that the window actually draws — no display
         // permissions involved; used by the DoD check and CI screenshots.
         // --select <slot> additionally selects that slot (1..99) and waits
-        // for its waveform before rendering.
+        // for its waveform before rendering; --inspector opens the slot
+        // panel, so the studio side can be proven headless too.
         const int snapshotFlag = args.indexOf("--snapshot");
         if (snapshotFlag >= 0) {
             const int selectFlag = args.indexOf("--select");
@@ -78,6 +79,8 @@ private:
         }
         MainComponent content(explicitVolume);
         content.refreshNow();
+        if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--inspector"))
+            content.showInspector();
         if (selectSlot > 0) {
             content.selectSlot(selectSlot);
             const auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();

@@ -18,6 +18,7 @@
 #include "PedalWorker.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
+#include "SlotInspector.h"
 #include "SlotTable.h"
 #include "Toast.h"
 #include "UpdateCheck.h"
@@ -42,6 +43,7 @@ public:
     // programmatic slot selection, and "is the waveform drawn yet".
     void refreshNow();
     void selectSlot(int slot);
+    void showInspector() { setInspectorVisible(true); } // --inspector: the panel in snapshots
     void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
     bool playerReady() const;
 
@@ -83,6 +85,8 @@ private:
     // Mutations: every action becomes a queued worker job with the standard
     // write options (backup root + timestamp under the app data dir).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
+    void setInspectorVisible(bool visible); // the window grows, the table never shrinks
+    void updateInspector();                 // push the selected row into the panel
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
@@ -108,10 +112,14 @@ private:
     juce::TextButton connectButton { "Connect" };
     juce::TextButton disconnectButton { "Disconnect" };
     juce::ToggleButton showEmptyToggle { "show empty slots" };
+    juce::TextButton inspectorButton { "Slot settings" };
     SlotTable table;
+    SlotInspector inspector;
     Toast toast;
     PlayerPane player { engine };
     juce::String deviceError;
+    int selectedSlot = 0;        // what the panel is showing (0 = nothing)
+    bool inspectorVisible = false;
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)

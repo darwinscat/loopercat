@@ -29,6 +29,10 @@ namespace
     // One timer, two paces: the MIDI presence poll idles at 2 s; while a
     // connect attempt or the post-disconnect hold is live it runs at
     // supervision pace so the resend clock and the hold expiry stay honest.
+    // The panel's width: enough for a 12-character name field and a card's
+    // two lines of plain English without hyphenating them.
+    constexpr int kInspectorWidth = 320;
+
     constexpr int kMidiPollIntervalMs = 2000;
     constexpr int kSuperviseTickMs = 250;
 
@@ -133,7 +137,11 @@ MainComponent::MainComponent(std::string explicitVolume)
         settings.file() != nullptr ? settings.file()->getValue(kDeviceStateKey) : juce::String();
     deviceError = engine.initialiseDevice(savedDeviceState);
 
-    table.onSlotSelected = [this](int slot) { slotChosen(slot, false); };
+    table.onSlotSelected = [this](int slot) {
+        selectedSlot = slot;
+        slotChosen(slot, false);
+        updateInspector();
+    };
     table.onSlotActivated = [this](int slot) { slotChosen(slot, true); };
     table.onSlotContextMenu = [this](int slot, juce::Point<int> at) { showSlotMenu(slot, at); };
     table.onOneShotToggled = [this](int slot) {
@@ -187,6 +195,27 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (!pedalBusy && slotRowFor(slot) != nullptr)
             choosePushWav(slot, false);
     };
+    inspector.onRenameCommitted = [this](int slot, juce::String newName) {
+        if (table.onRenameCommitted)
+            table.onRenameCommitted(slot, newName);
+    };
+    inspector.onTempoCommitted = [this](int slot, long long tenths) {
+        if (table.onTempoCommitted)
+            table.onTempoCommitted(slot, tenths);
+    };
+    inspector.onOneShotToggled = [this](int slot) {
+        if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
+            toggleOneShot(slot, row->info.oneShot);
+    };
+    inspector.onCountInToggled = [this](int slot) {
+        if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
+            toggleCountIn(slot, row->info.countIn);
+    };
+
+    inspectorButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
+    inspectorButton.setEnabled(false);
+    inspectorButton.onClick = [this] { setInspectorVisible(!inspectorVisible); };
+
     player.onGear = [this] { openAudioSettings(); };
     player.onVolumeChanged = [this](double percent) {
         if (auto* file = settings.file())
@@ -359,6 +388,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     worker.onBusy = [this](bool busy, int slot) {
         pedalBusy = busy;
         table.setBusySlot(busy ? slot : 0);
+        inspector.setBusy(busy);
         updateStatusText();
         updateToolbar();
     };
@@ -393,7 +423,9 @@ MainComponent::MainComponent(std::string explicitVolume)
     addAndMakeVisible(connectButton);
     addAndMakeVisible(disconnectButton);
     addAndMakeVisible(showEmptyToggle);
+    addAndMakeVisible(inspectorButton);
     addChildComponent(table);  // shown once a pedal is mounted
+    addChildComponent(inspector);
     addChildComponent(player); // likewise
     addChildComponent(toast);  // fades in over everything on job success
 
@@ -401,6 +433,8 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     applySnapshot({}); // the no-pedal state, until the first scan lands
     setSize(920, 680);
+    if (settings.file() != nullptr && settings.file()->getBoolValue("slotInspectorOpen", false))
+        setInspectorVisible(true); // the panel is where the user left it
 
     worker.start();
     startTimer(kMidiPollIntervalMs); // presence poll — cheap device-list scan, message thread
@@ -576,6 +610,39 @@ void MainComponent::updateTableRows()
     table.setRows(std::move(visible));
 }
 
+// The panel always shows the slot the table has selected, re-read from the
+// newest snapshot: a finished write must change what the switches say.
+void MainComponent::updateInspector()
+{
+    inspector.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
+}
+
+// Opening the panel widens the WINDOW rather than narrowing the table: the
+// slot list is the thing people came for, and it does not pay rent for a
+// panel. If the display cannot spare the width, the table yields instead.
+void MainComponent::setInspectorVisible(bool visible)
+{
+    if (inspectorVisible == visible)
+        return;
+    inspectorVisible = visible;
+    inspector.setVisible(visible && table.isVisible());
+    inspectorButton.setButtonText(visible ? "Hide settings" : "Slot settings");
+    if (auto* file = settings.file()) {
+        file->setValue("slotInspectorOpen", visible);
+        file->saveIfNeeded();
+    }
+    if (auto* window = findParentComponentOfClass<juce::ResizableWindow>()) {
+        const int wanted = window->getWidth() + (visible ? kInspectorWidth : -kInspectorWidth);
+        const auto screen = juce::Desktop::getInstance().getDisplays()
+                                .getDisplayForRect(window->getScreenBounds());
+        const int limit = screen != nullptr ? juce::roundToInt(screen->userBounds.getWidth())
+                                            : wanted;
+        window->setSize(juce::jmin(wanted, limit), window->getHeight());
+    }
+    updateInspector();
+    resized();
+}
+
 void MainComponent::updateToolbar()
 {
     const bool usable = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
@@ -586,6 +653,7 @@ void MainComponent::updateToolbar()
     connectButton.setEnabled(midiPedalPresent && !pedalBusy
                              && snapshot.state == lifecycle::State::disconnected
                              && !connectAttempt.active() && !connectHoldActive());
+    inspectorButton.setEnabled(usable);
     if (appMenu != nullptr)
         appMenu->menuItemsChanged(); // the Maintenance items follow the same gate
 }
@@ -771,6 +839,16 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     table.setVisible(mounted);
     player.setVisible(mounted);
     hint.setVisible(!mounted);
+    // The panel comes back with the pedal when it was left open. Its arrival
+    // changes the table's width, so the layout has to be recomputed here —
+    // becoming visible does not lay a component out by itself.
+    if (inspector.isVisible() != (mounted && inspectorVisible)) {
+        inspector.setVisible(mounted && inspectorVisible);
+        resized();
+    }
+    if (!mounted)
+        selectedSlot = 0;
+    updateInspector();
 }
 
 void MainComponent::slotChosen(int slot, bool startPlaying)
@@ -817,29 +895,32 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     const bool occupied = row.info.hasAudio;
     const juce::String name = trimmedName(row);
 
+    // Operations only: the things done TO a slot. Its settings live in the
+    // panel now (and on the row's pills), so this menu stopped being a second
+    // copy of them.
     juce::PopupMenu menu;
-    menu.addItem(1, juce::String::fromUTF8("Rename\xe2\x80\xa6"));
-    menu.addItem(2, "One Shot", true, row.info.oneShot);
-    menu.addItem(7, "Play Count-In", true, row.info.countIn);
-    menu.addItem(6, juce::String::fromUTF8("Set tempo\xe2\x80\xa6"));
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     menu.addSeparator();
     menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
-    const bool oneShotNow = row.info.oneShot;
-    const bool countInNow = row.info.countIn;
+    // Nothing a user relies on may simply vanish: the first time this menu
+    // opens without its settings, it says where they went.
+    if (auto* file = settings.file(); file != nullptr && !file->getBoolValue("settingsMovedNotice")) {
+        file->setValue("settingsMovedNotice", true);
+        file->saveIfNeeded();
+        toast.show(juce::String::fromUTF8(
+            "Name, tempo, One Shot and Play Count-In moved to Slot settings (\xe2\x8c\x98I) "
+            "\xe2\x80\x94 the row's pills still switch the last two."));
+    }
+
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
-        [this, slot, name, occupied, oneShotNow, countInNow](int choice) {
+        [this, slot, name, occupied](int choice) {
             switch (choice) {
-            case 1: table.startRenameEditForSlot(slot); break; // same in-place editor as double-click
-            case 2: toggleOneShot(slot, oneShotNow); break;
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
-            case 6: table.startTempoEditForSlot(slot); break;
-            case 7: toggleCountIn(slot, countInNow); break;
             default: break;
             }
         });
@@ -1021,6 +1102,11 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
         engine.togglePlay();
         return true;
     }
+    if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)
+        && inspectorButton.isEnabled()) {
+        setInspectorVisible(!inspectorVisible);
+        return true;
+    }
     return false;
 }
 
@@ -1037,6 +1123,7 @@ void MainComponent::resized()
     pedalLight.setBounds(getWidth() - 232, 0, 220, 56);
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
     showEmptyToggle.setBounds(statusRow.removeFromRight(150));
+    inspectorButton.setBounds(statusRow.removeFromRight(112).reduced(2, 1));
     disconnectButton.setBounds(statusRow.removeFromRight(104).reduced(2, 1));
     connectButton.setBounds(statusRow.removeFromRight(84).reduced(2, 1));
     status.setBounds(statusRow);
@@ -1049,7 +1136,12 @@ void MainComponent::resized()
     toast.setBounds(getWidth() / 2 - 280, getHeight() - 44 - 40, 560, 34);
     player.setBounds(area.removeFromBottom(150).reduced(12, 0));
     area.removeFromBottom(8);
-    table.setBounds(area.reduced(12, 0));
+    auto listArea = area.reduced(12, 0);
+    if (inspector.isVisible()) {
+        inspector.setBounds(listArea.removeFromRight(kInspectorWidth));
+        listArea.removeFromRight(10);
+    }
+    table.setBounds(listArea);
     hint.setBounds(area);
 }
 

@@ -198,6 +198,7 @@ target_sources(LooperCat PRIVATE
     app/Main.cpp
     app/MainComponent.cpp
     app/PlayerPane.cpp
+    app/SlotInspector.cpp
     app/SlotTable.cpp
     app/WavImport.cpp)
 

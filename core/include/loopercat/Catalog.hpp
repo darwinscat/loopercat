@@ -29,6 +29,11 @@ struct SlotInfo {
     bool countIn;           // a count will be heard before this memory plays
                             // (usecases::countin::isOn — State on + PLAY COUNT
                             // 1MEAS; the pattern is none of its business)
+    bool countInTakesPattern; // switching the count on here would replace a
+                              // rhythm pattern picked on the pedal — the one
+                              // thing the UI has to say out loud beforehand.
+                              // A bool, not the pattern: its names are not
+                              // hardware-verified yet, so we cannot name it.
     long long tempoTenths;  // Tempo: tenths of BPM the pedal will play at
     long long measures;     // MeasLen: whole bars, as the pedal displays them
     long long recTempoTenths; // RecTmp: tenths of BPM the take was recorded at —
@@ -46,6 +51,7 @@ inline SlotInfo readSlot(std::string_view memoryText, int slot)
              rc0::field(body, "WavLen"),
              rc0::field(body, "One") == 1,
              usecases::countin::isOn(body),
+             usecases::countin::patternAtRisk(body).has_value(),
              rc0::field(body, "Tempo"),
              rc0::field(body, "MeasLen"),
              rc0::field(body, "RecTmp") };

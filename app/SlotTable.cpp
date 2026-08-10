@@ -10,6 +10,7 @@
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
+#include <tuple>
 #include <type_traits>
 
 namespace loopercat
@@ -48,10 +49,10 @@ SlotTable::SlotTable()
     header.addColumn("Duration", kDuration, 84, 84, 84, Flags::notSortable);
     header.addColumn("Bars", kBars, 56, 56, 56, Flags::notSortable);
     header.addColumn("Tempo", kTempo, 76, 76, 76, Flags::notSortable);
-    header.addColumn("One Shot", kOneShot, 84, 84, 84, Flags::notSortable);
-    // "Play Count-In", not bare "Count-In": the pedal also has a REC COUNT,
-    // and the name says which one this is (and that we know the difference).
-    header.addColumn("Play Count-In", kCountIn, 104, 104, 104, Flags::notSortable);
+    // One column for what the slot DOES, as pills. The pedal's own words on
+    // them ("Play Count-In", not bare "Count-In": the pedal also has a REC
+    // COUNT, and the name says which one this is).
+    header.addColumn("Behavior", kFlags, 140, 140, 140, Flags::notSortable);
     header.addColumn("WAV file", kWavFile, 300, 120, -1, Flags::notSortable);
     header.setStretchToFitActive(true);
 
@@ -88,20 +89,6 @@ void SlotTable::selectSlot(int slot)
     const int row = rowOfSlot(slot);
     if (row >= 0)
         table_.selectRow(row);
-}
-
-void SlotTable::startRenameEditForSlot(int slot)
-{
-    const int row = rowOfSlot(slot);
-    if (row >= 0)
-        startCellEdit(row, kName);
-}
-
-void SlotTable::startTempoEditForSlot(int slot)
-{
-    const int row = rowOfSlot(slot);
-    if (row >= 0)
-        startCellEdit(row, kTempo);
 }
 
 void SlotTable::startCellEdit(int rowIndex, int columnId)
@@ -180,6 +167,17 @@ void SlotTable::resized()
     table_.setBounds(getLocalBounds());
 }
 
+// Pill geometry, shared by the painter and the hit test so a click can never
+// land somewhere the eye does not see a pill.
+juce::Rectangle<int> SlotTable::pillBounds(Flag flag, int cellHeight)
+{
+    constexpr int kLeft = 8, kOneShotWidth = 52, kCountInWidth = 68, kGap = 6, kHeight = 16;
+    const int y = (cellHeight - kHeight) / 2;
+    return flag == Flag::oneShot
+             ? juce::Rectangle<int> { kLeft, y, kOneShotWidth, kHeight }
+             : juce::Rectangle<int> { kLeft + kOneShotWidth + kGap, y, kCountInWidth, kHeight };
+}
+
 juce::String SlotTable::formatDuration(long long frames)
 {
     if (frames <= 0)
@@ -223,14 +221,18 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
             onSlotContextMenu(slotOfRow(row), e.getScreenPosition());
         return;
     }
-    // The One Shot cell IS the toggle — click flips it (reference web UI).
-    if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0) {
-        onOneShotToggled(slotOfRow(row));
-        return;
-    }
-    // Same gesture for the Count-In cell.
-    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0) {
-        onCountInToggled(slotOfRow(row));
+    // A pill IS its switch — click flips it, as the old One Shot and
+    // Count-In cells did. e.x is row-relative, so subtract the column's own
+    // left edge to land in cell coordinates.
+    if (columnId == kFlags && slotOfRow(row) > 0) {
+        auto& header = table_.getHeader();
+        const int cellX = e.x - header.getColumnPosition(header.getIndexOfColumnId(kFlags, true))
+                                    .getX();
+        const juce::Point<int> hit { cellX, e.y }; // e.y is already row-relative
+        if (pillBounds(Flag::oneShot, table_.getRowHeight()).contains(hit) && onOneShotToggled)
+            onOneShotToggled(slotOfRow(row));
+        else if (pillBounds(Flag::countIn, table_.getRowHeight()).contains(hit) && onCountInToggled)
+            onCountInToggled(slotOfRow(row));
         return;
     }
     // The empty-slot hint is a button: click opens the WAV chooser.
@@ -422,8 +424,7 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kBars:     text = loaded && r.info.measures > 0 ? juce::String(r.info.measures)
                                                          : juce::String(); break;
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
-    case kOneShot:  break; // drawn as a dot below
-    case kCountIn:  break; // drawn as a dot below
+    case kFlags:    break; // drawn as pills below
     case kWavFile:
         text = r.wavFile.empty() && !loaded
                  ? juce::String::fromUTF8("\xe2\x80\x94 drop a WAV here, or click to choose")
@@ -446,19 +447,26 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
         area.removeFromLeft(6);
     }
 
-    if (columnId == kOneShot || columnId == kCountIn) {
-        // The cell is the toggle: filled = on, hollow = off (click flips it).
-        const bool on = columnId == kOneShot ? r.info.oneShot : r.info.countIn;
-        const float d = 7.0f;
-        const float x = static_cast<float>(area.getX()) + 2.0f;
-        const float y = (static_cast<float>(height) - d) * 0.5f;
-        if (on) {
-            g.setColour(columnId == kOneShot ? felitronics::appkit::brand::orange
-                                             : felitronics::appkit::brand::lilac);
-            g.fillEllipse(x, y, d, d);
-        } else {
-            g.setColour(kDim.withAlpha(0.55f));
-            g.drawEllipse(x, y, d, d, 1.2f);
+    if (columnId == kFlags) {
+        // Each pill is its own switch: lit when the setting is on, a quiet
+        // outline when it is off — off has to stay clickable, not invisible.
+        for (const auto& [flag, label, colour] :
+             { std::tuple { Flag::oneShot, "1-SHOT", felitronics::appkit::brand::orange },
+               std::tuple { Flag::countIn, "COUNT-IN", felitronics::appkit::brand::lilac } }) {
+            const bool on = flag == Flag::oneShot ? r.info.oneShot : r.info.countIn;
+            const auto pill = pillBounds(flag, height).toFloat();
+            const float dim = lifted ? 0.45f : 1.0f;
+            if (on) {
+                g.setColour(colour.withAlpha(0.16f * dim));
+                g.fillRoundedRectangle(pill, pill.getHeight() * 0.5f);
+                g.setColour(colour.withAlpha(0.85f * dim));
+            } else {
+                g.setColour(kDim.withAlpha(0.28f * dim));
+            }
+            g.drawRoundedRectangle(pill.reduced(0.5f), pill.getHeight() * 0.5f, 1.0f);
+            g.setColour(on ? colour.withAlpha(dim) : kDim.withAlpha(0.6f * dim));
+            g.setFont(juce::FontOptions(9.0f));
+            g.drawText(label, pill, juce::Justification::centred, false);
         }
         return;
     }

@@ -47,6 +47,12 @@ int main()
         body13 = rc0::setField(body13, "State", rc0::kRhythmStateOn);
         body13 = rc0::setField(body13, "Pattern", 11);
         text = rc0::replaceSlotBody(text, 13, body13);
+
+        // Slot 14: a pattern picked on the pedal with the rhythm switched
+        // off — the only slot where switching a count on costs something.
+        std::string body14 = rc0::slotBody(text, 14);
+        body14 = rc0::setField(body14, "Pattern", 11);
+        text = rc0::replaceSlotBody(text, 14, body14);
     }
 
     const auto slots = catalog::listSlots(text);
@@ -91,6 +97,13 @@ int main()
     CHECK(slots.at(11).countIn);
     CHECK(!slots.at(12).countIn);
     CHECK(!slots.at(0).countIn);
+
+    // Only slot 14 pays for a count with a pattern it chose; the factory
+    // pattern of an untouched slot is nobody's choice, and a rhythm already
+    // playing keeps its pattern either way.
+    CHECK(slots.at(13).countInTakesPattern);
+    CHECK(!slots.at(12).countInTakesPattern);
+    CHECK(!slots.at(0).countInTakesPattern);
 
     // readSlot agrees with listSlots.
     CHECK(catalog::readSlot(text, 7) == slots.at(6));
