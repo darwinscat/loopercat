@@ -49,6 +49,7 @@ SlotTable::SlotTable()
     header.addColumn("Bars", kBars, 56, 56, 56, Flags::notSortable);
     header.addColumn("Tempo", kTempo, 76, 76, 76, Flags::notSortable);
     header.addColumn("One Shot", kOneShot, 84, 84, 84, Flags::notSortable);
+    header.addColumn("Count-In", kCountIn, 84, 84, 84, Flags::notSortable);
     header.addColumn("WAV file", kWavFile, 300, 120, -1, Flags::notSortable);
     header.setStretchToFitActive(true);
 
@@ -223,6 +224,11 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
     // The One Shot cell IS the toggle — click flips it (reference web UI).
     if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0) {
         onOneShotToggled(slotOfRow(row));
+        return;
+    }
+    // Same gesture for the Count-In cell.
+    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0) {
+        onCountInToggled(slotOfRow(row));
         return;
     }
     // The empty-slot hint is a button: click opens the WAV chooser.
@@ -415,6 +421,7 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
                                                          : juce::String(); break;
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
     case kOneShot:  break; // drawn as a dot below
+    case kCountIn:  break; // drawn as a dot below
     case kWavFile:
         text = r.wavFile.empty() && !loaded
                  ? juce::String::fromUTF8("\xe2\x80\x94 drop a WAV here, or click to choose")
@@ -437,13 +444,15 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
         area.removeFromLeft(6);
     }
 
-    if (columnId == kOneShot) {
+    if (columnId == kOneShot || columnId == kCountIn) {
         // The cell is the toggle: filled = on, hollow = off (click flips it).
+        const bool on = columnId == kOneShot ? r.info.oneShot : r.info.countIn;
         const float d = 7.0f;
         const float x = static_cast<float>(area.getX()) + 2.0f;
         const float y = (static_cast<float>(height) - d) * 0.5f;
-        if (r.info.oneShot) {
-            g.setColour(felitronics::appkit::brand::orange);
+        if (on) {
+            g.setColour(columnId == kOneShot ? felitronics::appkit::brand::orange
+                                             : felitronics::appkit::brand::lilac);
             g.fillEllipse(x, y, d, d);
         } else {
             g.setColour(kDim.withAlpha(0.55f));
