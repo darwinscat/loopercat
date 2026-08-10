@@ -4,6 +4,7 @@
 #include "MainComponent.h"
 
 #include "Strings.h"
+#include "WavImport.h"
 
 #include <loopercat/Wav.hpp>
 
@@ -866,13 +867,32 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
         worker.enqueue({ "Push " + juce::File(sourcePath).getFileName() + " to slot "
                              + juce::String(slot),
                          slot,
-                         [source = sourcePath.toStdString(), slot, force,
+                         [source = sourcePath, slot, force,
                           options = makeWriteOptions(),
+                          importTmp = settings.dataDir().getChildFile("import-tmp"),
                           trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
                              const volume::fs::path& volumePath) {
-                             commands::push(volumePath, source, slot,
-                                            { .force = force, .trashRoot = trash,
-                                              .write = options });
+                             // DAW exports arrive as anything — convert off the
+                             // message thread, on this worker, before the push
+                             // (issue #20). The temp conversion dies with the job.
+                             wavimport::Prepared prepared;
+                             const juce::Result ok =
+                                 wavimport::prepare(juce::File(source), importTmp, prepared);
+                             if (ok.failed())
+                                 throw Error(ok.getErrorMessage().toStdString());
+                             try {
+                                 commands::push(volumePath,
+                                                prepared.file.getFullPathName().toStdString(),
+                                                slot,
+                                                { .force = force, .trashRoot = trash,
+                                                  .write = options });
+                             } catch (...) {
+                                 if (prepared.converted)
+                                     prepared.file.deleteFile();
+                                 throw;
+                             }
+                             if (prepared.converted)
+                                 prepared.file.deleteFile();
                          } });
     };
 
