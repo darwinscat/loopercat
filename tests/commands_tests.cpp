@@ -177,6 +177,60 @@ int main()
         CHECK_EQ(m2.value(), 0x101u);
     }
 
+    // --- readMemory picks the bank the write counters name as newest ---
+
+    {
+        // The pedal-side save state observed live 2026-08-10: the fresh WRITE
+        // sits in ONE bank (generation 237) while the other is stale (236).
+        // Reading always-MEMORY1 called the just-saved loop absent.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const std::string stale = commands::readMemory(volume, 1);
+        std::string fresh = rc0::replaceSlotBody(
+            stale, 22, rc0::setName(rc0::slotBody(stale, 22), "Fresh Save"));
+
+        commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                 rc0::setTailGeneration(stale, 236));
+        commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                 rc0::setTailGeneration(fresh, 237));
+        CHECK_EQ(rc0::decodeName(rc0::slotBody(commands::readMemory(volume), 22)),
+                 "Fresh Save  ");
+
+        // The other order too — the banks ping-pong save by save.
+        commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                 rc0::setTailGeneration(fresh, 238));
+        commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                 rc0::setTailGeneration(stale, 237));
+        CHECK_EQ(rc0::decodeName(rc0::slotBody(commands::readMemory(volume), 22)),
+                 "Fresh Save  ");
+
+        // Serial arithmetic across the counter wrap: 0x00000000 is one past
+        // 0xffffffff, not four billion behind it.
+        commands::writeFileBytes(volume::memoryPath(volume, 1),
+                                 rc0::setTailGeneration(stale, 0xffffffffu));
+        commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                 rc0::setTailGeneration(fresh, 0x00000000u));
+        CHECK_EQ(rc0::decodeName(rc0::slotBody(commands::readMemory(volume), 22)),
+                 "Fresh Save  ");
+
+        // A bank with a broken trailer loses the vote to a counted one — the
+        // stale-but-counted MEMORY1 wins over the fresher trailer-less M2.
+        const std::string m2 = commands::readFileBytes(volume::memoryPath(volume, 2));
+        commands::writeFileBytes(volume::memoryPath(volume, 2), m2.substr(0, m2.size() - 2));
+        CHECK_EQ(rc0::decodeName(rc0::slotBody(commands::readMemory(volume), 22)),
+                 "Memory 22   ");
+
+        // One bank gone entirely: the survivor answers.
+        fs::remove(volume::memoryPath(volume, 1));
+        commands::writeFileBytes(volume::memoryPath(volume, 2),
+                                 rc0::setTailGeneration(fresh, 240));
+        CHECK_EQ(rc0::decodeName(rc0::slotBody(commands::readMemory(volume), 22)),
+                 "Fresh Save  ");
+
+        // The pinned form still pins.
+        CHECK_THROWS(commands::readMemory(volume, 1), "");
+    }
+
     // --- rename works on a card whose counters sit far past one byte ---
 
     {

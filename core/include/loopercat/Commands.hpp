@@ -65,11 +65,47 @@ inline void copyContent(const fs::path& src, const fs::path& dst)
 
 // --- reading ---
 
-inline std::string readMemory(const fs::path& volume, int fileNo = 1)
+// A specific bank, pinned — the doctor and the tests look at each in turn.
+inline std::string readMemory(const fs::path& volume, int fileNo)
 {
     const std::string text = readFileBytes(volume::memoryPath(volume, fileNo));
     rc0::assertMemoryFile(text);
     return text;
+}
+
+// THE database: the bank the write counters name as newest. The pedal writes
+// a save into one bank and reconciles the pair only at its next boot
+// (hardware-observed 2026-08-10: a fresh WRITE landed in MEMORY2 at
+// generation 237 while MEMORY1 sat stale at 236) — always reading MEMORY1
+// showed a just-saved loop as absent, and a mutation started from the stale
+// document would clobber the fresh save on both banks. Serial arithmetic
+// picks the newer counter across the wrap; an unreadable or trailer-less
+// bank simply loses the vote, and with neither readable the MEMORY1 error
+// propagates as before.
+inline std::string readMemory(const fs::path& volume)
+{
+    std::map<int, std::string> texts;
+    std::map<int, std::uint32_t> generations;
+    for (const int fileNo : { 1, 2 }) {
+        try {
+            std::string text = readMemory(volume, fileNo);
+            if (const auto marker = rc0::tailMarker(text))
+                generations[fileNo] = *marker;
+            texts[fileNo] = std::move(text);
+        } catch (const Error&) {
+            // this bank cannot vote
+        }
+    }
+    if (texts.empty())
+        return readMemory(volume, 1); // no bank readable: surface MEMORY1's error
+    if (generations.size() == 2) {
+        const bool secondNewer =
+            static_cast<std::int32_t>(generations[2] - generations[1]) > 0;
+        return texts[secondNewer ? 2 : 1];
+    }
+    if (generations.size() == 1)
+        return texts[generations.begin()->first]; // a counted bank beats a trailer-less one
+    return texts.contains(1) ? texts[1] : texts[2];
 }
 
 // --- the write discipline ---
