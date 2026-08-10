@@ -626,7 +626,13 @@ void MainComponent::setInspectorVisible(bool visible)
         return;
     inspectorVisible = visible;
     inspector.setVisible(visible && table.isVisible());
-    inspectorButton.setButtonText(visible ? "Hide settings" : "Slot settings");
+    // One button, two states — the label stays put and the violet says it is
+    // on, the same violet the selected row wears.
+    inspectorButton.setColour(juce::TextButton::buttonColourId,
+                              visible ? juce::Colour(0xff2a2440) : juce::Colour(0xff1e1e26));
+    inspectorButton.setColour(juce::TextButton::textColourOffId,
+                              visible ? felitronics::appkit::brand::lilac
+                                      : juce::Colours::white);
     if (auto* file = settings.file()) {
         file->setValue("slotInspectorOpen", visible);
         file->saveIfNeeded();
