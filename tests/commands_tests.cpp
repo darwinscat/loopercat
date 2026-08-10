@@ -273,6 +273,65 @@ int main()
         CHECK_EQ(rc0::field(rc0::slotBody(text, 4), "One"), 0);
     }
 
+    // --- setCountIn: the toggle owns exactly the RHYTHM triple (#34) ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+
+        // Preseed slot 8 with a custom rhythm the pedal could have written:
+        // a drum kit and a real pattern. The toggle must never touch the kit.
+        {
+            std::string text = commands::readMemory(volume);
+            std::string body = rc0::slotBody(text, 8);
+            body = rc0::setField(body, "Kit", 3);
+            body = rc0::setField(body, "Pattern", 11);
+            text = rc0::replaceSlotBody(text, 8, body);
+            for (const int fileNo : { 1, 2 })
+                commands::writeFileBytes(volume::memoryPath(volume, fileNo),
+                                         rc0::setTailMarker(text, fileNo));
+        }
+        const std::string before = commands::readMemory(volume);
+
+        commands::setCountIn(volume, { 3, 8 }, true, writeOpts(tmp.path));
+        const std::string afterOn = commands::readMemory(volume);
+        for (const int slot : { 3, 8 }) {
+            const std::string body = rc0::slotBody(afterOn, slot);
+            CHECK_EQ(rc0::field(body, "State"), rc0::kRhythmStateOn);
+            CHECK_EQ(rc0::field(body, "PlayCount"), rc0::kRhythmPlayCount1Meas);
+            CHECK_EQ(rc0::field(body, "Pattern"), rc0::kRhythmPatternBlank);
+            CHECK(catalog::readSlot(afterOn, slot).countIn);
+        }
+        // The custom kit survives; the drum pattern is deliberately replaced.
+        CHECK_EQ(rc0::field(rc0::slotBody(afterOn, 8), "Kit"), 3);
+        // No slot beyond the targeted two changed a byte.
+        int changedOtherSlots = 0;
+        for (int slot = 1; slot <= rc0::kSlotCount; ++slot)
+            if (slot != 3 && slot != 8 && rc0::slotBody(afterOn, slot) != rc0::slotBody(before, slot))
+                ++changedOtherSlots;
+        CHECK_EQ(changedOtherSlots, 0);
+
+        // Off restores the factory zeros — NOT the pre-toggle pattern: the
+        // toggle keeps no hidden state, and that is the documented contract.
+        commands::setCountIn(volume, { 3, 8 }, false, writeOpts(tmp.path));
+        const std::string afterOff = commands::readMemory(volume);
+        for (const int slot : { 3, 8 }) {
+            const std::string body = rc0::slotBody(afterOff, slot);
+            CHECK_EQ(rc0::field(body, "State"), 0);
+            CHECK_EQ(rc0::field(body, "PlayCount"), 0);
+            CHECK_EQ(rc0::field(body, "Pattern"), 0);
+            CHECK(!catalog::readSlot(afterOff, slot).countIn);
+        }
+        CHECK_EQ(rc0::field(rc0::slotBody(afterOff, 8), "Kit"), 3);
+        // A factory slot round-trips byte-identically through on/off.
+        CHECK(rc0::slotBody(afterOff, 3) == rc0::slotBody(before, 3));
+
+        CHECK_THROWS(commands::setCountIn(volume, { 0 }, true, writeOpts(tmp.path)),
+                     "out of range");
+        CHECK_THROWS(commands::setCountIn(volume, { 100 }, true, writeOpts(tmp.path)),
+                     "out of range");
+    }
+
     // --- push: validate-then-write, canonical bytes, full config ---
 
     {

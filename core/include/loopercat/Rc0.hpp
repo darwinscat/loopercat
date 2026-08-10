@@ -39,6 +39,17 @@ namespace loopercat::rc0 {
 inline constexpr int kSlotCount = 99;
 inline constexpr int kNameLength = 12;
 
+// The RHYTHM value map, read back from the pedal's screens (issue #34,
+// hardware 2026-08-10): State=1 recalls the memory with its rhythm already
+// enabled, PlayCount=1 shows as "PLAY COUNT: 1MEAS", Pattern=57 as
+// "PATTERN: Blank" — a 0-based index into the reference manual's pattern
+// list. Together the triple is the count-in preset: the pedal plays one
+// measure of count-in at the memory tempo, then the track with the rhythm
+// silent. The count-in is its own sound, independent of the pattern.
+inline constexpr long long kRhythmStateOn = 1;
+inline constexpr long long kRhythmPlayCount1Meas = 1;
+inline constexpr long long kRhythmPatternBlank = 57;
+
 // The factory-fresh generation pair (golden.json tailMarkers). The trailer
 // is really a write-generation counter — see setTailGeneration; this
 // pair is where a pedal starts counting and where a healed volume restarts.
