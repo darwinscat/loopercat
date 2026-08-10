@@ -143,6 +143,14 @@ void PlayerPane::releaseFile()
     updateTransportRow();
 }
 
+void PlayerPane::setTempoNote(const juce::String& note)
+{
+    if (tempoNote_ == note)
+        return;
+    tempoNote_ = note;
+    repaint();
+}
+
 void PlayerPane::clear()
 {
     engine_.unload();
@@ -150,6 +158,7 @@ void PlayerPane::clear()
     title_.clear();
     error_.clear();
     currentPath_.clear();
+    tempoNote_.clear();
     slot_ = 0;
     slotFrames_ = 0;
     inSeconds_ = outSeconds_ = 0.0;
@@ -253,6 +262,15 @@ void PlayerPane::paint(juce::Graphics& g)
         g.setColour(kText);
         g.drawText(title_, row.withTrimmedLeft(244).withTrimmedRight(420),
                    juce::Justification::centredLeft, true);
+    }
+    if (tempoNote_.isNotEmpty()) {
+        // Right-aligned into the gap between the title zone and the time
+        // readout — visible exactly while the pedal and the preview disagree.
+        g.setColour(kDim);
+        g.setFont(juce::FontOptions(12.0f));
+        g.drawText(tempoNote_, row.withTrimmedLeft(row.getWidth() - 414).withTrimmedRight(136),
+                   juce::Justification::centredRight, true);
+        g.setFont(juce::FontOptions(13.0f));
     }
 
     if (!volumeIconArea_.isEmpty()) {

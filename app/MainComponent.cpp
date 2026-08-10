@@ -96,6 +96,18 @@ namespace
     {
         return utf8(row.info.name).trimEnd();
     }
+
+    // The pedal time-stretches when a slot's Tempo leaves its RecTmp; the
+    // preview plays the file as recorded and says so instead of implying the
+    // tempo change was ignored (issue #29).
+    juce::String tempoNoteFor(const catalog::SlotInfo& info)
+    {
+        if (!info.hasAudio || info.recTempoTenths <= 0
+            || info.tempoTenths == info.recTempoTenths)
+            return {};
+        return "pedal: " + SlotTable::formatTempo(info.tempoTenths)
+             + juce::String::fromUTF8(" BPM \xc2\xb7 preview: recorded tempo");
+    }
 } // namespace
 
 MainComponent::MainComponent(std::string explicitVolume)
@@ -729,6 +741,8 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
             stillThere = stillThere || utf8(row.wavPath) == player.currentPath();
         if (!stillThere)
             player.clear();
+        else if (const SlotRow* held = slotRowFor(player.currentSlot()))
+            player.setTempoNote(tempoNoteFor(held->info)); // a Set tempo just landed (issue #29)
     }
 
     if (snapshot.state == lifecycle::State::ghost) {
@@ -775,6 +789,7 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
                                  + trimmedName(row);
         player.setSlot(row.info.slot, juce::File(path), title, row.info.oneShot, row.info.frames);
     }
+    player.setTempoNote(tempoNoteFor(row.info));
     if (startPlaying && engine.hasSource() && !engine.isPlaying())
         engine.play();
 }

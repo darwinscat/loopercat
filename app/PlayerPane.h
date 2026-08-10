@@ -53,6 +53,11 @@ public:
 
     int currentSlot() const { return slot_; }
 
+    // The one-line truth about tempo (issue #29): the pedal time-stretches
+    // when a slot's Tempo differs from its RecTmp, the preview plays the
+    // recording as-is. Empty hides the note.
+    void setTempoNote(const juce::String& note);
+
     // Close every handle on the loaded WAV (reader, read-ahead, thumbnail
     // source) but keep the pane's state, so reload() can bring it back.
     void releaseFile();
@@ -91,7 +96,7 @@ private:
     juce::TextButton trimButton_ { "Trim" };
     juce::TextButton resetButton_ { "Reset" };
     felitronics::appkit::brand::GearButton gearButton_;
-    juce::String title_, error_, currentPath_;
+    juce::String title_, error_, currentPath_, tempoNote_;
     int slot_ = 0;
     long long slotFrames_ = 0;
     bool oneShot_ = false;
