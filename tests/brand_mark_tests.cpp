@@ -29,6 +29,8 @@
 #include <BinaryData.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <cstdio>
+
 #include <cmath>
 #include <functional>
 
@@ -160,12 +162,30 @@ int main()
         const int hh = 52;
         header.setBounds (0, 0, 400, hh);
         juce::Image headerImg (juce::Image::ARGB, 400, hh, true);
-        juce::Graphics hg (headerImg);
-        header.paint (hg);
+        // The Graphics must DIE before the pixels are read. On macOS the
+        // software renderer writes through, so a live context read fine; on
+        // Windows the image is Direct2D-backed and nothing lands until the
+        // context is destroyed — the whole header came back transparent.
+        // render() above gets this right by construction; this block did not.
+        {
+            juce::Graphics hg (headerImg);
+            header.paint (hg);
+        }
         const float hd = (float) hh * 0.86f;
         const float hs = hd / 40.0f;
         const float mx = (float) hh + 6.0f + hd * 0.5f;
         const float my = (float) hh / 2.0f;
+        // Evidence before argument: the header image itself and a scan line
+        // through the mark's centre go into the log (and the artifact), so a
+        // platform that draws this differently says WHAT it drew.
+        if (auto stream = juce::File::getCurrentWorkingDirectory()
+                              .getChildFile ("brand-header.png").createOutputStream())
+            juce::PNGImageFormat().writeImageToStream (headerImg, *stream);
+        std::printf ("header scan y=%d:", (int) my);
+        for (int x = (int) mx - 26; x <= (int) mx + 26; x += 4)
+            std::printf (" %08x", (unsigned) headerImg.getPixelAt (x, (int) my).getARGB());
+        std::printf ("\n");
+
         const auto atGap = headerImg.getPixelAt ((int) mx, (int) (my + 12.0f * hs));
         CHECK (maxChannelDiff (atGap, juce::Colour (0xff0b0b11)) < 8);
         const auto atCore = headerImg.getPixelAt ((int) mx, (int) my);
@@ -173,6 +193,9 @@ int main()
         const auto atEar = headerImg.getPixelAt ((int) (mx + (27.33f - 20.0f) * hs),
                                                  (int) (my + (9.67f - 20.0f) * hs));
         CHECK (maxChannelDiff (atEar, felitronics::appkit::brand::lilac) < 80);  // header wears the ears
+        std::printf ("header probes: gap %08x core %08x ear %08x (mark d=%.2f at x=%.1f)\n",
+                     (unsigned) atGap.getARGB(), (unsigned) atCore.getARGB(),
+                     (unsigned) atEar.getARGB(), hd, mx);
 
         // The VersionBadge popover calls its Config::drawMark through this
         // exact type-erased shape (no hover argument). The ears must survive
