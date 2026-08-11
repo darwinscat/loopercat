@@ -11,7 +11,7 @@
 
 //==============================================================================
 // loopercat::PlayerPane — the listening strip for the selected slot: transport
-// row (play/stop, loop toggle, title, selection readout, time, gear) over the
+// row (play/stop, loop toggle, title, selection readout, time) over the
 // waveform with a playhead and trim markers. Drag the in/out flags to choose
 // a section — it previews as a gapless loop immediately; Trim rewrites the
 // slot to exactly that range (the owner runs the command). The pane drives
@@ -45,7 +45,6 @@ public:
     const juce::String& currentPath() const { return currentPath_; }
     bool isThumbnailReady() const { return thumbnail_.isFullyLoaded(); }
 
-    std::function<void()> onGear;                                    // open the audio-settings dialog
     std::function<void(double)> onVolumeChanged;                     // preview volume moved (0..100)
 
     // Set the preview volume (0..100) — the fader follows and the gain applies.
@@ -95,7 +94,6 @@ private:
     juce::Rectangle<int> volumeIconArea_; // the speaker glyph, drawn in paint()
     juce::TextButton trimButton_ { "Trim" };
     juce::TextButton resetButton_ { "Reset" };
-    felitronics::appkit::brand::GearButton gearButton_;
     juce::String title_, error_, currentPath_, tempoNote_;
     int slot_ = 0;
     long long slotFrames_ = 0;

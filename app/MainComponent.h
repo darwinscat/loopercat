@@ -18,8 +18,10 @@
 #include "PedalWorker.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
+#include "SettingsDialog.h"
 #include "SlotInspector.h"
 #include "SlotTable.h"
+#include "TabStrip.h"
 #include "Toast.h"
 #include "UpdateCheck.h"
 
@@ -43,7 +45,7 @@ public:
     // programmatic slot selection, and "is the waveform drawn yet".
     void refreshNow();
     void selectSlot(int slot);
-    void showInspector() { setInspectorVisible(true); } // --inspector: the panel in snapshots
+    void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
     void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
     bool playerReady() const;
 
@@ -58,9 +60,11 @@ public:
     bool keyPressed(const juce::KeyPress& key) override;
 
 private:
+    static constexpr int kAudioTab = 0, kPropertiesTab = 1; // the bottom pane's two faces
+
     void applySnapshot(const PedalSnapshot& snapshot);
     void slotChosen(int slot, bool startPlaying);
-    void openAudioSettings();
+    void openSettings();
     void updateStatusText();
     juce::String volumeDisplayName() const;
     void updateTableRows();
@@ -85,8 +89,9 @@ private:
     // Mutations: every action becomes a queued worker job with the standard
     // write options (backup root + timestamp under the app data dir).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
-    void setInspectorVisible(bool visible); // the window grows, the table never shrinks
+    void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
     void updateInspector();                 // push the selected row into the panel
+    void applyColumnPreferences();          // Settings -> Columns, onto the table
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
@@ -112,14 +117,14 @@ private:
     juce::TextButton connectButton { "Connect" };
     juce::TextButton disconnectButton { "Disconnect" };
     juce::ToggleButton showEmptyToggle { "show empty slots" };
-    juce::TextButton inspectorButton { "Slot settings" };
+    felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
+    TabStrip bottomTabs { { "Audio", "Properties" } };
     SlotInspector inspector;
     Toast toast;
     PlayerPane player { engine };
     juce::String deviceError;
-    int selectedSlot = 0;        // what the panel is showing (0 = nothing)
-    bool inspectorVisible = false;
+    int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)

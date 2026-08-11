@@ -83,6 +83,13 @@ int SlotTable::slotOfRow(int rowIndex) const
              : 0;
 }
 
+void SlotTable::setOptionalColumns(bool oneShot, bool countIn)
+{
+    auto& header = table_.getHeader();
+    header.setColumnVisible(kOneShot, oneShot);
+    header.setColumnVisible(kCountIn, countIn);
+}
+
 void SlotTable::selectSlot(int slot)
 {
     const int row = rowOfSlot(slot);

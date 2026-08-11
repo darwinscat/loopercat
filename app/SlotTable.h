@@ -43,6 +43,10 @@ public:
 
     void selectSlot(int slot);
 
+    // The two behaviour columns are a preference (Settings -> Columns): the
+    // pedal's own facts always show, these are the ones a player opts into.
+    void setOptionalColumns(bool oneShot, bool countIn);
+
     // Inline edits live on double-click (name, tempo): an editor right in the
     // cell. Enter commits, Esc cancels; the field enforces the pedal's
     // constraints — 12 printable ASCII for names, digits and a dot for tempo.

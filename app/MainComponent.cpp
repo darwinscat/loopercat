@@ -18,7 +18,11 @@ namespace loopercat
 namespace
 {
     constexpr auto kProductUrl = "https://darwinscat.com/loopercat";
-    constexpr auto kDeviceStateKey = "audioDeviceState";
+
+    // Which behaviour columns the table shows. One Shot is on out of the box
+    // because most players use it; Play Count-In waits to be asked for.
+    constexpr auto kOneShotColumnKey = "columnOneShot";
+    constexpr auto kCountInColumnKey = "columnPlayCountIn";
 
     // The window background — the family's near-black stage (the brand mark's
     // dark disc is 0xff0b0b11; the stage sits just above it).
@@ -29,10 +33,6 @@ namespace
     // One timer, two paces: the MIDI presence poll idles at 2 s; while a
     // connect attempt or the post-disconnect hold is live it runs at
     // supervision pace so the resend clock and the hold expiry stay honest.
-    // The panel's width: enough for a 12-character name field and a card's
-    // two lines of plain English without hyphenating them.
-    constexpr int kInspectorWidth = 320;
-
     constexpr int kMidiPollIntervalMs = 2000;
     constexpr int kSuperviseTickMs = 250;
 
@@ -71,32 +71,6 @@ namespace
                  } };
     }
 
-    // The audio-settings dialog content; persists the device choice when the
-    // dialog goes away (family settings file, one XML-string key).
-    struct AudioSettingsHolder final : juce::Component
-    {
-        AudioSettingsHolder(juce::AudioDeviceManager& dm, AppSettings& s)
-            : panel(dm, { .minInputs = 0, .maxInputs = 0, .minOutputs = 2, .maxOutputs = 2 }),
-              settings(s)
-        {
-            addAndMakeVisible(panel);
-            setSize(440, 260);
-        }
-
-        ~AudioSettingsHolder() override
-        {
-            if (auto* file = settings.file()) {
-                file->setValue(kDeviceStateKey, panel.saveState());
-                file->saveIfNeeded();
-            }
-        }
-
-        void resized() override { panel.setBounds(getLocalBounds().reduced(8)); }
-
-        felitronics::appkit::AudioSettingsPanel panel;
-        AppSettings& settings;
-    };
-
     juce::String trimmedName(const SlotRow& row)
     {
         return utf8(row.info.name).trimEnd();
@@ -134,7 +108,8 @@ MainComponent::MainComponent(std::string explicitVolume)
     hint.setJustificationType(juce::Justification::centred);
 
     const juce::String savedDeviceState =
-        settings.file() != nullptr ? settings.file()->getValue(kDeviceStateKey) : juce::String();
+        settings.file() != nullptr ? settings.file()->getValue(SettingsDialog::kDeviceStateKey)
+                                   : juce::String();
     deviceError = engine.initialiseDevice(savedDeviceState);
 
     table.onSlotSelected = [this](int slot) {
@@ -212,11 +187,9 @@ MainComponent::MainComponent(std::string explicitVolume)
             toggleCountIn(slot, row->info.countIn);
     };
 
-    inspectorButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
-    inspectorButton.setEnabled(false);
-    inspectorButton.onClick = [this] { setInspectorVisible(!inspectorVisible); };
+    settingsButton.onClick = [this] { openSettings(); };
+    bottomTabs.onTabChanged = [this](int index) { showBottomTab(index); };
 
-    player.onGear = [this] { openAudioSettings(); };
     player.onVolumeChanged = [this](double percent) {
         if (auto* file = settings.file())
             file->setValue("previewVolume", percent);
@@ -423,18 +396,19 @@ MainComponent::MainComponent(std::string explicitVolume)
     addAndMakeVisible(connectButton);
     addAndMakeVisible(disconnectButton);
     addAndMakeVisible(showEmptyToggle);
-    addAndMakeVisible(inspectorButton);
+    addAndMakeVisible(settingsButton);
     addChildComponent(table);  // shown once a pedal is mounted
+    addChildComponent(bottomTabs);
     addChildComponent(inspector);
     addChildComponent(player); // likewise
     addChildComponent(toast);  // fades in over everything on job success
 
     setWantsKeyboardFocus(true); // Space toggles playback
 
+    applyColumnPreferences();
+    showBottomTab(kAudioTab);
     applySnapshot({}); // the no-pedal state, until the first scan lands
     setSize(920, 680);
-    if (settings.file() != nullptr && settings.file()->getBoolValue("slotInspectorOpen", false))
-        setInspectorVisible(true); // the panel is where the user left it
 
     worker.start();
     startTimer(kMidiPollIntervalMs); // presence poll — cheap device-list scan, message thread
@@ -617,36 +591,24 @@ void MainComponent::updateInspector()
     inspector.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
 }
 
-// Opening the panel widens the WINDOW rather than narrowing the table: the
-// slot list is the thing people came for, and it does not pay rent for a
-// panel. If the display cannot spare the width, the table yields instead.
-void MainComponent::setInspectorVisible(bool visible)
+// The bottom pane has two faces for the selected slot: listen to it (the
+// player) or set it up (its properties). One pane, so the table never moves.
+void MainComponent::showBottomTab(int index)
 {
-    if (inspectorVisible == visible)
-        return;
-    inspectorVisible = visible;
-    inspector.setVisible(visible && table.isVisible());
-    // One button, two states — the label stays put and the violet says it is
-    // on, the same violet the selected row wears.
-    inspectorButton.setColour(juce::TextButton::buttonColourId,
-                              visible ? juce::Colour(0xff2a2440) : juce::Colour(0xff1e1e26));
-    inspectorButton.setColour(juce::TextButton::textColourOffId,
-                              visible ? felitronics::appkit::brand::lilac
-                                      : juce::Colours::white);
-    if (auto* file = settings.file()) {
-        file->setValue("slotInspectorOpen", visible);
-        file->saveIfNeeded();
-    }
-    if (auto* window = findParentComponentOfClass<juce::ResizableWindow>()) {
-        const int wanted = window->getWidth() + (visible ? kInspectorWidth : -kInspectorWidth);
-        const auto screen = juce::Desktop::getInstance().getDisplays()
-                                .getDisplayForRect(window->getScreenBounds());
-        const int limit = screen != nullptr ? juce::roundToInt(screen->userBounds.getWidth())
-                                            : wanted;
-        window->setSize(juce::jmin(wanted, limit), window->getHeight());
-    }
-    updateInspector();
+    const bool mounted = table.isVisible();
+    player.setVisible(mounted && index == kAudioTab);
+    inspector.setVisible(mounted && index == kPropertiesTab);
     resized();
+}
+
+// Settings -> Columns onto the table. The pedal's own facts always show; these
+// two are the ones a player opts into.
+void MainComponent::applyColumnPreferences()
+{
+    auto* file = settings.file();
+    table.setOptionalColumns(
+        file == nullptr || file->getBoolValue(kOneShotColumnKey, true),
+        file != nullptr && file->getBoolValue(kCountInColumnKey, false));
 }
 
 void MainComponent::updateToolbar()
@@ -659,7 +621,6 @@ void MainComponent::updateToolbar()
     connectButton.setEnabled(midiPedalPresent && !pedalBusy
                              && snapshot.state == lifecycle::State::disconnected
                              && !connectAttempt.active() && !connectHoldActive());
-    inspectorButton.setEnabled(usable);
     if (appMenu != nullptr)
         appMenu->menuItemsChanged(); // the Maintenance items follow the same gate
 }
@@ -843,15 +804,9 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     updateTableRows();
     updateToolbar();
     table.setVisible(mounted);
-    player.setVisible(mounted);
+    bottomTabs.setVisible(mounted);
     hint.setVisible(!mounted);
-    // The panel comes back with the pedal when it was left open. Its arrival
-    // changes the table's width, so the layout has to be recomputed here —
-    // becoming visible does not lay a component out by itself.
-    if (inspector.isVisible() != (mounted && inspectorVisible)) {
-        inspector.setVisible(mounted && inspectorVisible);
-        resized();
-    }
+    showBottomTab(bottomTabs.selected()); // the pane follows the pedal in and out
     if (!mounted)
         selectedSlot = 0;
     updateInspector();
@@ -1091,11 +1046,22 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
     }), true);
 }
 
-void MainComponent::openAudioSettings()
+void MainComponent::openSettings()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned(new AudioSettingsHolder(engine.deviceManager(), settings));
-    options.dialogTitle = "Audio output";
+    options.content.setOwned(new SettingsDialog(
+        engine.deviceManager(), settings,
+        { settings.file() == nullptr || settings.file()->getBoolValue(kOneShotColumnKey, true),
+          settings.file() != nullptr && settings.file()->getBoolValue(kCountInColumnKey, false) },
+        [this](SettingsDialog::Columns columns) {
+            if (auto* file = settings.file()) {
+                file->setValue(kOneShotColumnKey, columns.oneShot);
+                file->setValue(kCountInColumnKey, columns.countIn);
+                file->saveIfNeeded();
+            }
+            applyColumnPreferences();
+        }));
+    options.dialogTitle = "Settings";
     options.dialogBackgroundColour = kBackground;
     options.escapeKeyTriggersCloseButton = true;
     options.resizable = false;
@@ -1109,8 +1075,8 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
         return true;
     }
     if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)
-        && inspectorButton.isEnabled()) {
-        setInspectorVisible(!inspectorVisible);
+        && table.isVisible()) {
+        bottomTabs.select(bottomTabs.selected() == kPropertiesTab ? kAudioTab : kPropertiesTab);
         return true;
     }
     return false;
@@ -1126,10 +1092,11 @@ void MainComponent::resized()
     auto area = getLocalBounds();
     header.setBounds(area.removeFromTop(56));
     header.clickRight = juce::roundToInt(header.contentRight());
-    pedalLight.setBounds(getWidth() - 232, 0, 220, 56);
+    // The gear sits at the very corner, just past the pedal's light and name.
+    settingsButton.setBounds(getWidth() - 40, 16, 24, 24);
+    pedalLight.setBounds(getWidth() - 268, 0, 220, 56);
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
     showEmptyToggle.setBounds(statusRow.removeFromRight(150));
-    inspectorButton.setBounds(statusRow.removeFromRight(112).reduced(2, 1));
     disconnectButton.setBounds(statusRow.removeFromRight(104).reduced(2, 1));
     connectButton.setBounds(statusRow.removeFromRight(84).reduced(2, 1));
     status.setBounds(statusRow);
@@ -1140,14 +1107,14 @@ void MainComponent::resized()
     badge.setBounds(getWidth() - 122, getHeight() - 40, 110, 32);
     area.removeFromBottom(44); // the badge strip stays clear
     toast.setBounds(getWidth() / 2 - 280, getHeight() - 44 - 40, 560, 34);
-    player.setBounds(area.removeFromBottom(150).reduced(12, 0));
+    // The bottom pane keeps its 150 px whichever tab is up, tab strip included:
+    // switching between listening and setting up must not move the table.
+    auto bottom = area.removeFromBottom(150).reduced(12, 0);
+    bottomTabs.setBounds(bottom.removeFromTop(26));
+    player.setBounds(bottom);
+    inspector.setBounds(bottom);
     area.removeFromBottom(8);
-    auto listArea = area.reduced(12, 0);
-    if (inspector.isVisible()) {
-        inspector.setBounds(listArea.removeFromRight(kInspectorWidth));
-        listArea.removeFromRight(10);
-    }
-    table.setBounds(listArea);
+    table.setBounds(area.reduced(12, 0));
     hint.setBounds(area);
 }
 

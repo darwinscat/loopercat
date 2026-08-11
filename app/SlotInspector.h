@@ -9,9 +9,9 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 //==============================================================================
-// loopercat::SlotInspector — everything about ONE slot, next to the list of
-// all of them: the table is the stage a player reads between songs, this is
-// the studio where a memory gets set up.
+// loopercat::SlotInspector — everything about ONE slot, on the Properties tab
+// under the list of all of them: the table is the stage a player reads
+// between songs, this is the studio where a memory gets set up.
 //
 // What it shows is deliberately narrow. Identity first (the name and the
 // tempo the pedal will play at, with the bar count that follows from it),

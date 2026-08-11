@@ -66,10 +66,8 @@ SlotInspector::SlotInspector()
 
     footer_.setFont(juce::FontOptions(11.0f));
     footer_.setColour(juce::Label::textColourId, kDim);
-    footer_.setJustificationType(juce::Justification::topLeft);
-    footer_.setText(juce::String::fromUTF8(
-                        "Changes land in the pedal's memory file \xe2\x80\x94 eject the volume "
-                        "and reboot the pedal to hear them."),
+    footer_.setJustificationType(juce::Justification::centredRight);
+    footer_.setText("Eject and reboot the pedal to hear the changes.",
                     juce::dontSendNotification);
 
     countIn_.onToggle = [this] {
@@ -200,11 +198,7 @@ void SlotInspector::commitTempo()
 
 void SlotInspector::paint(juce::Graphics& g)
 {
-    auto area = getLocalBounds().toFloat();
-    g.setColour(kPaneBackground);
-    g.fillRoundedRectangle(area, 8.0f);
-    g.setColour(juce::Colour(0xff1e1e26));
-    g.drawRoundedRectangle(area.reduced(0.5f), 8.0f, 1.0f);
+    g.fillAll(kPaneBackground);
 
     if (!hasSlot_) {
         g.setColour(kDim);
@@ -213,51 +207,39 @@ void SlotInspector::paint(juce::Graphics& g)
         return;
     }
 
-    // The slot's number is the title: it is what the pedal's display shows.
-    auto header = getLocalBounds().reduced(kPad, 0).withHeight(38).withTrimmedTop(12);
+    // The slot's number leads the row, the way the pedal's display names it.
+    auto header = getLocalBounds().reduced(kPad, 0).withHeight(28).withTrimmedTop(6);
     g.setColour(felitronics::appkit::brand::lilac);
-    g.setFont(juce::FontOptions(15.0f));
-    g.drawText("SLOT " + juce::String(info_.slot).paddedLeft('0', 2), header,
-               juce::Justification::topLeft);
-
-    if (info_.hasAudio) {
-        // Bars only when the pedal has counted them: a slot it has not
-        // indexed yet says nothing rather than "0 bars".
-        juce::String facts = SlotTable::formatDuration(info_.frames);
-        if (info_.measures > 0)
-            facts << juce::String::fromUTF8(" \xc2\xb7 ") << info_.measures << " bars";
-        g.setColour(kDim);
-        g.setFont(juce::FontOptions(11.5f));
-        g.drawText(facts, header, juce::Justification::topRight);
-    }
-
-    g.setColour(juce::Colour(0xff1e1e26)); // the rule between identity and behaviour
-    const int y = 132;
-    g.fillRect(kPad, y, getWidth() - 2 * kPad, 1);
+    g.setFont(juce::FontOptions(14.0f));
+    g.drawText("SLOT " + juce::String(info_.slot).paddedLeft('0', 2),
+               header.removeFromLeft(76), juce::Justification::centredLeft);
 }
 
 void SlotInspector::resized()
 {
-    auto area = getLocalBounds().reduced(kPad, 0);
-    area.removeFromTop(50); // the painted header
+    // A strip, not a column: identity on one row, the cards side by side under
+    // it, so switching tabs never moves the table.
+    auto area = getLocalBounds().reduced(kPad, 6);
 
-    nameCaption_.setBounds(area.removeFromTop(14));
-    nameEditor_.setBounds(area.removeFromTop(26));
-    area.removeFromTop(10);
+    auto identity = area.removeFromTop(28);
+    identity.removeFromLeft(76); // the painted "SLOT nn"
 
-    tempoCaption_.setBounds(area.removeFromTop(14));
-    auto tempoFieldRow = area.removeFromTop(26);
-    tempoEditor_.setBounds(tempoFieldRow.removeFromLeft(78));
-    tempoFieldRow.removeFromLeft(10);
-    barsHint_.setBounds(tempoFieldRow); // the consequence sits beside the field
+    nameCaption_.setBounds(identity.removeFromLeft(44).withTrimmedTop(8));
+    nameEditor_.setBounds(identity.removeFromLeft(150).withSizeKeepingCentre(150, 24));
+    identity.removeFromLeft(18);
+    tempoCaption_.setBounds(identity.removeFromLeft(48).withTrimmedTop(8));
+    tempoEditor_.setBounds(identity.removeFromLeft(72).withSizeKeepingCentre(72, 24));
+    identity.removeFromLeft(8);
+    barsHint_.setBounds(identity.removeFromLeft(90));
+    footer_.setBounds(identity); // the "eject and reboot" note rides the same row
 
-    area.removeFromTop(22); // clears the rule painted at y = 132
-
-    countIn_.setBounds(area.removeFromTop(countIn_.preferredHeight()));
     area.removeFromTop(8);
-    oneShot_.setBounds(area.removeFromTop(oneShot_.preferredHeight()));
-
-    footer_.setBounds(getLocalBounds().reduced(kPad, 0).withTop(getHeight() - 46).withHeight(40));
+    const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight());
+    auto cards = area.removeFromTop(juce::jmin(cardHeight, area.getHeight()));
+    const int cardWidth = juce::jmin(320, (cards.getWidth() - 10) / 2);
+    countIn_.setBounds(cards.removeFromLeft(cardWidth));
+    cards.removeFromLeft(10);
+    oneShot_.setBounds(cards.removeFromLeft(cardWidth));
 }
 
 } // namespace loopercat
