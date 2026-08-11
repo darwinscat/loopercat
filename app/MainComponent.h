@@ -134,6 +134,7 @@ private:
     VersionChip versionChip { badge }; // after the badge: it parents it
     PedalLight pedalLight;
     juce::Label status;
+    juce::Label devMark; // "dev" when this build is ahead of the last release
     juce::Label hint; // the empty-state prompt, shown while no pedal is mounted
     AudioEngine engine;
     BannerStrip banners;

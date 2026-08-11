@@ -64,6 +64,7 @@ namespace
                  .productUrl = kProductUrl,
                  .gitHash = LOOPERCAT_GIT_HASH,
                  .buildNumber = LOOPERCAT_BUILD_NUMBER,
+                 .buildCount = LOOPERCAT_BUILD_COUNT,
                  .gitDirty = LOOPERCAT_GIT_DIRTY,
                  .os = LOOPERCAT_BUILD_OS,
                  .arch = LOOPERCAT_BUILD_ARCH,
@@ -102,6 +103,14 @@ MainComponent::MainComponent(std::string explicitVolume)
 {
     badge.setBrandTypeface(juce::Typeface::createSystemTypefaceFor(
         BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize));
+
+    // A build ahead of the last release tag, or with uncommitted changes, is
+    // not what anyone downloaded — the corner says so next to the version.
+    devMark.setText(LOOPERCAT_BUILD_COUNT > 0 || LOOPERCAT_GIT_DIRTY ? "dev" : "",
+                    juce::dontSendNotification);
+    devMark.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    devMark.setJustificationType(juce::Justification::centredRight);
+    devMark.setColour(juce::Label::textColourId, felitronics::appkit::brand::orange);
 
     status.setFont(juce::FontOptions(12.0f));
     status.setColour(juce::Label::textColourId, kStatusText);
@@ -405,6 +414,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     addAndMakeVisible(header);
     addAndMakeVisible(pedalLight); // over the header's right side
     addAndMakeVisible(versionChip);
+    addAndMakeVisible(devMark);
     addAndMakeVisible(status);
     addAndMakeVisible(hint);
     addAndMakeVisible(banners);
@@ -1112,7 +1122,8 @@ void MainComponent::resized()
     // the pedal buttons; the status text takes whatever is left and elides.
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
     versionChip.setBounds(statusRow.removeFromRight(52)); // the text's own width
-    statusRow.removeFromRight(8);
+    devMark.setBounds(statusRow.removeFromRight(26));
+    statusRow.removeFromRight(6);
     settingsButton.setBounds(statusRow.removeFromRight(22));
     statusRow.removeFromRight(8);
     showEmptyToggle.setBounds(statusRow.removeFromRight(134));
