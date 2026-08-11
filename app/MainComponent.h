@@ -33,6 +33,28 @@
 namespace loopercat
 {
 
+// The family's version badge draws two lines — the version over the running
+// format — and the window's status row has room for one. The chip crops it to
+// the line that matters; the click, the update dot and the popover are the
+// badge's own, untouched.
+class VersionChip final : public juce::Component
+{
+public:
+    explicit VersionChip(juce::Component& badge) : badge_(badge) { addAndMakeVisible(badge_); }
+
+    void resized() override
+    {
+        // Tall enough that the format line lands past the chip's edge and is
+        // clipped away, with the version line centred in what is left.
+        badge_.setBounds(0, 0, getWidth(), juce::roundToInt(getHeight() / 0.56f));
+    }
+
+private:
+    juce::Component& badge_;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VersionChip)
+};
+
 class MainComponent final : public juce::Component,
                             private juce::Timer // MIDI presence poll + connect supervision clock
 {
@@ -109,6 +131,7 @@ private:
     UpdateCheck updateChecker { settings };
     ui::LooperBrandHeader header;
     felitronics::appkit::VersionBadge badge;
+    VersionChip versionChip { badge }; // after the badge: it parents it
     PedalLight pedalLight;
     juce::Label status;
     juce::Label hint; // the empty-state prompt, shown while no pedal is mounted

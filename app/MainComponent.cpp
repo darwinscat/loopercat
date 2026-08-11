@@ -33,6 +33,10 @@ namespace
     // One timer, two paces: the MIDI presence poll idles at 2 s; while a
     // connect attempt or the post-disconnect hold is live it runs at
     // supervision pace so the resend clock and the hold expiry stay honest.
+    // The bottom pane: the old 150 px of player, plus the tab strip above it,
+    // plus the breathing room the version badge used to occupy.
+    constexpr int kBottomPaneHeight = 190;
+
     constexpr int kMidiPollIntervalMs = 2000;
     constexpr int kSuperviseTickMs = 250;
 
@@ -389,7 +393,7 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     addAndMakeVisible(header);
     addAndMakeVisible(pedalLight); // over the header's right side
-    addAndMakeVisible(badge);
+    addAndMakeVisible(versionChip);
     addAndMakeVisible(status);
     addAndMakeVisible(hint);
     addAndMakeVisible(banners);
@@ -1092,11 +1096,15 @@ void MainComponent::resized()
     auto area = getLocalBounds();
     header.setBounds(area.removeFromTop(56));
     header.clickRight = juce::roundToInt(header.contentRight());
-    // The gear sits at the very corner, just past the pedal's light and name.
-    settingsButton.setBounds(getWidth() - 40, 16, 24, 24);
-    pedalLight.setBounds(getWidth() - 268, 0, 220, 56);
+    pedalLight.setBounds(getWidth() - 232, 0, 220, 56);
+    // One line, right to left: the version, the gear, the view filter, then
+    // the pedal buttons; the status text takes whatever is left and elides.
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
-    showEmptyToggle.setBounds(statusRow.removeFromRight(150));
+    versionChip.setBounds(statusRow.removeFromRight(74));
+    statusRow.removeFromRight(10);
+    settingsButton.setBounds(statusRow.removeFromRight(24));
+    statusRow.removeFromRight(10);
+    showEmptyToggle.setBounds(statusRow.removeFromRight(140));
     disconnectButton.setBounds(statusRow.removeFromRight(104).reduced(2, 1));
     connectButton.setBounds(statusRow.removeFromRight(84).reduced(2, 1));
     status.setBounds(statusRow);
@@ -1104,12 +1112,11 @@ void MainComponent::resized()
     banners.setBounds(area.removeFromTop(bannerHeight).reduced(12, 0));
     if (bannerHeight > 0)
         area.removeFromTop(6);
-    badge.setBounds(getWidth() - 122, getHeight() - 40, 110, 32);
-    area.removeFromBottom(44); // the badge strip stays clear
-    toast.setBounds(getWidth() / 2 - 280, getHeight() - 44 - 40, 560, 34);
-    // The bottom pane keeps its 150 px whichever tab is up, tab strip included:
-    // switching between listening and setting up must not move the table.
-    auto bottom = area.removeFromBottom(150).reduced(12, 0);
+    // The version moved up into the status row, so the strip it used to
+    // reserve at the bottom goes to the pane that needed it: the waveform is
+    // back to its old height with the tab strip on top of it.
+    toast.setBounds(getWidth() / 2 - 280, getHeight() - kBottomPaneHeight - 42, 560, 34);
+    auto bottom = area.removeFromBottom(kBottomPaneHeight).reduced(12, 8);
     bottomTabs.setBounds(bottom.removeFromTop(26));
     player.setBounds(bottom);
     inspector.setBounds(bottom);
