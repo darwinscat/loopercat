@@ -34,11 +34,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Configure (app, no test tier)
-        run: cmake -B build -DLOOPERCAT_BUILD_TESTS=OFF
+      # The test tier runs here too: the JUCE-side suites (brand mark, wav
+      # import, the harnesses) only ever ran on macOS, so a Windows-only
+      # rendering or timing difference first showed up in the RELEASE lane,
+      # which is the worst place to learn it.
+      - name: Configure (app + tests)
+        run: cmake -B build -DLOOPERCAT_BUILD_TESTS=ON
 
       - name: Build the app
-        run: cmake --build build --config Release --target LooperCat
+        run: cmake --build build --config Release
+
+      - name: Test (all suites)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Keep what the brand-mark test drew
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: brand-header-windows
+          path: build/brand-header.png
+          if-no-files-found: ignore
 
       # The exe must run on a machine with no VC++ redistributable: a
       # dynamic-CRT import in the exe means the static-runtime setting
