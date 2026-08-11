@@ -162,8 +162,15 @@ int main()
         const int hh = 52;
         header.setBounds (0, 0, 400, hh);
         juce::Image headerImg (juce::Image::ARGB, 400, hh, true);
-        juce::Graphics hg (headerImg);
-        header.paint (hg);
+        // The Graphics must DIE before the pixels are read. On macOS the
+        // software renderer writes through, so a live context read fine; on
+        // Windows the image is Direct2D-backed and nothing lands until the
+        // context is destroyed — the whole header came back transparent.
+        // render() above gets this right by construction; this block did not.
+        {
+            juce::Graphics hg (headerImg);
+            header.paint (hg);
+        }
         const float hd = (float) hh * 0.86f;
         const float hs = hd / 40.0f;
         const float mx = (float) hh + 6.0f + hd * 0.5f;
