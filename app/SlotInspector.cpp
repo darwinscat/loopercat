@@ -23,6 +23,7 @@ namespace
     const juce::Colour kCaption { 0xff8a8a92 };
 
     constexpr int kPad = 14;
+    constexpr int kTempoDigits = 5; // "300.0", the pedal's widest tempo
 
     void styleEditor(juce::TextEditor& editor)
     {
@@ -43,6 +44,11 @@ SlotInspector::SlotInspector()
     makeCaption(tempoCaption_, "TEMPO");
 
     styleEditor(nameEditor_);
+    // The pedal's name is twelve fixed cells on a small display. A monospaced
+    // field exactly twelve glyphs wide says that without a word of help — you
+    // can see the room you have left.
+    nameEditor_.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 13.0f,
+                                          juce::Font::plain));
     // The pedal's own constraints, enforced at the field: 12 characters from
     // the printable ASCII its display can show.
     juce::String printableAscii;
@@ -54,7 +60,9 @@ SlotInspector::SlotInspector()
     nameEditor_.onEscapeKey = [this] { refresh(); };
 
     styleEditor(tempoEditor_);
-    tempoEditor_.setInputRestrictions(5, "0123456789."); // "300.0" is the widest legal value
+    tempoEditor_.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 13.0f,
+                                           juce::Font::plain));
+    tempoEditor_.setInputRestrictions(kTempoDigits, "0123456789."); // "300.0" is the widest value
     tempoEditor_.setJustification(juce::Justification::centredRight);
     tempoEditor_.onReturnKey = [this] { commitTempo(); };
     tempoEditor_.onFocusLost = [this] { commitTempo(); };
@@ -153,6 +161,16 @@ void SlotInspector::refresh()
     repaint();
 }
 
+// A field as wide as the value the pedal allows and no wider: twelve cells for
+// a name, five for "300.0". Monospaced, so the room left is the room shown —
+// the limit made visible instead of explained.
+int SlotInspector::fieldWidth(const juce::TextEditor& field, int cells)
+{
+    juce::GlyphArrangement glyphs;
+    glyphs.addLineOfText(field.getFont(), juce::String::repeatedString("0", cells), 0.0f, 0.0f);
+    return juce::roundToInt(glyphs.getBoundingBox(0, -1, true).getWidth()) + 14;
+}
+
 void SlotInspector::updateBarsHint()
 {
     // The tempo is not just a number on this pedal: the bar count follows
@@ -225,10 +243,12 @@ void SlotInspector::resized()
     identity.removeFromLeft(76); // the painted "SLOT nn"
 
     nameCaption_.setBounds(identity.removeFromLeft(44).withTrimmedTop(8));
-    nameEditor_.setBounds(identity.removeFromLeft(150).withSizeKeepingCentre(150, 24));
+    const int nameWidth = fieldWidth(nameEditor_, rc0::kNameLength);
+    nameEditor_.setBounds(identity.removeFromLeft(nameWidth).withSizeKeepingCentre(nameWidth, 24));
     identity.removeFromLeft(18);
     tempoCaption_.setBounds(identity.removeFromLeft(48).withTrimmedTop(8));
-    tempoEditor_.setBounds(identity.removeFromLeft(72).withSizeKeepingCentre(72, 24));
+    const int tempoWidth = fieldWidth(tempoEditor_, kTempoDigits);
+    tempoEditor_.setBounds(identity.removeFromLeft(tempoWidth).withSizeKeepingCentre(tempoWidth, 24));
     identity.removeFromLeft(8);
     barsHint_.setBounds(identity.removeFromLeft(90));
     footer_.setBounds(identity); // the "eject and reboot" note rides the same row

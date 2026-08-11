@@ -44,7 +44,8 @@ public:
 
 private:
     void refresh();          // paint the current info into the controls
-    void updateBarsHint();   // the consequence line under the tempo field
+    void updateBarsHint();   // the consequence line beside the tempo field
+    static int fieldWidth(const juce::TextEditor& field, int cells); // the pedal's limit, in pixels
     void commitName();
     void commitTempo();
     void makeCaption(juce::Label& label, const juce::String& text);

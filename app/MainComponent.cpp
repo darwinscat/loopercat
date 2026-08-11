@@ -1100,13 +1100,13 @@ void MainComponent::resized()
     // One line, right to left: the version, the gear, the view filter, then
     // the pedal buttons; the status text takes whatever is left and elides.
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
-    versionChip.setBounds(statusRow.removeFromRight(74));
-    statusRow.removeFromRight(10);
-    settingsButton.setBounds(statusRow.removeFromRight(24));
-    statusRow.removeFromRight(10);
-    showEmptyToggle.setBounds(statusRow.removeFromRight(140));
-    disconnectButton.setBounds(statusRow.removeFromRight(104).reduced(2, 1));
-    connectButton.setBounds(statusRow.removeFromRight(84).reduced(2, 1));
+    versionChip.setBounds(statusRow.removeFromRight(52)); // the text's own width
+    statusRow.removeFromRight(8);
+    settingsButton.setBounds(statusRow.removeFromRight(22));
+    statusRow.removeFromRight(8);
+    showEmptyToggle.setBounds(statusRow.removeFromRight(134));
+    disconnectButton.setBounds(statusRow.removeFromRight(94).reduced(2, 1));
+    connectButton.setBounds(statusRow.removeFromRight(76).reduced(2, 1));
     status.setBounds(statusRow);
     const int bannerHeight = banners.preferredHeight();
     banners.setBounds(area.removeFromTop(bannerHeight).reduced(12, 0));
