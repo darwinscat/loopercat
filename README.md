@@ -20,12 +20,17 @@ knowledge of [rc5cat](https://github.com/AliceLafox/rc5cat).
 - **Connect / Disconnect.** One button puts the pedal into STORAGE mode and
   mounts it; one button ejects politely and returns it to the looper screen —
   over USB-MIDI SysEx, with zero trips through the pedal's SETUP menu.
-- **Browse.** All 99 slots in one table: name, duration, bars, tempo, one-shot,
-  WAV file. Live refresh as the pedal comes and goes.
+- **Browse.** All 99 slots in one table: name, duration, bars, tempo, the
+  behaviour lamps you choose to show, WAV file. Live refresh as the pedal comes
+  and goes.
 - **Listen.** Double-click a slot to play it — waveform, seeking, output device
   picker. No copying files around just to hear what's in slot 37.
-- **Edit.** Inline rename, one-shot toggle, tempo and bars, trim with a gapless
-  preview of the cut, clear a slot, drag one slot onto another to swap them.
+- **Set a slot up.** A Properties tab per slot: its name, its true tempo with
+  the bar count that follows, **One Shot**, and **Play Count-In** — one measure
+  of count before the loop, without walking the pedal's menus. Disconnect and
+  the pedal has it.
+- **Edit audio.** Trim with a gapless preview of the cut, clear a slot, drag one
+  slot onto another to swap them.
 - **Move audio.** Push a WAV into an empty slot or replace an occupied one
   (converted to the pedal's canonical float32 format; the old loop goes to the
   app's trash first), pull any loop out as a standard WAV.

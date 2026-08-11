@@ -55,36 +55,71 @@ Windows has no removable-volume permission gate.
 
 ## The slot table
 
-All 99 memory slots in one table: name, duration, bars, tempo, one-shot flag,
-and the WAV file behind the slot. It refreshes live as the pedal comes and
-goes; **show empty slots** in the toolbar switches between the full 1–99 list
-and just the occupied ones.
+All 99 memory slots in one table: name, duration, bars, tempo, the behaviour
+lamps and the WAV file behind the slot. It refreshes live as the pedal comes
+and goes; **show empty slots** in the toolbar switches between the full 1–99
+list and just the occupied ones.
+
+A lit lamp means the setting is on for that slot, and clicking it flips the
+setting straight from the row. Which lamps appear is up to you — see
+**Settings → Columns** below; **One Shot** is shown out of the box and **Play
+Count-In** is not, so the table stays as short as your playing needs.
 
 A row pulses while a job runs against it, and the table re-reads the card
 after every write — what you see is what the card says.
 
-## Listening
+## Listening and setting up: the bottom pane
 
-Double-click a slot to load and play it. The player pane draws the waveform;
-click anywhere in it to seek. ▶/■ starts and stops, **Loop** keeps it
-rolling, and the gear opens the audio-output settings (pick your interface).
+The pane under the table has two tabs for whichever slot is selected, and
+**⌘I** flips between them.
+
+- **Audio** — the waveform: click anywhere in it to seek, ▶/■ starts and
+  stops, **Loop** keeps it rolling. Double-clicking a row loads and plays it.
+- **Properties** — what the slot *is*: its name, its tempo, and one card per
+  setting LooperCat can change for it. Settings arrive here as they are
+  verified against real hardware, one at a time, rather than as a wall of
+  fields copied out of the file format.
+
+## Settings
+
+The gear in the top row opens the app's own settings:
+
+- **Audio** — which interface and outputs the preview plays through.
+- **Columns** — which behaviour lamps the slot table shows. The pedal's own
+  facts (name, duration, bars, tempo, file) are always there.
 
 ## Editing a slot
 
-- **Rename** — right in the name cell, or right-click → **Rename…**.
-- **One Shot** — the flag in the row, or the context-menu toggle: play once
-  and stop instead of looping.
-- **Play Count-In** — the second flag: the pedal plays one measure of click
-  at the slot's tempo, then the track with no drums over the music — a
-  backing track becomes stage-ready in one tap. The name is the pedal's own
-  **PLAY COUNT**; its separate REC COUNT (a count-in before recording) is a
-  different setting and is not touched.
-- **Set tempo…** — enter the loop's true tempo and LooperCat writes the
-  pedal's tempo fields coherently — tempo and measure count together, the
-  arithmetic the pedal itself skips on import. The Bars column shows the
-  result. (Why this matters: on import the pedal assumes every loop is a
-  power-of-two number of measures, so any other loop gets a wrong tempo and
-  the onboard rhythm drifts. This menu is the cure.)
+Select the slot and open the **Properties** tab. Everything there is written
+the moment you commit it, and the note on the right says the one thing you
+have to do afterwards: **Disconnect** — that is when the pedal re-reads its
+memory. No power cycling.
+
+- **Name** — twelve characters, the field is exactly that wide because the
+  pedal's display is. Enter commits, Esc puts it back. (Double-clicking the
+  name cell in the table edits it in place too.)
+- **Tempo** — the loop's true tempo. The line beside the field shows the bar
+  count that follows from it *before* you commit, and LooperCat writes both
+  coherently — the arithmetic the pedal skips on import. (Why this matters:
+  on import the pedal assumes every loop is a power-of-two number of measures,
+  so any other loop gets a wrong tempo and the onboard rhythm drifts against
+  the music. This field is the cure.)
+- **Play Count-In** — one switch: the pedal plays one measure of count at the
+  slot's tempo, then the loop — a backing track becomes stage-ready in one
+  tap. The name is the pedal's own **PLAY COUNT**; its separate REC COUNT (a
+  count-in before recording) is a different setting and is not touched. If the
+  slot has a rhythm pattern you picked on the pedal, the card says so before
+  you switch it on: a *silent* rhythm section is what the count borrows, and
+  it will replace that pattern. A rhythm that is actually playing is left
+  alone — the count simply joins it, and switching the count off later leaves
+  your groove where it was.
+- **One Shot** — play once and stop instead of looping.
+
+Both switches are also the lamps in the table, if you keep those columns on:
+one click there does the same thing.
+
+Right-clicking a row is for operations — pushing, pulling and clearing audio —
+not for settings.
 
 ## Trim
 
