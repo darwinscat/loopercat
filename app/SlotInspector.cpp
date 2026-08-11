@@ -75,8 +75,10 @@ SlotInspector::SlotInspector()
     footer_.setFont(juce::FontOptions(11.0f));
     footer_.setColour(juce::Label::textColourId, kDim);
     footer_.setJustificationType(juce::Justification::centredRight);
-    footer_.setText("Eject and reboot the pedal to hear the changes.",
-                    juce::dontSendNotification);
+    // Disconnect is enough: leaving STORAGE makes the pedal re-read its
+    // memory (hardware, 2026-08-11 — a rename and a tempo both landed on the
+    // display with no power cycle). No reason to send anyone to the wall plug.
+    footer_.setText("Disconnect to hear the changes.", juce::dontSendNotification);
 
     countIn_.onToggle = [this] {
         if (hasSlot_ && !busy_ && onCountInToggled)
@@ -251,7 +253,7 @@ void SlotInspector::resized()
     tempoEditor_.setBounds(identity.removeFromLeft(tempoWidth).withSizeKeepingCentre(tempoWidth, 24));
     identity.removeFromLeft(8);
     barsHint_.setBounds(identity.removeFromLeft(90));
-    footer_.setBounds(identity); // the "eject and reboot" note rides the same row
+    footer_.setBounds(identity); // the "disconnect to hear it" note rides the same row
 
     area.removeFromTop(8);
     const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight());
