@@ -385,29 +385,22 @@ MainComponent::MainComponent(std::string explicitVolume)
         }
         banners.clearJobError(); // a later mutation succeeded — the story moved on
         juce::String note = description + juce::String::fromUTF8(" \xe2\x80\x94 done");
-        // Settings-only writes: the pedal re-reads its memory on leaving
-        // STORAGE, so Disconnect is the whole story (hardware, 2026-08-11).
-        const bool changedSettings = description.startsWith("Rename")
-                                  || description.startsWith("Enable")
-                                  || description.startsWith("Disable")
-                                  || description.startsWith("Set tempo");
-        // Writes that move audio. The app already writes what the pedal's
-        // boot-time indexing would (WavStat/WavLen/MeasLen/Tempo), but that
-        // the pedal picks THOSE up on Disconnect is not verified yet, so the
-        // note stops short of promising it.
-        const bool movedAudio = description.startsWith("Push")
-                             || description.startsWith("Trim")
-                             || description.startsWith("Clear")
-                             || description.startsWith("Swap");
-        const bool wroteToPedal = changedSettings || movedAudio;
+        // The pedal re-reads its memory on leaving STORAGE — settings and
+        // audio alike (hardware, 2026-08-11: a rename, a tempo change and a
+        // trim all reached the pedal with no power cycle). Disconnect is the
+        // whole story, so nobody gets sent to the wall plug.
+        const bool wroteToPedal = description.startsWith("Rename")
+                               || description.startsWith("Enable")
+                               || description.startsWith("Disable")
+                               || description.startsWith("Push")
+                               || description.startsWith("Trim")
+                               || description.startsWith("Set tempo")
+                               || description.startsWith("Clear")
+                               || description.startsWith("Swap");
         if (description.startsWith("Trim"))
             player.reload(); // same path, new bytes — fresh reader + thumbnail
         if (wroteToPedal)
-            note << juce::String::fromUTF8(
-                changedSettings
-                    ? " \xe2\x80\x94 Disconnect to hear it on the pedal."
-                    : " \xe2\x80\x94 Disconnect to hear it; reboot the pedal if the audio does "
-                      "not follow.");
+            note << juce::String::fromUTF8(" \xe2\x80\x94 Disconnect to hear it on the pedal.");
         toast.show(note);
     };
 

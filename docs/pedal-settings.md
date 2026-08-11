@@ -92,9 +92,10 @@ A per-slot **Memory Settings drawer** (opens from the context menu / a gear in
 the row), three groups mirroring the file: Playback / Recording / Rhythm.
 Enums as combo boxes with verified value lists only — an unverified enum stays
 out rather than guessing labels. Every change is one worker job; the row
-pulses; the usual "Disconnect to hear it" note stands — leaving STORAGE
-makes the pedal re-read its memory (hardware-verified 2026-08-11: a rename and
-a tempo change both showed on the display with no power cycle).
+pulses; the usual "Disconnect to hear it" note stands — leaving STORAGE makes
+the pedal re-read its memory, settings and audio alike (hardware-verified
+2026-08-11: a rename, a tempo change and a trim all reached the pedal with no
+power cycle, so "reboot to apply" was folklore).
 
 ## How to finish the enum maps (fast path)
 
