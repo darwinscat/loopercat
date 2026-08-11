@@ -18,7 +18,10 @@
 #include "PedalWorker.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
+#include "SettingsDialog.h"
+#include "SlotInspector.h"
 #include "SlotTable.h"
+#include "TabStrip.h"
 #include "Toast.h"
 #include "UpdateCheck.h"
 
@@ -29,6 +32,28 @@
 //==============================================================================
 namespace loopercat
 {
+
+// The family's version badge draws two lines — the version over the running
+// format — and the window's status row has room for one. The chip crops it to
+// the line that matters; the click, the update dot and the popover are the
+// badge's own, untouched.
+class VersionChip final : public juce::Component
+{
+public:
+    explicit VersionChip(juce::Component& badge) : badge_(badge) { addAndMakeVisible(badge_); }
+
+    void resized() override
+    {
+        // Tall enough that the format line lands past the chip's edge and is
+        // clipped away, with the version line centred in what is left.
+        badge_.setBounds(0, 0, getWidth(), juce::roundToInt(getHeight() / 0.56f));
+    }
+
+private:
+    juce::Component& badge_;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VersionChip)
+};
 
 class MainComponent final : public juce::Component,
                             private juce::Timer // MIDI presence poll + connect supervision clock
@@ -42,6 +67,7 @@ public:
     // programmatic slot selection, and "is the waveform drawn yet".
     void refreshNow();
     void selectSlot(int slot);
+    void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
     void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
     bool playerReady() const;
 
@@ -56,9 +82,11 @@ public:
     bool keyPressed(const juce::KeyPress& key) override;
 
 private:
+    static constexpr int kAudioTab = 0, kPropertiesTab = 1; // the bottom pane's two faces
+
     void applySnapshot(const PedalSnapshot& snapshot);
     void slotChosen(int slot, bool startPlaying);
-    void openAudioSettings();
+    void openSettings();
     void updateStatusText();
     juce::String volumeDisplayName() const;
     void updateTableRows();
@@ -83,6 +111,9 @@ private:
     // Mutations: every action becomes a queued worker job with the standard
     // write options (backup root + timestamp under the app data dir).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
+    void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
+    void updateInspector();                 // push the selected row into the panel
+    void applyColumnPreferences();          // Settings -> Columns, onto the table
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
@@ -100,18 +131,24 @@ private:
     UpdateCheck updateChecker { settings };
     ui::LooperBrandHeader header;
     felitronics::appkit::VersionBadge badge;
+    VersionChip versionChip { badge }; // after the badge: it parents it
     PedalLight pedalLight;
     juce::Label status;
+    juce::Label devMark; // "dev" when this build is ahead of the last release
     juce::Label hint; // the empty-state prompt, shown while no pedal is mounted
     AudioEngine engine;
     BannerStrip banners;
     juce::TextButton connectButton { "Connect" };
     juce::TextButton disconnectButton { "Disconnect" };
     juce::ToggleButton showEmptyToggle { "show empty slots" };
+    felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
+    TabStrip bottomTabs { { "Audio", "Properties" } };
+    SlotInspector inspector;
     Toast toast;
     PlayerPane player { engine };
     juce::String deviceError;
+    int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)

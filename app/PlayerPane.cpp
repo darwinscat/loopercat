@@ -66,10 +66,6 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
         markersChanged();
     };
 
-    gearButton_.onClick = [this] {
-        if (onGear)
-            onGear();
-    };
 
     thumbnail_.addChangeListener(this); // repaint as the background build progresses
 
@@ -78,7 +74,6 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     addAndMakeVisible(volumeSlider_);
     addChildComponent(trimButton_);  // appear with active markers
     addChildComponent(resetButton_);
-    addAndMakeVisible(gearButton_);
 
     startTimerHz(30);
 }
@@ -371,7 +366,6 @@ void PlayerPane::resized()
     loopButton_.setBounds(row.removeFromLeft(64));
     volumeIconArea_ = row.removeFromLeft(16);
     volumeSlider_.setBounds(row.removeFromLeft(84).reduced(0, 3));
-    gearButton_.setBounds(row.removeFromRight(24).reduced(0, 1));
     row.removeFromRight(96); // the time readout, drawn in paint()
     trimButton_.setBounds(row.removeFromRight(58).reduced(2, 0));
     resetButton_.setBounds(row.removeFromRight(58).reduced(2, 0));

@@ -83,25 +83,18 @@ int SlotTable::slotOfRow(int rowIndex) const
              : 0;
 }
 
+void SlotTable::setOptionalColumns(bool oneShot, bool countIn)
+{
+    auto& header = table_.getHeader();
+    header.setColumnVisible(kOneShot, oneShot);
+    header.setColumnVisible(kCountIn, countIn);
+}
+
 void SlotTable::selectSlot(int slot)
 {
     const int row = rowOfSlot(slot);
     if (row >= 0)
         table_.selectRow(row);
-}
-
-void SlotTable::startRenameEditForSlot(int slot)
-{
-    const int row = rowOfSlot(slot);
-    if (row >= 0)
-        startCellEdit(row, kName);
-}
-
-void SlotTable::startTempoEditForSlot(int slot)
-{
-    const int row = rowOfSlot(slot);
-    if (row >= 0)
-        startCellEdit(row, kTempo);
 }
 
 void SlotTable::startCellEdit(int rowIndex, int columnId)

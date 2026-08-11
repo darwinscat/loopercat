@@ -106,6 +106,7 @@ loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
+loopercat_core_test(usecase_count_in_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 
@@ -167,6 +168,19 @@ if(GIT_EXECUTABLE)
         set(LOOPERCAT_GIT_DIRTY 1)
     endif()
 endif()
+# Commits since the last release tag: 0 means this build IS a release build,
+# anything else means it is ahead of what users can download. The window says
+# so out loud — a dev build must never pass for the shipped one.
+set(LOOPERCAT_BUILD_COUNT 0)
+if(GIT_EXECUTABLE)
+    execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" describe --tags --abbrev=0
+        OUTPUT_VARIABLE _loopercat_tag OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_loopercat_tag)
+        execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-list "${_loopercat_tag}..HEAD" --count
+            OUTPUT_VARIABLE LOOPERCAT_BUILD_COUNT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+endif()
+
 string(TIMESTAMP LOOPERCAT_BUILD_NUMBER "%Y%m%d%H%M%S" UTC)
 
 set(LOOPERCAT_BUILD_ARCH "${CMAKE_OSX_ARCHITECTURES}")
@@ -197,6 +211,7 @@ target_sources(LooperCat PRIVATE
     app/Main.cpp
     app/MainComponent.cpp
     app/PlayerPane.cpp
+    app/SlotInspector.cpp
     app/SlotTable.cpp
     app/WavImport.cpp)
 
@@ -231,6 +246,7 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_GIT_HASH="${LOOPERCAT_GIT_HASH}"
     LOOPERCAT_GIT_DIRTY=${LOOPERCAT_GIT_DIRTY}
     LOOPERCAT_BUILD_NUMBER=${LOOPERCAT_BUILD_NUMBER}
+    LOOPERCAT_BUILD_COUNT=${LOOPERCAT_BUILD_COUNT}
     LOOPERCAT_BUILD_OS="${CMAKE_SYSTEM_NAME}"
     LOOPERCAT_BUILD_ARCH="${LOOPERCAT_BUILD_ARCH}"
     LOOPERCAT_BUILDER="${LOOPERCAT_BUILDER}")

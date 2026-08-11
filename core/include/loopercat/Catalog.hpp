@@ -13,6 +13,7 @@
 #pragma once
 
 #include "Rc0.hpp"
+#include "usecases/CountIn.hpp"
 
 #include <string>
 #include <vector>
@@ -25,7 +26,14 @@ struct SlotInfo {
     bool hasAudio;          // WavStat == 1: the pedal has indexed a loop here
     long long frames;       // WavLen: sample frames at 44.1 kHz
     bool oneShot;           // One == 1
-    bool countIn;           // the full #34 preset: rhythm State on + PLAY COUNT 1MEAS + PATTERN Blank
+    bool countIn;           // a count will be heard before this memory plays
+                            // (usecases::countin::isOn — State on + PLAY COUNT
+                            // 1MEAS; the pattern is none of its business)
+    bool countInTakesPattern; // switching the count on here would replace a
+                              // rhythm pattern picked on the pedal — the one
+                              // thing the UI has to say out loud beforehand.
+                              // A bool, not the pattern: its names are not
+                              // hardware-verified yet, so we cannot name it.
     long long tempoTenths;  // Tempo: tenths of BPM the pedal will play at
     long long measures;     // MeasLen: whole bars, as the pedal displays them
     long long recTempoTenths; // RecTmp: tenths of BPM the take was recorded at —
@@ -42,9 +50,8 @@ inline SlotInfo readSlot(std::string_view memoryText, int slot)
              rc0::field(body, "WavStat") == 1,
              rc0::field(body, "WavLen"),
              rc0::field(body, "One") == 1,
-             rc0::field(body, "State") == rc0::kRhythmStateOn
-                 && rc0::field(body, "PlayCount") == rc0::kRhythmPlayCount1Meas
-                 && rc0::field(body, "Pattern") == rc0::kRhythmPatternBlank,
+             usecases::countin::isOn(body),
+             usecases::countin::patternAtRisk(body).has_value(),
              rc0::field(body, "Tempo"),
              rc0::field(body, "MeasLen"),
              rc0::field(body, "RecTmp") };

@@ -18,7 +18,11 @@ namespace loopercat
 namespace
 {
     constexpr auto kProductUrl = "https://darwinscat.com/loopercat";
-    constexpr auto kDeviceStateKey = "audioDeviceState";
+
+    // Which behaviour columns the table shows. One Shot is on out of the box
+    // because most players use it; Play Count-In waits to be asked for.
+    constexpr auto kOneShotColumnKey = "columnOneShot";
+    constexpr auto kCountInColumnKey = "columnPlayCountIn";
 
     // The window background — the family's near-black stage (the brand mark's
     // dark disc is 0xff0b0b11; the stage sits just above it).
@@ -29,6 +33,10 @@ namespace
     // One timer, two paces: the MIDI presence poll idles at 2 s; while a
     // connect attempt or the post-disconnect hold is live it runs at
     // supervision pace so the resend clock and the hold expiry stay honest.
+    // The bottom pane: the old 150 px of player, plus the tab strip above it,
+    // plus the breathing room the version badge used to occupy.
+    constexpr int kBottomPaneHeight = 190;
+
     constexpr int kMidiPollIntervalMs = 2000;
     constexpr int kSuperviseTickMs = 250;
 
@@ -56,6 +64,7 @@ namespace
                  .productUrl = kProductUrl,
                  .gitHash = LOOPERCAT_GIT_HASH,
                  .buildNumber = LOOPERCAT_BUILD_NUMBER,
+                 .buildCount = LOOPERCAT_BUILD_COUNT,
                  .gitDirty = LOOPERCAT_GIT_DIRTY,
                  .os = LOOPERCAT_BUILD_OS,
                  .arch = LOOPERCAT_BUILD_ARCH,
@@ -66,32 +75,6 @@ namespace
                      ui::drawLoopMark(g, cx, cy, d);
                  } };
     }
-
-    // The audio-settings dialog content; persists the device choice when the
-    // dialog goes away (family settings file, one XML-string key).
-    struct AudioSettingsHolder final : juce::Component
-    {
-        AudioSettingsHolder(juce::AudioDeviceManager& dm, AppSettings& s)
-            : panel(dm, { .minInputs = 0, .maxInputs = 0, .minOutputs = 2, .maxOutputs = 2 }),
-              settings(s)
-        {
-            addAndMakeVisible(panel);
-            setSize(440, 260);
-        }
-
-        ~AudioSettingsHolder() override
-        {
-            if (auto* file = settings.file()) {
-                file->setValue(kDeviceStateKey, panel.saveState());
-                file->saveIfNeeded();
-            }
-        }
-
-        void resized() override { panel.setBounds(getLocalBounds().reduced(8)); }
-
-        felitronics::appkit::AudioSettingsPanel panel;
-        AppSettings& settings;
-    };
 
     juce::String trimmedName(const SlotRow& row)
     {
@@ -121,6 +104,14 @@ MainComponent::MainComponent(std::string explicitVolume)
     badge.setBrandTypeface(juce::Typeface::createSystemTypefaceFor(
         BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize));
 
+    // A build ahead of the last release tag, or with uncommitted changes, is
+    // not what anyone downloaded — the corner says so next to the version.
+    devMark.setText(LOOPERCAT_BUILD_COUNT > 0 || LOOPERCAT_GIT_DIRTY ? "dev" : "",
+                    juce::dontSendNotification);
+    devMark.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    devMark.setJustificationType(juce::Justification::centredRight);
+    devMark.setColour(juce::Label::textColourId, felitronics::appkit::brand::orange);
+
     status.setFont(juce::FontOptions(12.0f));
     status.setColour(juce::Label::textColourId, kStatusText);
 
@@ -130,10 +121,15 @@ MainComponent::MainComponent(std::string explicitVolume)
     hint.setJustificationType(juce::Justification::centred);
 
     const juce::String savedDeviceState =
-        settings.file() != nullptr ? settings.file()->getValue(kDeviceStateKey) : juce::String();
+        settings.file() != nullptr ? settings.file()->getValue(SettingsDialog::kDeviceStateKey)
+                                   : juce::String();
     deviceError = engine.initialiseDevice(savedDeviceState);
 
-    table.onSlotSelected = [this](int slot) { slotChosen(slot, false); };
+    table.onSlotSelected = [this](int slot) {
+        selectedSlot = slot;
+        slotChosen(slot, false);
+        updateInspector();
+    };
     table.onSlotActivated = [this](int slot) { slotChosen(slot, true); };
     table.onSlotContextMenu = [this](int slot, juce::Point<int> at) { showSlotMenu(slot, at); };
     table.onOneShotToggled = [this](int slot) {
@@ -187,7 +183,26 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (!pedalBusy && slotRowFor(slot) != nullptr)
             choosePushWav(slot, false);
     };
-    player.onGear = [this] { openAudioSettings(); };
+    inspector.onRenameCommitted = [this](int slot, juce::String newName) {
+        if (table.onRenameCommitted)
+            table.onRenameCommitted(slot, newName);
+    };
+    inspector.onTempoCommitted = [this](int slot, long long tenths) {
+        if (table.onTempoCommitted)
+            table.onTempoCommitted(slot, tenths);
+    };
+    inspector.onOneShotToggled = [this](int slot) {
+        if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
+            toggleOneShot(slot, row->info.oneShot);
+    };
+    inspector.onCountInToggled = [this](int slot) {
+        if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
+            toggleCountIn(slot, row->info.countIn);
+    };
+
+    settingsButton.onClick = [this] { openSettings(); };
+    bottomTabs.onTabChanged = [this](int index) { showBottomTab(index); };
+
     player.onVolumeChanged = [this](double percent) {
         if (auto* file = settings.file())
             file->setValue("previewVolume", percent);
@@ -359,6 +374,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     worker.onBusy = [this](bool busy, int slot) {
         pedalBusy = busy;
         table.setBusySlot(busy ? slot : 0);
+        inspector.setBusy(busy);
         updateStatusText();
         updateToolbar();
     };
@@ -369,6 +385,10 @@ MainComponent::MainComponent(std::string explicitVolume)
         }
         banners.clearJobError(); // a later mutation succeeded — the story moved on
         juce::String note = description + juce::String::fromUTF8(" \xe2\x80\x94 done");
+        // The pedal re-reads its memory on leaving STORAGE — settings and
+        // audio alike (hardware, 2026-08-11: a rename, a tempo change and a
+        // trim all reached the pedal with no power cycle). Disconnect is the
+        // whole story, so nobody gets sent to the wall plug.
         const bool wroteToPedal = description.startsWith("Rename")
                                || description.startsWith("Enable")
                                || description.startsWith("Disable")
@@ -380,25 +400,31 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (description.startsWith("Trim"))
             player.reload(); // same path, new bytes — fresh reader + thumbnail
         if (wroteToPedal)
-            note << ". Eject the volume and reboot the pedal to apply.";
+            note << juce::String::fromUTF8(" \xe2\x80\x94 Disconnect to hear it on the pedal.");
         toast.show(note);
     };
 
     addAndMakeVisible(header);
     addAndMakeVisible(pedalLight); // over the header's right side
-    addAndMakeVisible(badge);
+    addAndMakeVisible(versionChip);
+    addAndMakeVisible(devMark);
     addAndMakeVisible(status);
     addAndMakeVisible(hint);
     addAndMakeVisible(banners);
     addAndMakeVisible(connectButton);
     addAndMakeVisible(disconnectButton);
     addAndMakeVisible(showEmptyToggle);
+    addAndMakeVisible(settingsButton);
     addChildComponent(table);  // shown once a pedal is mounted
+    addChildComponent(bottomTabs);
+    addChildComponent(inspector);
     addChildComponent(player); // likewise
     addChildComponent(toast);  // fades in over everything on job success
 
     setWantsKeyboardFocus(true); // Space toggles playback
 
+    applyColumnPreferences();
+    showBottomTab(kAudioTab);
     applySnapshot({}); // the no-pedal state, until the first scan lands
     setSize(920, 680);
 
@@ -574,6 +600,33 @@ void MainComponent::updateTableRows()
         if (row.info.hasAudio || !row.wavFile.empty())
             visible.push_back(row);
     table.setRows(std::move(visible));
+}
+
+// The panel always shows the slot the table has selected, re-read from the
+// newest snapshot: a finished write must change what the switches say.
+void MainComponent::updateInspector()
+{
+    inspector.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
+}
+
+// The bottom pane has two faces for the selected slot: listen to it (the
+// player) or set it up (its properties). One pane, so the table never moves.
+void MainComponent::showBottomTab(int index)
+{
+    const bool mounted = table.isVisible();
+    player.setVisible(mounted && index == kAudioTab);
+    inspector.setVisible(mounted && index == kPropertiesTab);
+    resized();
+}
+
+// Settings -> Columns onto the table. The pedal's own facts always show; these
+// two are the ones a player opts into.
+void MainComponent::applyColumnPreferences()
+{
+    auto* file = settings.file();
+    table.setOptionalColumns(
+        file == nullptr || file->getBoolValue(kOneShotColumnKey, true),
+        file != nullptr && file->getBoolValue(kCountInColumnKey, false));
 }
 
 void MainComponent::updateToolbar()
@@ -769,8 +822,12 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     updateTableRows();
     updateToolbar();
     table.setVisible(mounted);
-    player.setVisible(mounted);
+    bottomTabs.setVisible(mounted);
     hint.setVisible(!mounted);
+    showBottomTab(bottomTabs.selected()); // the pane follows the pedal in and out
+    if (!mounted)
+        selectedSlot = 0;
+    updateInspector();
 }
 
 void MainComponent::slotChosen(int slot, bool startPlaying)
@@ -817,29 +874,32 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     const bool occupied = row.info.hasAudio;
     const juce::String name = trimmedName(row);
 
+    // Operations only: the things done TO a slot. Its settings live in the
+    // panel now (and the two lamp columns still flip on click), so this menu
+    // stopped being a second copy of them.
     juce::PopupMenu menu;
-    menu.addItem(1, juce::String::fromUTF8("Rename\xe2\x80\xa6"));
-    menu.addItem(2, "One Shot", true, row.info.oneShot);
-    menu.addItem(7, "Play Count-In", true, row.info.countIn);
-    menu.addItem(6, juce::String::fromUTF8("Set tempo\xe2\x80\xa6"));
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     menu.addSeparator();
     menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
-    const bool oneShotNow = row.info.oneShot;
-    const bool countInNow = row.info.countIn;
+    // Nothing a user relies on may simply vanish: the first time this menu
+    // opens without its settings, it says where they went.
+    if (auto* file = settings.file(); file != nullptr && !file->getBoolValue("settingsMovedNotice")) {
+        file->setValue("settingsMovedNotice", true);
+        file->saveIfNeeded();
+        toast.show(juce::String::fromUTF8(
+            "Name, tempo, One Shot and Play Count-In moved to Slot settings (\xe2\x8c\x98I) "
+            "\xe2\x80\x94 the One Shot and Play Count-In cells still switch them."));
+    }
+
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
-        [this, slot, name, occupied, oneShotNow, countInNow](int choice) {
+        [this, slot, name, occupied](int choice) {
             switch (choice) {
-            case 1: table.startRenameEditForSlot(slot); break; // same in-place editor as double-click
-            case 2: toggleOneShot(slot, oneShotNow); break;
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
-            case 6: table.startTempoEditForSlot(slot); break;
-            case 7: toggleCountIn(slot, countInNow); break;
             default: break;
             }
         });
@@ -1004,11 +1064,22 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
     }), true);
 }
 
-void MainComponent::openAudioSettings()
+void MainComponent::openSettings()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned(new AudioSettingsHolder(engine.deviceManager(), settings));
-    options.dialogTitle = "Audio output";
+    options.content.setOwned(new SettingsDialog(
+        engine.deviceManager(), settings,
+        { settings.file() == nullptr || settings.file()->getBoolValue(kOneShotColumnKey, true),
+          settings.file() != nullptr && settings.file()->getBoolValue(kCountInColumnKey, false) },
+        [this](SettingsDialog::Columns columns) {
+            if (auto* file = settings.file()) {
+                file->setValue(kOneShotColumnKey, columns.oneShot);
+                file->setValue(kCountInColumnKey, columns.countIn);
+                file->saveIfNeeded();
+            }
+            applyColumnPreferences();
+        }));
+    options.dialogTitle = "Settings";
     options.dialogBackgroundColour = kBackground;
     options.escapeKeyTriggersCloseButton = true;
     options.resizable = false;
@@ -1019,6 +1090,11 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 {
     if (key == juce::KeyPress::spaceKey && engine.hasSource()) {
         engine.togglePlay();
+        return true;
+    }
+    if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)
+        && table.isVisible()) {
+        bottomTabs.select(bottomTabs.selected() == kPropertiesTab ? kAudioTab : kPropertiesTab);
         return true;
     }
     return false;
@@ -1035,19 +1111,30 @@ void MainComponent::resized()
     header.setBounds(area.removeFromTop(56));
     header.clickRight = juce::roundToInt(header.contentRight());
     pedalLight.setBounds(getWidth() - 232, 0, 220, 56);
+    // One line, right to left: the version, the gear, the view filter, then
+    // the pedal buttons; the status text takes whatever is left and elides.
     auto statusRow = area.removeFromTop(28).reduced(12, 2);
-    showEmptyToggle.setBounds(statusRow.removeFromRight(150));
-    disconnectButton.setBounds(statusRow.removeFromRight(104).reduced(2, 1));
-    connectButton.setBounds(statusRow.removeFromRight(84).reduced(2, 1));
+    versionChip.setBounds(statusRow.removeFromRight(52)); // the text's own width
+    devMark.setBounds(statusRow.removeFromRight(26));
+    statusRow.removeFromRight(6);
+    settingsButton.setBounds(statusRow.removeFromRight(22));
+    statusRow.removeFromRight(8);
+    showEmptyToggle.setBounds(statusRow.removeFromRight(134));
+    disconnectButton.setBounds(statusRow.removeFromRight(94).reduced(2, 1));
+    connectButton.setBounds(statusRow.removeFromRight(76).reduced(2, 1));
     status.setBounds(statusRow);
     const int bannerHeight = banners.preferredHeight();
     banners.setBounds(area.removeFromTop(bannerHeight).reduced(12, 0));
     if (bannerHeight > 0)
         area.removeFromTop(6);
-    badge.setBounds(getWidth() - 122, getHeight() - 40, 110, 32);
-    area.removeFromBottom(44); // the badge strip stays clear
-    toast.setBounds(getWidth() / 2 - 280, getHeight() - 44 - 40, 560, 34);
-    player.setBounds(area.removeFromBottom(150).reduced(12, 0));
+    // The version moved up into the status row, so the strip it used to
+    // reserve at the bottom goes to the pane that needed it: the waveform is
+    // back to its old height with the tab strip on top of it.
+    toast.setBounds(getWidth() / 2 - 280, getHeight() - kBottomPaneHeight - 42, 560, 34);
+    auto bottom = area.removeFromBottom(kBottomPaneHeight).reduced(12, 8);
+    bottomTabs.setBounds(bottom.removeFromTop(26));
+    player.setBounds(bottom);
+    inspector.setBounds(bottom);
     area.removeFromBottom(8);
     table.setBounds(area.reduced(12, 0));
     hint.setBounds(area);

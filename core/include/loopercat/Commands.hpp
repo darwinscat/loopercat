@@ -218,23 +218,19 @@ inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& sl
     return writeMemoryPair(volume, text, options);
 }
 
-// The count-in preset (#34): write the rc0 RHYTHM triple so the pedal plays
-// a one-measure count-in at the memory tempo, then the track with the rhythm
-// silent. Off restores the factory zeros for the triple — deliberately not a
-// saved copy of a custom rhythm config: the toggle owns exactly three fields
-// and keeps no hidden state. Everything else in the RHYTHM block (kit, beat,
-// level, ...) is left untouched either way.
+// Play Count-In (#34) across a set of slots. The field surgery lives in
+// usecases::countin, which owns the rules about what the feature may touch
+// (the count always; the rhythm's State/Pattern only while it is otherwise
+// silent). This is the transaction around it: one read, one backup, one
+// pair-write. Everything else in the RHYTHM block (kit, beat, level, ...) is
+// left untouched either way.
 inline WriteResult setCountIn(const fs::path& volume, const std::vector<int>& slots, bool on,
                               const WriteOptions& options)
 {
     std::string text = readMemory(volume);
-    for (const int slot : slots) {
-        std::string body = rc0::slotBody(text, slot);
-        body = rc0::setField(body, "State", on ? rc0::kRhythmStateOn : 0);
-        body = rc0::setField(body, "PlayCount", on ? rc0::kRhythmPlayCount1Meas : 0);
-        body = rc0::setField(body, "Pattern", on ? rc0::kRhythmPatternBlank : 0);
-        text = rc0::replaceSlotBody(text, slot, body);
-    }
+    for (const int slot : slots)
+        text = rc0::replaceSlotBody(text, slot,
+                                    usecases::countin::apply(rc0::slotBody(text, slot), on));
     return writeMemoryPair(volume, text, options);
 }
 

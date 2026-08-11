@@ -8,8 +8,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 //==============================================================================
-// loopercat::SlotTable — the read-only slot browser: one row per memory slot
-// (number, name, duration, tempo, One Shot, Count-In, on-pedal wav file). Rows with
+// loopercat::SlotTable — the slot browser: one row per memory slot (number,
+// name, duration, bars, tempo, One Shot, Count-In, on-pedal wav file). Rows with
 // audio carry the full text colour; empty slots stay dim so a loaded pedal
 // reads at a glance.
 //==============================================================================
@@ -43,11 +43,13 @@ public:
 
     void selectSlot(int slot);
 
-    // Inline edits: an editor right in the cell (double-click does this too).
-    // Enter commits, Esc cancels; the field enforces the pedal's constraints
-    // (12 printable ASCII for names, digits and a dot for tempo).
-    void startRenameEditForSlot(int slot);
-    void startTempoEditForSlot(int slot);
+    // The two behaviour columns are a preference (Settings -> Columns): the
+    // pedal's own facts always show, these are the ones a player opts into.
+    void setOptionalColumns(bool oneShot, bool countIn);
+
+    // Inline edits live on double-click (name, tempo): an editor right in the
+    // cell. Enter commits, Esc cancels; the field enforces the pedal's
+    // constraints — 12 printable ASCII for names, digits and a dot for tempo.
 
     // The slot a worker job is touching right now (0 = none): its row pulses.
     void setBusySlot(int slot);
