@@ -20,6 +20,36 @@
 //==============================================================================
 namespace loopercat::linuxrules {
 
+// The pedal's USB identity, as the kernel reports it. This is what the
+// auto-mount arm keys on, and the choice is deliberate.
+//
+// The obvious key is the volume LABEL, and it is wrong twice over. First,
+// the label belongs to the user: rename the card and the pedal stops being
+// recognised — while the app's real detection (volume::looksLikePedal, which
+// looks for ROLAND/DATA and ROLAND/WAVE) survives a rename just fine, so the
+// label would be the one rename-fragile link in the chain. Second, the
+// label is a string that arrives escaped, differently at every layer: real
+// hardware hands udev "BOSS RC-5" as ID_FS_LABEL=BOSS_RC-5 — space silently
+// turned into an underscore — while the same space reaches
+// /proc/self/mountinfo as \040 and ID_FS_LABEL_ENC as \x20. A comparison
+// against "BOSS RC-5" matches none of them and fails SILENTLY, which is
+// exactly how the first version of this arm never fired once.
+//
+// The USB vendor and product IDs have neither problem: the user cannot edit
+// them, and they are four hex digits with nothing to escape.
+inline constexpr const char* kPedalUsbVendorId = "0582";  // Roland Corp.
+inline constexpr const char* kPedalUsbProductId = "0251"; // BOSS RC-5
+
+// Is this block device the pedal itself? Both IDs must match: the vendor
+// alone would also claim every other Roland device a musician owns.
+// Compared as plain strings — udev writes these as four lowercase hex
+// digits, and both of the pedal's are digits only, so there is no case to
+// fold and no width to normalise.
+inline bool isPedalDevice(const std::string& usbVendorId, const std::string& usbProductId)
+{
+    return usbVendorId == kPedalUsbVendorId && usbProductId == kPedalUsbProductId;
+}
+
 // True when a resolved sysfs path runs through a USB controller. Real paths
 // look like ".../0000:00:14.0/usb2/2-1/2-1:1.0/host6/.../block/sdb/sdb1",
 // so the marker is a whole path COMPONENT of the form usb<digits>. A plain

@@ -14,9 +14,14 @@
 //   non-removable disk is `untracked` — trusted, the same policy the other
 //   two backends already apply to paths with no device story.
 // - push notifications — a libudev netlink monitor on the `block` subsystem,
-//   on its own thread: any block `add` pokes onDiskAppeared, and a `remove`
-//   whose device number matches the tracked volume fires onDeviceLost within
-//   milliseconds, not at the next poll.
+//   on its own thread: `add` and `change` poke onDiskAppeared, and a
+//   `remove` whose device number matches the tracked volume fires
+//   onDeviceLost. Note what hardware showed about the ghost case in
+//   particular: when the pedal surrenders the medium while its volume is
+//   still MOUNTED, no `remove` arrives at all — the mount holds the
+//   partition alive and the kernel says only `change` on the parent disk.
+//   So onDeviceLost is not the mechanism there; the `change` poke plus the
+//   polling verdict below is.
 // - eject — udisks2 over `udisksctl`. A desktop Linux mount belongs to
 //   udisks2, not to us: umount(2) on someone else's mount is a privileged
 //   operation, while udisksctl asks the same daemon that mounted it and
@@ -27,8 +32,15 @@
 // The auto-mount arm matters MORE here than on macOS: Linux desktops mount
 // removable media through udisks2 only when a file manager or a session
 // agent asks it to, and a plain X session, a tiling WM or a minimal install
-// simply has nobody to ask. A pedal-labeled partition that appears and stays
-// unmounted through the grace period gets one `udisksctl mount`.
+// simply has nobody to ask. A partition on the pedal that appears and stays
+// unmounted through the grace period gets one `udisksctl mount`. It is
+// recognised by USB identity, not by volume label — see LinuxDeviceRules.h.
+//
+// One thing hardware taught that no test could: udisks2 authorises through
+// PolicyKit against the caller's SEAT. Launched from a desktop session the
+// mount, unmount and power-off all go through; launched over SSH, or from
+// anything else without a seat, they come back "Not authorized to perform
+// operation" — which the banner reports verbatim rather than pretending.
 
 #include "DeviceWatcher.h"
 
@@ -66,11 +78,9 @@ namespace loopercat::app {
 
 namespace {
 
-    // The FAT label the pedal presents in USB storage mode. Mirrors the
-    // macOS backend's constant — the auto-mount arm is the only consumer on
-    // either platform, so the two stay side by side rather than moving to a
-    // shared header for one use each.
-    constexpr const char* kPedalVolumeLabel = "BOSS RC-5";
+    // What to CALL the pedal in the "Mounted …" toast. A display string
+    // only: matching happens on the USB identity, never on this.
+    constexpr const char* kPedalDisplayName = "BOSS RC-5";
 
     // An I/O probe outstanding longer than this means the volume is wedged
     // or the medium is gone mid-read: the device story is over even though
@@ -375,7 +385,7 @@ struct DeviceWatcher::Impl {
                 cb = owner.onAutoMountResult;
             }
             if (cb)
-                cb(result.ok, result.ok ? std::string(kPedalVolumeLabel) : result.output);
+                cb(result.ok, result.ok ? std::string(kPedalDisplayName) : result.output);
         }).detach();
     }
 
@@ -390,12 +400,30 @@ struct DeviceWatcher::Impl {
             deviceRemoved(number);
             return;
         }
+        // A `change` on a block device is the kernel saying its MEDIUM
+        // changed, and on this hardware it is the only notification there
+        // is: measured on a real RC-5, leaving USB storage while the volume
+        // stays mounted emits exactly one event — `change` on the parent
+        // disk — and no `remove` for the partition at all, because the mount
+        // holds it alive. Without this poke the ghost would only surface at
+        // the next poll seconds later, so it is treated as "re-check now".
+        if (std::strcmp(action, "change") == 0) {
+            diskArrived();
+            return;
+        }
         if (std::strcmp(action, "add") != 0)
             return;
 
-        const char* label = udev_device_get_property_value(device, "ID_FS_LABEL");
+        // The pedal is recognised by its USB identity, never by the volume
+        // label — see LinuxDeviceRules.h for why the label fails silently.
+        // Partitions only: mounting the whole disk is not a thing.
+        const char* devType = udev_device_get_devtype(device);
+        const char* vendor = udev_device_get_property_value(device, "ID_VENDOR_ID");
+        const char* product = udev_device_get_property_value(device, "ID_MODEL_ID");
         const char* node = udev_device_get_devnode(device);
-        if (label != nullptr && node != nullptr && std::strcmp(label, kPedalVolumeLabel) == 0)
+        if (node != nullptr && devType != nullptr && std::strcmp(devType, "partition") == 0
+            && vendor != nullptr && product != nullptr
+            && linuxrules::isPedalDevice(vendor, product))
             considerAutoMount(node, number);
         diskArrived();
     }

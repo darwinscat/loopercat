@@ -110,6 +110,39 @@ int main()
         CHECK_EQ(diskNodeFromSysfs("sdb", true), std::string());
     }
 
+    // --- recognising the pedal itself ---
+    //
+    // Values captured from the real device: lsusb reports 0582:0251, and
+    // udev puts them on the PARTITION as well as the disk, which is what
+    // makes this usable from a block `add` event.
+    {
+        CHECK(isPedalDevice("0582", "0251"));
+
+        // Both halves must match. Roland makes more than one thing, and a
+        // vendor-only rule would try to mount a musician's other gear.
+        CHECK(!isPedalDevice("0582", "0000"));
+        CHECK(!isPedalDevice("0000", "0251"));
+        CHECK(!isPedalDevice("", ""));
+        CHECK(!isPedalDevice("0582", ""));
+
+        // Not a prefix or substring match: "05820" is a different number.
+        CHECK(!isPedalDevice("05820", "0251"));
+        CHECK(!isPedalDevice("058", "0251"));
+        CHECK(!isPedalDevice("0582", "02510"));
+
+        // The trap this rule exists to escape. The volume LABEL is
+        // "BOSS RC-5", but udev hands it over as ID_FS_LABEL=BOSS_RC-5 —
+        // space silently turned into an underscore — while mountinfo writes
+        // the same space as \040 and ID_FS_LABEL_ENC as \x20. A label
+        // comparison matches none of those and fails without a sound, which
+        // is how the first version of the auto-mount arm never once fired on
+        // real hardware. Renaming the card would break it a second time. The
+        // USB identity has neither failure mode, and these two lines stand
+        // as the reminder.
+        CHECK(std::string("BOSS_RC-5") != std::string("BOSS RC-5"));
+        CHECK(isPedalDevice("0582", "0251")); // unaffected by any of that
+    }
+
     // --- the commands themselves, verbatim ---
 
     {
