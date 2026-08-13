@@ -54,6 +54,11 @@ mkdir -p "$OUT_DIR"
 # support. Same reasoning for the graphics and sound stacks, which
 # linuxdeploy excludes by default.
 export LDAI_OUTPUT="$OUT_DIR/LooperCat-${VERSION}-Linux-${ARCH}.AppImage"
+# appimagetool refuses to overwrite, and reports it as a bare
+# "sfs_mksquashfs error" several layers down — so the second run into the
+# same directory fails for a reason that looks nothing like the cause.
+# Clearing exactly this one path keeps a rebuild working.
+rm -f "$LDAI_OUTPUT"
 "$WORK/linuxdeploy" \
     --appdir "$APPDIR" \
     --desktop-file "$APPDIR/usr/share/applications/loopercat.desktop" \
