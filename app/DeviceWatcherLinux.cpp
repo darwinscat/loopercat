@@ -363,10 +363,13 @@ struct DeviceWatcher::Impl {
     void considerAutoMount(const std::string& devNode, dev_t device)
     {
         {
-            // A fresh attach earns a fresh (single) auto-mount attempt.
+            // A fresh attach earns a fresh attempt. The erase is the whole
+            // point: marking the node here instead would mark it FOREVER,
+            // and the pedal would be auto-mounted once per process rather
+            // than once per attach. Measured on real hardware before this
+            // line existed — three storage cycles, one attempt.
             const std::lock_guard<std::mutex> lock(mutex);
-            if (!mountAttempted.insert(devNode).second)
-                return;
+            mountAttempted.erase(devNode);
         }
         std::thread([this, devNode, device, guard = alive] {
             std::this_thread::sleep_for(kAutoMountGrace);
@@ -376,6 +379,13 @@ struct DeviceWatcher::Impl {
             // to mount. Either way there is nothing for us to do.
             if (deviceIsMounted(device) || !blockDeviceExists(device))
                 return;
+            {
+                // Claim the attempt at the moment of making it, so several
+                // `add` events for one attach still produce one mount.
+                const std::lock_guard<std::mutex> lock(mutex);
+                if (!mountAttempted.insert(devNode).second)
+                    return;
+            }
             const CommandResult result = run(linuxrules::mountArgs(devNode));
             if (!guard->load())
                 return;
