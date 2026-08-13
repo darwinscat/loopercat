@@ -115,9 +115,9 @@ loopercat_core_test(sysex_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
 loopercat_core_test(usecase_count_in_tests)
-# Parsing only — no syscalls, no Linux headers — so the mountinfo contract
-# behind the Linux DeviceWatcher is gated on every platform's lane, not just
-# on a machine that happens to have /proc.
+# Parsing and decisions only — no syscalls, no Linux headers — so the
+# contracts behind the Linux DeviceWatcher are gated on every platform's
+# lane, not just on a machine that happens to have /proc and /sys.
 loopercat_core_test(mount_table_tests)
 loopercat_core_test(linux_device_rules_tests)
 
@@ -169,28 +169,49 @@ juce_add_binary_data(LooperCatAssets
 # a UTC number. Deliberately simple for now — the always-fresh per-build
 # generator (the TabbyEQ pattern) arrives with packaging in Sprint 5.
 # ----------------------------------------------------------------------------
+# Provenance has to be PROVEN, never assumed. execute_process overwrites its
+# OUTPUT_VARIABLE with an empty string when the command fails, so the
+# "unknown" default below was unreachable: a build with no reachable .git
+# ended up with an empty hash and a zero commit count — which is exactly the
+# shape of a clean release build. A source tarball, a "Download ZIP", a
+# distro packager's tree or a container that cannot see the worktree's .git
+# would all present themselves as the binary users downloaded. Caught on the
+# Linux lane. Hence RESULT_VARIABLE on every query, and one flag that says
+# whether we know anything at all.
 find_package(Git QUIET)
 set(LOOPERCAT_GIT_HASH "unknown")
 set(LOOPERCAT_GIT_DIRTY 0)
+set(LOOPERCAT_GIT_KNOWN 0)
+set(LOOPERCAT_BUILD_COUNT 0)
 if(GIT_EXECUTABLE)
     execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
-        OUTPUT_VARIABLE LOOPERCAT_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        RESULT_VARIABLE _loopercat_rc OUTPUT_VARIABLE _loopercat_hash
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_loopercat_rc EQUAL 0 AND NOT _loopercat_hash STREQUAL "")
+        set(LOOPERCAT_GIT_HASH "${_loopercat_hash}")
+        set(LOOPERCAT_GIT_KNOWN 1)
+    endif()
+endif()
+if(LOOPERCAT_GIT_KNOWN)
     execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" status --porcelain
         OUTPUT_VARIABLE _loopercat_status ERROR_QUIET)
     if(NOT _loopercat_status STREQUAL "")
         set(LOOPERCAT_GIT_DIRTY 1)
     endif()
-endif()
-# Commits since the last release tag: 0 means this build IS a release build,
-# anything else means it is ahead of what users can download. The window says
-# so out loud — a dev build must never pass for the shipped one.
-set(LOOPERCAT_BUILD_COUNT 0)
-if(GIT_EXECUTABLE)
+    # Commits since the last release tag: 0 means this build IS a release
+    # build, anything else means it is ahead of what users can download. The
+    # window says so out loud — a dev build must never pass for the shipped
+    # one. Only trustworthy when the tag query itself succeeded.
     execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" describe --tags --abbrev=0
-        OUTPUT_VARIABLE _loopercat_tag OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    if(_loopercat_tag)
+        RESULT_VARIABLE _loopercat_tag_rc OUTPUT_VARIABLE _loopercat_tag
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_loopercat_tag_rc EQUAL 0 AND _loopercat_tag)
         execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-list "${_loopercat_tag}..HEAD" --count
-            OUTPUT_VARIABLE LOOPERCAT_BUILD_COUNT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            RESULT_VARIABLE _loopercat_count_rc OUTPUT_VARIABLE _loopercat_count
+            OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_loopercat_count_rc EQUAL 0 AND NOT _loopercat_count STREQUAL "")
+            set(LOOPERCAT_BUILD_COUNT "${_loopercat_count}")
+        endif()
     endif()
 endif()
 
@@ -261,6 +282,7 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_VERSION="${PROJECT_VERSION}"
     LOOPERCAT_GIT_HASH="${LOOPERCAT_GIT_HASH}"
     LOOPERCAT_GIT_DIRTY=${LOOPERCAT_GIT_DIRTY}
+    LOOPERCAT_GIT_KNOWN=${LOOPERCAT_GIT_KNOWN}
     LOOPERCAT_BUILD_NUMBER=${LOOPERCAT_BUILD_NUMBER}
     LOOPERCAT_BUILD_COUNT=${LOOPERCAT_BUILD_COUNT}
     LOOPERCAT_BUILD_OS="${CMAKE_SYSTEM_NAME}"

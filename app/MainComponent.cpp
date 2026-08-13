@@ -106,7 +106,12 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     // A build ahead of the last release tag, or with uncommitted changes, is
     // not what anyone downloaded — the corner says so next to the version.
-    devMark.setText(LOOPERCAT_BUILD_COUNT > 0 || LOOPERCAT_GIT_DIRTY ? "dev" : "",
+    // So is a build whose provenance could not be established at all (no
+    // reachable .git: a source tarball, a packager's tree): unproven is not
+    // the same as clean, and only a proven release may go unmarked.
+    devMark.setText(LOOPERCAT_BUILD_COUNT > 0 || LOOPERCAT_GIT_DIRTY || !LOOPERCAT_GIT_KNOWN
+                        ? "dev"
+                        : "",
                     juce::dontSendNotification);
     devMark.setFont(juce::FontOptions(10.0f, juce::Font::bold));
     devMark.setJustificationType(juce::Justification::centredRight);
