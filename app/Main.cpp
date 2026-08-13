@@ -5,6 +5,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <fstream>
 #include <iostream>
 
 namespace loopercat
@@ -15,12 +16,16 @@ class LooperCatApplication final : public juce::JUCEApplication
 public:
     const juce::String getApplicationName() override { return "LooperCat"; }
     const juce::String getApplicationVersion() override { return LOOPERCAT_VERSION; }
-    // One window per user — except the headless --snapshot seam: a CI or
-    // verification run must render and exit even while a windowed instance
-    // is open, not silently forward its arguments to that window.
+    // One window per user — except the headless seams: a CI or verification
+    // run must do its job and exit even while a windowed instance is open,
+    // not silently forward its arguments to that window. Every headless flag
+    // has to be listed here, and the failure mode when one is forgotten is
+    // the quietest kind: the process exits 0 having printed nothing and done
+    // nothing, which reads exactly like a feature that does not work.
     bool moreThanOneInstanceAllowed() override
     {
-        return getCommandLineParameters().contains("--snapshot");
+        const auto args = getCommandLineParameters();
+        return args.contains("--snapshot") || args.contains("--midi-probe");
     }
 
     void initialise(const juce::String&) override
@@ -39,6 +44,63 @@ public:
         // --select <slot> additionally selects that slot (1..99) and waits
         // for its waveform before rendering; --properties switches the bottom
         // pane to its Properties tab, so that side renders headless too.
+        // --midi-probe: list the MIDI outputs the app can see, send the
+        // storage-mode frame through the very same path Connect uses, and
+        // report what happened. A diagnostic seam in the spirit of
+        // --snapshot: on Linux the Connect button reported a clean send
+        // while the pedal never moved, and telling "found nothing" apart
+        // from "sent into the void" needs the send without the window.
+        if (args.contains("--midi-probe")) {
+            for (const auto& device : juce::MidiOutput::getAvailableDevices())
+                std::cout << "midi out: [" << device.name << "] id=[" << device.identifier
+                          << "]\n";
+            // --midi-target <substring>: aim the probe at something other
+            // than the pedal (Midi Through, say), which is how a JUCE-side
+            // send failure is told apart from a pedal-side one.
+            const int targetFlag = args.indexOf("--midi-target");
+            std::optional<juce::MidiDeviceInfo> found;
+            if (targetFlag >= 0) {
+                for (const auto& device : juce::MidiOutput::getAvailableDevices())
+                    if (device.name.containsIgnoreCase(args[targetFlag + 1]))
+                        found = device;
+            } else {
+                found = pedallink::findPedal();
+            }
+            std::cout << "found: " << (found ? found->name : juce::String("NOTHING")) << "\n";
+            if (found) {
+                auto out = juce::MidiOutput::openDevice(found->identifier);
+                std::cout << "opened: " << (out != nullptr ? "yes" : "NO") << std::endl;
+                if (out != nullptr) {
+                    // Who is our port actually wired to? JUCE subscribes at
+                    // port creation and only jassert()s the result, so in a
+                    // Release build a failed subscription is invisible: the
+                    // send then goes to no subscriber and still reports ok.
+                    std::ifstream clients("/proc/asound/seq/clients");
+                    std::string line;
+                    bool ours = false;
+                    while (std::getline(clients, line)) {
+                        if (line.rfind("Client", 0) == 0)
+                            ours = line.find("LooperCat") != std::string::npos;
+                        if (ours)
+                            std::cout << "  seq| " << line << "\n";
+                    }
+                    const auto frame = loopercat::sysex::enterStorageMode();
+                    out->sendMessageNow(juce::MidiMessage::createSysExMessage(
+                        frame.data() + 1, static_cast<int>(frame.size()) - 2));
+                    std::cout << "sent sysex" << std::endl;
+                    // A plain channel message through the same port: if this
+                    // arrives and the sysex does not, the fault is JUCE's
+                    // sysex path, not its output path.
+                    out->sendMessageNow(juce::MidiMessage::noteOn(1, 60, (juce::uint8) 100));
+                    std::cout << "sent note-on" << std::endl;
+                    juce::Thread::sleep(1500);
+                }
+            }
+            setApplicationReturnValue(0);
+            quit();
+            return;
+        }
+
         const int snapshotFlag = args.indexOf("--snapshot");
         if (snapshotFlag >= 0) {
             const int selectFlag = args.indexOf("--select");
