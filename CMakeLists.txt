@@ -119,6 +119,7 @@ loopercat_core_test(usecase_count_in_tests)
 # behind the Linux DeviceWatcher is gated on every platform's lane, not just
 # on a machine that happens to have /proc.
 loopercat_core_test(mount_table_tests)
+loopercat_core_test(linux_device_rules_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 

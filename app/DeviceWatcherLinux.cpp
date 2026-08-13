@@ -32,6 +32,7 @@
 
 #include "DeviceWatcher.h"
 
+#include "LinuxDeviceRules.h"
 #include "MountTable.h"
 
 #include <libudev.h>
@@ -138,26 +139,19 @@ namespace {
         return line;
     }
 
-    // Only removable media carry a device story — the pedal is one, and an
-    // internal disk can never be it. Two independent signals, because
-    // neither alone covers the field: the parent disk's `removable` flag is
-    // what the kernel advertises for card readers and most sticks, while a
-    // USB transport in the sysfs path catches the USB disks that report
-    // removable=0.
+    // The two syscalls behind the removability rule; the rule itself lives
+    // in LinuxDeviceRules.h, under test. A partition's sysfs node sits
+    // inside its disk's, so the parent directory is the whole-disk node
+    // that carries `removable`.
     bool deviceIsRemovable(dev_t device)
     {
         char resolved[PATH_MAX];
         const char* real = ::realpath(sysfsBlockDir(device).c_str(), resolved);
-        if (real != nullptr && std::string(real).find("/usb") != std::string::npos)
-            return true;
-        // A partition's sysfs node sits inside its disk's, so the parent
-        // directory is the whole-disk node that carries `removable`.
-        return readSysfsLine(sysfsBlockDir(device) + "/../removable") == "1";
+        return linuxrules::isRemovable(real != nullptr ? real : std::string(),
+                                       readSysfsLine(sysfsBlockDir(device) + "/../removable"));
     }
 
     // "/dev/sdb" for a partition on it — what a whole-disk power-off needs.
-    // The partition's sysfs parent directory is the disk, and its name is
-    // the kernel name of the block device.
     std::string parentDiskNode(dev_t device)
     {
         char resolved[PATH_MAX];
@@ -165,14 +159,7 @@ namespace {
         if (real == nullptr)
             return {};
         const std::string path(real);
-        const size_t slash = path.find_last_of('/');
-        if (slash == std::string::npos || slash + 1 >= path.size())
-            return {};
-        // The parent of a WHOLE disk's node is the transport directory, not
-        // another block device; only accept a parent that is itself one.
-        if (!std::ifstream(path + "/dev").good())
-            return {};
-        return "/dev/" + path.substr(slash + 1);
+        return linuxrules::diskNodeFromSysfs(path, std::ifstream(path + "/dev").good());
     }
 
     //==========================================================================
@@ -379,7 +366,7 @@ struct DeviceWatcher::Impl {
             // to mount. Either way there is nothing for us to do.
             if (deviceIsMounted(device) || !blockDeviceExists(device))
                 return;
-            const CommandResult result = run({ "udisksctl", "mount", "-b", devNode });
+            const CommandResult result = run(linuxrules::mountArgs(devNode));
             if (!guard->load())
                 return;
             std::function<void(bool, std::string)> cb;
@@ -541,7 +528,7 @@ void DeviceWatcher::eject(const std::filesystem::path& volumePath,
     // fires from this thread — the owner already hops to the message thread.
     std::thread([node = mount->source, disk = parentDiskNode(deviceOf(*mount)),
                  done = std::move(done)] {
-        const CommandResult unmounted = run({ "udisksctl", "unmount", "-b", node });
+        const CommandResult unmounted = run(linuxrules::unmountArgs(node));
         if (!unmounted.ok) {
             done(false, unmounted.output);
             return;
@@ -553,7 +540,7 @@ void DeviceWatcher::eject(const std::filesystem::path& volumePath,
             done(true, "unmounted, but the disk behind " + node + " could not be identified");
             return;
         }
-        const CommandResult off = run({ "udisksctl", "power-off", "-b", disk });
+        const CommandResult off = run(linuxrules::powerOffArgs(disk));
         done(true, off.ok ? std::string() : off.output);
     }).detach();
 }
@@ -569,7 +556,7 @@ void DeviceWatcher::forceUnmount(const std::filesystem::path& volumePath,
     // Ghost cleanup: nothing can flush to a medium that is already gone, so
     // forcing is safe here by construction.
     std::thread([node = mount->source, done = std::move(done)] {
-        const CommandResult result = run({ "udisksctl", "unmount", "-b", node, "--force" });
+        const CommandResult result = run(linuxrules::forceUnmountArgs(node));
         done(result.ok, result.output);
     }).detach();
 }
