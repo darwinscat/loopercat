@@ -77,7 +77,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         -Werror -Wall -Wextra -Wpedantic
         -Wconversion -Wsign-conversion -Wfloat-equal -Wshadow -Wcast-align
         -Wzero-as-null-pointer-constant -Wunreachable-code -Wswitch-enum -Wextra-semi
-        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wshorten-64-to-32;-Wimplicit-float-conversion;-Wconditional-uninitialized;-Wconstant-conversion;-Wbool-conversion>)
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wshorten-64-to-32;-Wimplicit-float-conversion;-Wconditional-uninitialized;-Wconstant-conversion;-Wbool-conversion>
+        # GCC's -Wextra still fires -Wmissing-field-initializers on C++20
+        # DESIGNATED initializers, where omitting a member is the whole point
+        # and the standard value-initializes it. The suites use them heavily
+        # ({ .trashRoot = ..., .write = ... }), so GCC 13 rejected the core
+        # tier outright with 56 -Werror hits while Clang and MSVC saw nothing.
+        # Suppressed for GNU only: the aggregate case Clang does warn about
+        # stays covered by the macOS and Windows lanes.
+        $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers>)
 elseif(MSVC)
     # /W4 without /WX for now: the Windows gate (issue #5) starts by proving
     # the suites build and pass; warning-parity with the Clang set comes once
@@ -107,6 +115,10 @@ loopercat_core_test(sysex_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
 loopercat_core_test(usecase_count_in_tests)
+# Parsing only — no syscalls, no Linux headers — so the mountinfo contract
+# behind the Linux DeviceWatcher is gated on every platform's lane, not just
+# on a machine that happens to have /proc.
+loopercat_core_test(mount_table_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 
@@ -228,12 +240,15 @@ endif()
 
 # One DeviceWatcher interface, one backend per platform (issue #5): IOKit +
 # DiskArbitration on macOS; WM_DEVICECHANGE + uncached probe + DeviceIoControl
-# eject on Windows. A new platform must bring a backend — there is
-# deliberately no portable fallback to compile against.
+# eject on Windows; udev + mountinfo + O_DIRECT + udisks2 on Linux. A new
+# platform must bring a backend — there is deliberately no portable fallback
+# to compile against.
 if(APPLE)
     target_sources(LooperCat PRIVATE app/DeviceWatcherMac.cpp)
 elseif(WIN32)
     target_sources(LooperCat PRIVATE app/DeviceWatcherWin.cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(LooperCat PRIVATE app/DeviceWatcherLinux.cpp)
 else()
     message(FATAL_ERROR "no DeviceWatcher backend for this platform")
 endif()
@@ -268,6 +283,16 @@ if(APPLE)
     target_link_libraries(LooperCat PRIVATE
         "-framework DiskArbitration"
         "-framework IOKit")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # DeviceWatcher: the udev netlink monitor behind the detach push. REQUIRED
+    # on purpose — a Linux build without it would have no device truth at all,
+    # and libudev ships on every systemd and eudev distribution, so a missing
+    # one means the build machine lacks the -dev package, not that the app
+    # should quietly degrade. Unmount and eject go through the `udisksctl`
+    # binary at runtime, so they add no link-time dependency here.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(UDEV REQUIRED IMPORTED_TARGET libudev)
+    target_link_libraries(LooperCat PRIVATE PkgConfig::UDEV)
 endif()
 
 if(LOOPERCAT_BUILD_TESTS)
