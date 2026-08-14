@@ -54,49 +54,16 @@ public:
             for (const auto& device : juce::MidiOutput::getAvailableDevices())
                 std::cout << "midi out: [" << device.name << "] id=[" << device.identifier
                           << "]\n";
-            // --midi-target <substring>: aim the probe at something other
-            // than the pedal (Midi Through, say), which is how a JUCE-side
-            // send failure is told apart from a pedal-side one.
-            const int targetFlag = args.indexOf("--midi-target");
-            std::optional<juce::MidiDeviceInfo> found;
-            if (targetFlag >= 0) {
-                for (const auto& device : juce::MidiOutput::getAvailableDevices())
-                    if (device.name.containsIgnoreCase(args[targetFlag + 1]))
-                        found = device;
-            } else {
-                found = pedallink::findPedal();
-            }
+            const auto found = pedallink::findPedal();
             std::cout << "found: " << (found ? found->name : juce::String("NOTHING")) << "\n";
-            if (found) {
-                auto out = juce::MidiOutput::openDevice(found->identifier);
-                std::cout << "opened: " << (out != nullptr ? "yes" : "NO") << std::endl;
-                if (out != nullptr) {
-                    // Who is our port actually wired to? JUCE subscribes at
-                    // port creation and only jassert()s the result, so in a
-                    // Release build a failed subscription is invisible: the
-                    // send then goes to no subscriber and still reports ok.
-                    std::ifstream clients("/proc/asound/seq/clients");
-                    std::string line;
-                    bool ours = false;
-                    while (std::getline(clients, line)) {
-                        if (line.rfind("Client", 0) == 0)
-                            ours = line.find("LooperCat") != std::string::npos;
-                        if (ours)
-                            std::cout << "  seq| " << line << "\n";
-                    }
-                    const auto frame = loopercat::sysex::enterStorageMode();
-                    out->sendMessageNow(juce::MidiMessage::createSysExMessage(
-                        frame.data() + 1, static_cast<int>(frame.size()) - 2));
-                    std::cout << "sent sysex" << std::endl;
-                    // A plain channel message through the same port: if this
-                    // arrives and the sysex does not, the fault is JUCE's
-                    // sysex path, not its output path.
-                    out->sendMessageNow(juce::MidiMessage::noteOn(1, 60, (juce::uint8) 100));
-                    std::cout << "sent note-on" << std::endl;
-                    juce::Thread::sleep(1500);
-                }
-            }
-            setApplicationReturnValue(0);
+            // "--midi-probe exit" sends the leaving frame instead, so the
+            // Disconnect half of the same path can be measured too.
+            const int probeFlag = args.indexOf("--midi-probe");
+            const bool enter = !(probeFlag >= 0 && args[probeFlag + 1] == "exit");
+            const juce::String error = pedallink::requestStorageMode(enter);
+            std::cout << "send: " << (error.isEmpty() ? juce::String("reported ok") : error)
+                      << std::endl;
+            setApplicationReturnValue(error.isEmpty() ? 0 : 1);
             quit();
             return;
         }

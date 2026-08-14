@@ -275,6 +275,16 @@ else()
     message(FATAL_ERROR "no DeviceWatcher backend for this platform")
 endif()
 
+# The storage-mode sender, likewise one backend per platform. JUCE's
+# MidiOutput carries macOS and Windows; on Linux it delivers only sometimes,
+# silently, on every JUCE version tried, so that platform writes to ALSA
+# rawmidi itself — PedalLinkLinux.cpp records the measurements.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(LooperCat PRIVATE app/PedalLinkLinux.cpp)
+else()
+    target_sources(LooperCat PRIVATE app/PedalLinkJuce.cpp)
+endif()
+
 target_compile_definitions(LooperCat PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
@@ -315,7 +325,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # binary at runtime, so they add no link-time dependency here.
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(UDEV REQUIRED IMPORTED_TARGET libudev)
-    target_link_libraries(LooperCat PRIVATE PkgConfig::UDEV)
+    # ALSA for the rawmidi sender. JUCE links it too, but this backend uses
+    # the API directly and must say so rather than inherit it by luck.
+    pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
+    target_link_libraries(LooperCat PRIVATE PkgConfig::UDEV PkgConfig::ALSA)
 endif()
 
 if(LOOPERCAT_BUILD_TESTS)

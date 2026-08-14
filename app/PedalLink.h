@@ -15,6 +15,10 @@
 // issue #22); this layer only locates the device and sends. The pedal's MIDI
 // endpoint is present in BOTH modes, so Connect works from the looper screen
 // and Disconnect works from storage.
+//
+// Finding the pedal is JUCE's job everywhere: enumeration has never been in
+// doubt on any platform. SENDING is a per-platform backend, because on Linux
+// JUCE's is not dependable — see PedalLinkLinux.cpp for what was measured.
 //==============================================================================
 namespace loopercat::pedallink {
 
@@ -28,19 +32,7 @@ inline std::optional<juce::MidiDeviceInfo> findPedal()
 }
 
 // Send the storage-mode switch. Returns an error message; empty = sent.
-inline juce::String requestStorageMode(bool enter)
-{
-    const auto device = findPedal();
-    if (!device)
-        return "no RC-5 MIDI device on the bus";
-    const auto out = juce::MidiOutput::openDevice(device->identifier);
-    if (out == nullptr)
-        return "cannot open MIDI device " + device->name;
-    const auto frame = enter ? sysex::enterStorageMode() : sysex::exitStorageMode();
-    // JUCE wraps the payload in F0/F7 itself.
-    out->sendMessageNow(juce::MidiMessage::createSysExMessage(
-        frame.data() + 1, static_cast<int>(frame.size()) - 2));
-    return {};
-}
+// MESSAGE THREAD. Implemented once per platform.
+juce::String requestStorageMode(bool enter);
 
 } // namespace loopercat::pedallink
