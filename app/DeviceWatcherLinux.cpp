@@ -90,6 +90,10 @@ namespace {
     // How long the session's own automounter gets before we do it ourselves.
     constexpr auto kAutoMountGrace = std::chrono::seconds(5);
 
+    // Matches the Windows backend's lock ladder: five tries, 400 ms apart.
+    constexpr int kUnmountAttempts = 5;
+    constexpr auto kUnmountRetryDelay = std::chrono::milliseconds(400);
+
     // O_DIRECT demands the buffer, the offset and the length be aligned to
     // the device's logical block size; 4096 satisfies every real sector size.
     constexpr size_t kDirectAlign = 4096;
@@ -566,7 +570,22 @@ void DeviceWatcher::eject(const std::filesystem::path& volumePath,
     // fires from this thread — the owner already hops to the message thread.
     std::thread([node = mount->source, disk = parentDiskNode(deviceOf(*mount)),
                  done = std::move(done)] {
-        const CommandResult unmounted = run(linuxrules::unmountArgs(node));
+        // A volume someone still holds is worth waiting out, and the
+        // holders let go quickly: a file manager that auto-opened the card,
+        // a desktop indexer, or our own read-ahead thread finishing its last
+        // block. Disconnect releases the player before asking for this, but
+        // the release is not instantaneous and udisksctl asks immediately.
+        // The Windows backend has had this ladder from the start for exactly
+        // the same reason; the Linux one tried once and reported DeviceBusy
+        // to a user who had done nothing wrong.
+        CommandResult unmounted;
+        for (int attempt = 0; attempt < kUnmountAttempts; ++attempt) {
+            if (attempt > 0)
+                std::this_thread::sleep_for(kUnmountRetryDelay);
+            unmounted = run(linuxrules::unmountArgs(node));
+            if (unmounted.ok || !linuxrules::isBusyError(unmounted.output))
+                break;
+        }
         if (!unmounted.ok) {
             done(false, unmounted.output);
             return;

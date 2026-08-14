@@ -173,5 +173,23 @@ int main()
         }
     }
 
+    // --- which unmount failures are worth waiting out ---
+
+    {
+        // The real message, as udisks2 phrased it on the machine.
+        CHECK(isBusyError("Error unmounting /dev/sdb1: GDBus.Error:"
+                          "org.freedesktop.UDisks2.Error.DeviceBusy: Device busy"));
+
+        // Retrying these only delays an honest banner: they read the same
+        // in four hundred milliseconds as they do now.
+        CHECK(!isBusyError("Error unmounting /dev/sdb1: GDBus.Error:"
+                           "org.freedesktop.UDisks2.Error.NotAuthorizedCanObtain: "
+                           "Not authorized to perform operation"));
+        CHECK(!isBusyError("Error looking up object for device /dev/sdb1"));
+        CHECK(!isBusyError(""));
+        // Success has no message at all, and must not read as busy.
+        CHECK(!isBusyError("Unmounted /dev/sdb1"));
+    }
+
     return testkit::summary("linux device rules");
 }
