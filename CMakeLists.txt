@@ -149,15 +149,7 @@ else()
 endif()
 FetchContent_MakeAvailable(felitronics_appkit)
 
-# 8.0.15 rather than 8.0.14 because MIDI OUTPUT DOES NOT WORK AT ALL on
-# Linux in .14: the device enumerates, opens, and the ALSA port is correctly
-# subscribed to the destination, but nothing is ever delivered and
-# sendMessageNow reports success. Measured against a listener on Midi
-# Through: aplaymidi's notes arrive, JUCE's do not - neither sysex nor a
-# plain note-on. That silently broke Connect, Disconnect and quit-as-
-# disconnect on Linux, since all three ride the same frame. On .15 the same
-# probe delivers, and a real RC-5 enters USB storage from the app's own path.
-set(LOOPERCAT_JUCE_TAG "8.0.15" CACHE STRING "JUCE git tag")   # the family's pinned JUCE
+set(LOOPERCAT_JUCE_TAG "8.0.14" CACHE STRING "JUCE git tag")   # the family's pinned JUCE
 FetchContent_Declare(juce
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
     GIT_TAG        ${LOOPERCAT_JUCE_TAG}
