@@ -77,6 +77,19 @@ public:
     // completion or at the time bound, whichever lands first.
     bool beginQuitDisconnect(std::function<void()> done);
 
+    // The --cycle seam: press Connect, press Disconnect, and read back what
+    // the window would be showing. The two buttons call THESE, so the seam
+    // can never drift into testing a copy of the real thing — the failure
+    // mode of every verification hook that quietly stops meaning anything.
+    // playSlot starts a slot the way a double-click does, so the read-ahead
+    // thread holds a WAV open: the state a real Disconnect has to survive.
+    void playSlot(int slot) { slotChosen(slot, true); }
+    void beginConnect();
+    void beginDisconnect();
+    std::string lifecycleStateName() const;
+    std::string volumePath() const;
+    std::vector<std::string> bannerLines() const;
+
     void paint(juce::Graphics& g) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress& key) override;

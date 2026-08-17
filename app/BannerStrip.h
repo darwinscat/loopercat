@@ -25,6 +25,11 @@ class BannerStrip final : public juce::Component
 public:
     BannerStrip() = default; // JUCE_DECLARE_NON_COPYABLE suppresses the implicit one
 
+    // What the strip is currently showing, for the --cycle seam: the
+    // transient lines during a disconnect are the ones worth reading, and
+    // they are gone before a screenshot can catch them.
+    std::vector<banners::Line> lines() const { return model_.lines(); }
+
     static constexpr int kMaxLines = 4;
     static constexpr int kLineHeight = 19;
 
