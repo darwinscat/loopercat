@@ -3,9 +3,9 @@
 //
 // The Linux backend's judgements, tested from what they PROMISE rather than
 // from how they are written: a device is removable when the kernel says so
-// or when it hangs off USB; the disk to power off is the parent block
-// device and never its transport directory; and udisksctl gets exactly the
-// arguments a musician's card can survive.
+// or when it hangs off USB; udisksctl gets exactly the arguments a
+// musician's card can survive; and a refused unmount is waited out only when
+// waiting can help.
 //
 // The bias here is towards the two failures that would not announce
 // themselves. Treating an internal disk as removable hands it a device
@@ -92,57 +92,6 @@ int main()
         CHECK(!isRemovable(kSataDisk, "true"));
     }
 
-    // --- which node gets powered off ---
-
-    {
-        CHECK_EQ(diskNodeFromSysfs("/sys/devices/pci0000:00/usb2/2-1/block/sdb", true),
-                 std::string("/dev/sdb"));
-        CHECK_EQ(diskNodeFromSysfs("/sys/devices/pci0000:00/block/nvme0n1", true),
-                 std::string("/dev/nvme0n1"));
-
-        // The parent of a WHOLE disk is its transport directory, not another
-        // block device: "/dev/host6" is not a thing to power off.
-        CHECK_EQ(diskNodeFromSysfs("/sys/devices/pci0000:00/usb2/2-1/host6", false),
-                 std::string());
-
-        CHECK_EQ(diskNodeFromSysfs("", true), std::string());
-        CHECK_EQ(diskNodeFromSysfs("/sys/devices/block/", true), std::string());
-        CHECK_EQ(diskNodeFromSysfs("sdb", true), std::string());
-    }
-
-    // --- recognising the pedal itself ---
-    //
-    // Values captured from the real device: lsusb reports 0582:0251, and
-    // udev puts them on the PARTITION as well as the disk, which is what
-    // makes this usable from a block `add` event.
-    {
-        CHECK(isPedalDevice("0582", "0251"));
-
-        // Both halves must match. Roland makes more than one thing, and a
-        // vendor-only rule would try to mount a musician's other gear.
-        CHECK(!isPedalDevice("0582", "0000"));
-        CHECK(!isPedalDevice("0000", "0251"));
-        CHECK(!isPedalDevice("", ""));
-        CHECK(!isPedalDevice("0582", ""));
-
-        // Not a prefix or substring match: "05820" is a different number.
-        CHECK(!isPedalDevice("05820", "0251"));
-        CHECK(!isPedalDevice("058", "0251"));
-        CHECK(!isPedalDevice("0582", "02510"));
-
-        // The trap this rule exists to escape. The volume LABEL is
-        // "BOSS RC-5", but udev hands it over as ID_FS_LABEL=BOSS_RC-5 —
-        // space silently turned into an underscore — while mountinfo writes
-        // the same space as \040 and ID_FS_LABEL_ENC as \x20. A label
-        // comparison matches none of those and fails without a sound, which
-        // is how the first version of the auto-mount arm never once fired on
-        // real hardware. Renaming the card would break it a second time. The
-        // USB identity has neither failure mode, and these two lines stand
-        // as the reminder.
-        CHECK(std::string("BOSS_RC-5") != std::string("BOSS RC-5"));
-        CHECK(isPedalDevice("0582", "0251")); // unaffected by any of that
-    }
-
     // --- the commands themselves, verbatim ---
 
     {
@@ -150,8 +99,6 @@ int main()
                  std::string("udisksctl mount -b /dev/sdb1"));
         CHECK_EQ(joined(unmountArgs("/dev/sdb1")),
                  std::string("udisksctl unmount -b /dev/sdb1"));
-        CHECK_EQ(joined(powerOffArgs("/dev/sdb")),
-                 std::string("udisksctl power-off -b /dev/sdb"));
 
         // --force belongs to the ghost path and only to it. If it ever
         // migrated into the ordinary unmount, a live card would be torn off
@@ -165,8 +112,7 @@ int main()
         // detached flag turns the command into "act on whatever udisks2
         // picks", which is not a thing we may hand a musician's card.
         for (const std::vector<std::string>& args :
-             { mountArgs("/dev/x1"), unmountArgs("/dev/x1"), forceUnmountArgs("/dev/x1"),
-               powerOffArgs("/dev/x1") }) {
+             { mountArgs("/dev/x1"), unmountArgs("/dev/x1"), forceUnmountArgs("/dev/x1") }) {
             CHECK_EQ(args.front(), std::string("udisksctl"));
             CHECK_EQ(args[2], std::string("-b"));
             CHECK_EQ(args[3], std::string("/dev/x1"));

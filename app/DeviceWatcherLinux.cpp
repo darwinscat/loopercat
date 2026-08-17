@@ -26,8 +26,9 @@
 //   udisks2, not to us: umount(2) on someone else's mount is a privileged
 //   operation, while udisksctl asks the same daemon that mounted it and
 //   passes through PolicyKit as the logged-in user. Unmount first (the
-//   safety-relevant fact), then power-off the whole disk, the equivalent of
-//   the macOS whole-disk eject. Its stderr becomes the banner text.
+//   safety-relevant fact) and nothing more: powering the device off, the
+//   obvious next step for a USB stick, strands this one — see eject().
+//   udisksctl's stderr becomes the banner text.
 //
 // The auto-mount arm matters MORE here than on macOS: Linux desktops mount
 // removable media through udisks2 only when a file manager or a session
@@ -38,7 +39,7 @@
 //
 // One thing hardware taught that no test could: udisks2 authorises through
 // PolicyKit against the caller's SEAT. Launched from a desktop session the
-// mount, unmount and power-off all go through; launched over SSH, or from
+// mount and unmount go through; launched over SSH, or from
 // anything else without a seat, they come back "Not authorized to perform
 // operation" — which the banner reports verbatim rather than pretending.
 
@@ -163,17 +164,6 @@ namespace {
         const char* real = ::realpath(sysfsBlockDir(device).c_str(), resolved);
         return linuxrules::isRemovable(real != nullptr ? real : std::string(),
                                        readSysfsLine(sysfsBlockDir(device) + "/../removable"));
-    }
-
-    // "/dev/sdb" for a partition on it — what a whole-disk power-off needs.
-    std::string parentDiskNode(dev_t device)
-    {
-        char resolved[PATH_MAX];
-        const char* real = ::realpath((sysfsBlockDir(device) + "/..").c_str(), resolved);
-        if (real == nullptr)
-            return {};
-        const std::string path(real);
-        return linuxrules::diskNodeFromSysfs(path, std::ifstream(path + "/dev").good());
     }
 
     //==========================================================================
@@ -568,8 +558,7 @@ void DeviceWatcher::eject(const std::filesystem::path& volumePath,
     // Short-lived worker: udisksctl blocks (PolicyKit may even prompt), and
     // the caller (the pedal worker thread) must stay responsive. `done`
     // fires from this thread — the owner already hops to the message thread.
-    std::thread([node = mount->source, disk = parentDiskNode(deviceOf(*mount)),
-                 done = std::move(done)] {
+    std::thread([node = mount->source, done = std::move(done)] {
         // A volume someone still holds is worth waiting out, and the
         // holders let go quickly: a file manager that auto-opened the card,
         // a desktop indexer, or our own read-ahead thread finishing its last
@@ -590,15 +579,21 @@ void DeviceWatcher::eject(const std::filesystem::path& volumePath,
             done(false, unmounted.output);
             return;
         }
-        // Power-off is the whole-disk eject: it is what makes the pedal
-        // leave USB storage. Best-effort — the volume is already safely let
-        // go by the unmount, so a refusal here is a warning, not a failure.
-        if (disk.empty()) {
-            done(true, "unmounted, but the disk behind " + node + " could not be identified");
-            return;
-        }
-        const CommandResult off = run(linuxrules::powerOffArgs(disk));
-        done(true, off.ok ? std::string() : off.output);
+        // Unmounting is the whole job here, and deliberately so. The obvious
+        // next step — `udisksctl power-off`, the "safely remove hardware" of
+        // a USB stick — is WRONG for this device and was measured doing real
+        // damage: the RC-5 is composite, mass storage AND MIDI on one USB
+        // device, so powering it off takes the entire pedal off the bus. The
+        // kernel logged a USB disconnect nobody had asked for, the exit-
+        // storage frame that Disconnect sends immediately afterwards had no
+        // MIDI device left to reach, and the pedal was stranded believing it
+        // was still in storage — unrecoverable from the app, because it was
+        // no longer on the bus at all. Only re-plugging the cable brought it
+        // back.
+        //
+        // The medium goes away when the PEDAL leaves storage, which is what
+        // the sysex is for. Our job is to stop holding the filesystem.
+        done(true, {});
     }).detach();
 }
 

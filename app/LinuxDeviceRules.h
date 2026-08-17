@@ -91,20 +91,6 @@ inline bool isRemovable(const std::string& sysfsPath, const std::string& removab
     return hasUsbTransport(sysfsPath) || removableFlag == "1";
 }
 
-// "/dev/sdb" from the resolved sysfs directory of a whole disk. `isDisk`
-// says whether that directory really is a block device (it carries a `dev`
-// file) — the parent of a whole disk is its transport directory, not
-// another block device, and powering off "/dev/host6" would be nonsense.
-inline std::string diskNodeFromSysfs(const std::string& sysfsParentPath, bool isDisk)
-{
-    if (!isDisk || sysfsParentPath.empty())
-        return {};
-    const size_t slash = sysfsParentPath.find_last_of('/');
-    if (slash == std::string::npos || slash + 1 >= sysfsParentPath.size())
-        return {};
-    return "/dev/" + sysfsParentPath.substr(slash + 1);
-}
-
 //==============================================================================
 // udisksctl argument vectors.
 //
@@ -130,10 +116,11 @@ inline std::vector<std::string> forceUnmountArgs(const std::string& deviceNode)
     return { "udisksctl", "unmount", "-b", deviceNode, "--force" };
 }
 
-inline std::vector<std::string> powerOffArgs(const std::string& diskNode)
-{
-    return { "udisksctl", "power-off", "-b", diskNode };
-}
+// There is deliberately no power-off here. `udisksctl power-off` is the
+// "safely remove hardware" of a USB stick, and the RC-5 is not one: it is a
+// composite device, mass storage AND MIDI, so powering it off takes the
+// whole pedal off the bus — including the MIDI face the very next step
+// needs to tell it to leave storage. See DeviceWatcherLinux.cpp.
 
 // Is this unmount failure worth waiting out? Only a volume someone still
 // holds: a file manager, a desktop indexer, or our own read-ahead thread on
