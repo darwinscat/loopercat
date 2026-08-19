@@ -15,6 +15,7 @@
 #pragma once
 
 #include "Catalog.hpp"
+#include "Downmix.hpp"
 #include "Error.hpp"
 #include "Params.hpp"
 #include "Rc0.hpp"
@@ -516,6 +517,75 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
                    std::string_view(reinterpret_cast<const char*>(slice.data()), slice.size()));
 
     result.written = writeMemoryPair(volume, newDocument, options.write);
+    return result;
+}
+
+// --- downmix ---
+
+struct DownmixOptions {
+    fs::path trashRoot; // REQUIRED: the stereo original lands here first (the undo)
+    WriteOptions write;
+};
+
+struct DownmixResult {
+    fs::path trashedOriginal;
+    std::int64_t frames;
+    WriteResult written;
+};
+
+// Fold a slot's loop to mono in place (issue #43): both channels come out
+// carrying 0.5*(L+R) under the same on-pedal filename, and the ORIGINAL
+// stereo file moves to the trash root first. This is the second command that
+// rewrites audio, and it is as recoverable as the first.
+//
+// The config document is rewritten UNCHANGED, on purpose. Folding moves no
+// frame, so WavLen, MeasLen, Measure and LpLen all still describe this loop
+// exactly and there is nothing to recompute — but the pair write is the
+// mutation tail every command shares, and it is what backs the memory up,
+// sweeps the sidecars macOS leaves on the volume, and carries the pedal's
+// write generation forward for a memory whose audio just changed.
+//
+// A loop that already carries the same signal in both channels is refused
+// rather than rewritten: the fold would be a no-op and the trash copy pure
+// churn, so saying so is more use than doing it.
+inline DownmixResult downmixToMono(const fs::path& volume, int slot,
+                                   const DownmixOptions& options)
+{
+    if (options.trashRoot.empty() || options.write.stamp.empty())
+        throw Error("downmix requires a trash root and a timestamp");
+
+    const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
+    if (files.empty())
+        throw Error("slot " + std::to_string(slot) + " has no audio to fold");
+    const fs::path source = volume::wavDir(volume, slot) / files.front();
+
+    const std::string raw = readFileBytes(source);
+    const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
+    if (wav::isDualMono(rawView)) // validates the format before it answers
+        throw Error("slot " + std::to_string(slot)
+                    + " already carries the same signal in both channels");
+    const wav::Bytes folded = wav::downmixedToMono(rawView);
+    const wav::Info info = wav::readWavInfo(folded);
+
+    // The config has to be readable before the audio is touched: a fold that
+    // could not write its memory pair afterwards would leave the volume in a
+    // state no undo describes.
+    const std::string memoryText = readMemory(volume);
+
+    // All checks passed — the writes begin. Trash copy first: the original
+    // must be safe before anything replaces it.
+    const fs::path trashDir = options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+    std::error_code ec;
+    fs::create_directories(trashDir, ec);
+    if (ec)
+        throw Error("cannot create " + trashDir.string());
+    DownmixResult result { trashDir / files.front(), info.frames, {} };
+    writeFileBytes(result.trashedOriginal, raw);
+
+    writeFileBytes(source,
+                   std::string_view(reinterpret_cast<const char*>(folded.data()), folded.size()));
+
+    result.written = writeMemoryPair(volume, memoryText, options.write);
     return result;
 }
 

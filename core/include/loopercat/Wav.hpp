@@ -66,6 +66,23 @@ namespace detail {
         return true;
     }
 
+    // Offset of the first sample byte — the body of the "data" chunk. Anything
+    // that reaches past the header for samples needs it, and the walk exists
+    // once so two readers cannot disagree about where the audio begins.
+    inline std::size_t dataChunkStart(BytesView data)
+    {
+        std::int64_t offset = 12;
+        const auto size = static_cast<std::int64_t>(data.size());
+        while (offset + 8 <= size) {
+            const auto o = static_cast<std::size_t>(offset);
+            const std::int64_t chunkSize = u32(data, o + 4);
+            if (chunkIdIs(data, o, "data"))
+                return o + 8;
+            offset += 8 + chunkSize + (chunkSize % 2);
+        }
+        throw Error("missing data chunk");
+    }
+
 } // namespace detail
 
 inline Info readWavInfo(BytesView data)
@@ -141,17 +158,7 @@ inline Bytes trimmed(BytesView data, std::int64_t startFrame, std::int64_t endFr
                     + std::to_string(endFrame) + ") of " + std::to_string(info.frames)
                     + " frames");
 
-    std::int64_t offset = 12;
-    std::int64_t dataStart = -1;
-    while (offset + 8 <= static_cast<std::int64_t>(data.size())) {
-        const auto o = static_cast<std::size_t>(offset);
-        const std::int64_t chunkSize = detail::u32(data, o + 4);
-        if (detail::chunkIdIs(data, o, "data")) {
-            dataStart = offset + 8;
-            break;
-        }
-        offset += 8 + chunkSize + (chunkSize % 2);
-    }
+    const auto dataStart = static_cast<std::int64_t>(detail::dataChunkStart(data));
 
     const std::int64_t sliceBytes = (endFrame - startFrame) * info.blockAlign;
     const std::int64_t fmtBody = info.formatTag == 3 ? 28 : 16;
