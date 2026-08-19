@@ -201,8 +201,15 @@ int main()
     CHECK_THROWS(wav::assertUploadable(wav::readWavInfo(syntheticWav({ .tag = 1, .bits = 8 }))), "format");
     CHECK_THROWS(wav::assertUploadable(wav::readWavInfo(syntheticWav({ .tag = 3, .bits = 64 }))), "format");
 
-    CHECK_EQ(wav::assertUploadable(wav::readWavInfo(syntheticWav({ .tag = 1, .bits = 16 }))).format(), "pcm16");
-    CHECK_EQ(wav::assertUploadable(wav::readWavInfo(syntheticWav({ .tag = 1, .bits = 24 }))).format(), "pcm24");
+    // Only the pedal's own format goes in untouched. PCM used to be accepted
+    // here on the strength of Roland's documentation, and hardware said no:
+    // a 16-bit 44.1 kHz stereo file uploaded as-is produced a memory the
+    // pedal would not play (issue #44). Everything else now goes through the
+    // converter, which is what made the same tester's 24-bit files work.
+    CHECK_THROWS(wav::assertUploadable(wav::readWavInfo(syntheticWav({ .tag = 1, .bits = 16 }))),
+                 "32-bit float");
+    CHECK_THROWS(wav::assertUploadable(wav::readWavInfo(syntheticWav({ .tag = 1, .bits = 24 }))),
+                 "32-bit float");
     CHECK_EQ(wav::assertUploadable(wav::readWavInfo(syntheticWav({ .tag = 3, .bits = 32 }))).format(), "float32");
 
     // --- canonicalize ---

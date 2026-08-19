@@ -1,8 +1,8 @@
-# Looper Cat 🐾
+# LooperCat 🐾
 
-**See inside your looper.** LooperCat is a companion app for the BOSS RC-5:
+**See inside your looper.** LooperCat is a companion editor app for the BOSS RC-5:
 browse all 99 memory slots, listen to loops, rename, trim, re-tempo, upload and
-download WAVs — while the app drives the pedal's STORAGE mode for you.
+download WAVs — while the app drives the pedal's STORAGE mode for you. 
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 

@@ -115,13 +115,36 @@ int main()
     const juce::File tmp = work.getChildFile("import-tmp");
 
     // --- a pedal-ready file passes through untouched ---
+    //
+    // "Pedal-ready" means float32, the format the pedal records in. Nothing
+    // else earns the shortcut (issue #44).
     {
-        const auto bytes = testkit::syntheticWav({ .frames = 4410 });
+        const auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410 });
         const juce::File src = writeTemp(work, "ready.wav", bytes);
         wavimport::Prepared p;
         CHECK(wavimport::prepare(src, tmp, p).wasOk());
         CHECK(!p.converted);
         CHECK(p.file == src);
+    }
+
+    // --- the reported case: plain 16-bit stereo 44.1 kHz IS converted ---
+    //
+    // The exact shape a beta tester's file had. It used to sail through the
+    // gate untouched and land on the pedal as PCM, which the pedal would not
+    // play; the fix is that it now goes through the converter like everything
+    // that is not already float32.
+    {
+        const auto bytes = testkit::syntheticWav({ .tag = 1, .bits = 16, .frames = 4410 });
+        const juce::File src = writeTemp(work, "sixteen-bit.wav", bytes);
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p).wasOk());
+        CHECK(p.converted);          // the whole point: it must NOT pass through
+        CHECK(p.file != src);
+        const wav::Info out = infoOf(p.file);
+        CHECK_EQ(out.format(), "float32");
+        CHECK_EQ(out.channels, 2);
+        CHECK_EQ(out.sampleRate, 44100);
+        CHECK_EQ(out.frames, 4410);  // same length, resampling is a no-op at 44.1
     }
 
     // --- the field case: extensible 24-bit stereo 44.1 kHz converts ---
