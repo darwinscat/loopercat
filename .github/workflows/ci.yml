@@ -87,6 +87,48 @@ jobs:
           path: build/LooperCat_artefacts/Release/
           if-no-files-found: error
 
+  # The RELEASE base, exercised on every push. app-linux above builds on
+  # ubuntu-latest, which is the convenient thing and the wrong thing to ship:
+  # since glibc 2.38 the headers redirect strtol/sscanf to __isoc23_* symbols,
+  # so a binary built there refuses to start on Ubuntu 22.04, Debian 12 or
+  # Mint 21. The release lane therefore builds on 22.04 — and until this job
+  # existed, a tag was the first time anyone found out whether that lane still
+  # worked. Now a push is.
+  release-base-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-12 ninja-build pkg-config libudev-dev \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxcomposite-dev libgl1-mesa-dev
+
+      - name: Build the app
+        env:
+          CC: gcc-12
+          CXX: g++-12
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLOOPERCAT_BUILD_TESTS=OFF
+          cmake --build build -j4
+
+      # The same assertion the release lane carries, in the place that runs
+      # first: a floor above 2.35 excludes a distribution that is still
+      # supported, and the exclusion surfaces on a user's machine, not here.
+      - name: Assert the glibc floor (<= 2.35, Ubuntu 22.04)
+        run: |
+          HIGHEST=$(objdump -T build/LooperCat_artefacts/Release/LooperCat \
+                    | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "highest required: $HIGHEST"
+          case "$HIGHEST" in
+            GLIBC_2.3|GLIBC_2.[0-9]|GLIBC_2.1?|GLIBC_2.2?|GLIBC_2.3[0-5]) ;;
+            *) echo "glibc floor rose to $HIGHEST — this build excludes Ubuntu 22.04"; exit 1 ;;
+          esac
+
   core-windows:
     runs-on: windows-latest
     timeout-minutes: 30
