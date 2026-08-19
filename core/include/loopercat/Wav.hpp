@@ -207,9 +207,19 @@ inline Bytes canonicalize(BytesView data)
     return trimmed(data, 0, readWavInfo(data).frames);
 }
 
-// What we accept for upload. Roland documents 44.1 kHz stereo WAV at 16-bit,
-// 24-bit and 32-bit float — float being the pedal's own native recording
-// format; 16-bit and float32 are additionally verified on real hardware.
+// What goes to the pedal UNTOUCHED: float32 only, the format the pedal writes
+// itself. Anything else is converted first (app/WavImport.cpp).
+//
+// This used to accept pcm16 and pcm24 as well, on the strength of Roland's
+// import documentation as relayed by rc5cat. Hardware disagreed (issue #44):
+// a beta tester's 16-bit 44.1 kHz stereo file was accepted as-is and the
+// pedal would not play the memory, while 24-bit exports from the same source
+// played fine — because those are WAVE_FORMAT_EXTENSIBLE, failed this gate,
+// and so went through the converter and arrived as float32. The difference
+// was conversion, not bit depth.
+//
+// So the rule is now what we can prove rather than what a datasheet claims:
+// the pedal plays back its own format, and we hand it exactly that.
 inline const Info& assertUploadable(const Info& info)
 {
     if (info.sampleRate != kSampleRate)
@@ -218,8 +228,8 @@ inline const Info& assertUploadable(const Info& info)
     if (info.channels != 2)
         throw Error("file must be stereo, got " + std::to_string(info.channels) + " channel(s)");
     const std::string format = info.format();
-    if (format != "pcm16" && format != "pcm24" && format != "float32")
-        throw Error("format must be 16/24-bit PCM or 32-bit float, got " + format);
+    if (format != "float32")
+        throw Error("format must be 32-bit float, got " + format);
     return info;
 }
 
