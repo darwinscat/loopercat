@@ -880,6 +880,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     juce::PopupMenu menu;
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
+    menu.addItem(6, juce::String::fromUTF8("Downmix to mono\xe2\x80\xa6"), occupied);
     menu.addSeparator();
     menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
@@ -900,6 +901,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
+            case 6: downmixSlot(slot, name); break;
             default: break;
             }
         });
@@ -1005,6 +1007,41 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
         [enqueuePush](int button) {
             if (button == 1)
                 enqueuePush(true);
+        });
+}
+
+// Folding is the app's half of "put this loop on one output jack" (issue
+// #43): the pedal's own Pan does the placing, but it cannot fold a file it
+// was handed, and a loop whose channels already match lands whole on either
+// jack however Pan turns out to be implemented. Destructive by nature — the
+// two channels stop being separable — so it asks first and keeps the stereo
+// original in the trash, exactly like a replace.
+void MainComponent::downmixSlot(int slot, const juce::String& name)
+{
+    const juce::String label = name.isEmpty() ? juce::String(slot)
+                                              : juce::String(slot) + " (" + name + ")";
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::WarningIcon)
+            .withTitle("Downmix slot " + label + " to mono?")
+            .withMessage(juce::String::fromUTF8(
+                "Left and right are averaged into one signal, and both channels then carry "
+                "it \xe2\x80\x94 the loop stops being stereo.\n\nThe current WAV moves to the "
+                "app's trash first \xe2\x80\x94 that is your undo."))
+            .withButton("Downmix")
+            .withButton("Cancel"),
+        [this, slot](int button) {
+            if (button != 1)
+                return;
+            releasePlayerIfHolding(slot, slot); // the fold rewrites the WAV under preview (issue #26)
+            worker.enqueue(
+                { "Downmix slot " + juce::String(slot) + " to mono", slot,
+                  [slot, options = makeWriteOptions(),
+                   trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                      const volume::fs::path& volumePath) {
+                      commands::downmixToMono(volumePath, slot,
+                                              { .trashRoot = trash, .write = options });
+                  } });
         });
 }
 

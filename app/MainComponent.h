@@ -121,6 +121,7 @@ private:
     void choosePushWav(int slot, bool slotOccupied);
     void pullSlot(int slot);
     void clearSlot(int slot, const juce::String& name);
+    void downmixSlot(int slot, const juce::String& name);
     commands::WriteOptions makeWriteOptions();
 
     // Declaration order is lifetime order: settings outlives the checker
