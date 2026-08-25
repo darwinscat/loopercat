@@ -30,21 +30,25 @@ needed.
 
 ### `Pan` is a field, not a knob
 
-The RC-5 has no pan. Its Reference Manual documents every memory parameter
-(LOOP, RHYTHM, NAME) and every SETUP parameter including the whole CC#80–87
-assignable list, and none of them is a pan — the strongest evidence being that
-CC list, which enumerates essentially every per-memory parameter the pedal will
-let an external device drive. So `<Pan>` is a field this format inherited from
-its RC-500/RC-505 relatives. Writing it would be writing to nobody, and it must
-never appear in an editor as though it did something.
+The RC-5 has no pan. The decisive evidence is the memory parameter tables
+themselves (LOOP p. 9, RHYTHM p. 10, NAME p. 11): a per-memory parameter would
+be printed there, and pan is not. It is missing from the SETUP pages too, and
+from the CC#80–87 assignable list on p. 14 — though that list proves less than
+it looks like it does, since the manual never claims it is complete and it is
+not: `MEASURE`, `BEAT` and `NAME` have no CC entry either.
+
+So `<Pan>` is a field this format inherited from its RC-500/RC-505 relatives.
+Writing it would be writing to nobody, and it must never appear in an editor as
+though it did something.
 
 What the pedal does instead is simpler, and it is what a player actually needs:
 **file channel 1 goes to OUTPUT A (MONO) and channel 2 goes to OUTPUT B**,
 untouched and unmixed. Measured on hardware 2026-08-25 with 441 Hz in one
-channel and 1470 Hz in the other, each arriving at its own jack alone. That is
-why placing a loop on one output jack is something the app does to the WAV
-(see `core/include/loopercat/Downmix.hpp`) rather than something it asks the
-pedal for.
+channel and 1470 Hz in the other, each arriving at its own jack alone — **with
+both jacks patched**, which is the condition the rest of this paragraph depends
+on. That is why placing a loop on one output jack is something the app does to
+the WAV (see `core/include/loopercat/Downmix.hpp`) rather than something it asks
+the pedal for.
 
 Two more things that jack carries, both from the manual: OUTPUT A doubles as
 the power switch — the pedal is on because a cable is in it — and with OUTPUT B

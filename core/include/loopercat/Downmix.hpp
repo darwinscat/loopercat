@@ -7,17 +7,22 @@
 // that does, so it lives in its own header rather than widening that charter.
 //
 // Why the app does the whole job, placement included: the RC-5 has no pan.
-// Its reference manual documents every memory parameter (LOOP, RHYTHM, NAME)
-// and every SETUP parameter, including the full CC#80-87 assignable list, and
-// none of them is a pan — so the <Pan> tag sitting in TRACK1 of a .RC0 is a
-// field this format inherited from its RC-500/RC-505 relatives, not a knob
-// this pedal turns. Writing it would be writing to nobody.
+// Its reference manual prints every memory parameter in three tables (LOOP,
+// RHYTHM, NAME) and none of them is a pan — that is the decisive evidence,
+// since a per-memory parameter would be printed there. It is absent from the
+// SETUP pages as well. So the <Pan> tag sitting in TRACK1 of a .RC0 is a field
+// this format inherited from its RC-500/RC-505 relatives, not a knob this
+// pedal turns. Writing it would be writing to nobody.
 //
 // What the pedal DOES do is send file channel 1 to OUTPUT A and channel 2 to
 // OUTPUT B, untouched and unmixed — measured on real hardware 2026-08-25 with
 // 441 Hz in one channel and 1470 Hz in the other, each arriving at its own
-// jack alone. So the loop's position is a property of the FILE, and it is
-// ours to write.
+// jack alone. That measurement had BOTH jacks patched, and the condition is
+// load-bearing: with only OUTPUT A (MONO) in use the pedal folds its own
+// output down to mono, so a loop placed on OUTPUT B alone is still heard.
+// Placement separates the jacks; it does not hide a loop from a mono rig.
+//
+// So the loop's position is a property of the FILE, and it is ours to write.
 //
 // That is what makes the reporter's ask reachable (issue #43): fold the two
 // channels into one signal, then put that signal where it should come out —
