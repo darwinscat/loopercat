@@ -128,6 +128,35 @@ cut **gaplessly** — you hear the loop exactly as it will land on the pedal.
 **Trim** commits, **Reset** drops the markers. The original WAV moves to the
 app's trash folder first — that is your undo.
 
+## Downmix to mono, and choosing an output jack
+
+Right-click a slot → **Downmix to mono**, then pick where the result should
+come out: **Both outputs**, **OUTPUT A only** or **OUTPUT B only**. Left and
+right are averaged into one signal — averaged, not added, so a fold can never
+push a loop into clipping it did not already have.
+
+The single-jack choices are what make this more than a tidy-up. The RC-5 sends
+a loop's first channel to OUTPUT A (MONO) and its second to OUTPUT B, and it
+does not mix them. So a loop folded onto OUTPUT B plays out of that jack alone
+and leaves OUTPUT A completely silent — which is how you run loops into one amp
+or channel while your live instrument keeps the other, with nothing bleeding
+between them.
+
+A few things worth knowing:
+
+- Changing your mind is free. A loop already sitting on OUTPUT A can be moved
+  to OUTPUT B, or spread back across both, without losing any level.
+- The stereo original moves to the app's trash first, exactly like a replace —
+  that is your undo. Folding is not reversible inside the slot itself: once
+  left and right are one signal, they stop being separable.
+- Nothing else about the loop changes — same length, same tempo, same bar
+  count, same name.
+- **Disconnect** to hear it: the pedal re-reads its card on the way out of
+  storage.
+- OUTPUT A is also the pedal's power switch. If you want to hear a loop that
+  lives on OUTPUT B alone, both cables need to be in — with OUTPUT B unplugged
+  the RC-5 folds everything back down to mono on its own.
+
 ## Moving audio
 
 - **Push WAV here…** (empty slot) / **Replace WAV…** (occupied slot) — put a
