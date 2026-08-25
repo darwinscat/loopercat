@@ -524,6 +524,7 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
 
 struct DownmixOptions {
     fs::path trashRoot; // REQUIRED: the stereo original lands here first (the undo)
+    wav::Placement placement = wav::Placement::BothOutputs;
     WriteOptions write;
 };
 
@@ -533,10 +534,11 @@ struct DownmixResult {
     WriteResult written;
 };
 
-// Fold a slot's loop to mono in place (issue #43): both channels come out
-// carrying 0.5*(L+R) under the same on-pedal filename, and the ORIGINAL
-// stereo file moves to the trash root first. This is the second command that
-// rewrites audio, and it is as recoverable as the first.
+// Fold a slot's loop to mono in place (issue #43) and put the result where
+// `placement` says — both jacks, OUTPUT A alone or OUTPUT B alone — under the
+// same on-pedal filename, with the ORIGINAL stereo file moved to the trash
+// root first. This is the second command that rewrites audio, and it is as
+// recoverable as the first.
 //
 // The config document is rewritten UNCHANGED, on purpose. Folding moves no
 // frame, so WavLen, MeasLen, Measure and LpLen all still describe this loop
@@ -545,9 +547,11 @@ struct DownmixResult {
 // sweeps the sidecars macOS leaves on the volume, and carries the pedal's
 // write generation forward for a memory whose audio just changed.
 //
-// A loop that already carries the same signal in both channels is refused
-// rather than rewritten: the fold would be a no-op and the trash copy pure
-// churn, so saying so is more use than doing it.
+// A fold that would not change a single byte is refused rather than performed:
+// it would spend a trash copy and a pedal write generation on nothing, so
+// saying so is more use than doing it. Note this is per placement — a loop
+// already folded across both jacks is a no-op for BothOutputs and a real
+// rewrite for OUTPUT B alone.
 inline DownmixResult downmixToMono(const fs::path& volume, int slot,
                                    const DownmixOptions& options)
 {
@@ -561,10 +565,11 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
 
     const std::string raw = readFileBytes(source);
     const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
-    if (wav::isDualMono(rawView)) // validates the format before it answers
-        throw Error("slot " + std::to_string(slot)
-                    + " already carries the same signal in both channels");
-    const wav::Bytes folded = wav::downmixedToMono(rawView);
+    // validates the format before it answers
+    if (wav::foldWouldChangeNothing(rawView, options.placement))
+        throw Error("slot " + std::to_string(slot) + " is already folded to "
+                    + wav::placementName(options.placement));
+    const wav::Bytes folded = wav::downmixedToMono(rawView, options.placement);
     const wav::Info info = wav::readWavInfo(folded);
 
     // The config has to be readable before the audio is touched: a fold that
