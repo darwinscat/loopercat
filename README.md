@@ -62,10 +62,20 @@ protocol notes live in [docs/midi-protocol](docs/midi-protocol/).
 
 ## Install
 
-macOS first: grab the DMG from [Releases](../../releases), drag LooperCat to
-Applications, plug the RC-5 in over USB, press **Connect**. Universal binary
-(Apple silicon + Intel). A Windows build is planned once the macOS release
-settles.
+Grab the build for your system from [Releases](../../releases), plug the RC-5
+in over USB, and press **Connect**.
+
+- **macOS** — a DMG; drag LooperCat to Applications. Universal binary (Apple
+  silicon + Intel).
+- **Windows** — a portable zip. No installer, and nothing to install first:
+  the exe carries its own runtime.
+- **Linux** — an AppImage. `chmod +x` it and run; there is nothing to unpack.
+  Needs glibc 2.35 or newer, which covers Ubuntu 22.04+, Debian 12+, Mint 21+
+  and Fedora 36+.
+
+On Linux the card is mounted through udisks2, the same service your file
+manager uses, so run LooperCat from your desktop session as you would any
+other app — no root, no permissions to grant.
 
 ## Building from source
 
@@ -77,6 +87,15 @@ ctest --test-dir build
 
 JUCE and felitronics-appkit are fetched automatically; the app lands in
 `build/LooperCat_artefacts/`.
+
+On Linux the app needs libudev (the device backend) plus JUCE's own X11,
+FreeType and ALSA development packages:
+
+```sh
+sudo apt install g++ cmake ninja-build pkg-config libudev-dev \
+  libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxext-dev \
+  libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev libgl1-mesa-dev
+```
 
 ## Supported hardware
 

@@ -1,4 +1,8 @@
-build/
+# Any build directory, not just the default one: a core-only configure and an
+# app configure cannot share a CMake cache, so a second tree (build-core,
+# build-linux) is routine — and one that git still reports leaves a dirty
+# status, which is how a real untracked file gets overlooked.
+build*/
 .build/
 .swiftpm/
 xcuserdata/
