@@ -167,8 +167,93 @@ jobs:
           path: dist/LooperCat-*-Windows.zip
           if-no-files-found: error
 
+  linux:
+    needs: gate
+    # 22.04 ON PURPOSE, and it is the difference between shipping to Linux and
+    # shipping to this year's Linux. An AppImage inherits the glibc of the
+    # machine that built it, and since glibc 2.38 the headers redirect plain
+    # strtol/sscanf to __isoc23_* symbols — so a binary built on 24.04 demands
+    # GLIBC_2.38 and refuses to start on Ubuntu 22.04 (2.35), Debian 12 (2.36)
+    # or Mint 21, with an error naming a symbol rather than a cause. The same
+    # source on 22.04 asks for 2.34. Ubuntu 22.04 is supported into 2027, so
+    # that is a large share of players. Raise this floor only with a reason.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # gcc-12: 22.04 ships gcc-11 by default, which is short of the C++20 the
+      # core needs. The older glibc is the point; the older compiler is not.
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-12 ninja-build pkg-config libudev-dev \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxcomposite-dev libgl1-mesa-dev
+
+      - name: Configure (Release flavor badge)
+        env:
+          CC: gcc-12
+          CXX: g++-12
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLOOPERCAT_BUILDER=release
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Test (all suites)
+        run: ctest --test-dir build --output-on-failure
+
+      # Without the udev backend the app has no device truth at all, and it
+      # fails silently — the monitor thread simply never starts.
+      - name: Assert the udev backend is linked in
+        run: |
+          ldd build/LooperCat_artefacts/Release/LooperCat | grep -q libudev.so \
+            || { echo "libudev is not linked"; exit 1; }
+          echo "udev backend confirmed"
+
+      # The glibc floor is a shipping decision, not a build detail: every
+      # version above 2.35 excludes a distribution that is still supported,
+      # and the exclusion shows up as a symbol-not-found error on a user's
+      # machine rather than anywhere near this build. Assert it so a runner
+      # image bump cannot move it quietly.
+      - name: Assert the glibc floor (<= 2.35, Ubuntu 22.04)
+        run: |
+          HIGHEST=$(objdump -T build/LooperCat_artefacts/Release/LooperCat \
+                    | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "highest required: $HIGHEST"
+          case "$HIGHEST" in
+            GLIBC_2.3|GLIBC_2.[0-9]|GLIBC_2.1?|GLIBC_2.2?|GLIBC_2.3[0-5]) ;;
+            *) echo "glibc floor rose to $HIGHEST — this build excludes Ubuntu 22.04"; exit 1 ;;
+          esac
+
+      - name: Package the AppImage
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          packaging/linux/make-appimage.sh build "$VER" dist
+
+      # An AppImage that cannot start is worth nothing, and the failure mode
+      # is a missing bundled library, which only shows on a machine that is
+      # not the build machine. The headless snapshot seam runs the real app
+      # through its real startup path.
+      - name: Prove the AppImage runs
+        run: |
+          sudo apt-get install -y xvfb
+          chmod +x dist/LooperCat-*.AppImage
+          mkdir -p /tmp/probe/ROLAND/DATA /tmp/probe/ROLAND/WAVE
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a \
+            dist/LooperCat-*.AppImage --volume /tmp/probe --snapshot /tmp/probe.png
+          test -s /tmp/probe.png && echo "the AppImage starts and renders"
+
+      - name: Hand the AppImage to the publish job
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux
+          path: dist/LooperCat-*.AppImage
+          if-no-files-found: error
+
   publish:
-    needs: [macos, windows]
+    needs: [macos, windows, linux]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

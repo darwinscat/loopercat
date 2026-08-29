@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=LooperCat
+GenericName=Looper companion
+Comment=Browse, audition and manage the loop memories on a BOSS RC-5
+Exec=LooperCat
+Icon=loopercat
+Categories=AudioVideo;Audio;
+Terminal=false
+# The window class JUCE gives the app; without it a desktop shell shows the
+# generic icon in the task bar instead of ours.
+StartupWMClass=LooperCat
+Keywords=looper;loop;pedal;BOSS;RC-5;guitar;backing track;

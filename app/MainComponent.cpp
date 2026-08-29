@@ -106,7 +106,12 @@ MainComponent::MainComponent(std::string explicitVolume)
 
     // A build ahead of the last release tag, or with uncommitted changes, is
     // not what anyone downloaded — the corner says so next to the version.
-    devMark.setText(LOOPERCAT_BUILD_COUNT > 0 || LOOPERCAT_GIT_DIRTY ? "dev" : "",
+    // So is a build whose provenance could not be established at all (no
+    // reachable .git: a source tarball, a packager's tree): unproven is not
+    // the same as clean, and only a proven release may go unmarked.
+    devMark.setText(LOOPERCAT_BUILD_COUNT > 0 || LOOPERCAT_GIT_DIRTY || !LOOPERCAT_GIT_KNOWN
+                        ? "dev"
+                        : "",
                     juce::dontSendNotification);
     devMark.setFont(juce::FontOptions(10.0f, juce::Font::bold));
     devMark.setJustificationType(juce::Justification::centredRight);
@@ -248,15 +253,8 @@ MainComponent::MainComponent(std::string explicitVolume)
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
         button->setEnabled(false);
     }
-    connectButton.onClick = [this] { startConnectAttempt(); };
-    disconnectButton.onClick = [this] {
-        // Release our own hold on the volume first: the read-ahead thread
-        // keeps the slot WAV open, and an open file dissents the unmount.
-        // The eject completion then walks the pedal out of STORAGE.
-        engine.stop();
-        player.clear();
-        worker.requestEject();
-    };
+    connectButton.onClick = [this] { beginConnect(); };
+    disconnectButton.onClick = [this] { beginDisconnect(); };
     appMenu = std::make_unique<AppMenu>(AppMenu::Actions {
         .about = [this] { showAbout(); },
         .backup = [this] { runBackup(); },
@@ -475,6 +473,43 @@ void MainComponent::pollMidiPresence()
 // the pedal's MIDI side is still re-enumerating is silently lost, and a
 // pedal playing a loop keeps the medium — both used to mean "Connecting…"
 // forever, with nothing said.
+// --- the --cycle seam -------------------------------------------------------
+// Both buttons route through these, so a headless verification run exercises
+// the same code a finger does.
+
+void MainComponent::beginConnect()
+{
+    startConnectAttempt();
+}
+
+void MainComponent::beginDisconnect()
+{
+    // Release our own hold on the volume first: the read-ahead thread keeps
+    // the slot WAV open, and an open file dissents the unmount. The eject
+    // completion then walks the pedal out of STORAGE.
+    engine.stop();
+    player.clear();
+    worker.requestEject();
+}
+
+std::string MainComponent::lifecycleStateName() const
+{
+    return lifecycle::stateName(snapshot.state);
+}
+
+std::string MainComponent::volumePath() const
+{
+    return snapshot.volume;
+}
+
+std::vector<std::string> MainComponent::bannerLines() const
+{
+    std::vector<std::string> out;
+    for (const banners::Line& line : banners.lines())
+        out.push_back((line.level == commands::Level::error ? "ERROR " : "info  ") + line.text);
+    return out;
+}
+
 void MainComponent::startConnectAttempt()
 {
     connectAttempt.begin(nowMs());

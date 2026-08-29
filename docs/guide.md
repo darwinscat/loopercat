@@ -5,10 +5,10 @@ short version; this is the whole map.
 
 ## Connect and disconnect
 
-Plug the RC-5 into the Mac over USB and press **Connect**. The app sends the
-pedal one SysEx command, the pedal walks itself into STORAGE mode
-("Connecting" on its display), macOS mounts the card, and the slot table
-fills. No trips through the pedal's SETUP menu.
+Plug the RC-5 in over USB and press **Connect**. The app sends the pedal one
+SysEx command, the pedal walks itself into STORAGE mode ("Connecting" on its
+display), your system mounts the card, and the slot table fills. No trips
+through the pedal's SETUP menu.
 
 **Disconnect** is the same trip backwards: playback stops, the volume is
 unmounted politely, and the pedal returns to the looper screen on its own.
@@ -52,6 +52,23 @@ roadmap; until then that one extra click is the whole ceremony.
 Connect works the same as on the Mac — one press, the pedal walks itself into
 STORAGE, the card comes up on a drive letter. There is no access prompt:
 Windows has no removable-volume permission gate.
+
+### The first run on Linux
+
+LooperCat for Linux is an AppImage: make it executable (`chmod +x`) and run
+it — nothing to unpack, nothing to install. It needs glibc 2.35 or newer,
+which covers Ubuntu 22.04+, Debian 12+, Mint 21+ and Fedora 36+.
+
+Mounting goes through **udisks2**, the same service your file manager uses
+for USB sticks, so launch LooperCat from your desktop session like any other
+app. No root, and no permission prompt to click through — your session is
+already allowed to mount removable media. Started from a remote shell it
+would not be, and Disconnect would say so plainly rather than pretend.
+
+If your desktop normally opens a window when a stick appears, it may do the
+same for the pedal's card; that is harmless. Should something on the system
+still be holding the card when you press **Disconnect**, LooperCat waits a
+moment and tries again before telling you.
 
 ## The slot table
 
@@ -181,7 +198,7 @@ outright.
 
 - **Backup configs** — snapshot the pedal's configuration files to the app's
   data folder, on demand. Mutations also back up what they touch, every time.
-- **Clean junk** — sweep the macOS droppings (AppleDouble `._*` files and
+- **Clean junk** — sweep the desktop droppings (macOS AppleDouble `._*` files and
   friends) off the card. The app also sweeps automatically after its own
   writes; this button is for cards that lived a life before LooperCat.
 

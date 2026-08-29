@@ -61,8 +61,18 @@ fs::path makePedal(const fs::path& root)
     return volume;
 }
 
+// float32 stereo geometry, used by the size arithmetic below: 8 bytes per
+// frame; the synthetic source keeps a plain 16-byte fmt (44-byte header),
+// while anything the commands write is canonical, and float32 canonical
+// carries a 28-byte fmt body (56-byte header).
+constexpr std::size_t kFrameBytes = 8;
+constexpr std::size_t kSourceHeader = 44;
+constexpr std::size_t kCanonicalHeader = 56;
+
+// Slot audio as the PEDAL writes it: float32. Since issue #44 that is also
+// the only shape push accepts without conversion.
 void putWav(const fs::path& volume, int slot, const std::string& name,
-            const testkit::WavSpec& spec = { .frames = 4410 })
+            const testkit::WavSpec& spec = { .tag = 3, .bits = 32, .frames = 4410 })
 {
     const auto bytes = testkit::syntheticWav(spec);
     fs::create_directories(volume::wavDir(volume, slot));
@@ -471,7 +481,7 @@ int main()
         // (64 measures, 98.7 BPM) — but huge; use 1323000 frames = 30 s
         // -> 8 measures, 96.0 BPM by the formula. Compute, don't copy.
         const int frames = 1323000;
-        const auto wavBytes = testkit::syntheticWav({ .frames = frames, .extraChunk = true });
+        const auto wavBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = frames, .extraChunk = true });
         const fs::path source = tmp.path / "My Song.wav";
         commands::writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(wavBytes.data()),
                                                           wavBytes.size()));
@@ -484,7 +494,7 @@ int main()
 
         // On-volume bytes are CANONICAL (metadata stripped), not the source copy.
         const std::string pushed = commands::readFileBytes(result.dest);
-        CHECK_EQ(pushed.size(), 44u + static_cast<std::size_t>(frames) * 4);
+        CHECK_EQ(pushed.size(), kCanonicalHeader + static_cast<std::size_t>(frames) * kFrameBytes);
 
         const std::string text = commands::readMemory(volume);
         const std::string body = rc0::slotBody(text, 9);
@@ -528,14 +538,14 @@ int main()
         const auto before = volumeBytes(volume);
 
         // Mono is not uploadable — must be rejected BEFORE any write.
-        const auto mono = testkit::syntheticWav({ .channels = 1, .frames = 1323000 });
+        const auto mono = testkit::syntheticWav({ .tag = 3, .channels = 1, .bits = 32, .frames = 1323000 });
         const fs::path source = tmp.path / "mono.wav";
         commands::writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(mono.data()),
                                                           mono.size()));
         CHECK_THROWS(commands::push(volume, source, 5, { .write = writeOpts(tmp.path) }), "stereo");
 
         // Too short for the tempo range: also rejected pre-write.
-        const auto tiny = testkit::syntheticWav({ .frames = 1000 });
+        const auto tiny = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1000 });
         const fs::path tinySource = tmp.path / "tiny.wav";
         commands::writeFileBytes(tinySource, std::string_view(reinterpret_cast<const char*>(tiny.data()),
                                                               tiny.size()));
@@ -543,7 +553,7 @@ int main()
                      "too short");
 
         // A bad slot name: rejected before the audio lands too.
-        const auto ok = testkit::syntheticWav({ .frames = 1323000 });
+        const auto ok = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 });
         const fs::path okSource = tmp.path / "ok.wav";
         commands::writeFileBytes(okSource, std::string_view(reinterpret_cast<const char*>(ok.data()),
                                                             ok.size()));
@@ -572,7 +582,7 @@ int main()
         }
         const auto before = volumeBytes(volume);
 
-        const auto ok = testkit::syntheticWav({ .frames = 1323000 });
+        const auto ok = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 });
         const fs::path source = tmp.path / "ok.wav";
         commands::writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(ok.data()),
                                                           ok.size()));
@@ -662,8 +672,10 @@ int main()
         // A 2-minute silent wav with marker bytes at known frames: frame F's
         // first sample byte = 0xAB proves the slice offset end-to-end.
         const int frames = 5292000;
-        auto bytes = testkit::syntheticWav({ .frames = frames });
-        const auto frameByte = [&](int frame) { return 44 + static_cast<std::size_t>(frame) * 4; };
+        auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = frames });
+        const auto frameByte = [&](int frame) {
+            return kSourceHeader + static_cast<std::size_t>(frame) * kFrameBytes;
+        };
         bytes[frameByte(1000000)] = 0xab;     // inside the kept range -> lands at new frame 0
         bytes[frameByte(3999999)] = 0xcd;     // the last kept frame
         bytes[frameByte(4000001)] = 0xef;     // outside -> must vanish
@@ -681,9 +693,9 @@ int main()
 
         // Same filename, canonical header, exactly the requested 3M frames.
         const std::string after = commands::readFileBytes(volume::wavDir(volume, 4) / "take.wav");
-        CHECK_EQ(after.size(), 44u + 3000000u * 4);
-        CHECK_EQ(static_cast<unsigned char>(after[44]), 0xab);                          // old frame 1000000
-        CHECK_EQ(static_cast<unsigned char>(after[44 + 2999999u * 4]), 0xcd);           // old frame 3999999
+        CHECK_EQ(after.size(), kCanonicalHeader + 3000000u * kFrameBytes);
+        CHECK_EQ(static_cast<unsigned char>(after[kCanonicalHeader]), 0xab);                          // old frame 1000000
+        CHECK_EQ(static_cast<unsigned char>(after[kCanonicalHeader + 2999999u * kFrameBytes]), 0xcd);           // old frame 3999999
         CHECK_EQ(result.frames, 3000000);
 
         // The original is in the trash, byte-identical — the undo.
@@ -976,7 +988,7 @@ int main()
         const std::string m1 = commands::readFileBytes(volume::memoryPath(volume, 1));
         const std::string m2 = commands::readFileBytes(volume::memoryPath(volume, 2));
 
-        const auto wavBytes = testkit::syntheticWav({ .frames = 1323000 });
+        const auto wavBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 });
         const fs::path source = tmp.path / "new.wav";
         commands::writeFileBytes(source,
                                  std::string_view(reinterpret_cast<const char*>(wavBytes.data()),

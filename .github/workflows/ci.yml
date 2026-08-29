@@ -1,10 +1,15 @@
-# The Windows lanes behind the port (issue #5). The core is OS-free by
-# design (header-only C++20, std::filesystem); core-windows keeps it that
-# way with MSVC on every push. app-windows builds the full JUCE app with the
-# phase-0 DeviceWatcher backend and publishes the unsigned dev artifact —
-# the proof the app tier compiles and links on Windows long before signing
-# and hardware QA. The macOS story is covered by the release lane and local
-# development.
+# The Windows lanes behind the port (issue #5) and the Linux lanes behind
+# the third platform. The core is OS-free by design (header-only C++20,
+# std::filesystem); the core-* lanes keep it that way with MSVC and GCC on
+# every push. The app-* lanes build the full JUCE app with that platform's
+# DeviceWatcher backend and publish an unsigned dev artifact — the proof the
+# app tier compiles and links there long before signing and hardware QA. The
+# macOS story is covered by the release lane and local development.
+#
+# The lanes must NOT run as root: the command suites prove their failure
+# paths by making a directory unwritable, and root ignores permission bits,
+# so twelve fault-injection checks pass vacuously under it. GitHub's runners
+# are unprivileged, which is what makes those checks mean anything here.
 name: CI
 
 on:
@@ -13,6 +18,117 @@ on:
   pull_request:
 
 jobs:
+  core-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure (core only, no JUCE)
+        run: cmake -B build -DLOOPERCAT_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test (all core suites)
+        run: ctest --test-dir build --output-on-failure
+
+  app-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # libudev backs the DeviceWatcher's detach push; the rest is what JUCE
+      # needs for an X11 window, fonts and ALSA. No GTK or webkit: the app
+      # builds with JUCE_WEB_BROWSER=0 and JUCE_USE_CURL=0.
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libudev-dev \
+            libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxcomposite-dev libgl1-mesa-dev
+
+      - name: Configure (app + tests)
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLOOPERCAT_BUILD_TESTS=ON
+
+      # -O3 with LTO on the JUCE monoliths is memory-hungry: an unbounded
+      # -j on a 4-core/16 GB runner is fine, but the same command on a
+      # 24-core container OOM-killed cc1plus during the port. Keep the job
+      # count tied to the runner, not to nproc on whatever builds this next.
+      - name: Build the app
+        run: cmake --build build -j4
+
+      - name: Test (all suites)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Keep what the brand-mark test drew
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: brand-header-linux
+          path: build/brand-header.png
+          if-no-files-found: ignore
+
+      # libudev must be a real link-time dependency: without it the backend
+      # would still compile (the monitor thread simply never starts) and the
+      # port would ship with no detach detection at all.
+      - name: Assert the udev backend is linked in
+        run: |
+          BIN=build/LooperCat_artefacts/Release/LooperCat
+          ldd "$BIN" | grep -q libudev.so || { echo "libudev is not linked"; exit 1; }
+          echo "udev backend confirmed"
+
+      - name: Upload the unsigned dev artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: LooperCat-linux-dev
+          path: build/LooperCat_artefacts/Release/
+          if-no-files-found: error
+
+  # The RELEASE base, exercised on every push. app-linux above builds on
+  # ubuntu-latest, which is the convenient thing and the wrong thing to ship:
+  # since glibc 2.38 the headers redirect strtol/sscanf to __isoc23_* symbols,
+  # so a binary built there refuses to start on Ubuntu 22.04, Debian 12 or
+  # Mint 21. The release lane therefore builds on 22.04 — and until this job
+  # existed, a tag was the first time anyone found out whether that lane still
+  # worked. Now a push is.
+  release-base-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-12 ninja-build pkg-config libudev-dev \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxcomposite-dev libgl1-mesa-dev
+
+      - name: Build the app
+        env:
+          CC: gcc-12
+          CXX: g++-12
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLOOPERCAT_BUILD_TESTS=OFF
+          cmake --build build -j4
+
+      # The same assertion the release lane carries, in the place that runs
+      # first: a floor above 2.35 excludes a distribution that is still
+      # supported, and the exclusion surfaces on a user's machine, not here.
+      - name: Assert the glibc floor (<= 2.35, Ubuntu 22.04)
+        run: |
+          HIGHEST=$(objdump -T build/LooperCat_artefacts/Release/LooperCat \
+                    | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "highest required: $HIGHEST"
+          case "$HIGHEST" in
+            GLIBC_2.3|GLIBC_2.[0-9]|GLIBC_2.1?|GLIBC_2.2?|GLIBC_2.3[0-5]) ;;
+            *) echo "glibc floor rose to $HIGHEST — this build excludes Ubuntu 22.04"; exit 1 ;;
+          esac
+
   core-windows:
     runs-on: windows-latest
     timeout-minutes: 30

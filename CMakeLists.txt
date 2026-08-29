@@ -20,7 +20,7 @@ endif()
 # rc5cat JS and Swift suites. `-DLOOPERCAT_BUILD_APP=OFF` configures core-only
 # (no JUCE fetch) and runs the conformance suites via `ctest`.
 # ----------------------------------------------------------------------------
-project(LooperCat VERSION 0.9.3 LANGUAGES C CXX)   # C: juce_graphics compiles Sheenbidi (.c)
+project(LooperCat VERSION 0.9.4 LANGUAGES C CXX)   # C: juce_graphics compiles Sheenbidi (.c)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -77,7 +77,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         -Werror -Wall -Wextra -Wpedantic
         -Wconversion -Wsign-conversion -Wfloat-equal -Wshadow -Wcast-align
         -Wzero-as-null-pointer-constant -Wunreachable-code -Wswitch-enum -Wextra-semi
-        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wshorten-64-to-32;-Wimplicit-float-conversion;-Wconditional-uninitialized;-Wconstant-conversion;-Wbool-conversion>)
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wshorten-64-to-32;-Wimplicit-float-conversion;-Wconditional-uninitialized;-Wconstant-conversion;-Wbool-conversion>
+        # GCC's -Wextra still fires -Wmissing-field-initializers on C++20
+        # DESIGNATED initializers, where omitting a member is the whole point
+        # and the standard value-initializes it. The suites use them heavily
+        # ({ .trashRoot = ..., .write = ... }), so GCC 13 rejected the core
+        # tier outright with 56 -Werror hits while Clang and MSVC saw nothing.
+        # Suppressed for GNU only: the aggregate case Clang does warn about
+        # stays covered by the macOS and Windows lanes.
+        $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers>)
 elseif(MSVC)
     # /W4 without /WX for now: the Windows gate (issue #5) starts by proving
     # the suites build and pass; warning-parity with the Clang set comes once
@@ -108,6 +116,11 @@ loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
 loopercat_core_test(downmix_tests)
 loopercat_core_test(usecase_count_in_tests)
+# Parsing and decisions only — no syscalls, no Linux headers — so the
+# contracts behind the Linux DeviceWatcher are gated on every platform's
+# lane, not just on a machine that happens to have /proc and /sys.
+loopercat_core_test(mount_table_tests)
+loopercat_core_test(linux_device_rules_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 
@@ -157,28 +170,49 @@ juce_add_binary_data(LooperCatAssets
 # a UTC number. Deliberately simple for now — the always-fresh per-build
 # generator (the TabbyEQ pattern) arrives with packaging in Sprint 5.
 # ----------------------------------------------------------------------------
+# Provenance has to be PROVEN, never assumed. execute_process overwrites its
+# OUTPUT_VARIABLE with an empty string when the command fails, so the
+# "unknown" default below was unreachable: a build with no reachable .git
+# ended up with an empty hash and a zero commit count — which is exactly the
+# shape of a clean release build. A source tarball, a "Download ZIP", a
+# distro packager's tree or a container that cannot see the worktree's .git
+# would all present themselves as the binary users downloaded. Caught on the
+# Linux lane. Hence RESULT_VARIABLE on every query, and one flag that says
+# whether we know anything at all.
 find_package(Git QUIET)
 set(LOOPERCAT_GIT_HASH "unknown")
 set(LOOPERCAT_GIT_DIRTY 0)
+set(LOOPERCAT_GIT_KNOWN 0)
+set(LOOPERCAT_BUILD_COUNT 0)
 if(GIT_EXECUTABLE)
     execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
-        OUTPUT_VARIABLE LOOPERCAT_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        RESULT_VARIABLE _loopercat_rc OUTPUT_VARIABLE _loopercat_hash
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_loopercat_rc EQUAL 0 AND NOT _loopercat_hash STREQUAL "")
+        set(LOOPERCAT_GIT_HASH "${_loopercat_hash}")
+        set(LOOPERCAT_GIT_KNOWN 1)
+    endif()
+endif()
+if(LOOPERCAT_GIT_KNOWN)
     execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" status --porcelain
         OUTPUT_VARIABLE _loopercat_status ERROR_QUIET)
     if(NOT _loopercat_status STREQUAL "")
         set(LOOPERCAT_GIT_DIRTY 1)
     endif()
-endif()
-# Commits since the last release tag: 0 means this build IS a release build,
-# anything else means it is ahead of what users can download. The window says
-# so out loud — a dev build must never pass for the shipped one.
-set(LOOPERCAT_BUILD_COUNT 0)
-if(GIT_EXECUTABLE)
+    # Commits since the last release tag: 0 means this build IS a release
+    # build, anything else means it is ahead of what users can download. The
+    # window says so out loud — a dev build must never pass for the shipped
+    # one. Only trustworthy when the tag query itself succeeded.
     execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" describe --tags --abbrev=0
-        OUTPUT_VARIABLE _loopercat_tag OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    if(_loopercat_tag)
+        RESULT_VARIABLE _loopercat_tag_rc OUTPUT_VARIABLE _loopercat_tag
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_loopercat_tag_rc EQUAL 0 AND _loopercat_tag)
         execute_process(COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-list "${_loopercat_tag}..HEAD" --count
-            OUTPUT_VARIABLE LOOPERCAT_BUILD_COUNT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            RESULT_VARIABLE _loopercat_count_rc OUTPUT_VARIABLE _loopercat_count
+            OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_loopercat_count_rc EQUAL 0 AND NOT _loopercat_count STREQUAL "")
+            set(LOOPERCAT_BUILD_COUNT "${_loopercat_count}")
+        endif()
     endif()
 endif()
 
@@ -229,14 +263,27 @@ endif()
 
 # One DeviceWatcher interface, one backend per platform (issue #5): IOKit +
 # DiskArbitration on macOS; WM_DEVICECHANGE + uncached probe + DeviceIoControl
-# eject on Windows. A new platform must bring a backend — there is
-# deliberately no portable fallback to compile against.
+# eject on Windows; udev + mountinfo + O_DIRECT + udisks2 on Linux. A new
+# platform must bring a backend — there is deliberately no portable fallback
+# to compile against.
 if(APPLE)
     target_sources(LooperCat PRIVATE app/DeviceWatcherMac.cpp)
 elseif(WIN32)
     target_sources(LooperCat PRIVATE app/DeviceWatcherWin.cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(LooperCat PRIVATE app/DeviceWatcherLinux.cpp)
 else()
     message(FATAL_ERROR "no DeviceWatcher backend for this platform")
+endif()
+
+# The storage-mode sender, likewise one backend per platform. JUCE's
+# MidiOutput carries macOS and Windows; on Linux it delivers only sometimes,
+# silently, on every JUCE version tried, so that platform writes to ALSA
+# rawmidi itself — PedalLinkLinux.cpp records the measurements.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(LooperCat PRIVATE app/PedalLinkLinux.cpp)
+else()
+    target_sources(LooperCat PRIVATE app/PedalLinkJuce.cpp)
 endif()
 
 target_compile_definitions(LooperCat PRIVATE
@@ -246,6 +293,7 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_VERSION="${PROJECT_VERSION}"
     LOOPERCAT_GIT_HASH="${LOOPERCAT_GIT_HASH}"
     LOOPERCAT_GIT_DIRTY=${LOOPERCAT_GIT_DIRTY}
+    LOOPERCAT_GIT_KNOWN=${LOOPERCAT_GIT_KNOWN}
     LOOPERCAT_BUILD_NUMBER=${LOOPERCAT_BUILD_NUMBER}
     LOOPERCAT_BUILD_COUNT=${LOOPERCAT_BUILD_COUNT}
     LOOPERCAT_BUILD_OS="${CMAKE_SYSTEM_NAME}"
@@ -269,6 +317,19 @@ if(APPLE)
     target_link_libraries(LooperCat PRIVATE
         "-framework DiskArbitration"
         "-framework IOKit")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # DeviceWatcher: the udev netlink monitor behind the detach push. REQUIRED
+    # on purpose — a Linux build without it would have no device truth at all,
+    # and libudev ships on every systemd and eudev distribution, so a missing
+    # one means the build machine lacks the -dev package, not that the app
+    # should quietly degrade. Unmount and eject go through the `udisksctl`
+    # binary at runtime, so they add no link-time dependency here.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(UDEV REQUIRED IMPORTED_TARGET libudev)
+    # ALSA for the rawmidi sender. JUCE links it too, but this backend uses
+    # the API directly and must say so rather than inherit it by luck.
+    pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
+    target_link_libraries(LooperCat PRIVATE PkgConfig::UDEV PkgConfig::ALSA)
 endif()
 
 if(LOOPERCAT_BUILD_TESTS)
