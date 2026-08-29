@@ -24,9 +24,12 @@
 
 #include <loopercat/Commands.hpp>
 
+#include <bit>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
+#include <vector>
 
 using namespace loopercat;
 namespace fs = std::filesystem;
@@ -76,6 +79,78 @@ void putWav(const fs::path& volume, int slot, const std::string& name,
     commands::writeFileBytes(volume::wavDir(volume, slot) / name,
                              std::string_view(reinterpret_cast<const char*>(bytes.data()),
                                               bytes.size()));
+}
+
+// A float32 stereo slot take whose channels DIFFER — the only thing a fold
+// has anything to do with. Left ramps up, right ramps down, so a fold that
+// dropped a channel or read the wrong one cannot land on the right answer by
+// accident. Values are dyadic so the mean is exact.
+void putStereoFloatWav(const fs::path& volume, int slot, const std::string& name, int frames)
+{
+    std::vector<unsigned char> b;
+    const auto ascii = [&b](std::string_view t) {
+        for (const char c : t)
+            b.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](int v) { p16(v & 0xffff); p16((v >> 16) & 0xffff); };
+    const auto sample = [&b](float value) {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        for (int shift = 0; shift < 32; shift += 8)
+            b.push_back(static_cast<unsigned char>((bits >> shift) & 0xffu));
+    };
+    const int dataSize = frames * 8;
+    ascii("RIFF"); p32(12 + 24 + 8 + dataSize - 8); ascii("WAVE");
+    ascii("fmt "); p32(16);
+    p16(3); p16(2); p32(wav::kSampleRate); p32(wav::kSampleRate * 8); p16(8); p16(32);
+    ascii("data"); p32(dataSize);
+    for (int frame = 0; frame < frames; ++frame) {
+        const float step = static_cast<float>(frame % 8) / 8.0f; // 0, .125 .. .875
+        sample(step);
+        sample(-step);
+    }
+    fs::create_directories(volume::wavDir(volume, slot));
+    commands::writeFileBytes(volume::wavDir(volume, slot) / name,
+                             std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+}
+
+// The same shape, but the two channels do NOT cancel: the placement tests need
+// a fold that is audible, or "channel 2 carries the loop" would be true of
+// silence and prove nothing.
+void putUncancellingStereoFloatWav(const fs::path& volume, int slot, const std::string& name,
+                                   int frames)
+{
+    std::vector<unsigned char> b;
+    const auto ascii = [&b](std::string_view t) {
+        for (const char c : t)
+            b.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](int v) { p16(v & 0xffff); p16((v >> 16) & 0xffff); };
+    const auto sample = [&b](float value) {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        for (int shift = 0; shift < 32; shift += 8)
+            b.push_back(static_cast<unsigned char>((bits >> shift) & 0xffu));
+    };
+    const int dataSize = frames * 8;
+    ascii("RIFF"); p32(12 + 24 + 8 + dataSize - 8); ascii("WAVE");
+    ascii("fmt "); p32(16);
+    p16(3); p16(2); p32(wav::kSampleRate); p32(wav::kSampleRate * 8); p16(8); p16(32);
+    ascii("data"); p32(dataSize);
+    for (int frame = 0; frame < frames; ++frame) {
+        const float step = static_cast<float>(frame % 8) / 8.0f; // 0, .125 .. .875
+        sample(step);
+        sample(step * 0.5f); // mean = 0.75 * step — dyadic, and not silence
+    }
+    fs::create_directories(volume::wavDir(volume, slot));
+    commands::writeFileBytes(volume::wavDir(volume, slot) / name,
+                             std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
 }
 
 // Byte-map of the whole volume, for exact before/after comparisons.
@@ -1107,6 +1182,145 @@ int main()
                 || (finding.level == commands::Level::error
                     && finding.message.find("RC-500") != std::string::npos);
         CHECK(named);
+    }
+
+    // --- downmix: the fold lands, the stereo take stays recoverable ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const int frames = 4410;
+        putStereoFloatWav(volume, 6, "take.wav", frames);
+        const std::string originalBytes =
+            commands::readFileBytes(volume::wavDir(volume, 6) / "take.wav");
+        const std::string bodyBefore = rc0::slotBody(commands::readMemory(volume), 6);
+
+        const auto result = commands::downmixToMono(
+            volume, 6,
+            { .trashRoot = tmp.path / "trash", .write = writeOpts(tmp.path, "fold-1") });
+
+        // Same filename, canonical float32, same number of frames.
+        const std::string after = commands::readFileBytes(volume::wavDir(volume, 6) / "take.wav");
+        const auto afterView =
+            wav::BytesView(reinterpret_cast<const unsigned char*>(after.data()), after.size());
+        const wav::Info info = wav::readWavInfo(afterView);
+        CHECK_EQ(info.frames, frames);
+        CHECK_EQ(result.frames, frames);
+        CHECK_EQ(info.format(), std::string("float32"));
+
+        // The point of the whole feature: both channels now carry one signal.
+        CHECK(wav::isDualMono(afterView));
+        // Left ramps up and right ramps down, so their mean is silence — a
+        // fold that kept one channel would leave a ramp here instead.
+        for (std::size_t i = wav::kCanonicalFloatDataStart; i < after.size(); ++i)
+            if (static_cast<unsigned char>(after[i]) != 0) {
+                CHECK(false); // a non-zero byte means the channels did not cancel
+                break;
+            }
+
+        // The stereo original is in the trash, byte-identical — the undo.
+        CHECK(commands::readFileBytes(result.trashedOriginal) == originalBytes);
+
+        // Folding moves no frame, so the length story in the config is
+        // untouched — that is what lets this command skip the recompute trim
+        // has to do.
+        const std::string bodyAfter = rc0::slotBody(commands::readMemory(volume), 6);
+        CHECK_EQ(rc0::field(bodyAfter, "WavLen"), rc0::field(bodyBefore, "WavLen"));
+        CHECK_EQ(rc0::field(bodyAfter, "MeasLen"), rc0::field(bodyBefore, "MeasLen"));
+        CHECK_EQ(rc0::field(bodyAfter, "Measure"), rc0::field(bodyBefore, "Measure"));
+        CHECK_EQ(rc0::field(bodyAfter, "Tempo"), rc0::field(bodyBefore, "Tempo"));
+        CHECK_EQ(bodyAfter, bodyBefore);
+    }
+
+    // --- downmix: every refusal leaves the volume byte-identical ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putStereoFloatWav(volume, 2, "take.wav", 128);   // foldable
+        putWav(volume, 3, "pcm.wav", { .frames = 128 }); // pcm16 — not the pedal's own format
+        putWav(volume, 4, "silent.wav",
+               { .tag = 3, .channels = 2, .bits = 32, .frames = 128 }); // silence: already mono
+
+        const auto before = volumeBytes(volume);
+        const commands::DownmixOptions options { .trashRoot = tmp.path / "trash",
+                                                 .write = writeOpts(tmp.path, "fold-2") };
+
+        CHECK_THROWS(commands::downmixToMono(volume, 9, options), "no audio to fold");
+        CHECK_THROWS(commands::downmixToMono(volume, 3, options), "32-bit float");
+        CHECK_THROWS(commands::downmixToMono(volume, 4, options), "already folded to both outputs");
+        // The refusal is per placement: silence is already "on OUTPUT A" too,
+        // but a foldable take is not, and must not be refused.
+        CHECK_THROWS(commands::downmixToMono(
+                         volume, 4,
+                         { .trashRoot = tmp.path / "trash",
+                           .placement = wav::Placement::OutputAOnly,
+                           .write = writeOpts(tmp.path, "fold-2b") }),
+                     "already folded to OUTPUT A only");
+        // A fold with nowhere to put the original must not touch the audio.
+        CHECK_THROWS(commands::downmixToMono(volume, 2,
+                                             { .trashRoot = {}, .write = writeOpts(tmp.path) }),
+                     "requires a trash root");
+        CHECK_THROWS(commands::downmixToMono(
+                         volume, 2, { .trashRoot = tmp.path / "trash", .write = {} }),
+                     "requires a trash root");
+
+        CHECK(volumeBytes(volume) == before);
+    }
+
+    // --- downmix: the chosen jack is what reaches the card ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const int frames = 256;
+        putUncancellingStereoFloatWav(volume, 7, "take.wav", frames);
+
+        commands::downmixToMono(volume, 7,
+                                { .trashRoot = tmp.path / "trash",
+                                  .placement = wav::Placement::OutputBOnly,
+                                  .write = writeOpts(tmp.path, "fold-b") });
+
+        const std::string after = commands::readFileBytes(volume::wavDir(volume, 7) / "take.wav");
+        const auto view =
+            wav::BytesView(reinterpret_cast<const unsigned char*>(after.data()), after.size());
+        const wav::Info info = wav::readWavInfo(view);
+        CHECK_EQ(info.frames, frames);
+        CHECK_EQ(info.channels, 2); // the pedal only takes stereo, placement or not
+
+        // Channel 1 (OUTPUT A) must be exactly silent for every frame — that
+        // is the whole promise of the placement, and the reason issue #43 can
+        // be answered without the pedal doing anything.
+        for (std::int64_t frame = 0; frame < info.frames; ++frame) {
+            const std::size_t o = wav::kCanonicalFloatDataStart
+                                + static_cast<std::size_t>(frame) * 8;
+            for (std::size_t b = 0; b < 4; ++b)
+                CHECK_EQ(static_cast<unsigned char>(after[o + b]), 0u);
+        }
+        // ...and channel 2 must not be: a placement that silenced everything
+        // would pass the check above and be worthless.
+        CHECK(!wav::foldWouldChangeNothing(view, wav::Placement::BothOutputs));
+    }
+
+    // --- downmix: the shared mutation tail still runs ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putStereoFloatWav(volume, 5, "take.wav", 64);
+        commands::writeFileBytes(volume / "ROLAND" / "WAVE" / "._take.wav", "sidecar");
+
+        const auto result = commands::downmixToMono(
+            volume, 5,
+            { .trashRoot = tmp.path / "trash", .write = writeOpts(tmp.path, "fold-3") });
+
+        // Backed up, and the sidecar macOS left behind is gone: a fold is a
+        // mutation like any other, not a side door around the discipline.
+        CHECK(result.written.backedUp.has_value());
+        CHECK(!fs::exists(volume / "ROLAND" / "WAVE" / "._take.wav"));
+        // Both banks still readable and identical in content.
+        CHECK_EQ(rc0::slotBody(commands::readMemory(volume, 1), 5),
+                 rc0::slotBody(commands::readMemory(volume, 2), 5));
     }
 
     return testkit::summary("commands");

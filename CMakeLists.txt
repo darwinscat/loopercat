@@ -114,6 +114,7 @@ loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
+loopercat_core_test(downmix_tests)
 loopercat_core_test(usecase_count_in_tests)
 # Parsing and decisions only — no syscalls, no Linux headers — so the
 # contracts behind the Linux DeviceWatcher are gated on every platform's

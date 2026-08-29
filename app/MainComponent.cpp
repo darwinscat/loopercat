@@ -392,6 +392,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                                || description.startsWith("Disable")
                                || description.startsWith("Push")
                                || description.startsWith("Trim")
+                               || description.startsWith("Downmix")
                                || description.startsWith("Set tempo")
                                || description.startsWith("Clear")
                                || description.startsWith("Swap");
@@ -915,6 +916,11 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     juce::PopupMenu menu;
     menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
+    juce::PopupMenu downmix;
+    downmix.addItem(6, juce::String::fromUTF8("Both outputs\xe2\x80\xa6"));
+    downmix.addItem(7, juce::String::fromUTF8("OUTPUT A only\xe2\x80\xa6"));
+    downmix.addItem(8, juce::String::fromUTF8("OUTPUT B only\xe2\x80\xa6"));
+    menu.addSubMenu(juce::String::fromUTF8("Downmix to mono"), downmix, occupied);
     menu.addSeparator();
     menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
@@ -935,6 +941,9 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
             case 5: clearSlot(slot, name); break;
+            case 6: downmixSlot(slot, name, wav::Placement::BothOutputs); break;
+            case 7: downmixSlot(slot, name, wav::Placement::OutputAOnly); break;
+            case 8: downmixSlot(slot, name, wav::Placement::OutputBOnly); break;
             default: break;
             }
         });
@@ -1040,6 +1049,58 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
         [enqueuePush](int button) {
             if (button == 1)
                 enqueuePush(true);
+        });
+}
+
+// Folding is the app's half of "put this loop on one output jack" (issue
+// #43): the pedal's own Pan does the placing, but it cannot fold a file it
+// was handed, and a loop whose channels already match lands whole on either
+// jack however Pan turns out to be implemented. Destructive by nature — the
+// two channels stop being separable — so it asks first and keeps the stereo
+// original in the trash, exactly like a replace.
+void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placement placement)
+{
+    const juce::String label = name.isEmpty() ? juce::String(slot)
+                                              : juce::String(slot) + " (" + name + ")";
+    const juce::String where(wav::placementName(placement));
+
+    // The fold itself is one sentence; where the result goes is the part a
+    // user is deciding, so each placement says what the OTHER jack does.
+    const juce::String consequence =
+        placement == wav::Placement::BothOutputs
+            ? juce::String::fromUTF8(
+                  "Left and right are averaged into one signal, and both channels then carry "
+                  "it \xe2\x80\x94 the loop stops being stereo.")
+            : juce::String::fromUTF8("Left and right are averaged into one signal, which goes to ")
+                  + (placement == wav::Placement::OutputAOnly ? "OUTPUT A" : "OUTPUT B")
+                  + juce::String::fromUTF8(" alone. ")
+                  + (placement == wav::Placement::OutputAOnly ? "OUTPUT B" : "OUTPUT A")
+                  + juce::String::fromUTF8(
+                      " stays silent for this loop, so that jack is free for your instrument.");
+
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::WarningIcon)
+            .withTitle("Downmix slot " + label + " to mono, " + where + "?")
+            .withMessage(consequence
+                         + juce::String::fromUTF8(
+                             "\n\nThe current WAV moves to the app's trash first \xe2\x80\x94 "
+                             "that is your undo."))
+            .withButton("Downmix")
+            .withButton("Cancel"),
+        [this, slot, placement, where](int button) {
+            if (button != 1)
+                return;
+            releasePlayerIfHolding(slot, slot); // the fold rewrites the WAV under preview (issue #26)
+            worker.enqueue(
+                { "Downmix slot " + juce::String(slot) + " to mono, " + where, slot,
+                  [slot, placement, options = makeWriteOptions(),
+                   trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                      const volume::fs::path& volumePath) {
+                      commands::downmixToMono(
+                          volumePath, slot,
+                          { .trashRoot = trash, .placement = placement, .write = options });
+                  } });
         });
 }
 
