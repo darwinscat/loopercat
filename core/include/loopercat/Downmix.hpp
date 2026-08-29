@@ -73,6 +73,17 @@ namespace detail {
         return std::bit_cast<float>(bits);
     }
 
+    // True for +0.0 and -0.0, and for nothing else. Asked of the bits rather
+    // than with ==, for the same reason the rest of this header reasons in
+    // bytes: the question is exactly "is this sample silence", and the bits
+    // answer it without a float comparison — a NaN is not zero and this says
+    // so. (It also keeps GCC's -Wfloat-equal happy, which Clang does not
+    // raise here; the two compilers disagree, and the strict lane is right.)
+    inline bool isSilent(float value)
+    {
+        return (std::bit_cast<std::uint32_t>(value) & 0x7fffffffu) == 0u;
+    }
+
     inline void putF32(Bytes& out, std::size_t offset, float value)
     {
         const auto bits = std::bit_cast<std::uint32_t>(value);
@@ -169,13 +180,13 @@ inline Bytes downmixedToMono(BytesView data, Placement placement)
                                     + static_cast<std::size_t>(frame) * stride + channel * 4);
     };
 
-    // Which sides carry anything at all. Zero compares equal whether it is
-    // written +0.0 or -0.0, which is what we want; a NaN is not zero and so
-    // counts as signal, which is also what we want — it is not silence.
+    // Which sides carry anything at all. Silence means zero however it was
+    // written, +0.0 or -0.0; a NaN is not zero and so counts as signal, which
+    // is what we want — it is not silence.
     bool silent[2] = { true, true };
     for (std::int64_t frame = 0; frame < info.frames && (silent[0] || silent[1]); ++frame)
         for (std::size_t c = 0; c < 2; ++c)
-            if (silent[c] && sampleAt(frame, c) != 0.0f)
+            if (silent[c] && !detail::isSilent(sampleAt(frame, c)))
                 silent[c] = false;
 
     // Exactly one side carries signal: that side IS the mono signal, undiluted
