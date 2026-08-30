@@ -1323,5 +1323,42 @@ int main()
                  rc0::slotBody(commands::readMemory(volume, 2), 5));
     }
 
+    // --- doctor: the "reboot to index" hint tells the truth about format ---
+
+    {
+        // A reboot indexes a float32 take and DISCARDS a non-float one (issue
+        // #44/#45). So the hint must never send a 16-bit take to a reboot: the
+        // doctor reads the file and only promises a reboot for float32.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+
+        // Both slots hold audio the config has not indexed (factory WavStat=0),
+        // exactly the state a file copied straight onto the card leaves.
+        putWav(volume, 5, "float-take.wav"); // default spec is float32
+        putWav(volume, 6, "sixteen-bit.wav", { .tag = 1, .channels = 2, .bits = 16, .frames = 4410 });
+
+        std::string floatMsg, pcmMsg;
+        for (const auto& finding : commands::doctor(volume)) {
+            if (finding.message.find("float-take.wav") != std::string::npos) {
+                floatMsg = finding.message;
+                CHECK(finding.level == commands::Level::info);
+            }
+            if (finding.message.find("sixteen-bit.wav") != std::string::npos) {
+                pcmMsg = finding.message;
+                CHECK(finding.level == commands::Level::warn);
+            }
+        }
+
+        // The float32 slot keeps the reboot promise...
+        CHECK(floatMsg.find("reboot the pedal to index it") != std::string::npos);
+        // ...and the 16-bit slot never makes it: it says the pedal cannot
+        // index the file and that a reboot would DISCARD it, and it points at
+        // the fix (re-push to convert).
+        CHECK(pcmMsg.find("cannot index") != std::string::npos);
+        CHECK(pcmMsg.find("discard") != std::string::npos);
+        CHECK(pcmMsg.find("Re-push") != std::string::npos);
+        CHECK(pcmMsg.find("reboot the pedal to index it") == std::string::npos);
+    }
+
     return testkit::summary("commands");
 }

@@ -856,12 +856,42 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                                      "slot " + std::to_string(slot.slot) + " (\"" + trimmed
                                          + "\") is configured with audio but its folder is empty" });
             if (!slot.hasAudio && !wavs.empty()) {
+                // "Reboot to index it" is only true for the pedal's own
+                // format. The RC-5 indexer takes 32-bit float ONLY; a
+                // non-float file is DISCARDED from the slot on the next boot,
+                // not indexed (hardware: issue #44/#45). So telling a user to
+                // reboot a 16-bit take would cost them the take. Read the file
+                // and only promise a reboot when the pedal could keep it.
                 std::string files;
-                for (const auto& f : wavs)
+                bool allFloat32 = true;
+                for (const auto& f : wavs) {
                     files += (files.empty() ? "" : ", ") + f;
-                findings.push_back({ Level::info,
-                                     "slot " + std::to_string(slot.slot) + " has " + files
-                                         + " not indexed yet — reboot the pedal to index it" });
+                    try {
+                        const std::string raw =
+                            readFileBytes(volume::wavDir(volume, slot.slot) / f);
+                        const wav::BytesView view(
+                            reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
+                        if (wav::readWavInfo(view).format() != "float32")
+                            allFloat32 = false;
+                    } catch (const Error&) {
+                        // Unreadable or not a WAV the pedal understands: it
+                        // will not index this either, so it must not be sent
+                        // to a hopeful reboot.
+                        allFloat32 = false;
+                    }
+                }
+                if (allFloat32)
+                    findings.push_back(
+                        { Level::info,
+                          "slot " + std::to_string(slot.slot) + " has " + files
+                              + " not indexed yet — reboot the pedal to index it" });
+                else
+                    findings.push_back(
+                        { Level::warn,
+                          "slot " + std::to_string(slot.slot) + " has " + files
+                              + ", which the pedal cannot index: it plays 32-bit float only. "
+                                "Re-push it through LooperCat to convert it \xe2\x80\x94 a "
+                                "reboot would discard it, not index it" });
             }
         }
     }
