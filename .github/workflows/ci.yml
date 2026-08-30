@@ -129,6 +129,21 @@ jobs:
             *) echo "glibc floor rose to $HIGHEST — this build excludes Ubuntu 22.04"; exit 1 ;;
           esac
 
+      # The release lane builds AND runs the full suite at -O3; until now the
+      # only place that did. The app build above turns tests OFF for a fast
+      # glibc check, so a -O3-only compiler diagnostic (e.g. GCC's bogus
+      # -Wrestrict inside libstdc++'s std::string) first surfaced at a tag,
+      # not in a PR. Build and run the suites here at the same optimisation so
+      # a push catches it.
+      - name: Build and run the suites at release optimisation
+        env:
+          CC: gcc-12
+          CXX: g++-12
+        run: |
+          cmake -B build-rel-tests -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rel-tests -j4
+          ctest --test-dir build-rel-tests --output-on-failure
+
   core-windows:
     runs-on: windows-latest
     timeout-minutes: 30
