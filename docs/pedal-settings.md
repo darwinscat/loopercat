@@ -25,7 +25,7 @@ needed.
 | `MeasLen` | True bar count | integer, pedal displays it | [V] exposed |
 | `MeasBtLp` | ? (beat loop?) | 0 on every observed slot | [?] |
 | `RecTmp` | Tempo at record time | tenths of BPM | [V] |
-| `WavStat` | Audio indexed | 0/1, pedal-owned | [V] |
+| `WavStat` | Audio index state | 0 = none, 1 = indexed, 2 = present but not indexed (e.g. a non-float32 file the pedal will not take); pedal-owned | [V] 0/1/2 seen |
 | `WavLen` | Frames at 44.1 kHz | pedal-owned | [V] |
 
 ### `Pan` is a field, not a knob
