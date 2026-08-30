@@ -1,16 +1,21 @@
 # LooperCat 🐾
 
-**See inside your looper.** LooperCat is a companion editor app for the BOSS RC-5:
-browse all 99 memory slots, listen to loops, rename, trim, re-tempo, upload and
-download WAVs — while the app drives the pedal's STORAGE mode for you. 
+**See inside your looper.** LooperCat is a free, open-source editor and loop
+manager for the BOSS RC-5 Loop Station: browse all 99 memory slots, listen to
+loops, rename them from a real keyboard, trim, re-tempo, and push backing
+tracks straight from your DAW — while the app drives the pedal's STORAGE mode
+for you.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 ![The slot table and the player with a connected RC-5](docs/images/main-window.png)
 
 Part of the [Felitronics](https://darwinscat.com/felitronics) family by
-[Darwin's Cat](https://darwinscat.com). Built on the RC-5 file-format
-knowledge of [rc5cat](https://github.com/AliceLafox/rc5cat).
+[Darwin's Cat](https://darwinscat.com) — the product page with downloads and
+the full changelog lives at
+[darwinscat.com/felitronics/loopercat](https://darwinscat.com/felitronics/loopercat).
+Built on the RC-5 file-format knowledge of
+[rc5cat](https://github.com/AliceLafox/rc5cat).
 
 > **Beta.** Everything below is verified against real hardware, and every write
 > runs behind automatic backups — but treat v0.x like the beta it is.
@@ -59,6 +64,15 @@ time. It turns out that mode can be flipped remotely, and LooperCat speaks the
 protocol: **Connect** sends the SysEx, waits for the medium, and mounts the
 volume; **Disconnect** unmounts and sends the pedal back to looping. The
 protocol notes live in [docs/midi-protocol](docs/midi-protocol/).
+
+## LooperCat and BOSS TONE STUDIO
+
+The official BOSS TONE STUDIO for RC exists and works with the RC-5, and it
+does one thing well: it uploads a WAV — and flips the pedal into STORAGE mode
+over USB-MIDI (the SysEx trick our Connect button honestly learned by watching
+it). Everything else on this page — slot names, tempo repair, listening,
+trimming, backups, the card doctor — it simply does not do. If you came here
+looking for a BOSS TONE STUDIO alternative for the RC-5: yes, this is that.
 
 ## Install
 
