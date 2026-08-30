@@ -85,7 +85,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         # tier outright with 56 -Werror hits while Clang and MSVC saw nothing.
         # Suppressed for GNU only: the aggregate case Clang does warn about
         # stays covered by the macOS and Windows lanes.
-        $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers>)
+        #
+        # GCC 12 at -O3 emits a bogus -Wrestrict/-Wstringop-overflow deep in
+        # libstdc++'s std::string (char_traits.h memcpy, "accessing
+        # 9223372036854775810 bytes") — a well-known false positive with no
+        # call site in our code. It fires only at release optimisation, which
+        # is why the -O0 CI lanes never saw it and the tagged release build
+        # did. Demoted from error to warning for GNU ONLY, so the signal stays
+        # visible without a compiler bug blocking a build our own code is clean
+        # in; Clang and MSVC keep it as an error.
+        $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers;-Wno-error=restrict;-Wno-error=stringop-overflow>)
 elseif(MSVC)
     # /W4 without /WX for now: the Windows gate (issue #5) starts by proving
     # the suites build and pass; warning-parity with the Clang set comes once
