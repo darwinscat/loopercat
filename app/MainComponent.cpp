@@ -9,6 +9,7 @@
 #include <loopercat/Wav.hpp>
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
+#include <felitronics/appkit/Brand.h> // feedTheCatUrl — the family tip jar
 
 #include <BinaryData.h>
 
@@ -259,6 +260,9 @@ MainComponent::MainComponent(std::string explicitVolume)
         .about = [this] { showAbout(); },
         .backup = [this] { runBackup(); },
         .cleanJunk = [this] { runCleanJunk(); },
+        .feedTheCat = [] {
+            juce::URL(felitronics::appkit::brand::feedTheCatUrl).launchInDefaultBrowser();
+        },
         .maintenanceEnabled = [this] {
             return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
                 && !pedalBusy;

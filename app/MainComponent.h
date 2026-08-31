@@ -68,6 +68,7 @@ public:
     void refreshNow();
     void selectSlot(int slot);
     void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
+    void showAbout(); // the menu About and --about: opens the version badge's popover
     void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
     bool playerReady() const;
 
@@ -118,7 +119,6 @@ private:
 
     void runBackup();
     void runCleanJunk();
-    void showAbout();
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard

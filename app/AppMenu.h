@@ -10,9 +10,11 @@
 
 //==============================================================================
 // loopercat::AppMenu — the native macOS menu bar. About lives in the app menu
-// (the platform-standard home), and Maintenance carries the service actions
-// (config backup, junk sweep) that would otherwise crowd the toolbar: the
-// toolbar keeps only the primary Connect / Disconnect story.
+// (the platform-standard home), Maintenance carries the service actions
+// (config backup, junk sweep) that would otherwise crowd the toolbar — the
+// toolbar keeps only the primary Connect / Disconnect story — and Help holds
+// "Feed the cat", the family tip jar. Windows/Linux have no menu bar; there
+// the tip jar lives in the version badge's About popover.
 //==============================================================================
 namespace loopercat {
 
@@ -23,6 +25,7 @@ public:
         std::function<void()> about;
         std::function<void()> backup;
         std::function<void()> cleanJunk;
+        std::function<void()> feedTheCat;         // Help → the family tip jar, in the browser
         std::function<bool()> maintenanceEnabled; // pedal connected and idle
     };
 
@@ -46,7 +49,7 @@ public:
 #endif
     }
 
-    juce::StringArray getMenuBarNames() override { return { "Maintenance" }; }
+    juce::StringArray getMenuBarNames() override { return { "Maintenance", "Help" }; }
 
     juce::PopupMenu getMenuForIndex(int, const juce::String& name) override
     {
@@ -55,6 +58,8 @@ public:
             const bool enabled = actions_.maintenanceEnabled && actions_.maintenanceEnabled();
             menu.addItem(kBackup, "Backup configs", enabled);
             menu.addItem(kCleanJunk, "Clean junk from the pedal", enabled);
+        } else if (name == "Help") {
+            menu.addItem(kFeedTheCat, "Feed the cat");
         }
         return menu;
     }
@@ -65,10 +70,12 @@ public:
             actions_.backup();
         else if (itemId == kCleanJunk && actions_.cleanJunk)
             actions_.cleanJunk();
+        else if (itemId == kFeedTheCat && actions_.feedTheCat)
+            actions_.feedTheCat();
     }
 
 private:
-    enum { kBackup = 1, kCleanJunk };
+    enum { kBackup = 1, kCleanJunk, kFeedTheCat };
 
     const Actions actions_;
 

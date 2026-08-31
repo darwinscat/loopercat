@@ -202,6 +202,13 @@ private:
         content.refreshNow();
         if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--properties"))
             content.showProperties();
+        if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--about")) {
+            // The About popover parents into the top-level component — here that
+            // is `content` itself, so the callout lands inside the snapshot. No
+            // event-loop pump after this: headless the process is not foreground,
+            // and the box's own modal machinery would dismiss it on first tick.
+            content.showAbout();
+        }
         if (selectSlot > 0) {
             content.selectSlot(selectSlot);
             const auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();
