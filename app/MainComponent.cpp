@@ -261,7 +261,7 @@ MainComponent::MainComponent(std::string explicitVolume)
         .backup = [this] { runBackup(); },
         .cleanJunk = [this] { runCleanJunk(); },
         .feedTheCat = [] {
-            juce::URL(felitronics::appkit::brand::feedTheCatUrl).launchInDefaultBrowser();
+            felitronics::appkit::brand::feedTheCatLink("LooperCat").launchInDefaultBrowser();
         },
         .maintenanceEnabled = [this] {
             return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
