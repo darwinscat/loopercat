@@ -1,7 +1,7 @@
 # LooperCat 🐾
 
-**See inside your looper.** LooperCat is a free, open-source editor and loop
-manager for the BOSS RC-5 Loop Station: browse all 99 memory slots, listen to
+**See inside your looper.** LooperCat is a free, open-source companion for the
+BOSS RC-5 Loop Station — an editor and loop manager: browse all 99 memory slots, listen to
 loops, rename them from a real keyboard, trim, re-tempo, and push backing
 tracks straight from your DAW — while the app drives the pedal's STORAGE mode
 for you.
