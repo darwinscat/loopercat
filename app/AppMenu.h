@@ -13,7 +13,7 @@
 // (the platform-standard home), Maintenance carries the service actions
 // (config backup, junk sweep) that would otherwise crowd the toolbar — the
 // toolbar keeps only the primary Connect / Disconnect story — and Help holds
-// "Feed the cat", the family tip jar. Windows/Linux have no menu bar; there
+// "Feed the Cat", the family tip jar. Windows/Linux have no menu bar; there
 // the tip jar lives in the version badge's About popover.
 //==============================================================================
 namespace loopercat {
@@ -59,7 +59,7 @@ public:
             menu.addItem(kBackup, "Backup configs", enabled);
             menu.addItem(kCleanJunk, "Clean junk from the pedal", enabled);
         } else if (name == "Help") {
-            menu.addItem(kFeedTheCat, "Feed the cat");
+            menu.addItem(kFeedTheCat, "Feed the Cat");
         }
         return menu;
     }
