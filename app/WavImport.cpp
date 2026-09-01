@@ -3,6 +3,8 @@
 
 #include "WavImport.h"
 
+#include "Mp3AudioFormat.h"
+
 #include <loopercat/Error.hpp>
 #include <loopercat/Wav.hpp>
 
@@ -36,6 +38,9 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
     }
 
     juce::AudioFormatManager formats;
+    // The bundled gapless decoder goes FIRST so .mp3 takes it even where an
+    // OS codec would also claim the extension — identical PCM everywhere.
+    formats.registerFormat(new Mp3AudioFormat(), false);
     formats.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(source));
     if (reader == nullptr)

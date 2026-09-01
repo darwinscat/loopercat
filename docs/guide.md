@@ -176,9 +176,11 @@ A few things worth knowing:
 
 ## Moving audio
 
-- **Push WAV here…** (empty slot) / **Replace WAV…** (occupied slot) — put a
-  WAV on the pedal. The file is converted to the pedal's canonical format on
-  the way in; when replacing, the old loop goes to the app's trash first.
+- **Push audio here…** (empty slot) / **Replace audio…** (occupied slot) — put
+  a file on the pedal: WAV, MP3, AIFF, FLAC or Ogg. Whatever goes in is
+  converted to the pedal's canonical format on the way in (MP3s decode
+  gapless — no encoder-delay silence before the downbeat, no gap at the loop
+  seam); when replacing, the old loop goes to the app's trash first.
 - **Pull to folder…** — copy a loop off the pedal as a standard WAV.
 
 ## Swap

@@ -164,7 +164,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                              commands::setTempo(volumePath, slot, tenths, options);
                          } });
     };
-    table.onWavDropped = [this](int slot, juce::String path) {
+    table.onAudioDropped = [this](int slot, juce::String path) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             pushWav(slot, path, row->info.hasAudio);
     };
@@ -918,7 +918,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     // panel now (and the two lamp columns still flip on click), so this menu
     // stopped being a second copy of them.
     juce::PopupMenu menu;
-    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
+    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace audio\xe2\x80\xa6" : "Push audio here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     juce::PopupMenu downmix;
     downmix.addItem(6, juce::String::fromUTF8("Both outputs\xe2\x80\xa6"));
@@ -978,8 +978,9 @@ void MainComponent::toggleCountIn(int slot, bool currentlyOn)
 void MainComponent::choosePushWav(int slot, bool slotOccupied)
 {
     fileChooser = std::make_unique<juce::FileChooser>(
-        "Choose a WAV for slot " + juce::String(slot),
-        juce::File::getSpecialLocation(juce::File::userMusicDirectory), "*.wav");
+        "Choose audio for slot " + juce::String(slot),
+        juce::File::getSpecialLocation(juce::File::userMusicDirectory),
+        "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg");
     fileChooser->launchAsync(juce::FileBrowserComponent::openMode
                                  | juce::FileBrowserComponent::canSelectFiles,
                              [this, slot, slotOccupied](const juce::FileChooser& chooser) {

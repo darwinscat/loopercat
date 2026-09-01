@@ -36,9 +36,10 @@ Built on the RC-5 file-format knowledge of
   the pedal has it.
 - **Edit audio.** Trim with a gapless preview of the cut, clear a slot, drag one
   slot onto another to swap them.
-- **Move audio.** Push a WAV into an empty slot or replace an occupied one
-  (converted to the pedal's canonical float32 format; the old loop goes to the
-  app's trash first), pull any loop out as a standard WAV.
+- **Move audio.** Push a WAV, MP3, AIFF, FLAC or Ogg into an empty slot or
+  replace an occupied one (converted to the pedal's canonical float32 format;
+  MP3s are decoded gapless, so the downbeat lands on frame one; the old loop
+  goes to the app's trash first), pull any loop out as a standard WAV.
 - **Stay safe.** Config backups before every mutation, write-generation counters
   matching the pedal's own discipline, junk-file hygiene (macOS AppleDouble
   droppings), a doctor that checks card consistency — and honest ghost detection

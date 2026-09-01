@@ -68,6 +68,22 @@ FetchContent_Declare(nlohmann_json
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(nlohmann_json)
 
+# ----------------------------------------------------------------------------
+# minimp3 (fetched, pinned, CC0-1.0) — the app-tier MP3 decoder behind
+# app/Mp3AudioFormat (issue #52). ONE bundled decoder on all three platforms:
+# stock JUCE on Linux cannot read mp3 at all, and the platform codecs that
+# exist don't strip the LAME encoder delay/padding — leading junk and a
+# gapped loop seam a looper cannot accept. Two headers, no CMakeLists of its
+# own — MakeAvailable just populates the source; SYSTEM include keeps its C
+# internals out of our warning gate.
+# ----------------------------------------------------------------------------
+FetchContent_Declare(minimp3
+    GIT_REPOSITORY https://github.com/lieff/minimp3.git
+    GIT_TAG        ea99364f61c14656440e8d77e9c233ccf3124633)
+FetchContent_MakeAvailable(minimp3)
+add_library(minimp3_headers INTERFACE)
+target_include_directories(minimp3_headers SYSTEM INTERFACE "${minimp3_SOURCE_DIR}")
+
 # The same downstream-grade strict set the family gates its headers with
 # (felitronics-appkit/-core convention): the core must be warning-clean under
 # a consumer's harshest flags.
@@ -254,10 +270,12 @@ juce_add_gui_app(LooperCat
 target_sources(LooperCat PRIVATE
     app/Main.cpp
     app/MainComponent.cpp
+    app/Mp3AudioFormat.cpp
     app/PlayerPane.cpp
     app/SlotInspector.cpp
     app/SlotTable.cpp
     app/WavImport.cpp)
+target_link_libraries(LooperCat PRIVATE minimp3_headers)
 
 # JUCE's two-entry icns renders as noise in Sequoia's Launchpad (see
 # art/icon/make-icns.sh); overwrite it with a full iconutil-built set.
@@ -391,7 +409,9 @@ add_test(NAME audio_engine_harness COMMAND audio_engine_harness)
 # duplication, and the refusals.
 # ----------------------------------------------------------------------------
 juce_add_console_app(wav_import_tests PRODUCT_NAME "wav_import_tests")
-target_sources(wav_import_tests PRIVATE tests/wav_import_tests.cpp app/WavImport.cpp)
+target_sources(wav_import_tests PRIVATE tests/wav_import_tests.cpp app/WavImport.cpp
+    app/Mp3AudioFormat.cpp)
+target_link_libraries(wav_import_tests PRIVATE minimp3_headers)
 target_compile_definitions(wav_import_tests PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
@@ -404,6 +424,29 @@ target_link_libraries(wav_import_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME wav_import_tests COMMAND wav_import_tests)
+
+# ----------------------------------------------------------------------------
+# MP3 import (issue #52): theory tests for Mp3AudioFormat + the import chain —
+# gapless exactness against a LAME fixture whose source signal is defined
+# mathematically (see tests/mp3_import_tests.cpp for the fixture recipe).
+# ----------------------------------------------------------------------------
+juce_add_console_app(mp3_import_tests PRODUCT_NAME "mp3_import_tests")
+target_sources(mp3_import_tests PRIVATE tests/mp3_import_tests.cpp app/WavImport.cpp
+    app/Mp3AudioFormat.cpp)
+target_compile_definitions(mp3_import_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json"
+    LOOPERCAT_MP3_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tone-440-660-1s.mp3")
+target_link_libraries(mp3_import_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    minimp3_headers
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME mp3_import_tests COMMAND mp3_import_tests)
 
 # ----------------------------------------------------------------------------
 # The brand-mark contract: the product mark must cover appkit's drawOrbit
