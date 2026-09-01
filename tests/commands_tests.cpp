@@ -26,9 +26,11 @@
 
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <numbers>
 #include <vector>
 
 using namespace loopercat;
@@ -111,6 +113,45 @@ void putStereoFloatWav(const fs::path& volume, int slot, const std::string& name
         const float step = static_cast<float>(frame % 8) / 8.0f; // 0, .125 .. .875
         sample(step);
         sample(-step);
+    }
+    fs::create_directories(volume::wavDir(volume, slot));
+    commands::writeFileBytes(volume::wavDir(volume, slot) / name,
+                             std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+}
+
+// A take at a KNOWN loudness (issue #53): 997 Hz — the tone EBU Tech 3341
+// calibrates on — at `dbfs` peak in both channels, so a -23 dBFS take reads
+// -23 LUFS. `spike` plants one hot frame-0 sample on channel 0, the
+// quiet-but-peaky shape whose boost must stop at the ceiling.
+void putSineFloatWav(const fs::path& volume, int slot, const std::string& name, int frames,
+                     double dbfs, float spike = 0.0f)
+{
+    std::vector<unsigned char> b;
+    const auto ascii = [&b](std::string_view t) {
+        for (const char c : t)
+            b.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](int v) { p16(v & 0xffff); p16((v >> 16) & 0xffff); };
+    const auto sample = [&b](float value) {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        for (int shift = 0; shift < 32; shift += 8)
+            b.push_back(static_cast<unsigned char>((bits >> shift) & 0xffu));
+    };
+    const int dataSize = frames * 8;
+    ascii("RIFF"); p32(12 + 24 + 8 + dataSize - 8); ascii("WAVE");
+    ascii("fmt "); p32(16);
+    p16(3); p16(2); p32(wav::kSampleRate); p32(wav::kSampleRate * 8); p16(8); p16(32);
+    ascii("data"); p32(dataSize);
+    const double amp = std::pow(10.0, dbfs / 20.0);
+    const double w = 2.0 * std::numbers::pi * 997.0 / wav::kSampleRate;
+    for (int frame = 0; frame < frames; ++frame) {
+        const auto v = static_cast<float>(amp * std::sin(w * frame));
+        sample(frame == 0 && spike > 0.0f ? spike : v);
+        sample(v);
     }
     fs::create_directories(volume::wavDir(volume, slot));
     commands::writeFileBytes(volume::wavDir(volume, slot) / name,
@@ -1358,6 +1399,98 @@ int main()
         CHECK(pcmMsg.find("discard") != std::string::npos);
         CHECK(pcmMsg.find("Re-push") != std::string::npos);
         CHECK(pcmMsg.find("reboot the pedal to index it") == std::string::npos);
+    }
+
+    // --- normalize: the gain lands, the take stays recoverable (issue #53) ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const int frames = 44100;
+        putSineFloatWav(volume, 6, "take.wav", frames, -28.0);
+        const std::string originalBytes =
+            commands::readFileBytes(volume::wavDir(volume, 6) / "take.wav");
+        const std::string bodyBefore = rc0::slotBody(commands::readMemory(volume), 6);
+
+        const auto result = commands::normalize(volume, 6,
+                                                { .trashRoot = tmp.path / "trash",
+                                                  .targetLufs = -18.0,
+                                                  .write = writeOpts(tmp.path, "norm-1") });
+
+        CHECK(result.applied);
+        CHECK(!result.cappedByPeak);
+        CHECK(std::abs(result.measuredLufs - (-28.0)) <= 0.1);
+        CHECK(std::abs(result.gainDb - 10.0) <= 0.15);
+
+        // The OUTPUT is the proof: the rewritten take reads -18 on the same
+        // meter, same frame count, canonical float32, same filename.
+        const std::string after = commands::readFileBytes(volume::wavDir(volume, 6) / "take.wav");
+        const auto afterView =
+            wav::BytesView(reinterpret_cast<const unsigned char*>(after.data()), after.size());
+        const wav::Info info = wav::readWavInfo(afterView);
+        CHECK_EQ(info.frames, frames);
+        CHECK_EQ(info.format(), std::string("float32"));
+        const auto reading = wav::measureLoudness(afterView);
+        CHECK(reading.integratedLufs.has_value());
+        CHECK(std::abs(*reading.integratedLufs - (-18.0)) <= 0.1);
+
+        // The original is in the trash, byte-identical — the undo.
+        CHECK(commands::readFileBytes(result.trashedOriginal) == originalBytes);
+
+        // A gain moves no frame: the config's whole length-and-tempo story is
+        // untouched, like the fold's.
+        const std::string bodyAfter = rc0::slotBody(commands::readMemory(volume), 6);
+        CHECK_EQ(bodyAfter, bodyBefore);
+    }
+
+    // --- normalize: the no-write answers, and refusals that change nothing ---
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineFloatWav(volume, 6, "attarget.wav", 44100, -18.0);
+        putSineFloatWav(volume, 5, "peaky.wav", 44100, -25.0, 0.95f);
+        putSineFloatWav(volume, 4, "faint.wav", 44100, -100.0); // under the -70 gate
+        putSineFloatWav(volume, 2, "short.wav", 4410, -20.0);   // 100 ms < one block
+        putWav(volume, 3, "pcm.wav", { .frames = 128 });        // pcm16 — not the pedal's own
+        const auto before = volumeBytes(volume);
+        const commands::NormalizeOptions options { .trashRoot = tmp.path / "trash",
+                                                   .targetLufs = -18.0,
+                                                   .write = writeOpts(tmp.path, "norm-2") };
+
+        // Already at target: an answer, not an error — and not a write.
+        const auto atTarget = commands::normalize(volume, 6, options);
+        CHECK(!atTarget.applied);
+        CHECK(!atTarget.cappedByPeak);
+        CHECK(std::abs(atTarget.measuredLufs - (-18.0)) <= 0.1);
+        CHECK(std::abs(atTarget.gainDb) < 1.0e-12); // not a tiny write, an exact non-write
+
+        // A boost fully swallowed by the -1 dB ceiling: the peak is already
+        // there, nothing to give — an answer too, and still not a write.
+        const auto swallowed = commands::normalize(volume, 5, options);
+        CHECK(!swallowed.applied);
+        CHECK(swallowed.cappedByPeak);
+        CHECK(std::abs(swallowed.gainDb) < 1.0e-12);
+
+        // The player asked to normalize THIS slot; no gain does what they
+        // asked — these are errors, each naming its reason.
+        CHECK_THROWS(commands::normalize(volume, 9, options), "no audio to normalize");
+        CHECK_THROWS(commands::normalize(volume, 4, options), "silent or shorter");
+        CHECK_THROWS(commands::normalize(volume, 2, options), "silent or shorter");
+        CHECK_THROWS(commands::normalize(volume, 3, options), "32-bit float");
+        CHECK_THROWS(commands::normalize(
+                         volume, 6, { .trashRoot = {}, .targetLufs = -18.0,
+                                      .write = writeOpts(tmp.path) }),
+                     "requires a trash root");
+        // A default-constructed target (0.0) is a bug wearing a number.
+        CHECK_THROWS(commands::normalize(volume, 6,
+                                         { .trashRoot = tmp.path / "trash",
+                                           .write = writeOpts(tmp.path) }),
+                     "between -70 and -1");
+
+        // Every answer and every refusal above left the volume byte-identical.
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(tmp.path / "trash")); // and no trash copy was spent
     }
 
     return testkit::summary("commands");
