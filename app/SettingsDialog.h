@@ -36,6 +36,7 @@ public:
     struct Columns {
         bool oneShot;
         bool countIn;
+        bool loudness; // the LUFS column (issue #61) — off until asked for
     };
 
     struct ImportPrefs {
@@ -66,7 +67,8 @@ public:
 
         oneShot_.setToggleState(columns.oneShot, juce::dontSendNotification);
         countIn_.setToggleState(columns.countIn, juce::dontSendNotification);
-        for (auto* toggle : { &oneShot_, &countIn_ }) {
+        loudness_.setToggleState(columns.loudness, juce::dontSendNotification);
+        for (auto* toggle : { &oneShot_, &countIn_, &loudness_ }) {
             toggle->setColour(juce::ToggleButton::textColourId, juce::Colour(0xffd8d8d8));
             toggle->setColour(juce::ToggleButton::tickColourId,
                               felitronics::appkit::brand::violet);
@@ -153,6 +155,7 @@ public:
         columnsArea.removeFromTop(8);
         oneShot_.setBounds(columnsArea.removeFromTop(26));
         countIn_.setBounds(columnsArea.removeFromTop(26));
+        loudness_.setBounds(columnsArea.removeFromTop(26));
 
         auto importArea = area;
         normalize_.setBounds(importArea.removeFromTop(26));
@@ -173,6 +176,7 @@ private:
         columnsTitle_.setVisible(index == 1);
         oneShot_.setVisible(index == 1);
         countIn_.setVisible(index == 1);
+        loudness_.setVisible(index == 1);
         for (auto* c : std::initializer_list<juce::Component*> {
                  &normalize_, &targetCaption_, &target_, &targetEquiv_, &importHint_ })
             c->setVisible(index == 2);
@@ -181,7 +185,8 @@ private:
     void commitColumns()
     {
         if (onColumnsChanged_)
-            onColumnsChanged_({ oneShot_.getToggleState(), countIn_.getToggleState() });
+            onColumnsChanged_({ oneShot_.getToggleState(), countIn_.getToggleState(),
+                                loudness_.getToggleState() });
     }
 
     void commitImport()
@@ -222,6 +227,7 @@ private:
     juce::Label columnsTitle_;
     juce::ToggleButton oneShot_ { "One Shot" };
     juce::ToggleButton countIn_ { "Play Count-In" };
+    juce::ToggleButton loudness_ { "Loudness (LUFS)" };
 
     ImportPrefs importPrefs_;
     std::function<void(ImportPrefs)> onImportChanged_;

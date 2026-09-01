@@ -142,10 +142,26 @@ private:
     void enqueueNormalize(int slot, double target, int batch = 0,
                           std::shared_ptr<std::atomic<int>> filePermille = nullptr);
     void showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition);
-    void measureSlotLoudness(int slot);
     void startNormalizeBatch(const std::vector<int>& slots, double target,
                              const juce::String& targetText);
     void endNormalizeBatch();
+    double currentTargetLufs();
+
+    // Loudness reads (issue #61): one worker job per slot, read-only. The
+    // inspector's Measure is a foreground read of one slot; the check is a
+    // background run over a selection. Both land the same report.
+    struct LoudnessReport {
+        juce::String inspectorText, cellText;
+        bool attention = false; // off target or damaged — drawn to be noticed
+        bool damaged = false;
+    };
+    static LoudnessReport describeReading(const wav::LoudnessReading& reading, double targetLufs);
+    void enqueueLoudnessRead(int slot, double target, int batch, bool background);
+    void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
+    void measureSlotLoudness(int slot);
+    void startLoudnessCheck(const std::vector<int>& slots);
+    void stopLoudnessCheck();
+    void finishLoudnessCheck();
     commands::WriteOptions makeWriteOptions();
 
     // Declaration order is lifetime order: settings outlives the checker
@@ -179,6 +195,12 @@ private:
     int batchCounter = 0; // id source
     int batchTotal = 0, batchDone = 0, batchFailed = 0, batchUntouched = 0, batchDropped = 0;
     std::shared_ptr<std::atomic<int>> batchFilePermille;
+
+    // The running background loudness check (issue #61): id 0 = none. Shares
+    // the batch id space so the worker's cancelPending serves both.
+    int checkId = 0;
+    int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
+    bool checkStopping = false;
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)

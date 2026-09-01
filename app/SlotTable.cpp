@@ -57,6 +57,7 @@ SlotTable::SlotTable()
     // "Play Count-In", not bare "Count-In": the pedal also has a REC COUNT,
     // and the name says which one this is (and that we know the difference).
     header.addColumn("Play Count-In", kCountIn, 104, 104, 104, Flags::notSortable);
+    header.addColumn("LUFS", kLufs, 68, 68, 68, Flags::notSortable);
     header.addColumn("WAV file", kWavFile, 300, 120, -1, Flags::notSortable);
     header.setStretchToFitActive(true);
 
@@ -88,11 +89,38 @@ int SlotTable::slotOfRow(int rowIndex) const
              : 0;
 }
 
-void SlotTable::setOptionalColumns(bool oneShot, bool countIn)
+void SlotTable::setLoudness(int slot, LoudnessCell cell)
+{
+    loudness_[slot] = std::move(cell);
+    table_.repaint();
+}
+
+void SlotTable::clearLoudness(int slot)
+{
+    if (loudness_.erase(slot) > 0)
+        table_.repaint();
+}
+
+void SlotTable::clearAllLoudness()
+{
+    if (loudness_.empty())
+        return;
+    loudness_.clear();
+    table_.repaint();
+}
+
+void SlotTable::selectAll()
+{
+    if (!rows_.empty())
+        table_.selectRangeOfRows(0, static_cast<int>(rows_.size()) - 1);
+}
+
+void SlotTable::setOptionalColumns(bool oneShot, bool countIn, bool loudness)
 {
     auto& header = table_.getHeader();
     header.setColumnVisible(kOneShot, oneShot);
     header.setColumnVisible(kCountIn, countIn);
+    header.setColumnVisible(kLufs, loudness);
 }
 
 void SlotTable::selectSlot(int slot)
@@ -446,6 +474,7 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
     case kOneShot:  break; // drawn as a dot below
     case kCountIn:  break; // drawn as a dot below
+    case kLufs:     break; // drawn from the loudness cells below
     case kWavFile:
         text = r.wavFile.empty() && !loaded
                  ? juce::String::fromUTF8("\xe2\x80\x94 drop audio here, or click to choose")
@@ -482,6 +511,21 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
             g.setColour(kDim.withAlpha(0.55f));
             g.drawEllipse(x, y, d, d, 1.2f);
         }
+        return;
+    }
+
+    if (columnId == kLufs) {
+        // A reading, a dash for "not measured yet", nothing for an empty slot.
+        // Attention (off target, damaged) takes the brand's attention colour.
+        const auto found = loudness_.find(r.info.slot);
+        const bool known = loaded && found != loudness_.end();
+        g.setColour(!known ? kDim.withAlpha(0.55f)
+                    : found->second.attention ? felitronics::appkit::brand::orange
+                                              : kText);
+        g.setFont(juce::FontOptions(13.0f));
+        g.drawText(known ? found->second.text
+                         : (loaded ? juce::String::fromUTF8("\xe2\x80\x94") : juce::String()),
+                   area, juce::Justification::centredRight, true);
         return;
     }
 

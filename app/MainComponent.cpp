@@ -27,6 +27,9 @@ namespace
     // because most players use it; Play Count-In waits to be asked for.
     constexpr auto kOneShotColumnKey = "columnOneShot";
     constexpr auto kCountInColumnKey = "columnPlayCountIn";
+    // The LUFS column (issue #61) is off until asked for: it stays empty
+    // until a measure or a check fills it, and an empty column is noise.
+    constexpr auto kLoudnessColumnKey = "columnLoudness";
 
     // Normalize-on-upload (issue #53): OFF by default so every existing
     // workflow keeps the byte-exact pass-through; -18 LUFS is ReplayGain
@@ -431,18 +434,22 @@ MainComponent::MainComponent(std::string explicitVolume)
     });
 
     // Wired before start(): the worker reads these from its own thread.
-    worker.onBusy = [this](bool busy, int slot) {
-        pedalBusy = busy;
+    worker.onBusy = [this](bool busy, int slot, bool background) {
         table.setBusySlot(busy ? slot : 0);
+        if (background)
+            return; // a read-only check pulses its row and locks nothing (issue #61)
+        pedalBusy = busy;
         inspector.setBusy(busy);
         updateStatusText();
         updateToolbar();
         if (!busy)
             restoreListening(); // the job's own rescan applied while busy — see restoreListening
     };
-    worker.onJobResult = [this](juce::String description, juce::String error, int batch) {
+    worker.onJobResult = [this](juce::String description, juce::String error, int batch,
+                                int slot) {
         // Credited by the id the worker hands back — never by parsing text.
         const bool inBatch = batchId != 0 && batch == batchId;
+        const bool inCheck = checkId != 0 && batch == checkId;
         if (error.isNotEmpty()) {
             banners.showError(banners::Source::job, description + ": " + error);
             inspector.clearLoudness(); // a failed measure must not stay "measuring…"
@@ -451,6 +458,13 @@ MainComponent::MainComponent(std::string explicitVolume)
                 batchOverlay.setDone(batchDone + batchFailed);
                 if (batchDone + batchFailed >= batchTotal)
                     endNormalizeBatch();
+            }
+            if (inCheck) {
+                ++checkFailed;
+                if (checkDone + checkFailed >= checkTotal)
+                    finishLoudnessCheck();
+                else
+                    updateStatusText();
             }
             return;
         }
@@ -478,8 +492,25 @@ MainComponent::MainComponent(std::string explicitVolume)
                                     && description.contains("file untouched"));
         if (description.startsWith("Trim"))
             player.reload(); // same path, new bytes — fresh reader + thumbnail
-        if (wroteToPedal)
-            inspector.clearLoudness(); // the audio moved on; the reading did not
+        if (wroteToPedal) {
+            // The audio moved on; the readings did not. A swap moves two
+            // slots' files and the job names one — clear them all.
+            inspector.clearLoudness();
+            if (description.startsWith("Swap"))
+                table.clearAllLoudness();
+            else if (slot > 0)
+                table.clearLoudness(slot);
+        }
+        if (inCheck) {
+            // The reading already landed in the column (applyLoudnessReport
+            // ran before this result was delivered); count it, stay quiet.
+            ++checkDone;
+            if (checkDone + checkFailed >= checkTotal)
+                finishLoudnessCheck();
+            else
+                updateStatusText();
+            return;
+        }
         if (inBatch) {
             // Per-job toasts stay quiet under the overlay (they would replace
             // each other unread anyway) — the batch summary speaks once, and
@@ -776,7 +807,8 @@ void MainComponent::applyColumnPreferences()
     auto* file = settings.file();
     table.setOptionalColumns(
         file == nullptr || file->getBoolValue(kOneShotColumnKey, true),
-        file != nullptr && file->getBoolValue(kCountInColumnKey, false));
+        file != nullptr && file->getBoolValue(kCountInColumnKey, false),
+        file != nullptr && file->getBoolValue(kLoudnessColumnKey, false));
 }
 
 void MainComponent::updateToolbar()
@@ -914,6 +946,10 @@ void MainComponent::updateStatusText()
              << juce::String(static_cast<double>(snapshot.freeBytes) / 1.0e9, 1) << " GB free";
     if (pedalBusy)
         text << juce::String::fromUTF8("  \xc2\xb7  working\xe2\x80\xa6");
+    if (checkId != 0)
+        text << juce::String::fromUTF8("  \xc2\xb7  checking loudness ")
+             << juce::String(checkDone + checkFailed) << " / " << juce::String(checkTotal)
+             << (checkStopping ? juce::String::fromUTF8(", stopping\xe2\x80\xa6") : juce::String());
     if (deviceError.isNotEmpty())
         text << juce::String::fromUTF8("  \xc2\xb7  audio device: ") << deviceError;
     status.setText(text, juce::dontSendNotification);
@@ -923,6 +959,8 @@ void MainComponent::updateStatusText()
 void MainComponent::applySnapshot(const PedalSnapshot& latest)
 {
     const lifecycle::State previousState = snapshot.state;
+    if (latest.volume != snapshot.volume)
+        table.clearAllLoudness(); // another card is another set of files; readings do not travel
     snapshot = latest;
     // "Mounted" means honestly connected — a ghost lists slots too, but they
     // are page-cache fiction and nothing may play from or write to them.
@@ -1064,6 +1102,12 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
                  "Normalize to " + SettingsDialog::formatLufs(normalizeTarget)
                      + juce::String::fromUTF8(" LUFS\xe2\x80\xa6"),
                  occupied);
+    // The read-only counterpart (issue #61), and the way to stop a running
+    // background check from wherever the player happens to right-click.
+    if (checkId != 0)
+        menu.addItem(11, "Stop loudness check");
+    else
+        menu.addItem(10, "Check loudness", occupied);
     menu.addSeparator();
     menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
@@ -1088,6 +1132,8 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             case 7: downmixSlot(slot, name, wav::Placement::OutputAOnly); break;
             case 8: downmixSlot(slot, name, wav::Placement::OutputBOnly); break;
             case 9: normalizeSlot(slot, name); break;
+            case 10: measureSlotLoudness(slot); break;
+            case 11: stopLoudnessCheck(); break;
             default: break;
             }
         });
@@ -1371,13 +1417,43 @@ void MainComponent::endNormalizeBatch()
 // runs as a worker job like every mutation — same busy pulse, same error
 // banner, and serialized against rewrites so it can never read a half-written
 // take — but it writes nothing: no trash, no journal line, no Disconnect hint.
-void MainComponent::measureSlotLoudness(int slot)
+double MainComponent::currentTargetLufs()
+{
+    auto* file = settings.file();
+    return file != nullptr ? file->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
+                           : kDefaultTargetLufs;
+}
+
+// One reading, two audiences: the inspector wants the sentence, the column
+// wants the number — and both want to be told when the number is not one.
+MainComponent::LoudnessReport MainComponent::describeReading(const wav::LoudnessReading& reading,
+                                                             double targetLufs)
+{
+    if (reading.wildSamples > 0)
+        // The number the meter would print here is real — and meaningless:
+        // 2.4e38 is not a loudness, it is a foreign header read as float
+        // (the 2026-09-02 recovered card).
+        return { "damaged audio: " + juce::String(reading.wildSamples)
+                     + " impossible sample value(s)",
+                 "damaged", true, true };
+    if (!reading.integratedLufs.has_value())
+        return { "silent or too short to measure", "n/a", false, false };
+    const double lufs = *reading.integratedLufs;
+    return { juce::String(lufs, 1) + " LUFS, peak "
+                 + juce::String(20.0 * std::log10(double(reading.samplePeak)), 1) + " dB",
+             juce::String(lufs, 1),
+             std::abs(lufs - targetLufs) >= loudness::kAlreadyAtTargetLu, false };
+}
+
+void MainComponent::enqueueLoudnessRead(int slot, double target, int batch, bool background)
 {
     auto note = std::make_shared<juce::String>();
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue(
-        { "Measure slot " + juce::String(slot) + " loudness", slot,
-          [slot, note, safe](const volume::fs::path& volumePath) {
+        { juce::String(background ? "Check slot " : "Measure slot ") + juce::String(slot)
+              + " loudness",
+          slot,
+          [slot, target, batch, note, safe](const volume::fs::path& volumePath) {
               const std::vector<std::string> files = volume::listSlotWavs(volumePath, slot);
               if (files.empty())
                   throw Error("slot " + std::to_string(slot) + " has no audio to measure");
@@ -1385,25 +1461,86 @@ void MainComponent::measureSlotLoudness(int slot)
                   commands::readFileBytes(volume::wavDir(volumePath, slot) / files.front());
               const wav::LoudnessReading reading = wav::measureLoudness(wav::BytesView(
                   reinterpret_cast<const unsigned char*>(raw.data()), raw.size()));
-              juce::String text;
-              if (reading.wildSamples > 0)
-                  // The number the meter would print here is real — and
-                  // meaningless: 2.4e38 is not a loudness, it is a foreign
-                  // header read as float (the 2026-09-02 recovered card).
-                  text = "damaged audio: " + juce::String(reading.wildSamples)
-                       + " impossible sample value(s)";
-              else if (!reading.integratedLufs.has_value())
-                  text = "silent or too short to measure";
-              else
-                  text = juce::String(*reading.integratedLufs, 1) + " LUFS, peak "
-                       + juce::String(20.0 * std::log10(double(reading.samplePeak)), 1) + " dB";
-              *note = text;
-              juce::MessageManager::callAsync([safe, slot, text] {
+              const LoudnessReport report = describeReading(reading, target);
+              *note = report.inspectorText;
+              juce::MessageManager::callAsync([safe, slot, report, batch] {
                   if (safe != nullptr)
-                      safe->inspector.setLoudness(slot, text);
+                      safe->applyLoudnessReport(slot, report, batch);
               });
           },
-          note });
+          note, batch, background });
+}
+
+void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)
+{
+    table.setLoudness(slot, { report.cellText, report.attention });
+    inspector.setLoudness(slot, report.inspectorText); // ignored unless that slot is on display
+    if (checkId != 0 && batch == checkId) {
+        if (report.attention)
+            ++checkAttention;
+        if (report.damaged)
+            ++checkDamaged;
+    }
+}
+
+// The inspector's Measure button (issue #53): a foreground read of one slot.
+// It runs as a worker job like every mutation — same busy pulse, same error
+// banner, serialized against rewrites so it can never read a half-written
+// take — but it writes nothing: no trash, no journal line, no Disconnect hint.
+void MainComponent::measureSlotLoudness(int slot)
+{
+    enqueueLoudnessRead(slot, currentTargetLufs(), 0, false);
+}
+
+// The background loudness check (issue #61): the same read over a selection,
+// as background jobs — a mutation the player asks for meanwhile jumps ahead,
+// nothing locks, rows pulse as they are read and the LUFS column fills in.
+// Read-only, so no dialog: the cost is time, and Esc gives it back.
+void MainComponent::startLoudnessCheck(const std::vector<int>& slots)
+{
+    if (slots.empty() || checkId != 0)
+        return;
+    const double target = currentTargetLufs();
+    checkId = ++batchCounter;
+    checkTotal = static_cast<int>(slots.size());
+    checkDone = checkFailed = checkAttention = checkDamaged = 0;
+    checkStopping = false;
+    for (const int slot : slots)
+        enqueueLoudnessRead(slot, target, checkId, true);
+    toast.show("Checking the loudness of " + juce::String(checkTotal)
+               + (checkTotal == 1 ? " slot" : " slots")
+               + juce::String::fromUTF8(" in the background \xe2\x80\x94 Esc stops it."));
+    updateStatusText();
+}
+
+void MainComponent::stopLoudnessCheck()
+{
+    if (checkId == 0)
+        return;
+    checkTotal -= worker.cancelPending(checkId); // the dropped tail never reports back
+    checkStopping = true;
+    if (checkDone + checkFailed >= checkTotal)
+        finishLoudnessCheck(); // nothing in flight — over now
+    else
+        updateStatusText(); // the slot in flight finishes, then the summary
+}
+
+void MainComponent::finishLoudnessCheck()
+{
+    juce::String story = juce::String(checkStopping ? "Loudness check stopped: "
+                                                    : "Loudness check done: ")
+                       + juce::String(checkDone) + " measured";
+    const int offTarget = checkAttention - checkDamaged;
+    if (offTarget > 0)
+        story << ", " << juce::String(offTarget) << " off target";
+    if (checkDamaged > 0)
+        story << ", " << juce::String(checkDamaged) << " damaged";
+    if (checkFailed > 0)
+        story << ", " << juce::String(checkFailed) << " failed";
+    toast.show(story);
+    checkId = 0;
+    checkStopping = false;
+    updateStatusText();
 }
 
 // The selection menu (issue #53): right-click inside a 2+ row selection.
@@ -1425,14 +1562,26 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
     const juce::String targetText = SettingsDialog::formatLufs(target) + " LUFS";
 
     juce::PopupMenu menu;
-    menu.addItem(1,
-                 "Normalize " + juce::String(occupied.size())
-                     + (occupied.size() == 1 ? " slot to " : " slots to ") + targetText
-                     + juce::String::fromUTF8("\xe2\x80\xa6"),
+    const juce::String count =
+        juce::String(occupied.size()) + (occupied.size() == 1 ? " slot" : " slots");
+    // Look before you leap: the read-only check leads, the rewrite follows.
+    if (checkId != 0)
+        menu.addItem(3, "Stop loudness check");
+    else
+        menu.addItem(2, "Check loudness (" + count + ")", !occupied.empty());
+    menu.addItem(1, "Normalize " + count + " to " + targetText + juce::String::fromUTF8("\xe2\x80\xa6"),
                  !occupied.empty());
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
         [this, occupied, target, targetText](int choice) {
+            if (choice == 2) {
+                startLoudnessCheck(occupied);
+                return;
+            }
+            if (choice == 3) {
+                stopLoudnessCheck();
+                return;
+            }
             if (choice != 1 || occupied.empty())
                 return;
             juce::AlertWindow::showAsync(
@@ -1516,11 +1665,13 @@ void MainComponent::openSettings()
     options.content.setOwned(new SettingsDialog(
         engine.deviceManager(), settings,
         { settings.file() == nullptr || settings.file()->getBoolValue(kOneShotColumnKey, true),
-          settings.file() != nullptr && settings.file()->getBoolValue(kCountInColumnKey, false) },
+          settings.file() != nullptr && settings.file()->getBoolValue(kCountInColumnKey, false),
+          settings.file() != nullptr && settings.file()->getBoolValue(kLoudnessColumnKey, false) },
         [this](SettingsDialog::Columns columns) {
             if (auto* file = settings.file()) {
                 file->setValue(kOneShotColumnKey, columns.oneShot);
                 file->setValue(kCountInColumnKey, columns.countIn);
+                file->setValue(kLoudnessColumnKey, columns.loudness);
                 file->saveIfNeeded();
             }
             applyColumnPreferences();
@@ -1550,6 +1701,16 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     // to prevent (issue #61).
     if (batchOverlay.isVisible())
         return true;
+    // Standard list ergonomics: select every row — the way to point a check
+    // (or a batch) at the whole setlist without a dedicated button.
+    if (key == juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0) && table.isVisible()) {
+        table.selectAll();
+        return true;
+    }
+    if (key == juce::KeyPress::escapeKey && checkId != 0) {
+        stopLoudnessCheck();
+        return true;
+    }
     if (key == juce::KeyPress::spaceKey && engine.hasSource()) {
         engine.togglePlay();
         return true;
