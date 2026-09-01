@@ -5,6 +5,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include <cstdint>
 #include <optional>
 
 //==============================================================================
@@ -48,6 +49,9 @@ struct NormalizeOutcome {
                                // ceiling, short of target — loud peaks, quiet body
     double measuredLufs = 0;   // valid when measurable
     double gainDb = 0;         // gain actually baked in (0 when untouched/unmeasurable)
+    bool damaged = false;      // bytes that are not audio were found: imported
+                               // with no gain — no "loudness" of garbage is a target
+    std::int64_t wildSamples = 0; // how many, for the report
 };
 
 struct Prepared {

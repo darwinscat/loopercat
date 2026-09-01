@@ -40,6 +40,9 @@ namespace
     juce::String describeNormalize(const wavimport::NormalizeOutcome& outcome, double targetLufs)
     {
         const auto lufs = [](double v) { return juce::String(v, 1); };
+        if (outcome.damaged)
+            return "not normalized: " + juce::String(outcome.wildSamples)
+                 + " impossible sample value(s), the audio looks damaged";
         if (!outcome.measurable)
             return "not normalized: too short or too quiet to measure";
         if (outcome.untouched)
@@ -1383,7 +1386,13 @@ void MainComponent::measureSlotLoudness(int slot)
               const wav::LoudnessReading reading = wav::measureLoudness(wav::BytesView(
                   reinterpret_cast<const unsigned char*>(raw.data()), raw.size()));
               juce::String text;
-              if (!reading.integratedLufs.has_value())
+              if (reading.wildSamples > 0)
+                  // The number the meter would print here is real — and
+                  // meaningless: 2.4e38 is not a loudness, it is a foreign
+                  // header read as float (the 2026-09-02 recovered card).
+                  text = "damaged audio: " + juce::String(reading.wildSamples)
+                       + " impossible sample value(s)";
+              else if (!reading.integratedLufs.has_value())
                   text = "silent or too short to measure";
               else
                   text = juce::String(*reading.integratedLufs, 1) + " LUFS, peak "
