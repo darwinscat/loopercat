@@ -203,6 +203,9 @@ A few things worth knowing:
 - Quiet loops are turned up, loud ones turned down. A boost stops where the
   loop's peak would hit -1 dB, so a quiet-but-peaky track lands a little short
   of target instead of distorting — the toast says so when it happens.
+- To check where a loop sits without changing anything: select it, open
+  **Slot settings** (⌘I) and press **Measure** — the loudness and peak of
+  exactly what is on the card, read-only.
 - Every outcome is one line in `operations.log` in the app's data folder:
   what was measured, what was applied, what was skipped and why.
 - **Disconnect** to hear it on the pedal, as with every edit.

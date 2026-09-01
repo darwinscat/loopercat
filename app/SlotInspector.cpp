@@ -80,6 +80,24 @@ SlotInspector::SlotInspector()
     // display with no power cycle). No reason to send anyone to the wall plug.
     footer_.setText("Disconnect to hear the changes.", juce::dontSendNotification);
 
+    // The loudness row is a meter, not a mode: it answers only when asked,
+    // because the answer costs reading the whole WAV off the card (issue
+    // #53). The reading stays until a mutation makes it history.
+    makeCaption(loudnessCaption_, "LOUDNESS");
+    loudnessValue_.setFont(juce::FontOptions(11.5f));
+    loudnessValue_.setColour(juce::Label::textColourId, kDim);
+    measure_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff17171d));
+    measure_.setColour(juce::TextButton::textColourOffId, kText);
+    measure_.onClick = [this] {
+        if (!hasSlot_ || busy_ || measuring_ || !onMeasureRequested)
+            return;
+        measuring_ = true;
+        loudnessValue_.setText(juce::String::fromUTF8("measuring\xe2\x80\xa6"),
+                               juce::dontSendNotification);
+        measure_.setEnabled(false);
+        onMeasureRequested(info_.slot);
+    };
+
     countIn_.onToggle = [this] {
         if (hasSlot_ && !busy_ && onCountInToggled)
             onCountInToggled(info_.slot);
@@ -91,7 +109,7 @@ SlotInspector::SlotInspector()
 
     for (auto* child : std::initializer_list<juce::Component*> {
              &nameCaption_, &tempoCaption_, &barsHint_, &footer_, &nameEditor_, &tempoEditor_,
-             &countIn_, &oneShot_ })
+             &loudnessCaption_, &loudnessValue_, &measure_, &countIn_, &oneShot_ })
         addAndMakeVisible(child);
 
     setSlot(nullptr);
@@ -106,8 +124,27 @@ void SlotInspector::makeCaption(juce::Label& label, const juce::String& text)
 
 void SlotInspector::setSlot(const SlotRow* row)
 {
+    const int wasSlot = hasSlot_ ? info_.slot : 0;
     hasSlot_ = row != nullptr;
     info_ = hasSlot_ ? row->info : catalog::SlotInfo {};
+    if ((hasSlot_ ? info_.slot : 0) != wasSlot)
+        clearLoudness(); // a reading belongs to the slot it was taken from
+    refresh();
+}
+
+void SlotInspector::setLoudness(int slot, const juce::String& text)
+{
+    if (!hasSlot_ || info_.slot != slot)
+        return; // the player moved on; the answer expired in transit
+    measuring_ = false;
+    loudnessValue_.setText(text, juce::dontSendNotification);
+    refresh();
+}
+
+void SlotInspector::clearLoudness()
+{
+    measuring_ = false;
+    loudnessValue_.setText(juce::String::fromUTF8("\xe2\x80\x94"), juce::dontSendNotification);
     refresh();
 }
 
@@ -131,6 +168,12 @@ void SlotInspector::refresh()
                                                                 &nameEditor_, &tempoEditor_,
                                                                 &countIn_, &oneShot_ })
         child->setVisible(hasSlot_);
+
+    // The meter row exists only where there is audio to meter.
+    for (auto* child : std::initializer_list<juce::Component*> { &loudnessCaption_,
+                                                                &loudnessValue_, &measure_ })
+        child->setVisible(hasSlot_ && info_.hasAudio);
+    measure_.setEnabled(live && info_.hasAudio && !measuring_);
 
     if (!hasSlot_) {
         repaint();
@@ -262,6 +305,20 @@ void SlotInspector::resized()
     countIn_.setBounds(cards.removeFromLeft(cardWidth));
     cards.removeFromLeft(10);
     oneShot_.setBounds(cards.removeFromLeft(cardWidth));
+
+    // The meter column lives in the space right of the cards. Visibility is
+    // refresh()'s decision; a window too narrow just leaves it no bounds.
+    cards.removeFromLeft(14);
+    if (cards.getWidth() >= 130) {
+        loudnessCaption_.setBounds(cards.removeFromTop(14));
+        loudnessValue_.setBounds(cards.removeFromTop(20));
+        cards.removeFromTop(4);
+        measure_.setBounds(cards.removeFromTop(22).removeFromLeft(80));
+    } else {
+        for (auto* child : std::initializer_list<juce::Component*> { &loudnessCaption_,
+                                                                    &loudnessValue_, &measure_ })
+            child->setBounds(juce::Rectangle<int>());
+    }
 }
 
 } // namespace loopercat

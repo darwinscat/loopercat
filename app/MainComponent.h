@@ -140,6 +140,7 @@ private:
     void normalizeSlot(int slot, const juce::String& name);
     void enqueueNormalize(int slot, double target);
     void showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition);
+    void measureSlotLoudness(int slot);
     commands::WriteOptions makeWriteOptions();
 
     // Declaration order is lifetime order: settings outlives the checker
