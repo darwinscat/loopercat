@@ -57,6 +57,7 @@ namespace detail {
 struct LoudnessReading {
     std::optional<double> integratedLufs; // empty: silence, or under one 400 ms gating block
     float samplePeak = 0.0f;
+    std::int64_t wildSamples = 0; // > 0: bytes that are not audio — the two above are moot
 };
 
 // BS.1770 integrated loudness and sample peak of a pedal-shaped file, read
@@ -89,7 +90,7 @@ inline LoudnessReading measureLoudness(BytesView data,
         meter.process(interleaved.data(), filled);
     if (progress)
         progress(1.0);
-    return { meter.integratedLufs(), meter.samplePeak() };
+    return { meter.integratedLufs(), meter.samplePeak(), meter.wildSamples() };
 }
 
 // The file with one constant gain baked into every sample, in the pedal's

@@ -707,6 +707,14 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
     const wav::LoudnessReading reading = wav::measureLoudness( // validates the shape
         rawView, segment(0.30, 0.45));
+    // Garbage first: a "loudness" read off non-audio bytes would compute a
+    // gain of hundreds of dB and bake it in — that is how a damaged take
+    // becomes a silent one. Refuse, and say what to do instead.
+    if (reading.wildSamples > 0)
+        throw Error("slot " + std::to_string(slot) + " contains "
+                    + std::to_string(reading.wildSamples)
+                    + " impossible sample value(s) — bytes that are not audio. The take looks "
+                      "damaged; re-push it from the original instead of normalizing it");
     if (!reading.integratedLufs.has_value())
         throw Error("slot " + std::to_string(slot)
                     + " is silent or shorter than the 400 ms a loudness measurement needs");

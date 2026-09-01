@@ -1468,6 +1468,7 @@ int main()
         putSineFloatWav(volume, 4, "faint.wav", 44100, -100.0); // under the -70 gate
         putSineFloatWav(volume, 2, "short.wav", 4410, -20.0);   // 100 ms < one block
         putWav(volume, 3, "pcm.wav", { .frames = 128 });        // pcm16 — not the pedal's own
+        putSineFloatWav(volume, 7, "damaged.wav", 44100, -23.0, 1.0e20f); // one impossible sample
         const auto before = volumeBytes(volume);
         const commands::NormalizeOptions options { .trashRoot = tmp.path / "trash",
                                                    .targetLufs = -18.0,
@@ -1507,6 +1508,9 @@ int main()
         CHECK_THROWS(commands::normalize(volume, 4, options), "silent or shorter");
         CHECK_THROWS(commands::normalize(volume, 2, options), "silent or shorter");
         CHECK_THROWS(commands::normalize(volume, 3, options), "32-bit float");
+        // Garbage is refused BEFORE any gain is computed from it: the "loudness"
+        // of a 1e20 sample would bake in hundreds of dB and silence the take.
+        CHECK_THROWS(commands::normalize(volume, 7, options), "impossible sample");
         CHECK_THROWS(commands::normalize(
                          volume, 6, { .trashRoot = {}, .targetLufs = -18.0,
                                       .write = writeOpts(tmp.path) }),

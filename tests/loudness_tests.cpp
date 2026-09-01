@@ -27,6 +27,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 #include <optional>
 #include <utility>
@@ -232,6 +233,26 @@ int main()
         CHECK_THROWS(loudness::Meter(44101), "divisible by 10");
         CHECK_THROWS(loudness::Meter(0), "positive sample rate");
         CHECK_THROWS(loudness::Meter(-44100), "positive sample rate");
+    }
+
+    // --- bytes that are not audio are counted, never averaged into a "loudness"
+
+    {
+        // inf, NaN, the absurd and the merely impossible (-9: honest audio
+        // stops at +/-8) — four wild samples among four honest ones.
+        loudness::Meter meter(kRate);
+        const float inf = std::numeric_limits<float>::infinity();
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const std::vector<float> frames = { inf, 0.5f, 0.1f, nan, 1.0e30f, -9.0f, 0.25f, -0.25f };
+        meter.process(frames.data(), 4);
+        CHECK_EQ(meter.wildSamples(), 4);
+    }
+    {
+        // A whole second of a hot-but-honest tone (-0.5 dBFS): zero wild.
+        loudness::Meter meter(kRate);
+        long long n = 0;
+        feedSine(meter, kToneHz, -0.5, 1.0, n);
+        CHECK_EQ(meter.wildSamples(), 0);
     }
 
     // --- normalizeGainDb: cuts in full, boosts capped, cap never inverts
