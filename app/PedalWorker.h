@@ -79,6 +79,10 @@ public:
         // the result path reads it after — never concurrently. Empty or
         // absent = the plain description.
         std::shared_ptr<juce::String> note = nullptr;
+        // 0 = a standalone job. Jobs enqueued as one batch share an id, so
+        // cancelPending(id) can drop the queued tail and results can be
+        // credited to the batch's overlay (issue #61).
+        int batch = 0;
     };
 
     // `explicitVolume` pins the volume path (the --volume CLI override;
@@ -98,8 +102,9 @@ public:
         *alive_ = false; // message thread; queued deliveries become no-ops
     }
 
-    std::function<void(bool, int)> onBusy;                       // (started/finished, affected slot or 0)
-    std::function<void(juce::String, juce::String)> onJobResult; // (description, error; empty = ok)
+    std::function<void(bool, int)> onBusy; // (started/finished, affected slot or 0)
+    // (description, error — empty = ok, batch id — 0 = standalone)
+    std::function<void(juce::String, juce::String, int)> onJobResult;
 
     // Wire the platform device-truth probe (DeviceWatcher::verdict) and the
     // eject starter (DeviceWatcher::eject) before start(). Unset probe means
@@ -135,6 +140,17 @@ public:
             queue_.push_back(std::move(job));
         }
         notify(); // cut the poll wait short
+    }
+
+    // Drop this batch's not-yet-started jobs; the one in flight always
+    // finishes — a per-slot write is atomic and cancel must not change that
+    // (issue #61). Returns how many were dropped. MESSAGE THREAD.
+    int cancelPending(int batch)
+    {
+        const juce::ScopedLock sl(queueLock_);
+        const auto before = queue_.size();
+        std::erase_if(queue_, [batch](const Job& job) { return job.batch == batch; });
+        return static_cast<int>(before - queue_.size());
     }
 
     // One full scan, on the calling thread. Used by the worker loop and by
@@ -252,9 +268,9 @@ private:
                 juce::String described = job->description;
                 if (error.isEmpty() && job->note != nullptr && job->note->isNotEmpty())
                     described << juce::String::fromUTF8(" \xe2\x80\x94 ") << *job->note;
-                deliver([cb = onJobResult, d = described, error] {
+                deliver([cb = onJobResult, d = described, error, b = job->batch] {
                     if (cb)
-                        cb(d, error);
+                        cb(d, error, b);
                 });
                 deliver([cb = onBusy, slot = job->slot] { if (cb) cb(false, slot); });
                 continue; // more queued work before the next poll
@@ -324,7 +340,7 @@ private:
             } catch (const std::exception& e) {
                 deliver([cb = onJobResult, msg = juce::String::fromUTF8(e.what())] {
                     if (cb)
-                        cb("Eject", msg);
+                        cb("Eject", msg, 0);
                 });
             }
         }
