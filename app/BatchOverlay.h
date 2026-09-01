@@ -106,7 +106,7 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        g.fillAll(juce::Colours::black.withAlpha(0.55f)); // the table stays readable below
+        g.fillAll(juce::Colours::black.withAlpha(0.7f)); // dim but not opaque: the table stays visible below
         g.setColour(juce::Colour(0xf01a1a22));
         g.fillRoundedRectangle(card().toFloat(), 10.0f);
         g.setColour(juce::Colour(0xff2a2a34));
@@ -115,14 +115,16 @@ public:
 
     void resized() override
     {
+        // The current file leads: it is the live, fast-moving bar, and the
+        // eye lands on the top row first (field feedback, 2026-09-02).
         auto area = card().reduced(20, 14);
         title_.setBounds(area.removeFromTop(24));
         area.removeFromTop(10);
-        batchCaption_.setBounds(area.removeFromTop(16));
-        batchBar_.setBounds(area.removeFromTop(18));
-        area.removeFromTop(10);
         fileCaption_.setBounds(area.removeFromTop(16));
         fileBar_.setBounds(area.removeFromTop(18));
+        area.removeFromTop(10);
+        batchCaption_.setBounds(area.removeFromTop(16));
+        batchBar_.setBounds(area.removeFromTop(18));
         area.removeFromTop(14);
         cancel_.setBounds(area.removeFromTop(26).withSizeKeepingCentre(160, 26));
     }
