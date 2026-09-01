@@ -6,13 +6,19 @@
 #include "Mp3AudioFormat.h"
 
 #include <loopercat/Error.hpp>
+#include <loopercat/Loudness.hpp>
 #include <loopercat/Wav.hpp>
+
+#include <cmath>
+#include <vector>
 
 namespace loopercat::wavimport
 {
 
 namespace
 {
+    constexpr int kBlock = 32768;
+
     // The pedal takes the file as-is when the core's own upload gate does —
     // one truth, not a parallel reimplementation of it.
     bool pedalAcceptsAsIs(const juce::File& source)
@@ -28,12 +34,53 @@ namespace
             return false;
         }
     }
+
+    // How many 44.1 kHz frames the conversion of `reader` will produce.
+    juce::int64 outputFrames(const juce::AudioFormatReader& reader)
+    {
+        return juce::int64(std::llround(double(reader.lengthInSamples)
+                                        * double(wav::kSampleRate) / reader.sampleRate));
+    }
+
+    // The measurement pass feeds the meter the SAME stream the write pass
+    // produces — post-resample, mono already duplicated into both channels —
+    // so the gain is computed for exactly the samples that will land on the
+    // card. That pins issue #53's open point: a duplicated mono source is
+    // measured as the stereo sum it will actually play as.
+    void measureStream(juce::AudioFormatReader& reader, loudness::Meter& meter)
+    {
+        const int channels = static_cast<int>(reader.numChannels);
+        juce::AudioFormatReaderSource readerSource(&reader, false);
+        juce::ResamplingAudioSource resampler(&readerSource, false, channels);
+        const double ratio = reader.sampleRate / double(wav::kSampleRate);
+        resampler.setResamplingRatio(ratio);
+        resampler.prepareToPlay(kBlock, double(wav::kSampleRate));
+
+        juce::int64 remaining = outputFrames(reader);
+        juce::AudioBuffer<float> block(channels, kBlock);
+        std::vector<float> interleaved(2 * std::size_t(kBlock));
+        while (remaining > 0) {
+            const int n = int(std::min<juce::int64>(remaining, kBlock));
+            block.setSize(channels, n, false, false, true);
+            resampler.getNextAudioBlock(juce::AudioSourceChannelInfo(block));
+            const float* left = block.getReadPointer(0);
+            const float* right = block.getReadPointer(channels == 2 ? 1 : 0);
+            for (int i = 0; i < n; ++i) {
+                interleaved[2 * std::size_t(i)] = left[i];
+                interleaved[2 * std::size_t(i) + 1] = right[i];
+            }
+            meter.process(interleaved.data(), std::size_t(n));
+            remaining -= n;
+        }
+    }
 } // namespace
 
-juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepared& out)
+juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepared& out,
+                     const Options& options)
 {
-    if (pedalAcceptsAsIs(source)) {
-        out = { source, false };
+    const bool passesAsIs = pedalAcceptsAsIs(source);
+    if (!options.normalizeTargetLufs.has_value() && passesAsIs) {
+        out = { source, false, std::nullopt };
         return juce::Result::ok();
     }
 
@@ -51,6 +98,40 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
         return juce::Result::fail(source.getFileName() + " has "
                                   + juce::String(channels)
                                   + " channels — only mono and stereo can go to the pedal");
+
+    // Pass 1 of the opt-in normalization (issue #53): measure, decide, and —
+    // when a pedal-ready file needs nothing — keep the byte-exact promise.
+    double gainDb = 0.0;
+    std::optional<NormalizeOutcome> outcome;
+    if (options.normalizeTargetLufs.has_value()) {
+        const double target = *options.normalizeTargetLufs;
+        loudness::Meter meter(wav::kSampleRate);
+        measureStream(*reader, meter);
+        const std::optional<double> measured = meter.integratedLufs();
+        if (!measured.has_value()) {
+            // Silence, or shorter than one gating block: nothing to level,
+            // and inventing a gain would be a guess. Import as-is and say so.
+            outcome = NormalizeOutcome {};
+            if (passesAsIs) {
+                out = { source, false, outcome };
+                return juce::Result::ok();
+            }
+        } else {
+            const double wanted = target - *measured;
+            if (passesAsIs && std::abs(wanted) < kAlreadyAtTargetLu) {
+                outcome = NormalizeOutcome { .measurable = true, .untouched = true,
+                                             .measuredLufs = *measured };
+                out = { source, false, outcome };
+                return juce::Result::ok();
+            }
+            gainDb = loudness::normalizeGainDb(*measured, target, meter.samplePeak(),
+                                               loudness::kPeakCeilingDb);
+            outcome = NormalizeOutcome { .measurable = true,
+                                         .cappedByPeak = wanted > 0.0 && gainDb + 1.0e-9 < wanted,
+                                         .measuredLufs = *measured,
+                                         .gainDb = gainDb };
+        }
+    }
 
     const juce::Result dirOk = tempDir.createDirectory();
     if (dirOk.failed())
@@ -71,21 +152,24 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
         return juce::Result::fail("cannot open a float32 writer for " + dest.getFullPathName());
     stream.release(); // the writer owns it now
 
+    // A fresh reader source starts at frame zero — pass 1 left the shared
+    // reader's position behind it, and this rewinds without reopening.
     juce::AudioFormatReaderSource readerSource(reader.get(), false);
     juce::ResamplingAudioSource resampler(&readerSource, false, channels);
     const double ratio = reader->sampleRate / double(wav::kSampleRate);
     resampler.setResamplingRatio(ratio);
 
-    constexpr int kBlock = 32768;
     resampler.prepareToPlay(kBlock, double(wav::kSampleRate));
-    juce::int64 remaining =
-        juce::int64(std::llround(double(reader->lengthInSamples) / ratio));
+    juce::int64 remaining = outputFrames(*reader);
 
+    const float scale = static_cast<float>(std::pow(10.0, gainDb / 20.0));
     juce::AudioBuffer<float> block(channels, kBlock);
     while (remaining > 0) {
         const int n = int(std::min<juce::int64>(remaining, kBlock));
         block.setSize(channels, n, false, false, true);
         resampler.getNextAudioBlock(juce::AudioSourceChannelInfo(block));
+        if (outcome.has_value() && outcome->measurable)
+            block.applyGain(scale);
         // Mono feeds both pedal channels; stereo passes straight through.
         const float* left = block.getReadPointer(0);
         const float* right = block.getReadPointer(channels == 2 ? 1 : 0);
@@ -99,7 +183,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
     }
     writer.reset(); // flush before anyone reads the file
 
-    out = { dest, true };
+    out = { dest, true, outcome };
     return juce::Result::ok();
 }
 

@@ -123,7 +123,7 @@ int main()
                                        .getChildFile("loopercat-mp3-tests")
                                        .getNonexistentSibling();
         wavimport::Prepared out;
-        const juce::Result r = wavimport::prepare(fixtureFile(), tempDir, out);
+        const juce::Result r = wavimport::prepare(fixtureFile(), tempDir, out, {});
         CHECK(r.wasOk());
         if (r.wasOk()) {
             CHECK(out.converted); // an mp3 is always a conversion, never a pass-through
@@ -160,7 +160,7 @@ int main()
         fake.replaceWithData(noise.data(), noise.size());
 
         wavimport::Prepared out;
-        const juce::Result r = wavimport::prepare(fake, tempDir, out);
+        const juce::Result r = wavimport::prepare(fake, tempDir, out, {});
         CHECK(r.failed());
         CHECK(r.getErrorMessage().contains("not an audio file"));
         tempDir.deleteRecursively();
