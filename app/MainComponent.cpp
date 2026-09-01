@@ -868,6 +868,17 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     if (!mounted)
         selectedSlot = 0;
     updateInspector();
+
+    // A mutation releases the preview of the slot it rewrites (issue #26 —
+    // Windows will not let a held file be replaced), and the job itself never
+    // reloads it: the row refreshed but the player said "Select a slot to
+    // listen" until the user clicked away and back. The invariant — the
+    // selected occupied slot is the one in the player — is restored HERE,
+    // where every mutation ends anyway (the post-job rescan). slotChosen is
+    // idempotent (same path → no-op), and the busy guard keeps hands off a
+    // file a still-running job owns.
+    if (mounted && !pedalBusy && selectedSlot > 0)
+        slotChosen(selectedSlot, false);
 }
 
 void MainComponent::slotChosen(int slot, bool startPlaying)
