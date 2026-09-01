@@ -187,6 +187,9 @@ MainComponent::MainComponent(std::string explicitVolume)
     };
     table.onSlotActivated = [this](int slot) { slotChosen(slot, true); };
     table.onSlotContextMenu = [this](int slot, juce::Point<int> at) { showSlotMenu(slot, at); };
+    table.onSlotsContextMenu = [this](std::vector<int> slots, juce::Point<int> at) {
+        showSlotsMenu(std::move(slots), at);
+    };
     table.onOneShotToggled = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             toggleOneShot(slot, row->info.oneShot);
@@ -1249,23 +1252,80 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
             .withButton("Normalize")
             .withButton("Cancel"),
         [this, slot, target](int button) {
-            if (button != 1)
+            if (button == 1)
+                enqueueNormalize(slot, target);
+        });
+}
+
+// One normalize job for the worker queue — the shared tail of the single-slot
+// dialog and the bulk apply. Per-slot jobs on purpose: the row's busy pulse
+// and error isolation come free, and one stubborn slot cannot stop the rest.
+void MainComponent::enqueueNormalize(int slot, double target)
+{
+    releasePlayerIfHolding(slot, slot); // the rewrite happens under preview (issue #26)
+    auto note = std::make_shared<juce::String>();
+    worker.enqueue(
+        { "Normalize slot " + juce::String(slot), slot,
+          [slot, target, note, options = makeWriteOptions(),
+           logDir = settings.dataDir(),
+           trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+              const volume::fs::path& volumePath) {
+              const commands::NormalizeResult result = commands::normalize(
+                  volumePath, slot,
+                  { .trashRoot = trash, .targetLufs = target, .write = options });
+              *note = describeNormalize(result, target);
+              oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
+          },
+          note });
+}
+
+// The selection menu (issue #53): right-click inside a 2+ row selection.
+// One entry today — Normalize is the first operation safe enough to run over
+// a whole selection without an undo story beyond the trash; the menu grows as
+// operations earn their way in.
+void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition)
+{
+    if (pedalBusy)
+        return;
+    std::vector<int> occupied;
+    for (const int slot : slots)
+        if (const SlotRow* row = slotRowFor(slot); row != nullptr && row->info.hasAudio)
+            occupied.push_back(slot);
+
+    const double target = settings.file() != nullptr
+        ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
+        : kDefaultTargetLufs;
+    const juce::String targetText = SettingsDialog::formatLufs(target) + " LUFS";
+
+    juce::PopupMenu menu;
+    menu.addItem(1,
+                 "Normalize " + juce::String(occupied.size())
+                     + (occupied.size() == 1 ? " slot to " : " slots to ") + targetText
+                     + juce::String::fromUTF8("\xe2\x80\xa6"),
+                 !occupied.empty());
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
+        [this, occupied, target, targetText](int choice) {
+            if (choice != 1 || occupied.empty())
                 return;
-            releasePlayerIfHolding(slot, slot); // the rewrite happens under preview (issue #26)
-            auto note = std::make_shared<juce::String>();
-            worker.enqueue(
-                { "Normalize slot " + juce::String(slot), slot,
-                  [slot, target, note, options = makeWriteOptions(),
-                   logDir = settings.dataDir(),
-                   trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
-                      const volume::fs::path& volumePath) {
-                      const commands::NormalizeResult result = commands::normalize(
-                          volumePath, slot,
-                          { .trashRoot = trash, .targetLufs = target, .write = options });
-                      *note = describeNormalize(result, target);
-                      oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
-                  },
-                  note });
+            juce::AlertWindow::showAsync(
+                juce::MessageBoxOptions()
+                    .withIconType(juce::MessageBoxIconType::WarningIcon)
+                    .withTitle("Normalize " + juce::String(occupied.size()) + " slots to "
+                               + targetText + "?")
+                    .withMessage(juce::String::fromUTF8(
+                        "Each loop gets its own constant gain to land at the target loudness; "
+                        "a loop already there is left untouched. Every outcome is written to "
+                        "operations.log.\n\nEach rewritten WAV moves to the app's trash first "
+                        "\xe2\x80\x94 that is your undo."))
+                    .withButton("Normalize")
+                    .withButton("Cancel"),
+                [this, occupied, target](int button) {
+                    if (button != 1)
+                        return;
+                    for (const int slot : occupied)
+                        enqueueNormalize(slot, target);
+                });
         });
 }
 

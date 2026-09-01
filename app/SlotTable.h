@@ -33,6 +33,8 @@ public:
     std::function<void(int)> onSlotSelected;                        // selection moved
     std::function<void(int)> onSlotActivated;                       // double-click: select AND play
     std::function<void(int, juce::Point<int>)> onSlotContextMenu;   // right-click (screen position)
+    std::function<void(std::vector<int>, juce::Point<int>)>
+        onSlotsContextMenu; // right-click inside a 2+ row selection: its slots, in row order
     std::function<void(int, juce::String)> onAudioDropped;          // an importable audio file landed on a slot's row
     std::function<void(int, int)> onSwapRequested;                  // row dragged onto a row: (from, to) trade places
     std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
