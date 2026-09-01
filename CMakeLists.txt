@@ -51,6 +51,26 @@ add_library(loopercat::core ALIAS loopercat_core)
 target_include_directories(loopercat_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/core/include)
 target_compile_features(loopercat_core INTERFACE cxx_std_20)
 
+# ----------------------------------------------------------------------------
+# minimp3 (fetched, pinned, CC0-1.0) — the APP-tier MP3 decoder behind
+# app/Mp3AudioFormat (issue #52), so it lives OUTSIDE the tests guard: a
+# release-shaped build (app only, tests off) compiles Mp3AudioFormat.cpp too
+# — exactly what release-base-linux caught when this block sat in the test
+# section. ONE bundled decoder on all three platforms: stock JUCE on Linux
+# cannot read mp3 at all, and the platform codecs that exist don't strip the
+# LAME encoder delay/padding — leading junk and a gapped loop seam a looper
+# cannot accept. Two headers, no CMakeLists of its own — MakeAvailable just
+# populates the source; SYSTEM include keeps its C internals out of our
+# warning gate.
+# ----------------------------------------------------------------------------
+include(FetchContent)
+FetchContent_Declare(minimp3
+    GIT_REPOSITORY https://github.com/lieff/minimp3.git
+    GIT_TAG        ea99364f61c14656440e8d77e9c233ccf3124633)
+FetchContent_MakeAvailable(minimp3)
+add_library(minimp3_headers INTERFACE)
+target_include_directories(minimp3_headers SYSTEM INTERFACE "${minimp3_SOURCE_DIR}")
+
 enable_testing()
 
 if(LOOPERCAT_BUILD_TESTS)
@@ -68,21 +88,6 @@ FetchContent_Declare(nlohmann_json
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(nlohmann_json)
 
-# ----------------------------------------------------------------------------
-# minimp3 (fetched, pinned, CC0-1.0) — the app-tier MP3 decoder behind
-# app/Mp3AudioFormat (issue #52). ONE bundled decoder on all three platforms:
-# stock JUCE on Linux cannot read mp3 at all, and the platform codecs that
-# exist don't strip the LAME encoder delay/padding — leading junk and a
-# gapped loop seam a looper cannot accept. Two headers, no CMakeLists of its
-# own — MakeAvailable just populates the source; SYSTEM include keeps its C
-# internals out of our warning gate.
-# ----------------------------------------------------------------------------
-FetchContent_Declare(minimp3
-    GIT_REPOSITORY https://github.com/lieff/minimp3.git
-    GIT_TAG        ea99364f61c14656440e8d77e9c233ccf3124633)
-FetchContent_MakeAvailable(minimp3)
-add_library(minimp3_headers INTERFACE)
-target_include_directories(minimp3_headers SYSTEM INTERFACE "${minimp3_SOURCE_DIR}")
 
 # The same downstream-grade strict set the family gates its headers with
 # (felitronics-appkit/-core convention): the core must be warning-clean under
