@@ -279,10 +279,21 @@ int SlotTable::rowAt(int x, int y)
     return table_.getRowContainingPosition(inTable.x, inTable.y);
 }
 
+// The import gate: what the converter behind the drop actually reads on every
+// platform — WAV, MP3 (bundled minimp3, issue #52), and JUCE's own uniform
+// trio AIFF/FLAC/Ogg. M4A stays out: only macOS could decode it.
+bool SlotTable::isImportableAudio(const juce::String& path)
+{
+    for (const char* ext : { ".wav", ".mp3", ".aiff", ".aif", ".flac", ".ogg" })
+        if (path.endsWithIgnoreCase(ext))
+            return true;
+    return false;
+}
+
 bool SlotTable::isInterestedInFileDrag(const juce::StringArray& files)
 {
     for (const auto& file : files)
-        if (file.endsWithIgnoreCase(".wav"))
+        if (isImportableAudio(file))
             return true;
     return false;
 }
@@ -307,12 +318,12 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
     const int row = rowAt(x, y);
     dragRow_ = -1;
     table_.repaint();
-    if (slotOfRow(row) <= 0 || !onWavDropped)
+    if (slotOfRow(row) <= 0 || !onAudioDropped)
         return;
     for (const auto& file : files)
-        if (file.endsWithIgnoreCase(".wav")) {
-            onWavDropped(slotOfRow(row), file);
-            return; // one wav per slot; the first one wins
+        if (isImportableAudio(file)) {
+            onAudioDropped(slotOfRow(row), file);
+            return; // one file per slot; the first one wins
         }
 }
 
@@ -419,7 +430,7 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kCountIn:  break; // drawn as a dot below
     case kWavFile:
         text = r.wavFile.empty() && !loaded
-                 ? juce::String::fromUTF8("\xe2\x80\x94 drop a WAV here, or click to choose")
+                 ? juce::String::fromUTF8("\xe2\x80\x94 drop audio here, or click to choose")
                  : utf8(r.wavFile);
         break;
     default:        break;

@@ -33,13 +33,13 @@ public:
     std::function<void(int)> onSlotSelected;                        // selection moved
     std::function<void(int)> onSlotActivated;                       // double-click: select AND play
     std::function<void(int, juce::Point<int>)> onSlotContextMenu;   // right-click (screen position)
-    std::function<void(int, juce::String)> onWavDropped;            // a .wav landed on a slot's row
+    std::function<void(int, juce::String)> onAudioDropped;          // an importable audio file landed on a slot's row
     std::function<void(int, int)> onSwapRequested;                  // row dragged onto a row: (from, to) trade places
     std::function<void(int, juce::String)> onRenameCommitted;       // inline edit finished with a new name
     std::function<void(int, long long)> onTempoCommitted;           // inline edit finished with new tenths of BPM
     std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
     std::function<void(int)> onCountInToggled;                      // click on the Count-In cell
-    std::function<void(int)> onEmptyWavCellClicked;                 // click the "drop a WAV here" hint
+    std::function<void(int)> onEmptyWavCellClicked;                 // click the "drop audio here" hint
 
     void selectSlot(int slot);
 
@@ -54,6 +54,7 @@ public:
     // The slot a worker job is touching right now (0 = none): its row pulses.
     void setBusySlot(int slot);
 
+    static bool isImportableAudio(const juce::String& path); // the one import gate: drag + drop share it
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
     void fileDragMove(const juce::StringArray& files, int x, int y) override;
     void fileDragExit(const juce::StringArray& files) override;

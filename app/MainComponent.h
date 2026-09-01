@@ -69,6 +69,8 @@ public:
     void selectSlot(int slot);
     void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
     void showAbout(); // the menu About and --about: opens the version badge's popover
+    void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied); // UI + the --push seam
+    bool listeningTo(int slot) const; // --push seam: the slot is in the player, waveform drawn
     void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
     bool playerReady() const;
 
@@ -119,6 +121,7 @@ private:
 
     void runBackup();
     void runCleanJunk();
+    void restoreListening(); // the selected occupied slot is the one in the player
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
@@ -129,7 +132,6 @@ private:
     void applyColumnPreferences();          // Settings -> Columns, onto the table
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
-    void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied);
     void releasePlayerIfHolding(int slotA, int slotB);
     void choosePushWav(int slot, bool slotOccupied);
     void pullSlot(int slot);

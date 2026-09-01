@@ -164,7 +164,7 @@ MainComponent::MainComponent(std::string explicitVolume)
                              commands::setTempo(volumePath, slot, tenths, options);
                          } });
     };
-    table.onWavDropped = [this](int slot, juce::String path) {
+    table.onAudioDropped = [this](int slot, juce::String path) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             pushWav(slot, path, row->info.hasAudio);
     };
@@ -379,6 +379,8 @@ MainComponent::MainComponent(std::string explicitVolume)
         inspector.setBusy(busy);
         updateStatusText();
         updateToolbar();
+        if (!busy)
+            restoreListening(); // the job's own rescan applied while busy — see restoreListening
     };
     worker.onJobResult = [this](juce::String description, juce::String error) {
         if (error.isNotEmpty()) {
@@ -620,6 +622,14 @@ void MainComponent::selectSlot(int slot)
 bool MainComponent::playerReady() const
 {
     return !engine.hasSource() || player.isThumbnailReady();
+}
+
+// The --push seam's whole verdict: after a push into the selected slot the
+// player must be holding THAT slot with its waveform drawn — playerReady()
+// cannot say this, because an empty player counts as "ready" there.
+bool MainComponent::listeningTo(int slot) const
+{
+    return player.currentSlot() == slot && player.isThumbnailReady();
 }
 
 const SlotRow* MainComponent::slotRowFor(int slot) const
@@ -868,6 +878,26 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     if (!mounted)
         selectedSlot = 0;
     updateInspector();
+
+    restoreListening();
+}
+
+// A mutation releases the preview of the slot it rewrites (issue #26 —
+// Windows will not let a held file be replaced), and the job itself never
+// reloads it: the row refreshed but the player said "Select a slot to
+// listen" until the user clicked away and back. The invariant — the selected
+// occupied slot is the one in the player — restores at BOTH ends of a
+// mutation's tail, because the worker's delivery order is snapshot → result
+// → busy(false) (PedalWorker::run): at snapshot-apply time the job still
+// counts as busy and the guard below rightly stays hands-off, so the busy
+// drop is the hook that actually fires after a job; the snapshot-apply hook
+// covers mounts and idle rescans. slotChosen is idempotent (same path →
+// no-op), and an unmounted or empty selection is a no-op/clear by its own
+// rules.
+void MainComponent::restoreListening()
+{
+    if (!pedalBusy && selectedSlot > 0)
+        slotChosen(selectedSlot, false);
 }
 
 void MainComponent::slotChosen(int slot, bool startPlaying)
@@ -918,7 +948,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     // panel now (and the two lamp columns still flip on click), so this menu
     // stopped being a second copy of them.
     juce::PopupMenu menu;
-    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace WAV\xe2\x80\xa6" : "Push WAV here\xe2\x80\xa6"));
+    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace audio\xe2\x80\xa6" : "Push audio here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     juce::PopupMenu downmix;
     downmix.addItem(6, juce::String::fromUTF8("Both outputs\xe2\x80\xa6"));
@@ -978,8 +1008,9 @@ void MainComponent::toggleCountIn(int slot, bool currentlyOn)
 void MainComponent::choosePushWav(int slot, bool slotOccupied)
 {
     fileChooser = std::make_unique<juce::FileChooser>(
-        "Choose a WAV for slot " + juce::String(slot),
-        juce::File::getSpecialLocation(juce::File::userMusicDirectory), "*.wav");
+        "Choose audio for slot " + juce::String(slot),
+        juce::File::getSpecialLocation(juce::File::userMusicDirectory),
+        "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg");
     fileChooser->launchAsync(juce::FileBrowserComponent::openMode
                                  | juce::FileBrowserComponent::canSelectFiles,
                              [this, slot, slotOccupied](const juce::FileChooser& chooser) {

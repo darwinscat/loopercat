@@ -212,6 +212,25 @@ private:
         if (selectSlot > 0) {
             content.selectSlot(selectSlot);
             const auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();
+            // "--push <file>": push into the selected slot through the real
+            // worker/rescan chain, then fall into the playerReady wait below —
+            // which IS the check that the player picked the new file up
+            // (the missed-restore bug this seam exists to falsify).
+            const int pushFlag = args.indexOf("--push");
+            if (pushFlag >= 0) {
+                content.pushWav(selectSlot, args[pushFlag + 1], false);
+                // The verdict this seam exists for: the worker converts and
+                // pushes, the rescan lands, and the player must pick the new
+                // file up ON ITS OWN — no click-away-and-back.
+                const auto pushDeadline = juce::Time::getMillisecondCounterHiRes() + 30000;
+                while (!content.listeningTo(selectSlot)
+                       && juce::Time::getMillisecondCounterHiRes() < pushDeadline)
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+                if (!content.listeningTo(selectSlot)) {
+                    std::cerr << "player did not pick up the pushed file\n";
+                    return 2;
+                }
+            }
             const int markersFlag = args.indexOf("--markers");
             if (markersFlag >= 0) { // "--markers <in>:<out>" in seconds
                 const juce::String spec = args[markersFlag + 1];
