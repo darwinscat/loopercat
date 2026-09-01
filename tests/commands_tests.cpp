@@ -1421,8 +1421,9 @@ int main()
               .write = writeOpts(tmp.path, "norm-1"),
               .progress = [&ticks](double v) { ticks.push_back(v); } });
 
-        // Progress covers the whole command: measure first (the 0..0.5 half),
-        // rewrite second, and it ends at exactly done — monotonically.
+        // Progress covers the whole command — the read and the measure lead
+        // (the source must be in hand before anything), the write phases
+        // follow, and it ends at exactly done — monotonically.
         CHECK(!ticks.empty());
         CHECK(ticks.front() <= 0.5);
         bool monotonic = true;
@@ -1486,8 +1487,8 @@ int main()
         CHECK(swallowed.cappedByPeak);
         CHECK(std::abs(swallowed.gainDb) < 1.0e-12);
 
-        // A no-write answer never enters the rewrite half of the progress
-        // scale — the overlay's file bar must not claim work that never ran.
+        // A no-write answer stops at the end of the measure phase (0.45) —
+        // the overlay's file bar must not claim work that never ran.
         std::vector<double> ticks;
         (void) commands::normalize(volume, 6,
                                    { .trashRoot = tmp.path / "trash",
@@ -1498,7 +1499,7 @@ int main()
         double top = 0.0;
         for (const double v : ticks)
             top = std::max(top, v);
-        CHECK(top <= 0.5);
+        CHECK(top <= 0.45 + 1.0e-9);
 
         // The player asked to normalize THIS slot; no gain does what they
         // asked — these are errors, each naming its reason.
