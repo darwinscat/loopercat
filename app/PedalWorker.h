@@ -10,6 +10,7 @@
 
 #include <juce_events/juce_events.h>
 
+#include <algorithm>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -83,6 +84,12 @@ public:
         // cancelPending(id) can drop the queued tail and results can be
         // credited to the batch's overlay (issue #61).
         int batch = 0;
+        // A background job is read-only work the player did not sit down to
+        // wait for (the loudness check, issue #61): any foreground job jumps
+        // ahead of it in the queue, and it pulses its row without locking
+        // the UI. Still serialized on this thread — it can never read a take
+        // mid-rewrite.
+        bool background = false;
     };
 
     // `explicitVolume` pins the volume path (the --volume CLI override;
@@ -102,9 +109,10 @@ public:
         *alive_ = false; // message thread; queued deliveries become no-ops
     }
 
-    std::function<void(bool, int)> onBusy; // (started/finished, affected slot or 0)
-    // (description, error — empty = ok, batch id — 0 = standalone)
-    std::function<void(juce::String, juce::String, int)> onJobResult;
+    // (started/finished, affected slot or 0, background job)
+    std::function<void(bool, int, bool)> onBusy;
+    // (description, error — empty = ok, batch id — 0 = standalone, affected slot or 0)
+    std::function<void(juce::String, juce::String, int, int)> onJobResult;
 
     // Wire the platform device-truth probe (DeviceWatcher::verdict) and the
     // eject starter (DeviceWatcher::eject) before start(). Unset probe means
@@ -213,13 +221,20 @@ private:
         return volume::detectVolume(volume::candidateVolumes());
     }
 
+    // Foreground first: a mutation the player just asked for never waits
+    // behind a queue of background reads; background jobs run in order once
+    // nothing else is pending.
     std::optional<Job> popJob()
     {
         const juce::ScopedLock sl(queueLock_);
         if (queue_.empty())
             return std::nullopt;
-        Job job = std::move(queue_.front());
-        queue_.pop_front();
+        auto pick = std::find_if(queue_.begin(), queue_.end(),
+                                 [](const Job& job) { return !job.background; });
+        if (pick == queue_.end())
+            pick = queue_.begin();
+        Job job = std::move(*pick);
+        queue_.erase(pick);
         return job;
     }
 
@@ -248,7 +263,10 @@ private:
         while (!threadShouldExit()) {
             applyPendingEvents();
             if (auto job = popJob()) {
-                deliver([cb = onBusy, slot = job->slot] { if (cb) cb(true, slot); });
+                deliver([cb = onBusy, slot = job->slot, bg = job->background] {
+                    if (cb)
+                        cb(true, slot, bg);
+                });
                 juce::String error;
                 try {
                     // The lifecycle gate: a ghost mount happily accepts writes
@@ -268,11 +286,14 @@ private:
                 juce::String described = job->description;
                 if (error.isEmpty() && job->note != nullptr && job->note->isNotEmpty())
                     described << juce::String::fromUTF8(" \xe2\x80\x94 ") << *job->note;
-                deliver([cb = onJobResult, d = described, error, b = job->batch] {
+                deliver([cb = onJobResult, d = described, error, b = job->batch, s = job->slot] {
                     if (cb)
-                        cb(d, error, b);
+                        cb(d, error, b, s);
                 });
-                deliver([cb = onBusy, slot = job->slot] { if (cb) cb(false, slot); });
+                deliver([cb = onBusy, slot = job->slot, bg = job->background] {
+                    if (cb)
+                        cb(false, slot, bg);
+                });
                 continue; // more queued work before the next poll
             }
             maybeDeliverSnapshot(scanAdvanced());
@@ -340,7 +361,7 @@ private:
             } catch (const std::exception& e) {
                 deliver([cb = onJobResult, msg = juce::String::fromUTF8(e.what())] {
                     if (cb)
-                        cb("Eject", msg, 0);
+                        cb("Eject", msg, 0, 0);
                 });
             }
         }
