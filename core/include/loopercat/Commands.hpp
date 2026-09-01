@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -602,6 +603,10 @@ struct NormalizeOptions {
     fs::path trashRoot; // REQUIRED: the original lands here first (the undo)
     double targetLufs = 0.0; // REQUIRED: 0 is not a target and is refused as one
     WriteOptions write;
+    // Optional observer: hears 0..1 across the whole command — the measure
+    // pass as the first half, the rewrite as the second — on the calling
+    // thread. The batch overlay's current-file bar (issue #61).
+    std::function<void(double)> progress;
 };
 
 struct NormalizeResult {
@@ -645,9 +650,15 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
         throw Error("slot " + std::to_string(slot) + " has no audio to normalize");
     const fs::path source = volume::wavDir(volume, slot) / files.front();
 
+    const auto report = [&options](double v) {
+        if (options.progress)
+            options.progress(v);
+    };
+
     const std::string raw = readFileBytes(source);
     const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
-    const wav::LoudnessReading reading = wav::measureLoudness(rawView); // validates the shape
+    const wav::LoudnessReading reading = wav::measureLoudness( // validates the shape
+        rawView, [&report](double v) { report(0.5 * v); });
     if (!reading.integratedLufs.has_value())
         throw Error("slot " + std::to_string(slot)
                     + " is silent or shorter than the 400 ms a loudness measurement needs");
@@ -665,7 +676,8 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     if (std::abs(gainDb) < 1.0e-9)
         return result; // the ceiling ate the whole boost — rewriting would change nothing
 
-    const wav::Bytes rewritten = wav::withGainDb(rawView, gainDb);
+    const wav::Bytes rewritten =
+        wav::withGainDb(rawView, gainDb, [&report](double v) { report(0.5 + 0.5 * v); });
 
     // The config has to be readable before the audio is touched: a rewrite
     // that could not write its memory pair afterwards would leave the volume
@@ -688,6 +700,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     result.applied = true;
     result.gainDb = gainDb;
     result.written = writeMemoryPair(volume, memoryText, options.write);
+    report(1.0); // the config pair is part of the job; done means all of it
     return result;
 }
 

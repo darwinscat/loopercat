@@ -194,5 +194,31 @@ int main()
         CHECK_NEAR(*after, *before + 7.0, 0.05);
     }
 
+    // --- progress reporting tells the truth (issue #61) ---
+
+    {
+        const auto bytes = sineWav(44100, -23.0);
+        std::vector<double> ticks;
+        const auto collect = [&ticks](double v) { ticks.push_back(v); };
+
+        (void) wav::measureLoudness(view(bytes), collect);
+        CHECK(!ticks.empty());
+        bool monotonic = true;
+        for (std::size_t i = 1; i < ticks.size(); ++i)
+            monotonic = monotonic && ticks[i] >= ticks[i - 1];
+        CHECK(monotonic);
+        CHECK(ticks.front() > 0.0); // frames counted, not a courtesy 0
+        CHECK(std::abs(ticks.back() - 1.0) <= 1.0e-12);
+
+        ticks.clear();
+        (void) wav::withGainDb(view(bytes), 3.0, collect);
+        CHECK(!ticks.empty());
+        monotonic = true;
+        for (std::size_t i = 1; i < ticks.size(); ++i)
+            monotonic = monotonic && ticks[i] >= ticks[i - 1];
+        CHECK(monotonic);
+        CHECK(std::abs(ticks.back() - 1.0) <= 1.0e-12);
+    }
+
     return testkit::summary("normalize");
 }
