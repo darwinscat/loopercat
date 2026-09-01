@@ -118,7 +118,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
             }
         } else {
             const double wanted = target - *measured;
-            if (passesAsIs && std::abs(wanted) < kAlreadyAtTargetLu) {
+            if (passesAsIs && std::abs(wanted) < loudness::kAlreadyAtTargetLu) {
                 outcome = NormalizeOutcome { .measurable = true, .untouched = true,
                                              .measuredLufs = *measured };
                 out = { source, false, outcome };

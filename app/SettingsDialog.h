@@ -128,6 +128,14 @@ public:
 
     static constexpr const char* kDeviceStateKey = "audioDeviceState";
 
+    // "-18" for whole targets, "-17.5" otherwise — the number a player typed,
+    // not a printf artefact. Shared with the slot menu's Normalize label.
+    static juce::String formatLufs(double lufs)
+    {
+        juce::String s(lufs, 1);
+        return s.endsWith(".0") ? s.dropLastCharacters(2) : s;
+    }
+
     void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff121218)); }
 
     void resized() override
@@ -177,14 +185,6 @@ private:
     {
         if (onImportChanged_)
             onImportChanged_(importPrefs_);
-    }
-
-    // "-18" for whole targets, "-17.5" otherwise — the field shows a number a
-    // player typed, not a printf artefact.
-    static juce::String formatLufs(double lufs)
-    {
-        juce::String s(lufs, 1);
-        return s.endsWith(".0") ? s.dropLastCharacters(2) : s;
     }
 
     void refreshEquivalence()

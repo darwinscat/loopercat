@@ -34,10 +34,9 @@ struct Options {
     std::optional<double> normalizeTargetLufs;
 };
 
-// A pedal-ready source already within this much of the target passes through
-// byte-exact instead of being rewritten for a fraction nobody can hear —
-// re-importing an already-normalized file stays a no-op.
-inline constexpr double kAlreadyAtTargetLu = 0.2;
+// A pedal-ready source already within loudness::kAlreadyAtTargetLu of the
+// target passes through byte-exact instead of being rewritten for a fraction
+// nobody can hear — re-importing an already-normalized file stays a no-op.
 
 // What normalization did to this import — reported so the toast and the
 // operations log can say it, not so callers can second-guess it.
