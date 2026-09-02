@@ -5,9 +5,13 @@
 
 #include "AudioEngine.h"
 
+#include <loopercat/Normalize.hpp>
+
 #include <felitronics/appkit/Brand.h>
 
 #include <juce_gui_basics/juce_gui_basics.h>
+
+#include <optional>
 
 //==============================================================================
 // loopercat::PlayerPane — the listening strip for the selected slot: transport
@@ -43,7 +47,11 @@ public:
     void setMarkers(double inSeconds, double outSeconds);
 
     const juce::String& currentPath() const { return currentPath_; }
-    bool isThumbnailReady() const { return thumbnail_.isFullyLoaded(); }
+    // True once the read pass has fed the whole file into the waveform.
+    bool isThumbnailReady() const
+    {
+        return !readPass_.isThreadRunning() && thumbnail_.isFullyLoaded();
+    }
 
     std::function<void(double)> onVolumeChanged;                     // preview volume moved (0..100)
 
@@ -62,16 +70,21 @@ public:
     void releaseFile();
     std::function<void(int, juce::int64, juce::int64)> onTrim;       // (slot, inFrame, outFrame)
 
-    // Loudness of the loaded loop (issue #61): a readout after the title and
-    // the Measure / Normalize… pair — the audio toolbar's other half. Shown
-    // while no trim selection is active: the selection owns the row then,
-    // and Normalize is whole-loop work that must not read as "the selection".
-    // All three ignore a slot that is not the loaded one.
+    // Loudness of the loaded loop (issue #61). The pane reads every file it
+    // loads in ONE background pass that feeds both the waveform and a
+    // BS.1770 meter, and hands the reading up through onLoudnessRead the
+    // moment the waveform is complete — no second read off the card, no
+    // button. The owner turns it into words (target, damage) and feeds them
+    // back through setLoudness; a read-only check running elsewhere lands
+    // the same way. The readout and Normalize… share the row with Trim and
+    // step aside while a trim selection is active: the selection owns the
+    // row then, and Normalize is whole-loop work that must not read as "the
+    // selection". All setters ignore a slot that is not the loaded one.
+    std::function<void(int, const wav::LoudnessReading&)> onLoudnessRead;
     void setLoudness(int slot, const juce::String& text, bool attention, bool damaged,
                      const juce::String& tooltip);
     void setLoudnessPending(int slot);
     void clearLoudness(int slot = 0); // 0 = whatever is loaded
-    std::function<void(int)> onMeasure;   // Measure pressed for this slot
     std::function<void(int)> onNormalize; // Normalize… pressed for this slot
 
     void paint(juce::Graphics& g) override;
@@ -97,6 +110,26 @@ private:
     void updateTransportRow();
     void updateLoudnessButtons();
     void layoutReadout();
+    void passFinished(int slot, std::optional<wav::LoudnessReading> reading); // message thread
+
+    // The one read pass over a loaded file: waveform blocks into the
+    // thumbnail, samples into the meter, then the reading up to the pane. A
+    // new load or a clear stops it between blocks — browsing fast through
+    // slots must not queue a card's worth of reads.
+    class ReadPass final : public juce::Thread
+    {
+    public:
+        explicit ReadPass(PlayerPane& owner)
+            : juce::Thread("LooperCat player read pass"), owner_(owner) {}
+        void start(const juce::File& file, int slot);
+        void stop() { stopThread(5000); }
+        void run() override;
+
+    private:
+        PlayerPane& owner_;
+        juce::File file_;
+        int slot_ = 0;
+    };
 
     // The readout after the title: a line of text, or a warning sign with a
     // word — the row is tight, so the tooltip carries what the row cannot.
@@ -121,7 +154,6 @@ private:
     juce::Rectangle<int> volumeIconArea_; // the speaker glyph, drawn in paint()
     juce::TextButton trimButton_ { "Trim" };
     juce::TextButton resetButton_ { "Reset" };
-    juce::TextButton measureButton_ { "Measure" };
     juce::TextButton normalizeButton_ { juce::String::fromUTF8("Normalize\xe2\x80\xa6") };
     juce::String title_, error_, currentPath_, tempoNote_;
     LoudnessReadout readout_;
@@ -132,6 +164,7 @@ private:
     double inSeconds_ = 0.0, outSeconds_ = 0.0;
     Drag drag_ = Drag::none;
     bool lastPaintedPlaying_ = false;
+    ReadPass readPass_ { *this }; // last: it touches thumbnail_ and engine_, so it dies first
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PlayerPane)
 };

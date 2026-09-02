@@ -17,6 +17,7 @@ namespace
     const juce::Colour kText { 0xffd8d8d8 };
     const juce::Colour kDim { 0xff63636d };
     constexpr int kTransportRowHeight = 30;
+    constexpr int kReadBlock = 32768; // frames per read-pass block: ~0.7 s, a fine stop grain
     // The transport row's right side, outside in: the time readout ("12:34 /
     // 12:34" at 13 px plus its 44 px right margin), then the operation zone
     // that [Reset][Trim] and [Measure][Normalize…] take turns in. Any
@@ -74,13 +75,7 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
         markersChanged();
     };
 
-    // The loudness pair (issue #61) shares the trim pair's zone and styling:
-    // the quiet read on the left, the accented rewrite on the right.
-    measureButton_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
-    measureButton_.onClick = [this] {
-        if (onMeasure && slot_ > 0)
-            onMeasure(slot_);
-    };
+    // Normalize… (issue #61) shares the trim pair's zone and its accent.
     normalizeButton_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2a2440));
     normalizeButton_.setColour(juce::TextButton::textColourOffId,
                                felitronics::appkit::brand::lilac);
@@ -97,8 +92,7 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     addAndMakeVisible(volumeSlider_);
     addChildComponent(trimButton_);  // appear with active markers
     addChildComponent(resetButton_);
-    addChildComponent(measureButton_);   // appear with a loaded loop and no markers
-    addChildComponent(normalizeButton_);
+    addChildComponent(normalizeButton_); // appears with a loaded loop and no markers
     addChildComponent(readout_);
     clearLoudness();
 
@@ -107,6 +101,7 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
 
 PlayerPane::~PlayerPane()
 {
+    readPass_.stop(); // before anything it reads from goes away
     thumbnail_.removeChangeListener(this);
 }
 
@@ -129,6 +124,7 @@ void PlayerPane::setSlot(int slot, const juce::File& wav, const juce::String& ti
 
 void PlayerPane::applyFile(const juce::File& wav)
 {
+    readPass_.stop(); // whatever it was reading is not this file
     error_.clear();
     currentPath_.clear();
     thumbnail_.clear();
@@ -142,7 +138,8 @@ void PlayerPane::applyFile(const juce::File& wav)
         currentPath_ = wav.getFullPathName();
         engine_.setLooping(!oneShot_); // preview with the slot's own behavior
         outSeconds_ = engine_.lengthSeconds();
-        thumbnail_.setSource(new juce::FileInputSource(wav));
+        readPass_.start(wav, slot_); // waveform and loudness, one read
+        setLoudnessPending(slot_);
     }
     markersChanged();
     updateTransportRow();
@@ -154,16 +151,15 @@ void PlayerPane::reload()
 {
     if (currentPath_.isEmpty())
         return;
-    thumbnailCache_.clear(); // same path, new bytes — the cached thumbnail lies
-    const juce::File file(currentPath_);
+    const juce::File file(currentPath_); // same path, new bytes — applyFile reads it afresh
     slotFrames_ = 0; // unknown until the next snapshot; frame math re-derives from the reader
     applyFile(file);
 }
 
 void PlayerPane::releaseFile()
 {
+    readPass_.stop(); // the read handle is a handle too
     engine_.unload();
-    thumbnail_.setSource(nullptr);
     updateTransportRow();
 }
 
@@ -233,9 +229,90 @@ void PlayerPane::clearLoudness(int slot)
     if (slot != 0 && slot != slot_)
         return;
     loudnessDamaged_ = loudnessPending_ = false;
-    readout_.set(juce::String::fromUTF8("LUFS \xe2\x80\x94"), false, false,
-                 "Not measured yet. Press Measure.");
+    readout_.set(juce::String::fromUTF8("LUFS \xe2\x80\x94"), false, false, "Not measured.");
     updateLoudnessButtons();
+}
+
+// --- the read pass ---
+
+void PlayerPane::ReadPass::start(const juce::File& file, int slot)
+{
+    stop();
+    file_ = file;
+    slot_ = slot;
+    startThread();
+}
+
+void PlayerPane::ReadPass::run()
+{
+    std::unique_ptr<juce::AudioFormatReader> reader(owner_.engine_.formats().createReaderFor(file_));
+    const int slot = slot_;
+    juce::Component::SafePointer<PlayerPane> owner(&owner_);
+    const auto finish = [owner, slot](std::optional<wav::LoudnessReading> reading) {
+        juce::MessageManager::callAsync([owner, slot, reading] {
+            if (owner != nullptr)
+                owner->passFinished(slot, reading);
+        });
+    };
+    if (reader == nullptr || reader->numChannels < 1) {
+        finish(std::nullopt);
+        return;
+    }
+    const int channels = static_cast<int>(reader->numChannels);
+    const juce::int64 total = reader->lengthInSamples;
+    owner_.thumbnail_.reset(channels, reader->sampleRate, total); // thread-safe, like addBlock
+
+    // A rate the meter cannot cut into 100 ms sub-blocks is not audio the
+    // pedal plays anyway; the waveform still draws, the reading is simply absent.
+    std::optional<loudness::Meter> meter;
+    try {
+        meter.emplace(static_cast<int>(reader->sampleRate));
+    } catch (const Error&) {
+    }
+
+    juce::AudioBuffer<float> buffer(channels, kReadBlock);
+    std::vector<float> interleaved(2 * static_cast<std::size_t>(kReadBlock));
+    juce::int64 position = 0;
+    while (position < total && !threadShouldExit()) {
+        const int n = static_cast<int>(std::min<juce::int64>(kReadBlock, total - position));
+        if (!reader->read(&buffer, 0, n, position, true, true))
+            break;
+        owner_.thumbnail_.addBlock(position, buffer, 0, n);
+        if (meter.has_value()) {
+            // Mono feeds both meter channels — the pedal plays it that way.
+            const float* left = buffer.getReadPointer(0);
+            const float* right = buffer.getReadPointer(channels >= 2 ? 1 : 0);
+            for (int i = 0; i < n; ++i) {
+                interleaved[2 * static_cast<std::size_t>(i)] = left[i];
+                interleaved[2 * static_cast<std::size_t>(i) + 1] = right[i];
+            }
+            meter->process(interleaved.data(), static_cast<std::size_t>(n));
+        }
+        position += n;
+    }
+    if (threadShouldExit())
+        return; // stopped for a newer file: no verdict, and no message
+    if (position < total || !meter.has_value()) {
+        finish(std::nullopt); // a short read is not a reading
+        return;
+    }
+    finish(wav::LoudnessReading { meter->integratedLufs(), meter->samplePeak(),
+                                  meter->wildSamples() });
+}
+
+void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> reading)
+{
+    if (slot != slot_)
+        return; // the pass for a slot no longer loaded
+    if (!reading.has_value()) {
+        readout_.set(juce::String::fromUTF8("LUFS \xe2\x80\x94"), false, false,
+                     "Could not measure this file.");
+        loudnessPending_ = false;
+        updateLoudnessButtons();
+        return;
+    }
+    if (onLoudnessRead)
+        onLoudnessRead(slot, *reading); // the owner answers with setLoudness
 }
 
 // The readout sits right after the name and takes what is left of the row
@@ -260,10 +337,8 @@ void PlayerPane::layoutReadout()
 void PlayerPane::updateLoudnessButtons()
 {
     const bool show = engine_.hasSource() && slot_ > 0 && !markersActive();
-    measureButton_.setVisible(show);
     normalizeButton_.setVisible(show);
     readout_.setVisible(show);
-    measureButton_.setEnabled(!loudnessPending_);
     normalizeButton_.setEnabled(!loudnessPending_ && !loudnessDamaged_);
 }
 
@@ -278,6 +353,7 @@ void PlayerPane::setTempoNote(const juce::String& note)
 
 void PlayerPane::clear()
 {
+    readPass_.stop();
     engine_.unload();
     thumbnail_.clear();
     title_.clear();
@@ -513,7 +589,6 @@ void PlayerPane::resized()
     resetButton_.setBounds(
         ops.withTrimmedLeft(kOpsZone - 116).withTrimmedRight(58).reduced(2, 0));
     normalizeButton_.setBounds(ops.withTrimmedLeft(kOpsZone - 94).reduced(2, 0));
-    measureButton_.setBounds(ops.withTrimmedRight(94).reduced(2, 0));
     layoutReadout();
 }
 
