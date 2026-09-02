@@ -53,6 +53,27 @@ namespace
         return story;
     }
 
+    // The same story for the on-card command (issue #53) — its no-write
+    // outcomes are answers, and the toast must not imply a rewrite.
+    juce::String describeNormalize(const commands::NormalizeResult& result, double targetLufs)
+    {
+        const auto lufs = [](double v) { return juce::String(v, 1); };
+        if (!result.applied)
+            return result.cappedByPeak
+                     ? "already peaking at the -1 dB ceiling (measured "
+                           + lufs(result.measuredLufs) + " LUFS), nothing to give it, file untouched"
+                     : "already at " + lufs(targetLufs) + " LUFS (measured "
+                           + lufs(result.measuredLufs) + "), file untouched";
+        juce::String story = juce::String(result.gainDb >= 0.0 ? "+" : "")
+                           + juce::String(result.gainDb, 1) + " dB ("
+                           + lufs(result.measuredLufs)
+                           + juce::String::fromUTF8(" \xe2\x86\x92 ")
+                           + lufs(result.measuredLufs + result.gainDb) + " LUFS)";
+        if (result.cappedByPeak)
+            story << ", boost capped at the -1 dB peak ceiling";
+        return story;
+    }
+
     // The window background — the family's near-black stage (the brand mark's
     // dark disc is 0xff0b0b11; the stage sits just above it).
     const juce::Colour kBackground { 0xff121218 };
@@ -421,15 +442,23 @@ MainComponent::MainComponent(std::string explicitVolume)
         // audio alike (hardware, 2026-08-11: a rename, a tempo change and a
         // trim all reached the pedal with no power cycle). Disconnect is the
         // whole story, so nobody gets sent to the wall plug.
-        const bool wroteToPedal = description.startsWith("Rename")
-                               || description.startsWith("Enable")
-                               || description.startsWith("Disable")
-                               || description.startsWith("Push")
-                               || description.startsWith("Trim")
-                               || description.startsWith("Downmix")
-                               || description.startsWith("Set tempo")
-                               || description.startsWith("Clear")
-                               || description.startsWith("Swap");
+        const bool wroteToPedal = (description.startsWith("Rename")
+                                   || description.startsWith("Enable")
+                                   || description.startsWith("Disable")
+                                   || description.startsWith("Push")
+                                   || description.startsWith("Trim")
+                                   || description.startsWith("Downmix")
+                                   || description.startsWith("Normalize")
+                                   || description.startsWith("Set tempo")
+                                   || description.startsWith("Clear")
+                                   || description.startsWith("Swap"))
+                               // A normalize that found nothing to change wrote
+                               // nothing — its note says so, and the toast must
+                               // not send anyone to Disconnect for it. Only for
+                               // Normalize: a Push saying "file untouched" still
+                               // pushed that file onto the card.
+                               && !(description.startsWith("Normalize")
+                                    && description.contains("file untouched"));
         if (description.startsWith("Trim"))
             player.reload(); // same path, new bytes — fresh reader + thumbnail
         if (wroteToPedal)
@@ -983,6 +1012,15 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     downmix.addItem(7, juce::String::fromUTF8("OUTPUT A only\xe2\x80\xa6"));
     downmix.addItem(8, juce::String::fromUTF8("OUTPUT B only\xe2\x80\xa6"));
     menu.addSubMenu(juce::String::fromUTF8("Downmix to mono"), downmix, occupied);
+    // The label names the target so the choice is informed before the dialog:
+    // the number comes from Settings -> Import, shared with normalize-on-upload.
+    const double normalizeTarget = settings.file() != nullptr
+        ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
+        : kDefaultTargetLufs;
+    menu.addItem(9,
+                 "Normalize to " + SettingsDialog::formatLufs(normalizeTarget)
+                     + juce::String::fromUTF8(" LUFS\xe2\x80\xa6"),
+                 occupied);
     menu.addSeparator();
     menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
 
@@ -1006,6 +1044,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             case 6: downmixSlot(slot, name, wav::Placement::BothOutputs); break;
             case 7: downmixSlot(slot, name, wav::Placement::OutputAOnly); break;
             case 8: downmixSlot(slot, name, wav::Placement::OutputBOnly); break;
+            case 9: normalizeSlot(slot, name); break;
             default: break;
             }
         });
@@ -1181,6 +1220,52 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
                           volumePath, slot,
                           { .trashRoot = trash, .placement = placement, .write = options });
                   } });
+        });
+}
+
+// Levelling a loop that is already on the card (issue #53) — the on-card
+// sibling of normalize-on-upload, for setlists assembled before the option
+// existed. Destructive in the same sense as the fold (the original loudness
+// stops being recoverable from the file), so it asks first and keeps the
+// original in the trash. The target is the shared one from Settings → Import.
+void MainComponent::normalizeSlot(int slot, const juce::String& name)
+{
+    const double target = settings.file() != nullptr
+        ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
+        : kDefaultTargetLufs;
+    const juce::String label = name.isEmpty() ? juce::String(slot)
+                                              : juce::String(slot) + " (" + name + ")";
+    const juce::String targetText = SettingsDialog::formatLufs(target) + " LUFS";
+
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::WarningIcon)
+            .withTitle("Normalize slot " + label + " to " + targetText + "?")
+            .withMessage(juce::String::fromUTF8(
+                             "One constant gain lands the whole loop at the target loudness "
+                             "\xe2\x80\x94 nothing else about the sound changes.\n\n"
+                             "The current WAV moves to the app's trash first \xe2\x80\x94 "
+                             "that is your undo."))
+            .withButton("Normalize")
+            .withButton("Cancel"),
+        [this, slot, target](int button) {
+            if (button != 1)
+                return;
+            releasePlayerIfHolding(slot, slot); // the rewrite happens under preview (issue #26)
+            auto note = std::make_shared<juce::String>();
+            worker.enqueue(
+                { "Normalize slot " + juce::String(slot), slot,
+                  [slot, target, note, options = makeWriteOptions(),
+                   logDir = settings.dataDir(),
+                   trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                      const volume::fs::path& volumePath) {
+                      const commands::NormalizeResult result = commands::normalize(
+                          volumePath, slot,
+                          { .trashRoot = trash, .targetLufs = target, .write = options });
+                      *note = describeNormalize(result, target);
+                      oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
+                  },
+                  note });
         });
 }
 

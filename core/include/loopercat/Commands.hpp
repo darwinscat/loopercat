@@ -17,6 +17,8 @@
 #include "Catalog.hpp"
 #include "Downmix.hpp"
 #include "Error.hpp"
+#include "Loudness.hpp"
+#include "Normalize.hpp"
 #include "Params.hpp"
 #include "Rc0.hpp"
 #include "Volume.hpp"
@@ -590,6 +592,101 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
     writeFileBytes(source,
                    std::string_view(reinterpret_cast<const char*>(folded.data()), folded.size()));
 
+    result.written = writeMemoryPair(volume, memoryText, options.write);
+    return result;
+}
+
+// --- normalize ---
+
+struct NormalizeOptions {
+    fs::path trashRoot; // REQUIRED: the original lands here first (the undo)
+    double targetLufs = 0.0; // REQUIRED: 0 is not a target and is refused as one
+    WriteOptions write;
+};
+
+struct NormalizeResult {
+    bool applied = false;       // false: nothing was written — see gainDb/cappedByPeak for why
+    bool cappedByPeak = false;  // the boost stopped at the -1 dB sample-peak ceiling
+    double measuredLufs = 0.0;
+    double gainDb = 0.0;        // the gain baked in; 0 with applied=false means "already there"
+    fs::path trashedOriginal;   // empty when nothing was written
+    WriteResult written;        // empty when nothing was written
+};
+
+// Level a slot's loop to the target loudness in place (issue #53): measure
+// per BS.1770 straight from the card's bytes, bake one constant gain into the
+// samples under the same on-pedal filename, with the ORIGINAL moved to the
+// trash root first — the third command that rewrites audio, as recoverable as
+// the other two. A gain moves no frame, so like the fold this rewrites the
+// config document unchanged (the pair write is the shared mutation tail:
+// backup, sidecar sweep, write generation).
+//
+// Two outcomes deliberately write NOTHING and say so instead of erroring —
+// they are answers, not failures, and a bulk apply must be able to walk over
+// them: already within kAlreadyAtTargetLu of the target (nothing audible to
+// gain), and a wanted boost fully swallowed by the peak ceiling (the loop
+// already peaks at -1 dB — there is nothing to give it). An unmeasurable
+// slot — silence, or under one gating block — IS an error: the player asked
+// to normalize this slot, and no gain would do what they asked.
+inline NormalizeResult normalize(const fs::path& volume, int slot,
+                                 const NormalizeOptions& options)
+{
+    if (options.trashRoot.empty() || options.write.stamp.empty())
+        throw Error("normalize requires a trash root and a timestamp");
+    // 0.0 is what an unset field reads as, and no loudness war ever pushed a
+    // target out of this window — outside it is a bug, not a taste.
+    if (options.targetLufs >= loudness::kPeakCeilingDb
+        || options.targetLufs <= loudness::kAbsoluteGateLufs)
+        throw Error("normalize target must sit between -70 and -1 LUFS, got "
+                    + std::to_string(options.targetLufs));
+
+    const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
+    if (files.empty())
+        throw Error("slot " + std::to_string(slot) + " has no audio to normalize");
+    const fs::path source = volume::wavDir(volume, slot) / files.front();
+
+    const std::string raw = readFileBytes(source);
+    const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
+    const wav::LoudnessReading reading = wav::measureLoudness(rawView); // validates the shape
+    if (!reading.integratedLufs.has_value())
+        throw Error("slot " + std::to_string(slot)
+                    + " is silent or shorter than the 400 ms a loudness measurement needs");
+
+    NormalizeResult result;
+    result.measuredLufs = *reading.integratedLufs;
+    const double wanted = options.targetLufs - result.measuredLufs;
+    if (std::abs(wanted) < loudness::kAlreadyAtTargetLu)
+        return result; // already there — applied=false, gainDb=0
+
+    const double gainDb = loudness::normalizeGainDb(result.measuredLufs, options.targetLufs,
+                                                    reading.samplePeak,
+                                                    loudness::kPeakCeilingDb);
+    result.cappedByPeak = wanted > 0.0 && gainDb + 1.0e-9 < wanted;
+    if (std::abs(gainDb) < 1.0e-9)
+        return result; // the ceiling ate the whole boost — rewriting would change nothing
+
+    const wav::Bytes rewritten = wav::withGainDb(rawView, gainDb);
+
+    // The config has to be readable before the audio is touched: a rewrite
+    // that could not write its memory pair afterwards would leave the volume
+    // in a state no undo describes.
+    const std::string memoryText = readMemory(volume);
+
+    // All checks passed — the writes begin. Trash copy first: the original
+    // must be safe before anything replaces it.
+    const fs::path trashDir = options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+    std::error_code ec;
+    fs::create_directories(trashDir, ec);
+    if (ec)
+        throw Error("cannot create " + trashDir.string());
+    result.trashedOriginal = trashDir / files.front();
+    writeFileBytes(result.trashedOriginal, raw);
+
+    writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(rewritten.data()),
+                                            rewritten.size()));
+
+    result.applied = true;
+    result.gainDb = gainDb;
     result.written = writeMemoryPair(volume, memoryText, options.write);
     return result;
 }
