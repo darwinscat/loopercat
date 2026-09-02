@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -56,11 +57,12 @@ namespace detail {
 
 struct LoudnessReading {
     std::optional<double> integratedLufs; // empty: silence, or under one 400 ms gating block
-    float samplePeak = 0.0f;
-    std::int64_t wildSamples = 0; // > 0: bytes that are not audio — the two above are moot
+    float samplePeak = 0.0f;              // the grid's own maximum, exact
+    double truePeakDb = -std::numeric_limits<double>::infinity(); // dBTP; -inf: silence
+    std::int64_t wildSamples = 0; // > 0: bytes that are not audio — the three above are moot
 };
 
-// BS.1770 integrated loudness and sample peak of a pedal-shaped file, read
+// BS.1770 integrated loudness and peaks of a pedal-shaped file, read
 // straight from its bytes — the same meter the import path runs on streams.
 // `progress` (optional) hears 0..1 as the frames go by — a batch overlay
 // wants a bar that tells the truth, not an animation (issue #61).
@@ -90,7 +92,8 @@ inline LoudnessReading measureLoudness(BytesView data,
         meter.process(interleaved.data(), filled);
     if (progress)
         progress(1.0);
-    return { meter.integratedLufs(), meter.samplePeak(), meter.wildSamples() };
+    return { meter.integratedLufs(), meter.samplePeak(), meter.truePeakDb(),
+             meter.wildSamples() };
 }
 
 // The file with one constant gain baked into every sample, in the pedal's

@@ -52,6 +52,37 @@ target_include_directories(loopercat_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/
 target_compile_features(loopercat_core INTERFACE cxx_std_20)
 
 # ----------------------------------------------------------------------------
+# felitronics-core — the family's shared, JUCE-free DSP core. The core tier
+# links its `analysis` module for the ITU-R BS.1770 loudness and true-peak
+# meters behind core/Loudness.hpp (issue #53): one meter for the whole suite,
+# with Looper Cat keeping only its own policy (gates, ceiling, wild samples).
+# Header-only INTERFACE targets, no compiled code, no JUCE — so the fetch
+# lives OUTSIDE both the tests and the app guards (the minimp3 lesson: a
+# dependency of a tier belongs to that tier, not to whichever flag first
+# needed it). HYBRID like appkit: a local sibling checkout wins for
+# co-development, otherwise the pinned release is fetched. The consumer does
+# not inherit felitronics' own self-tests (FELITRONICS_BUILD_TESTS follows
+# PROJECT_IS_TOP_LEVEL upstream).
+# ----------------------------------------------------------------------------
+include(FetchContent)
+set(LOOPERCAT_FELITRONICS_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../felitronics-core" CACHE PATH
+    "Local felitronics-core checkout (used if present); else the pinned release is fetched")
+set(LOOPERCAT_FELITRONICS_CORE_TAG "v0.23.0" CACHE STRING
+    "felitronics-core git tag to fetch when no local checkout is present")
+if(LOOPERCAT_FELITRONICS_CORE_DIR AND EXISTS "${LOOPERCAT_FELITRONICS_CORE_DIR}/CMakeLists.txt")
+    message(STATUS "felitronics-core: local checkout — ${LOOPERCAT_FELITRONICS_CORE_DIR}")
+    FetchContent_Declare(felitronics_core SOURCE_DIR "${LOOPERCAT_FELITRONICS_CORE_DIR}")
+else()
+    message(STATUS "felitronics-core: fetching ${LOOPERCAT_FELITRONICS_CORE_TAG} from GitHub")
+    FetchContent_Declare(felitronics_core
+        GIT_REPOSITORY https://github.com/darwinscat/felitronics-core.git
+        GIT_TAG        ${LOOPERCAT_FELITRONICS_CORE_TAG}
+        GIT_SHALLOW    TRUE)
+endif()
+FetchContent_MakeAvailable(felitronics_core)
+target_link_libraries(loopercat_core INTERFACE felitronics::analysis)
+
+# ----------------------------------------------------------------------------
 # minimp3 (fetched, pinned, CC0-1.0) — the APP-tier MP3 decoder behind
 # app/Mp3AudioFormat (issue #52), so it lives OUTSIDE the tests guard: a
 # release-shaped build (app only, tests off) compiles Mp3AudioFormat.cpp too

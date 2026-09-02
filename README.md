@@ -100,8 +100,8 @@ cmake --build build --target LooperCat
 ctest --test-dir build
 ```
 
-JUCE and felitronics-appkit are fetched automatically; the app lands in
-`build/LooperCat_artefacts/`.
+JUCE, felitronics-core and felitronics-appkit are fetched automatically; the
+app lands in `build/LooperCat_artefacts/`.
 
 On Linux the app needs libudev (the device backend) plus JUCE's own X11,
 FreeType and ALSA development packages:
