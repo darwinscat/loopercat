@@ -17,6 +17,14 @@ namespace
     const juce::Colour kText { 0xffd8d8d8 };
     const juce::Colour kDim { 0xff63636d };
     constexpr int kTransportRowHeight = 30;
+    // The transport row's right side, outside in: the time readout ("12:34 /
+    // 12:34" at 13 px plus its 44 px right margin), then the operation zone
+    // that [Reset][Trim] and [Measure][Normalize…] take turns in. Any
+    // right-aligned text in the row stops at kReadoutRight so it never runs
+    // under the buttons (it did, once — a 96 px time zone was ~35 px short).
+    constexpr int kTimeZone = 160;
+    constexpr int kOpsZone = 164;
+    constexpr int kReadoutRight = 6 + kTimeZone + kOpsZone + 10;
     constexpr float kMarkerGrabZone = 7.0f;
     constexpr double kMinSectionSeconds = 0.1;
 
@@ -340,7 +348,8 @@ void PlayerPane::paint(juce::Graphics& g)
                                                                 : kDim);
             g.drawText(juce::String::fromUTF8("\xc2\xb7  ") + text,
                        row.withTrimmedLeft(244 + titleWidth + 10)
-                           .withTrimmedRight(tempoNote_.isNotEmpty() ? 560 : 280),
+                           .withTrimmedRight(tempoNote_.isNotEmpty() ? kReadoutRight + 280
+                                                                     : kReadoutRight),
                        juce::Justification::centredLeft, true);
         }
     }
@@ -349,7 +358,9 @@ void PlayerPane::paint(juce::Graphics& g)
         // exactly while the pedal and the preview disagree.
         g.setColour(kDim);
         g.setFont(juce::FontOptions(12.0f));
-        g.drawText(tempoNote_, row.withTrimmedLeft(row.getWidth() - 560).withTrimmedRight(280),
+        g.drawText(tempoNote_,
+                   row.withTrimmedLeft(row.getWidth() - kReadoutRight - 280)
+                       .withTrimmedRight(kReadoutRight),
                    juce::Justification::centredRight, true);
         g.setFont(juce::FontOptions(13.0f));
     }
@@ -396,7 +407,8 @@ void PlayerPane::paint(juce::Graphics& g)
             if (colour != felitronics::appkit::brand::orange)
                 trimButton_.setEnabled(true);
             g.setColour(colour);
-            g.drawText(readout, row.withTrimmedRight(280), juce::Justification::centredRight, false);
+            g.drawText(readout, row.withTrimmedRight(kReadoutRight),
+                       juce::Justification::centredRight, false);
         }
         g.setColour(kDim);
         g.drawText(formatSeconds(engine_.positionSeconds()) + " / "
@@ -452,13 +464,14 @@ void PlayerPane::resized()
     loopButton_.setBounds(row.removeFromLeft(64));
     volumeIconArea_ = row.removeFromLeft(16);
     volumeSlider_.setBounds(row.removeFromLeft(84).reduced(0, 3));
-    row.removeFromRight(96); // the time readout, drawn in paint()
+    row.removeFromRight(kTimeZone); // the time readout, drawn in paint()
     // One zone, two modes (issue #61): [Reset][Trim] while a selection is
     // active, [Measure][Normalize…] otherwise — never both at once.
-    const auto ops = row.removeFromRight(164);
-    trimButton_.setBounds(ops.withTrimmedLeft(164 - 58).reduced(2, 0));
-    resetButton_.setBounds(ops.withTrimmedLeft(164 - 116).withTrimmedRight(58).reduced(2, 0));
-    normalizeButton_.setBounds(ops.withTrimmedLeft(164 - 94).reduced(2, 0));
+    const auto ops = row.removeFromRight(kOpsZone);
+    trimButton_.setBounds(ops.withTrimmedLeft(kOpsZone - 58).reduced(2, 0));
+    resetButton_.setBounds(
+        ops.withTrimmedLeft(kOpsZone - 116).withTrimmedRight(58).reduced(2, 0));
+    normalizeButton_.setBounds(ops.withTrimmedLeft(kOpsZone - 94).reduced(2, 0));
     measureButton_.setBounds(ops.withTrimmedRight(94).reduced(2, 0));
 }
 
