@@ -263,12 +263,14 @@ void PlayerPane::ReadPass::run()
     owner_.thumbnail_.reset(channels, reader->sampleRate, total); // thread-safe, like addBlock
 
     // A rate the meter cannot cut into 100 ms sub-blocks is not audio the
-    // pedal plays anyway; the waveform still draws, the reading is simply absent.
+    // pedal plays anyway, and a program past the meter's capacity is not one
+    // it can read; the waveform still draws, the reading is simply absent.
     std::optional<loudness::Meter> meter;
     try {
         meter.emplace(static_cast<int>(reader->sampleRate));
     } catch (const Error&) {
     }
+    bool metered = meter.has_value();
 
     juce::AudioBuffer<float> buffer(channels, kReadBlock);
     std::vector<float> interleaved(2 * static_cast<std::size_t>(kReadBlock));
@@ -278,7 +280,7 @@ void PlayerPane::ReadPass::run()
         if (!reader->read(&buffer, 0, n, position, true, true))
             break;
         owner_.thumbnail_.addBlock(position, buffer, 0, n);
-        if (meter.has_value()) {
+        if (metered) {
             // Mono feeds both meter channels — the pedal plays it that way.
             const float* left = buffer.getReadPointer(0);
             const float* right = buffer.getReadPointer(channels >= 2 ? 1 : 0);
@@ -286,18 +288,22 @@ void PlayerPane::ReadPass::run()
                 interleaved[2 * static_cast<std::size_t>(i)] = left[i];
                 interleaved[2 * static_cast<std::size_t>(i) + 1] = right[i];
             }
-            meter->process(interleaved.data(), static_cast<std::size_t>(n));
+            try {
+                meter->process(interleaved.data(), static_cast<std::size_t>(n));
+            } catch (const Error&) {
+                metered = false; // past the meter's capacity: the waveform still draws
+            }
         }
         position += n;
     }
     if (threadShouldExit())
         return; // stopped for a newer file: no verdict, and no message
-    if (position < total || !meter.has_value()) {
+    if (position < total || !metered) {
         finish(std::nullopt); // a short read is not a reading
         return;
     }
     finish(wav::LoudnessReading { meter->integratedLufs(), meter->samplePeak(),
-                                  meter->wildSamples() });
+                                  meter->truePeakDb(), meter->wildSamples() });
 }
 
 void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> reading)
