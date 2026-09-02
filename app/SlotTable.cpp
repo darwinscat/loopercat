@@ -57,6 +57,7 @@ SlotTable::SlotTable()
     // "Play Count-In", not bare "Count-In": the pedal also has a REC COUNT,
     // and the name says which one this is (and that we know the difference).
     header.addColumn("Play Count-In", kCountIn, 104, 104, 104, Flags::notSortable);
+    header.addColumn("LUFS", kLufs, 68, 68, 68, Flags::notSortable);
     header.addColumn("WAV file", kWavFile, 300, 120, -1, Flags::notSortable);
     header.setStretchToFitActive(true);
 
@@ -88,11 +89,53 @@ int SlotTable::slotOfRow(int rowIndex) const
              : 0;
 }
 
-void SlotTable::setOptionalColumns(bool oneShot, bool countIn)
+void SlotTable::setLoudness(int slot, LoudnessCell cell)
+{
+    loudness_[slot] = std::move(cell);
+    table_.repaint();
+}
+
+void SlotTable::clearLoudness(int slot)
+{
+    if (loudness_.erase(slot) > 0)
+        table_.repaint();
+}
+
+void SlotTable::clearPendingLoudness(int slot)
+{
+    const auto found = loudness_.find(slot);
+    if (found != loudness_.end() && found->second.pending) {
+        loudness_.erase(found);
+        table_.repaint();
+    }
+}
+
+void SlotTable::clearAllLoudness()
+{
+    if (loudness_.empty())
+        return;
+    loudness_.clear();
+    table_.repaint();
+}
+
+const SlotTable::LoudnessCell* SlotTable::loudnessFor(int slot) const
+{
+    const auto found = loudness_.find(slot);
+    return found == loudness_.end() ? nullptr : &found->second;
+}
+
+void SlotTable::selectAll()
+{
+    if (!rows_.empty())
+        table_.selectRangeOfRows(0, static_cast<int>(rows_.size()) - 1);
+}
+
+void SlotTable::setOptionalColumns(bool oneShot, bool countIn, bool loudness)
 {
     auto& header = table_.getHeader();
     header.setColumnVisible(kOneShot, oneShot);
     header.setColumnVisible(kCountIn, countIn);
+    header.setColumnVisible(kLufs, loudness);
 }
 
 void SlotTable::selectSlot(int slot)
@@ -208,6 +251,12 @@ void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&
 {
     if (columnId == kName || columnId == kTempo) { // double-click = edit in place
         startCellEdit(row, columnId);
+        return;
+    }
+    if (columnId == kLufs) { // double-click the dash (or a stale number) = read this slot
+        if (onLoudnessCellDoubleClicked && slotOfRow(row) > 0
+            && rows_[static_cast<std::size_t>(row)].info.hasAudio)
+            onLoudnessCellDoubleClicked(slotOfRow(row));
         return;
     }
     if (onSlotActivated && slotOfRow(row) > 0)
@@ -446,6 +495,7 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kTempo:    text = loaded ? formatTempo(r.info.tempoTenths) : juce::String(); break;
     case kOneShot:  break; // drawn as a dot below
     case kCountIn:  break; // drawn as a dot below
+    case kLufs:     break; // drawn from the loudness cells below
     case kWavFile:
         text = r.wavFile.empty() && !loaded
                  ? juce::String::fromUTF8("\xe2\x80\x94 drop audio here, or click to choose")
@@ -482,6 +532,38 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
             g.setColour(kDim.withAlpha(0.55f));
             g.drawEllipse(x, y, d, d, 1.2f);
         }
+        return;
+    }
+
+    if (columnId == kLufs) {
+        // A reading, a dash for "not measured yet", nothing for an empty slot.
+        // Attention (off target, damaged) takes the brand's attention colour.
+        const auto found = loudness_.find(r.info.slot);
+        const bool known = loaded && found != loudness_.end();
+        g.setFont(juce::FontOptions(13.0f));
+        if (known && found->second.pending) {
+            // A queued read shows an ellipsis; the one being read right now
+            // breathes in step with its row's busy pulse — a beacon, not a
+            // toggle (the toggle cells are dots at rest, this one moves).
+            if (r.info.slot == busySlot_) {
+                const float pulse = 0.5f + 0.5f * std::sin(busyPhase_);
+                const float d = 7.0f;
+                g.setColour(felitronics::appkit::brand::lilac.withAlpha(0.3f + 0.7f * pulse));
+                g.fillEllipse(static_cast<float>(area.getRight()) - d - 2.0f,
+                              (static_cast<float>(height) - d) * 0.5f, d, d);
+            } else {
+                g.setColour(kDim.withAlpha(0.7f));
+                g.drawText(juce::String::fromUTF8("\xe2\x80\xa6"), area,
+                           juce::Justification::centredRight, true);
+            }
+            return;
+        }
+        g.setColour(!known ? kDim.withAlpha(0.55f)
+                    : found->second.attention ? felitronics::appkit::brand::orange
+                                              : kText);
+        g.drawText(known ? found->second.text
+                         : (loaded ? juce::String::fromUTF8("\xe2\x80\x94") : juce::String()),
+                   area, juce::Justification::centredRight, true);
         return;
     }
 

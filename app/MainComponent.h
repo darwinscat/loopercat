@@ -142,10 +142,29 @@ private:
     void enqueueNormalize(int slot, double target, int batch = 0,
                           std::shared_ptr<std::atomic<int>> filePermille = nullptr);
     void showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition);
-    void measureSlotLoudness(int slot);
     void startNormalizeBatch(const std::vector<int>& slots, double target,
                              const juce::String& targetText);
     void endNormalizeBatch();
+    double currentTargetLufs();
+
+    // Loudness reads (issue #61): one worker job per slot, read-only. The
+    // inspector's Measure is a foreground read of one slot; the check is a
+    // background run over a selection. Both land the same report.
+    struct LoudnessReport {
+        juce::String cellText; // the column: "-22.8", "damaged", "n/a"
+        juce::String rowText;  // the player row: "-22.8 LUFS · 4.8 dB below target -18"
+        juce::String noteText; // the toast: the row text plus the peak
+        juce::String tooltipText; // the hint: what the tight row cannot say
+        bool attention = false; // Normalize would change this — drawn to be noticed
+        bool damaged = false;
+    };
+    static LoudnessReport describeReading(const wav::LoudnessReading& reading, double targetLufs);
+    void enqueueLoudnessRead(int slot, double target, int batch);
+    void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
+    void measureSlotLoudness(int slot);
+    void startLoudnessCheck(const std::vector<int>& slots);
+    void stopLoudnessCheck();
+    void finishLoudnessCheck();
     commands::WriteOptions makeWriteOptions();
 
     // Declaration order is lifetime order: settings outlives the checker
@@ -172,6 +191,7 @@ private:
     SlotInspector inspector;
     Toast toast;
     BatchOverlay batchOverlay;
+    juce::TooltipWindow tooltips { this, 600 }; // hover hints (the player's loudness readout first)
 
     // The running batch (issue #61): id 0 = none. Results are credited by the
     // id the worker hands back, never by parsing descriptions.
@@ -179,6 +199,13 @@ private:
     int batchCounter = 0; // id source
     int batchTotal = 0, batchDone = 0, batchFailed = 0, batchUntouched = 0, batchDropped = 0;
     std::shared_ptr<std::atomic<int>> batchFilePermille;
+
+    // The running background loudness check (issue #61): id 0 = none. Shares
+    // the batch id space so the worker's cancelPending serves both.
+    int checkId = 0;
+    int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
+    bool checkStopping = false;
+    std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)

@@ -7,6 +7,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <map>
+
 //==============================================================================
 // loopercat::SlotTable — the slot browser: one row per memory slot (number,
 // name, duration, bars, tempo, One Shot, Count-In, on-pedal wav file). Rows with
@@ -45,9 +47,29 @@ public:
 
     void selectSlot(int slot);
 
-    // The two behaviour columns are a preference (Settings -> Columns): the
-    // pedal's own facts always show, these are the ones a player opts into.
-    void setOptionalColumns(bool oneShot, bool countIn);
+    // The behaviour columns and the LUFS column are a preference (Settings ->
+    // Columns): the pedal's own facts always show, these are opted into.
+    void setOptionalColumns(bool oneShot, bool countIn, bool loudness);
+
+    // The LUFS column's cells (issue #61): filled by a measure or a check,
+    // cleared when the slot's audio changes. Keyed by slot, so they survive
+    // every snapshot's setRows — a reading belongs to a file, not a row.
+    struct LoudnessCell {
+        juce::String text;
+        bool attention = false; // off target, or damaged: drawn to be noticed
+        bool pending = false;   // a read is queued or in flight: "…", or the beacon
+        juce::String detail {}; // the sentence the player row shows for this reading
+        bool damaged = false;
+        juce::String tooltip {}; // the explanation the player row's hint carries
+    };
+    void setLoudness(int slot, LoudnessCell cell);
+    void clearLoudness(int slot);
+    void clearPendingLoudness(int slot); // a read that will never land (dropped, failed)
+    void clearAllLoudness();
+    const LoudnessCell* loudnessFor(int slot) const; // nullptr = nothing known
+    std::function<void(int)> onLoudnessCellDoubleClicked; // the dash, double-clicked: check this slot
+
+    void selectAll(); // Cmd/Ctrl-A: every visible row
 
     // Inline edits live on double-click (name, tempo): an editor right in the
     // cell. Enter commits, Esc cancels; the field enforces the pedal's
@@ -70,7 +92,7 @@ public:
     static juce::String formatTempo(long long tenths);
 
 private:
-    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kOneShot, kCountIn, kWavFile };
+    enum Columns { kSlot = 1, kName, kDuration, kBars, kTempo, kOneShot, kCountIn, kLufs, kWavFile };
 
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;
@@ -97,6 +119,7 @@ private:
     void updateTimerState(); // one timer serves the busy pulse and drag autoscroll
 
     std::vector<SlotRow> rows_;
+    std::map<int, LoudnessCell> loudness_; // by slot; see setLoudness
     int dragRow_ = -1;  // row highlighted under a drag (wav file or row swap)
     bool rowDragActive_ = false;         // an internal row drag is over the table
     int rowDragSourceSlot_ = 0;          // the slot being dragged (its own row never highlights)
