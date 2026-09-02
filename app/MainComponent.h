@@ -156,7 +156,7 @@ private:
         bool damaged = false;
     };
     static LoudnessReport describeReading(const wav::LoudnessReading& reading, double targetLufs);
-    void enqueueLoudnessRead(int slot, double target, int batch, bool background);
+    void enqueueLoudnessRead(int slot, double target, int batch);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);
@@ -201,6 +201,7 @@ private:
     int checkId = 0;
     int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
     bool checkStopping = false;
+    std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)

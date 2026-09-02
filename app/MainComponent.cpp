@@ -266,6 +266,7 @@ MainComponent::MainComponent(std::string explicitVolume)
             toggleCountIn(slot, row->info.countIn);
     };
     inspector.onMeasureRequested = [this](int slot) { measureSlotLoudness(slot); };
+    table.onLoudnessCellDoubleClicked = [this](int slot) { measureSlotLoudness(slot); };
 
     settingsButton.onClick = [this] { openSettings(); };
     bottomTabs.onTabChanged = [this](int index) { showBottomTab(index); };
@@ -452,7 +453,11 @@ MainComponent::MainComponent(std::string explicitVolume)
         const bool inCheck = checkId != 0 && batch == checkId;
         if (error.isNotEmpty()) {
             banners.showError(banners::Source::job, description + ": " + error);
-            inspector.clearLoudness(); // a failed measure must not stay "measuring…"
+            if (description.startsWith("Check slot")) {
+                inspector.clearLoudness(); // a failed read must not stay "measuring…"
+                if (slot > 0)
+                    table.clearPendingLoudness(slot); // …nor its cell "…"
+            }
             if (inBatch) {
                 ++batchFailed;
                 batchOverlay.setDone(batchDone + batchFailed);
@@ -492,9 +497,18 @@ MainComponent::MainComponent(std::string explicitVolume)
                                     && description.contains("file untouched"));
         if (description.startsWith("Trim"))
             player.reload(); // same path, new bytes — fresh reader + thumbnail
-        if (wroteToPedal) {
-            // The audio moved on; the readings did not. A swap moves two
-            // slots' files and the job names one — clear them all.
+        // A reading belongs to the audio, not the memory: a rename, a tempo
+        // or a flag leaves it standing. Only a rewrite of the WAV itself
+        // moves the audio on — push, trim, downmix, a normalize that applied,
+        // clear; a swap moves two slots' files and the job names one, so it
+        // clears them all.
+        const bool changedAudio = description.startsWith("Push")
+                               || description.startsWith("Trim")
+                               || description.startsWith("Downmix")
+                               || (description.startsWith("Normalize") && wroteToPedal)
+                               || description.startsWith("Clear")
+                               || description.startsWith("Swap");
+        if (changedAudio) {
             inspector.clearLoudness();
             if (description.startsWith("Swap"))
                 table.clearAllLoudness();
@@ -1445,13 +1459,16 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
              std::abs(lufs - targetLufs) >= loudness::kAlreadyAtTargetLu, false };
 }
 
-void MainComponent::enqueueLoudnessRead(int slot, double target, int batch, bool background)
+void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
 {
+    // Every loudness read is background work: read-only, never a reason to
+    // lock the UI. The cell says "…" until the answer lands, and the one in
+    // flight breathes (SlotTable::paintCell).
+    table.setLoudness(slot, { juce::String::fromUTF8("\xe2\x80\xa6"), false, true });
     auto note = std::make_shared<juce::String>();
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue(
-        { juce::String(background ? "Check slot " : "Measure slot ") + juce::String(slot)
-              + " loudness",
+        { "Check slot " + juce::String(slot) + " loudness",
           slot,
           [slot, target, batch, note, safe](const volume::fs::path& volumePath) {
               const std::vector<std::string> files = volume::listSlotWavs(volumePath, slot);
@@ -1468,7 +1485,7 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch, bool
                       safe->applyLoudnessReport(slot, report, batch);
               });
           },
-          note, batch, background });
+          note, batch, /*background=*/true });
 }
 
 void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)
@@ -1483,13 +1500,14 @@ void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, 
     }
 }
 
-// The inspector's Measure button (issue #53): a foreground read of one slot.
-// It runs as a worker job like every mutation — same busy pulse, same error
-// banner, serialized against rewrites so it can never read a half-written
-// take — but it writes nothing: no trash, no journal line, no Disconnect hint.
+// One slot's read (issue #53): the inspector's Measure button, the menu's
+// Check loudness, a double-click on the LUFS dash. A worker job like every
+// mutation — same row pulse, same error banner, serialized against rewrites
+// so it can never read a half-written take — but it writes nothing: no
+// trash, no journal line, no Disconnect hint, no lock.
 void MainComponent::measureSlotLoudness(int slot)
 {
-    enqueueLoudnessRead(slot, currentTargetLufs(), 0, false);
+    enqueueLoudnessRead(slot, currentTargetLufs(), 0);
 }
 
 // The background loudness check (issue #61): the same read over a selection,
@@ -1505,8 +1523,9 @@ void MainComponent::startLoudnessCheck(const std::vector<int>& slots)
     checkTotal = static_cast<int>(slots.size());
     checkDone = checkFailed = checkAttention = checkDamaged = 0;
     checkStopping = false;
+    checkSlots = slots;
     for (const int slot : slots)
-        enqueueLoudnessRead(slot, target, checkId, true);
+        enqueueLoudnessRead(slot, target, checkId);
     toast.show("Checking the loudness of " + juce::String(checkTotal)
                + (checkTotal == 1 ? " slot" : " slots")
                + juce::String::fromUTF8(" in the background \xe2\x80\x94 Esc stops it."));
@@ -1518,6 +1537,8 @@ void MainComponent::stopLoudnessCheck()
     if (checkId == 0)
         return;
     checkTotal -= worker.cancelPending(checkId); // the dropped tail never reports back
+    for (const int slot : checkSlots)
+        table.clearPendingLoudness(slot); // …so its "…" cells go back to the dash
     checkStopping = true;
     if (checkDone + checkFailed >= checkTotal)
         finishLoudnessCheck(); // nothing in flight — over now

@@ -57,10 +57,13 @@ public:
     struct LoudnessCell {
         juce::String text;
         bool attention = false; // off target, or damaged: drawn to be noticed
+        bool pending = false;   // a read is queued or in flight: "…", or the beacon
     };
     void setLoudness(int slot, LoudnessCell cell);
     void clearLoudness(int slot);
+    void clearPendingLoudness(int slot); // a read that will never land (dropped, failed)
     void clearAllLoudness();
+    std::function<void(int)> onLoudnessCellDoubleClicked; // the dash, double-clicked: check this slot
 
     void selectAll(); // Cmd/Ctrl-A: every visible row
 

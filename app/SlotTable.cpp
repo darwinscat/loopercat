@@ -101,6 +101,15 @@ void SlotTable::clearLoudness(int slot)
         table_.repaint();
 }
 
+void SlotTable::clearPendingLoudness(int slot)
+{
+    const auto found = loudness_.find(slot);
+    if (found != loudness_.end() && found->second.pending) {
+        loudness_.erase(found);
+        table_.repaint();
+    }
+}
+
 void SlotTable::clearAllLoudness()
 {
     if (loudness_.empty())
@@ -236,6 +245,12 @@ void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&
 {
     if (columnId == kName || columnId == kTempo) { // double-click = edit in place
         startCellEdit(row, columnId);
+        return;
+    }
+    if (columnId == kLufs) { // double-click the dash (or a stale number) = read this slot
+        if (onLoudnessCellDoubleClicked && slotOfRow(row) > 0
+            && rows_[static_cast<std::size_t>(row)].info.hasAudio)
+            onLoudnessCellDoubleClicked(slotOfRow(row));
         return;
     }
     if (onSlotActivated && slotOfRow(row) > 0)
@@ -519,10 +534,27 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
         // Attention (off target, damaged) takes the brand's attention colour.
         const auto found = loudness_.find(r.info.slot);
         const bool known = loaded && found != loudness_.end();
+        g.setFont(juce::FontOptions(13.0f));
+        if (known && found->second.pending) {
+            // A queued read shows an ellipsis; the one being read right now
+            // breathes in step with its row's busy pulse — a beacon, not a
+            // toggle (the toggle cells are dots at rest, this one moves).
+            if (r.info.slot == busySlot_) {
+                const float pulse = 0.5f + 0.5f * std::sin(busyPhase_);
+                const float d = 7.0f;
+                g.setColour(felitronics::appkit::brand::lilac.withAlpha(0.3f + 0.7f * pulse));
+                g.fillEllipse(static_cast<float>(area.getRight()) - d - 2.0f,
+                              (static_cast<float>(height) - d) * 0.5f, d, d);
+            } else {
+                g.setColour(kDim.withAlpha(0.7f));
+                g.drawText(juce::String::fromUTF8("\xe2\x80\xa6"), area,
+                           juce::Justification::centredRight, true);
+            }
+            return;
+        }
         g.setColour(!known ? kDim.withAlpha(0.55f)
                     : found->second.attention ? felitronics::appkit::brand::orange
                                               : kText);
-        g.setFont(juce::FontOptions(13.0f));
         g.drawText(known ? found->second.text
                          : (loaded ? juce::String::fromUTF8("\xe2\x80\x94") : juce::String()),
                    area, juce::Justification::centredRight, true);
