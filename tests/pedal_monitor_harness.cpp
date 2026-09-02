@@ -84,7 +84,7 @@ int main()
     std::vector<bool> busyEvents;
     std::vector<std::pair<juce::String, juce::String>> jobResults;
     monitor.onBusy = [&busyEvents](bool busy, int) { busyEvents.push_back(busy); };
-    monitor.onJobResult = [&jobResults](juce::String description, juce::String error) {
+    monitor.onJobResult = [&jobResults](juce::String description, juce::String error, int) {
         jobResults.emplace_back(std::move(description), std::move(error));
     };
     monitor.start();
@@ -184,7 +184,7 @@ int main()
             ghostDeliveries.push_back(s);
         });
         std::vector<std::pair<juce::String, juce::String>> ghostResults;
-        ghostWorker.onJobResult = [&ghostResults](juce::String description, juce::String error) {
+        ghostWorker.onJobResult = [&ghostResults](juce::String description, juce::String error, int) {
             ghostResults.emplace_back(std::move(description), std::move(error));
         };
         ghostWorker.setBackingProbe(

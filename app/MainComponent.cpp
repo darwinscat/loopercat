@@ -437,14 +437,21 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (!busy)
             restoreListening(); // the job's own rescan applied while busy — see restoreListening
     };
-    worker.onJobResult = [this](juce::String description, juce::String error) {
+    worker.onJobResult = [this](juce::String description, juce::String error, int batch) {
+        // Credited by the id the worker hands back — never by parsing text.
+        const bool inBatch = batchId != 0 && batch == batchId;
         if (error.isNotEmpty()) {
             banners.showError(banners::Source::job, description + ": " + error);
             inspector.clearLoudness(); // a failed measure must not stay "measuring…"
+            if (inBatch) {
+                ++batchFailed;
+                batchOverlay.setDone(batchDone + batchFailed);
+                if (batchDone + batchFailed >= batchTotal)
+                    endNormalizeBatch();
+            }
             return;
         }
         banners.clearJobError(); // a later mutation succeeded — the story moved on
-        juce::String note = description + juce::String::fromUTF8(" \xe2\x80\x94 done");
         // The pedal re-reads its memory on leaving STORAGE — settings and
         // audio alike (hardware, 2026-08-11: a rename, a tempo change and a
         // trim all reached the pedal with no power cycle). Disconnect is the
@@ -468,10 +475,23 @@ MainComponent::MainComponent(std::string explicitVolume)
                                     && description.contains("file untouched"));
         if (description.startsWith("Trim"))
             player.reload(); // same path, new bytes — fresh reader + thumbnail
-        if (wroteToPedal) {
-            note << juce::String::fromUTF8(" \xe2\x80\x94 Disconnect to hear it on the pedal.");
+        if (wroteToPedal)
             inspector.clearLoudness(); // the audio moved on; the reading did not
+        if (inBatch) {
+            // Per-job toasts stay quiet under the overlay (they would replace
+            // each other unread anyway) — the batch summary speaks once, and
+            // operations.log already holds every line.
+            ++batchDone;
+            if (description.contains("file untouched"))
+                ++batchUntouched;
+            batchOverlay.setDone(batchDone + batchFailed);
+            if (batchDone + batchFailed >= batchTotal)
+                endNormalizeBatch();
+            return;
         }
+        juce::String note = description + juce::String::fromUTF8(" \xe2\x80\x94 done");
+        if (wroteToPedal)
+            note << juce::String::fromUTF8(" \xe2\x80\x94 Disconnect to hear it on the pedal.");
         toast.show(note);
     };
 
@@ -491,6 +511,17 @@ MainComponent::MainComponent(std::string explicitVolume)
     addChildComponent(inspector);
     addChildComponent(player); // likewise
     addChildComponent(toast);  // fades in over everything on job success
+    addChildComponent(batchOverlay); // over even that: the batch takeover (issue #61)
+    batchOverlay.onCancel = [this] {
+        if (batchId == 0)
+            return;
+        batchDropped = worker.cancelPending(batchId);
+        batchTotal -= batchDropped; // the dropped tail will never report back
+        batchOverlay.setCancelling();
+        batchOverlay.setDone(batchDone + batchFailed); // re-caption against the new total
+        if (batchDone + batchFailed >= batchTotal)
+            endNormalizeBatch(); // nothing in flight — the batch is over now
+    };
 
     setWantsKeyboardFocus(true); // Space toggles playback
 
@@ -1266,23 +1297,70 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
 // One normalize job for the worker queue — the shared tail of the single-slot
 // dialog and the bulk apply. Per-slot jobs on purpose: the row's busy pulse
 // and error isolation come free, and one stubborn slot cannot stop the rest.
-void MainComponent::enqueueNormalize(int slot, double target)
+// Batch jobs carry the batch id (for crediting and cancel) and feed the
+// overlay's current-file bar through `filePermille` (issue #61).
+void MainComponent::enqueueNormalize(int slot, double target, int batch,
+                                     std::shared_ptr<std::atomic<int>> filePermille)
 {
     releasePlayerIfHolding(slot, slot); // the rewrite happens under preview (issue #26)
     auto note = std::make_shared<juce::String>();
     worker.enqueue(
         { "Normalize slot " + juce::String(slot), slot,
-          [slot, target, note, options = makeWriteOptions(),
+          [slot, target, note, filePermille, options = makeWriteOptions(),
            logDir = settings.dataDir(),
            trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
               const volume::fs::path& volumePath) {
+              if (filePermille != nullptr)
+                  filePermille->store(0); // this job's file starts from zero
               const commands::NormalizeResult result = commands::normalize(
                   volumePath, slot,
-                  { .trashRoot = trash, .targetLufs = target, .write = options });
+                  { .trashRoot = trash, .targetLufs = target, .write = options,
+                    .progress = filePermille != nullptr
+                        ? std::function<void(double)>([filePermille](double v) {
+                              filePermille->store(static_cast<int>(v * 1000.0));
+                          })
+                        : std::function<void(double)>() });
               *note = describeNormalize(result, target);
               oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
           },
-          note });
+          note, batch });
+}
+
+// Batch takeover (issue #61): the overlay swallows every click until the last
+// result lands, so nothing can jump onto a slot mid-rewrite. The player is
+// silenced up front — not per job — because a batch and a preview have no
+// honest way to coexist.
+void MainComponent::startNormalizeBatch(const std::vector<int>& slots, double target,
+                                        const juce::String& targetText)
+{
+    player.clear();
+    batchId = ++batchCounter;
+    batchTotal = static_cast<int>(slots.size());
+    batchDone = batchFailed = batchUntouched = batchDropped = 0;
+    batchFilePermille = std::make_shared<std::atomic<int>>(0);
+    for (const int slot : slots)
+        enqueueNormalize(slot, target, batchId, batchFilePermille);
+    batchOverlay.begin("Normalizing " + juce::String(batchTotal) + " slots to " + targetText,
+                       batchTotal, batchFilePermille);
+}
+
+void MainComponent::endNormalizeBatch()
+{
+    batchOverlay.end();
+    batchId = 0;
+    // One summary instead of a toast per slot; every line is in operations.log.
+    const int normalized = batchDone - batchUntouched;
+    juce::String story = "Batch done: " + juce::String(normalized)
+                       + (normalized == 1 ? " slot" : " slots") + " normalized";
+    if (batchUntouched > 0)
+        story << ", " << juce::String(batchUntouched) << " already at target";
+    if (batchFailed > 0)
+        story << ", " << juce::String(batchFailed) << " failed";
+    if (batchDropped > 0)
+        story << ", " << juce::String(batchDropped) << " cancelled before starting";
+    if (normalized > 0)
+        story << juce::String::fromUTF8(" \xe2\x80\x94 Disconnect to hear it on the pedal.");
+    toast.show(story);
 }
 
 // The Measure button (issue #53): the inspector's loudness row answers only
@@ -1360,11 +1438,9 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
                         "\xe2\x80\x94 that is your undo."))
                     .withButton("Normalize")
                     .withButton("Cancel"),
-                [this, occupied, target](int button) {
-                    if (button != 1)
-                        return;
-                    for (const int slot : occupied)
-                        enqueueNormalize(slot, target);
+                [this, occupied, target, targetText](int button) {
+                    if (button == 1)
+                        startNormalizeBatch(occupied, target, targetText);
                 });
         });
 }
@@ -1460,6 +1536,11 @@ void MainComponent::openSettings()
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
 {
+    // The batch overlay swallows the keyboard the way it swallows clicks —
+    // space starting a preview mid-batch is exactly the conflict it exists
+    // to prevent (issue #61).
+    if (batchOverlay.isVisible())
+        return true;
     if (key == juce::KeyPress::spaceKey && engine.hasSource()) {
         engine.togglePlay();
         return true;
@@ -1503,6 +1584,7 @@ void MainComponent::resized()
     // reserve at the bottom goes to the pane that needed it: the waveform is
     // back to its old height with the tab strip on top of it.
     toast.setBounds(getWidth() / 2 - 280, getHeight() - kBottomPaneHeight - 42, 560, 34);
+    batchOverlay.setBounds(getLocalBounds());
     auto bottom = area.removeFromBottom(kBottomPaneHeight).reduced(12, 8);
     bottomTabs.setBounds(bottom.removeFromTop(26));
     player.setBounds(bottom);

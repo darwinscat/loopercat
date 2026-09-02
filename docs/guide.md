@@ -191,7 +191,10 @@ Three ways to use it:
   original WAV moves to the app's trash first — that is your undo.
 - **Several slots** — Cmd/Ctrl-click or Shift-click rows to select them,
   right-click the selection → **Normalize N slots…**. Each loop gets its own
-  gain; loops already at the target are left untouched.
+  gain; loops already at the target are left untouched. While the batch runs,
+  the app locks itself behind a progress overlay — the batch and the current
+  file, with the table visible underneath — so nothing can collide with the
+  rewrite. **Cancel** finishes the slot in flight and skips the rest.
 
 The target is -18 LUFS out of the box — ReplayGain's reference, the modern
 spelling of the old "89 dB" — and adjustable in Settings → Import (a hotter

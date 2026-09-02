@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -38,23 +39,63 @@ namespace fs = std::filesystem;
 
 // --- raw byte file I/O (a memory file is bytes, never text) ---
 
-inline std::string readFileBytes(const fs::path& path)
+// `progress` (optional, both functions) hears 0..1 as chunks move: on a USB
+// card the file I/O is where a big take's wall time actually goes, and a
+// progress bar that skips it stands still through the longest part of the
+// job (issue #61, seen on hardware with a 500 MB take).
+inline std::string readFileBytes(const fs::path& path,
+                                 const std::function<void(double)>& progress = {})
 {
     std::ifstream in(path, std::ios::binary);
     if (!in)
         throw Error("cannot read " + path.string());
-    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    if (!in.good() && !in.eof())
+    if (!progress) {
+        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (!in.good() && !in.eof())
+            throw Error("cannot read " + path.string());
+        return bytes;
+    }
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    in.seekg(0, std::ios::beg);
+    if (size < 0 || !in)
         throw Error("cannot read " + path.string());
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    constexpr std::streamoff kChunk = 4 << 20;
+    std::streamoff done = 0;
+    while (done < size) {
+        const std::streamoff n = std::min(kChunk, size - done);
+        in.read(bytes.data() + done, n);
+        if (!in)
+            throw Error("cannot read " + path.string());
+        done += n;
+        progress(static_cast<double>(done) / static_cast<double>(size));
+    }
     return bytes;
 }
 
-inline void writeFileBytes(const fs::path& path, std::string_view bytes)
+inline void writeFileBytes(const fs::path& path, std::string_view bytes,
+                           const std::function<void(double)>& progress = {})
 {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out)
         throw Error("cannot write " + path.string());
-    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!progress) {
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    } else {
+        // Chunked so the observer hears the bytes go; a chunk the OS still
+        // holds in cache reports as written — the flush below is the tail.
+        constexpr std::size_t kChunk = std::size_t { 4 } << 20;
+        std::size_t done = 0;
+        while (done < bytes.size()) {
+            const std::size_t n = std::min(kChunk, bytes.size() - done);
+            out.write(bytes.data() + done, static_cast<std::streamsize>(n));
+            if (!out.good())
+                throw Error("cannot write " + path.string());
+            done += n;
+            progress(static_cast<double>(done) / static_cast<double>(bytes.size()));
+        }
+    }
     out.flush();
     if (!out.good())
         throw Error("cannot write " + path.string());
@@ -602,6 +643,10 @@ struct NormalizeOptions {
     fs::path trashRoot; // REQUIRED: the original lands here first (the undo)
     double targetLufs = 0.0; // REQUIRED: 0 is not a target and is refused as one
     WriteOptions write;
+    // Optional observer: hears 0..1 across the whole command — the measure
+    // pass as the first half, the rewrite as the second — on the calling
+    // thread. The batch overlay's current-file bar (issue #61).
+    std::function<void(double)> progress;
 };
 
 struct NormalizeResult {
@@ -645,9 +690,23 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
         throw Error("slot " + std::to_string(slot) + " has no audio to normalize");
     const fs::path source = volume::wavDir(volume, slot) / files.front();
 
-    const std::string raw = readFileBytes(source);
+    const auto report = [&options](double v) {
+        if (options.progress)
+            options.progress(v);
+    };
+    // Phase weights are pragmatic, not measured: on a USB card the three
+    // file passes (read, trash copy, write-back) own the wall clock, in RAM
+    // the two DSP passes do — these segments keep the bar in honest motion
+    // through every phase either way. Past 0.96 is the flush and the pair.
+    const auto segment = [&report](double from, double to) {
+        return std::function<void(double)>(
+            [&report, from, to](double v) { report(from + (to - from) * v); });
+    };
+
+    const std::string raw = readFileBytes(source, segment(0.0, 0.30));
     const wav::BytesView rawView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
-    const wav::LoudnessReading reading = wav::measureLoudness(rawView); // validates the shape
+    const wav::LoudnessReading reading = wav::measureLoudness( // validates the shape
+        rawView, segment(0.30, 0.45));
     if (!reading.integratedLufs.has_value())
         throw Error("slot " + std::to_string(slot)
                     + " is silent or shorter than the 400 ms a loudness measurement needs");
@@ -665,7 +724,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     if (std::abs(gainDb) < 1.0e-9)
         return result; // the ceiling ate the whole boost — rewriting would change nothing
 
-    const wav::Bytes rewritten = wav::withGainDb(rawView, gainDb);
+    const wav::Bytes rewritten = wav::withGainDb(rawView, gainDb, segment(0.45, 0.60));
 
     // The config has to be readable before the audio is touched: a rewrite
     // that could not write its memory pair afterwards would leave the volume
@@ -680,14 +739,17 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     if (ec)
         throw Error("cannot create " + trashDir.string());
     result.trashedOriginal = trashDir / files.front();
-    writeFileBytes(result.trashedOriginal, raw);
+    writeFileBytes(result.trashedOriginal, raw, segment(0.60, 0.78));
 
-    writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(rewritten.data()),
-                                            rewritten.size()));
+    writeFileBytes(source,
+                   std::string_view(reinterpret_cast<const char*>(rewritten.data()),
+                                    rewritten.size()),
+                   segment(0.78, 0.96));
 
     result.applied = true;
     result.gainDb = gainDb;
     result.written = writeMemoryPair(volume, memoryText, options.write);
+    report(1.0); // the config pair is part of the job; done means all of it
     return result;
 }
 

@@ -11,6 +11,7 @@
 #include "AppSettings.h"
 #include "AudioEngine.h"
 #include "BannerStrip.h"
+#include "BatchOverlay.h"
 #include "DeviceWatcher.h"
 #include "LooperMark.h"
 #include "PedalLight.h"
@@ -138,9 +139,13 @@ private:
     void clearSlot(int slot, const juce::String& name);
     void downmixSlot(int slot, const juce::String& name, wav::Placement placement);
     void normalizeSlot(int slot, const juce::String& name);
-    void enqueueNormalize(int slot, double target);
+    void enqueueNormalize(int slot, double target, int batch = 0,
+                          std::shared_ptr<std::atomic<int>> filePermille = nullptr);
     void showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition);
     void measureSlotLoudness(int slot);
+    void startNormalizeBatch(const std::vector<int>& slots, double target,
+                             const juce::String& targetText);
+    void endNormalizeBatch();
     commands::WriteOptions makeWriteOptions();
 
     // Declaration order is lifetime order: settings outlives the checker
@@ -166,6 +171,14 @@ private:
     TabStrip bottomTabs { { "Audio", "Properties" } };
     SlotInspector inspector;
     Toast toast;
+    BatchOverlay batchOverlay;
+
+    // The running batch (issue #61): id 0 = none. Results are credited by the
+    // id the worker hands back, never by parsing descriptions.
+    int batchId = 0;
+    int batchCounter = 0; // id source
+    int batchTotal = 0, batchDone = 0, batchFailed = 0, batchUntouched = 0, batchDropped = 0;
+    std::shared_ptr<std::atomic<int>> batchFilePermille;
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
