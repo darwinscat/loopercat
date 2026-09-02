@@ -35,6 +35,11 @@ SlotTable::SlotTable()
 {
     table_.setHeaderHeight(26);
     table_.setRowHeight(24);
+    // Standard list ergonomics: Cmd/Ctrl-click grows a selection, Shift-click
+    // extends it. Operations that can act on many slots read it via the
+    // context menu (issue #53 brought the first one); drag-to-swap stays a
+    // one-row gesture (see getDragSourceDescription).
+    table_.setMultipleSelectionEnabled(true);
     table_.setColour(juce::ListBox::backgroundColourId, kRowOdd);
     table_.getViewport()->setScrollBarsShown(true, false);
 
@@ -211,8 +216,21 @@ void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&
 
 void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
 {
-    if (e.mods.isPopupMenu() && onSlotContextMenu) {
-        if (slotOfRow(row) > 0)
+    if (e.mods.isPopupMenu()) {
+        // A right-click INSIDE a 2+ row selection targets the whole
+        // selection; anywhere else it is the single-slot menu as ever.
+        const juce::SparseSet<int> selected = table_.getSelectedRows();
+        if (selected.size() > 1 && selected.contains(row) && onSlotsContextMenu) {
+            std::vector<int> slots;
+            for (int i = 0; i < selected.size(); ++i)
+                if (slotOfRow(selected[i]) > 0)
+                    slots.push_back(slotOfRow(selected[i]));
+            if (slots.size() > 1) {
+                onSlotsContextMenu(std::move(slots), e.getScreenPosition());
+                return;
+            }
+        }
+        if (onSlotContextMenu && slotOfRow(row) > 0)
             onSlotContextMenu(slotOfRow(row), e.getScreenPosition());
         return;
     }

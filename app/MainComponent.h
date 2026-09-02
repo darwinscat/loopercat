@@ -138,6 +138,8 @@ private:
     void clearSlot(int slot, const juce::String& name);
     void downmixSlot(int slot, const juce::String& name, wav::Placement placement);
     void normalizeSlot(int slot, const juce::String& name);
+    void enqueueNormalize(int slot, double target);
+    void showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition);
     commands::WriteOptions makeWriteOptions();
 
     // Declaration order is lifetime order: settings outlives the checker

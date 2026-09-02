@@ -174,6 +174,39 @@ A few things worth knowing:
   lives on OUTPUT B alone, both cables need to be in — with OUTPUT B unplugged
   the RC-5 folds everything back down to mono on its own.
 
+## Normalize
+
+A setlist assembled from different sources tends to jump in volume between
+songs. Normalize levels that out: each loop is measured the way ears hear it
+(ITU-R BS.1770 — the loudness standard behind streaming platforms and
+ReplayGain) and gets one constant gain to land at a target loudness. Nothing
+else about the sound changes.
+
+Three ways to use it:
+
+- **On upload** — Settings → **Import** → *Normalize uploads to a loudness
+  target*. Off by default: off means files the pedal accepts are written
+  byte-exact, as always. On, every pushed file lands at the target.
+- **One slot** — right-click a loaded slot → **Normalize to -18 LUFS…**. The
+  original WAV moves to the app's trash first — that is your undo.
+- **Several slots** — Cmd/Ctrl-click or Shift-click rows to select them,
+  right-click the selection → **Normalize N slots…**. Each loop gets its own
+  gain; loops already at the target are left untouched.
+
+The target is -18 LUFS out of the box — ReplayGain's reference, the modern
+spelling of the old "89 dB" — and adjustable in Settings → Import (a hotter
+target like -14 leaves less headroom against a live band; a quieter one buries
+loops under stage noise).
+
+A few things worth knowing:
+
+- Quiet loops are turned up, loud ones turned down. A boost stops where the
+  loop's peak would hit -1 dB, so a quiet-but-peaky track lands a little short
+  of target instead of distorting — the toast says so when it happens.
+- Every outcome is one line in `operations.log` in the app's data folder:
+  what was measured, what was applied, what was skipped and why.
+- **Disconnect** to hear it on the pedal, as with every edit.
+
 ## Moving audio
 
 - **Push audio here…** (empty slot) / **Replace audio…** (occupied slot) — put
