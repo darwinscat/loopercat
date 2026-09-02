@@ -43,6 +43,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <numbers>
 #include <optional>
 #include <string>
@@ -68,6 +69,15 @@ inline constexpr double kPeakCeilingDb = -1.0;
 // a trash copy and a pedal write generation on nothing. Shared policy of the
 // import path and the on-card normalize command.
 inline constexpr double kAlreadyAtTargetLu = 0.2;
+
+// Honest audio never leaves [-8, +8]: float32 masters peak a little over 1,
+// and nothing musical is 18 dB past that. A sample beyond it — or not a
+// number at all — is bytes that are not audio. Seen on hardware 2026-09-02:
+// a card rebuilt after a recovery carried foreign RIFF headers inside five
+// takes' data chunks, and the meter read them as 2.4e38 ("767 dB"). The
+// meter counts such samples so callers can refuse to act on garbage instead
+// of computing a "gain" from it.
+inline constexpr float kWildSampleThreshold = 8.0f;
 
 // ITU-R BS.1770-4 gated integrated loudness over a stereo float stream.
 // Feed interleaved frames in any chunking; read integratedLufs() at the end.
@@ -118,7 +128,13 @@ public:
         for (std::size_t i = 0; i < frames; ++i) {
             const float left = interleavedStereo[2 * i];
             const float right = interleavedStereo[2 * i + 1];
-            peak_ = std::max(peak_, std::max(std::abs(left), std::abs(right)));
+            const float absLeft = std::abs(left), absRight = std::abs(right);
+            // `!(a <= t)` is true for NaN as well as for the merely absurd.
+            if (!(absLeft <= kWildSampleThreshold))
+                ++wild_;
+            if (!(absRight <= kWildSampleThreshold))
+                ++wild_;
+            peak_ = std::max(peak_, std::max(absLeft, absRight));
 
             const double kl = step(highpass_, hpState_[0],
                                    step(shelf_, shelfState_[0], static_cast<double>(left)));
@@ -193,6 +209,11 @@ public:
     // meter behind the boost ceiling.
     float samplePeak() const { return peak_; }
 
+    // Samples that cannot be audio (see kWildSampleThreshold). Non-zero means
+    // the loudness and peak above describe bytes, not music — act on that
+    // first.
+    std::int64_t wildSamples() const { return wild_; }
+
 private:
     struct Biquad {
         double b0, b1, b2, a1, a2;
@@ -217,6 +238,7 @@ private:
     double subSum_ = 0.0;       // energy of the current sub-block, both channels
     std::vector<double> subSums_;
     float peak_ = 0.0f;
+    std::int64_t wild_ = 0;
 };
 
 // The one constant gain (dB) that takes a track from its measured loudness to

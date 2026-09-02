@@ -194,6 +194,18 @@ int main()
         CHECK_NEAR(*after, *before + 7.0, 0.05);
     }
 
+    // --- bytes that are not audio are reported, not metered ---
+
+    {
+        // One impossible value in a music file is counted (the recovered
+        // card's foreign RIFF headers read as hundreds of these); the same
+        // file without it counts zero.
+        const auto damaged = sineWav(44100, -23.0, 1.0e20f);
+        CHECK_EQ(wav::measureLoudness(view(damaged)).wildSamples, 1);
+        const auto clean = sineWav(44100, -23.0);
+        CHECK_EQ(wav::measureLoudness(view(clean)).wildSamples, 0);
+    }
+
     // --- progress reporting tells the truth (issue #61) ---
 
     {

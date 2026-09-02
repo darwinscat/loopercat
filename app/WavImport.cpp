@@ -108,7 +108,15 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
         loudness::Meter meter(wav::kSampleRate);
         measureStream(*reader, meter);
         const std::optional<double> measured = meter.integratedLufs();
-        if (!measured.has_value()) {
+        if (meter.wildSamples() > 0) {
+            // Bytes that are not audio: whatever "loudness" they add up to is
+            // not a thing to aim at. Import as-is, report the damage.
+            outcome = NormalizeOutcome { .damaged = true, .wildSamples = meter.wildSamples() };
+            if (passesAsIs) {
+                out = { source, false, outcome };
+                return juce::Result::ok();
+            }
+        } else if (!measured.has_value()) {
             // Silence, or shorter than one gating block: nothing to level,
             // and inventing a gain would be a guess. Import as-is and say so.
             outcome = NormalizeOutcome {};

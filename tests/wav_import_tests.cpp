@@ -387,6 +387,22 @@ int main()
         CHECK_NEAR(*out, -18.0, 0.2);
     }
 
+    // Bytes that are not audio: a pedal-ready file with an impossible sample
+    // imports untouched and the outcome names the damage — no gain is ever
+    // computed from a "loudness" of garbage.
+    {
+        const juce::File src =
+            writeTemp(work, "damaged.wav", sineWav(44100, 2, dbAmp(-28.0), 1.0e20f));
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, { .normalizeTargetLufs = -18.0 }).wasOk());
+        CHECK(!p.converted);
+        CHECK(p.file == src);
+        CHECK(p.normalize.has_value());
+        CHECK(p.normalize->damaged);
+        CHECK(!p.normalize->measurable);
+        CHECK_EQ(p.normalize->wildSamples, 1);
+    }
+
     // Digital silence is unmeasurable: a pedal-ready file imports untouched,
     // with the outcome saying why nothing was levelled.
     {
