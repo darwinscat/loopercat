@@ -1471,19 +1471,36 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
         return { "n/a", "silent or too short to measure", "silent or too short to measure", false,
                  false };
     const double lufs = *reading.integratedLufs;
-    const double delta = lufs - targetLufs;
-    const bool attention = std::abs(delta) >= loudness::kAlreadyAtTargetLu;
-    // The row says what the number MEANS against the target — the player
-    // reads a distance, not a scale.
-    const juce::String row = juce::String(lufs, 1) + juce::String::fromUTF8(" LUFS \xc2\xb7 ")
-                           + (attention ? juce::String(std::abs(delta), 1) + " dB "
-                                              + (delta < 0.0 ? "below" : "above") + " target "
-                                              + target
-                                        : "at target " + target);
+    const double wanted = targetLufs - lufs;
+    const bool offTarget = std::abs(wanted) >= loudness::kAlreadyAtTargetLu;
+    // Attention means "Normalize would change this" — so the readout runs
+    // the command's own gain rule. A quiet loop whose peaks already touch the
+    // ceiling is off target and yet has nothing to gain (field report: a slot
+    // painted orange that the command then rightly refused); it reads grey
+    // with the reason, and a partial boost says how much is actually there.
+    const double gain = !offTarget ? 0.0
+                      : reading.samplePeak > 0.0f
+                          ? loudness::normalizeGainDb(lufs, targetLufs, reading.samplePeak,
+                                                      loudness::kPeakCeilingDb)
+                          : wanted;
+    const bool wouldChange = offTarget && std::abs(gain) > 1.0e-9;
+    const bool capped = wanted > 0.0 && gain + 1.0e-9 < wanted;
+    juce::String row = juce::String(lufs, 1) + juce::String::fromUTF8(" LUFS \xc2\xb7 ");
+    if (!offTarget)
+        row << "at target " << target;
+    else {
+        row << juce::String(std::abs(wanted), 1) << " dB " << (wanted > 0.0 ? "below" : "above")
+            << " target " << target;
+        if (!wouldChange)
+            row << juce::String::fromUTF8(" \xc2\xb7 peak-limited, nothing to gain");
+        else if (capped)
+            row << juce::String::fromUTF8(" \xc2\xb7 only +") << juce::String(gain, 1)
+                << " dB possible";
+    }
     return { juce::String(lufs, 1), row,
              row + ", peak " + juce::String(20.0 * std::log10(double(reading.samplePeak)), 1)
                  + " dB",
-             attention, false };
+             wouldChange, false };
 }
 
 void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)

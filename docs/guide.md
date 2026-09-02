@@ -215,9 +215,11 @@ A few things worth knowing:
   right-click → **Check loudness**. It runs in the background — rows pulse as
   they are read, you keep working — and fills the **LUFS** column (switch it
   on in Settings → Columns; double-clicking a slot's dash there reads just
-  that slot). Orange means attention: off target, or audio
-  that is damaged — bytes that are not sound, which Normalize will refuse to
-  touch until the loop is re-pushed from its original. Esc, or right-click →
+  that slot). Orange means Normalize would change the loop: off target, or
+  audio that is damaged — bytes that are not sound, which Normalize will
+  refuse to touch until the loop is re-pushed from its original. A quiet loop
+  whose peaks already touch the −1 dB ceiling stays grey with a note: it is
+  below target, but there is nothing to gain without clipping. Esc, or right-click →
   **Stop loudness check**, stops it; a reading is dropped the moment its
   loop's audio changes.
 - Every outcome is one line in `operations.log` in the app's data folder:
