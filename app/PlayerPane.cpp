@@ -224,7 +224,7 @@ void PlayerPane::setLoudnessPending(int slot)
         return;
     loudnessPending_ = true;
     readout_.set(juce::String::fromUTF8("measuring\xe2\x80\xa6"), false, false,
-                 "Reading the whole file off the card. Nothing is written.");
+                 juce::String::fromUTF8("Reading the file\xe2\x80\xa6"));
     updateLoudnessButtons();
 }
 
@@ -234,7 +234,7 @@ void PlayerPane::clearLoudness(int slot)
         return;
     loudnessDamaged_ = loudnessPending_ = false;
     readout_.set(juce::String::fromUTF8("LUFS \xe2\x80\x94"), false, false,
-                 "Not measured yet. Measure reads this loop's loudness; nothing is written.");
+                 "Not measured yet. Press Measure.");
     updateLoudnessButtons();
 }
 

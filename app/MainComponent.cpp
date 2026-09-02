@@ -1466,15 +1466,13 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
         const juce::String what = "damaged audio: " + juce::String(reading.wildSamples)
                                 + " impossible sample value(s)";
         return { "damaged", "damaged audio", what,
-                 juce::String(reading.wildSamples)
-                     + " sample values in this file are not sound (a stray file header inside the "
-                       "take; a recovered card can do this). Normalize refuses it. Re-push the "
-                       "loop from its original.",
+                 "This file contains bytes that are not sound. Re-push the loop from its "
+                 "original; Normalize will not touch it.",
                  true, true };
     }
     if (!reading.integratedLufs.has_value())
         return { "n/a", "silent or too short to measure", "silent or too short to measure",
-                 "Too little signal to measure: silence, or under 400 ms of audio.", false, false };
+                 "Nothing to measure: silence, or under 400 ms of audio.", false, false };
     const double lufs = *reading.integratedLufs;
     const double wanted = targetLufs - lufs;
     const bool offTarget = std::abs(wanted) >= loudness::kAlreadyAtTargetLu;
@@ -1503,14 +1501,11 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
                 << " dB possible";
     }
     const juce::String peak = juce::String(20.0 * std::log10(double(reading.samplePeak)), 1) + " dB";
-    juce::String tip = "Integrated loudness " + juce::String(lufs, 1) + " LUFS, peak " + peak
-                     + ". Target " + target + " LUFS (Settings " + juce::String::fromUTF8("\xe2\x86\x92")
-                     + " Import).";
+    juce::String tip = "Peak " + peak + juce::String::fromUTF8(" \xc2\xb7 target ") + target + " LUFS.";
     if (offTarget && !wouldChange)
-        tip << " The peaks already touch the -1 dB ceiling: raising the level would clip, so "
-               "Normalize leaves it.";
+        tip << " Cannot be raised without clipping.";
     else if (capped)
-        tip << " Only +" << juce::String(gain, 1) << " dB fits under the -1 dB peak ceiling.";
+        tip << " Only +" << juce::String(gain, 1) << " dB fits without clipping.";
     return { juce::String(lufs, 1), row, row + ", peak " + peak, tip, wouldChange, false };
 }
 
