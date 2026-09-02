@@ -1085,7 +1085,8 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
         if (cell->pending)
             player.setLoudnessPending(row.info.slot);
         else
-            player.setLoudness(row.info.slot, cell->detail, cell->attention, cell->damaged);
+            player.setLoudness(row.info.slot, cell->detail, cell->attention, cell->damaged,
+                               cell->tooltip);
     }
     if (startPlaying && engine.hasSource() && !engine.isPlaying())
         engine.play();
@@ -1460,16 +1461,20 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
     if (reading.wildSamples > 0) {
         // The number the meter would print here is real — and meaningless:
         // 2.4e38 is not a loudness, it is a foreign header read as float
-        // (the 2026-09-02 recovered card).
+        // (the 2026-09-02 recovered card). The row gets a sign and a word;
+        // the hint gets the story.
         const juce::String what = "damaged audio: " + juce::String(reading.wildSamples)
                                 + " impossible sample value(s)";
-        return { "damaged",
-                 what + juce::String::fromUTF8(" \xe2\x80\x94 re-push it from the original"), what,
+        return { "damaged", "damaged audio", what,
+                 juce::String(reading.wildSamples)
+                     + " sample values in this file are not sound (a stray file header inside the "
+                       "take; a recovered card can do this). Normalize refuses it. Re-push the "
+                       "loop from its original.",
                  true, true };
     }
     if (!reading.integratedLufs.has_value())
-        return { "n/a", "silent or too short to measure", "silent or too short to measure", false,
-                 false };
+        return { "n/a", "silent or too short to measure", "silent or too short to measure",
+                 "Too little signal to measure: silence, or under 400 ms of audio.", false, false };
     const double lufs = *reading.integratedLufs;
     const double wanted = targetLufs - lufs;
     const bool offTarget = std::abs(wanted) >= loudness::kAlreadyAtTargetLu;
@@ -1497,10 +1502,16 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
             row << juce::String::fromUTF8(" \xc2\xb7 only +") << juce::String(gain, 1)
                 << " dB possible";
     }
-    return { juce::String(lufs, 1), row,
-             row + ", peak " + juce::String(20.0 * std::log10(double(reading.samplePeak)), 1)
-                 + " dB",
-             wouldChange, false };
+    const juce::String peak = juce::String(20.0 * std::log10(double(reading.samplePeak)), 1) + " dB";
+    juce::String tip = "Integrated loudness " + juce::String(lufs, 1) + " LUFS, peak " + peak
+                     + ". Target " + target + " LUFS (Settings " + juce::String::fromUTF8("\xe2\x86\x92")
+                     + " Import).";
+    if (offTarget && !wouldChange)
+        tip << " The peaks already touch the -1 dB ceiling: raising the level would clip, so "
+               "Normalize leaves it.";
+    else if (capped)
+        tip << " Only +" << juce::String(gain, 1) << " dB fits under the -1 dB peak ceiling.";
+    return { juce::String(lufs, 1), row, row + ", peak " + peak, tip, wouldChange, false };
 }
 
 void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
@@ -1536,9 +1547,9 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
 void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)
 {
     table.setLoudness(slot, { report.cellText, report.attention, false, report.rowText,
-                              report.damaged });
-    player.setLoudness(slot, report.rowText, report.attention,
-                       report.damaged); // ignored unless that slot is loaded
+                              report.damaged, report.tooltipText });
+    player.setLoudness(slot, report.rowText, report.attention, report.damaged,
+                       report.tooltipText); // ignored unless that slot is loaded
     if (checkId != 0 && batch == checkId) {
         if (report.attention)
             ++checkAttention;

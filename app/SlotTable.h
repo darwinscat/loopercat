@@ -60,6 +60,7 @@ public:
         bool pending = false;   // a read is queued or in flight: "…", or the beacon
         juce::String detail {}; // the sentence the player row shows for this reading
         bool damaged = false;
+        juce::String tooltip {}; // the explanation the player row's hint carries
     };
     void setLoudness(int slot, LoudnessCell cell);
     void clearLoudness(int slot);

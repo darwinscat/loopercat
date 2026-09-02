@@ -99,6 +99,8 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     addChildComponent(resetButton_);
     addChildComponent(measureButton_);   // appear with a loaded loop and no markers
     addChildComponent(normalizeButton_);
+    addChildComponent(readout_);
+    clearLoudness();
 
     startTimerHz(30);
 }
@@ -144,6 +146,7 @@ void PlayerPane::applyFile(const juce::File& wav)
     }
     markersChanged();
     updateTransportRow();
+    layoutReadout(); // the title may have changed width
     repaint();
 }
 
@@ -166,16 +169,53 @@ void PlayerPane::releaseFile()
 
 // --- loudness (issue #61) ---
 
-void PlayerPane::setLoudness(int slot, const juce::String& text, bool attention, bool damaged)
+void PlayerPane::LoudnessReadout::set(const juce::String& text, bool attention, bool warning,
+                                      const juce::String& tip)
+{
+    text_ = text;
+    attention_ = attention;
+    warning_ = warning;
+    setTooltip(tip);
+    repaint();
+}
+
+void PlayerPane::LoudnessReadout::paint(juce::Graphics& g)
+{
+    auto area = getLocalBounds();
+    g.setFont(juce::FontOptions(13.0f));
+    g.setColour(kDim);
+    g.drawText(juce::String::fromUTF8("\xc2\xb7"), area.removeFromLeft(10),
+               juce::Justification::centredLeft, false);
+    area.removeFromLeft(4);
+    if (warning_) {
+        // A warning sign, not a paragraph: the row is tight, the tooltip is not.
+        const float s = 12.0f;
+        const float x = static_cast<float>(area.getX());
+        const float y = (static_cast<float>(getHeight()) - s) * 0.5f;
+        juce::Path sign;
+        sign.addTriangle(x + s * 0.5f, y, x + s, y + s, x, y + s);
+        g.setColour(felitronics::appkit::brand::orange);
+        g.fillPath(sign);
+        g.setColour(kPaneBackground);
+        g.setFont(juce::FontOptions(9.0f, juce::Font::bold));
+        g.drawText("!", juce::Rectangle<float>(x, y + 1.5f, s, s - 1.5f),
+                   juce::Justification::centred, false);
+        g.setFont(juce::FontOptions(13.0f));
+        area.removeFromLeft(static_cast<int>(s) + 6);
+    }
+    g.setColour(attention_ ? felitronics::appkit::brand::orange : kDim);
+    g.drawText(text_, area, juce::Justification::centredLeft, true);
+}
+
+void PlayerPane::setLoudness(int slot, const juce::String& text, bool attention, bool damaged,
+                             const juce::String& tooltip)
 {
     if (slot != slot_)
         return; // an answer for a slot no longer loaded
-    loudnessText_ = text;
-    loudnessAttention_ = attention;
     loudnessDamaged_ = damaged;
     loudnessPending_ = false;
+    readout_.set(text, attention, damaged, tooltip);
     updateLoudnessButtons();
-    repaint();
 }
 
 void PlayerPane::setLoudnessPending(int slot)
@@ -183,18 +223,34 @@ void PlayerPane::setLoudnessPending(int slot)
     if (slot != slot_)
         return;
     loudnessPending_ = true;
+    readout_.set(juce::String::fromUTF8("measuring\xe2\x80\xa6"), false, false,
+                 "Reading the whole file off the card. Nothing is written.");
     updateLoudnessButtons();
-    repaint();
 }
 
 void PlayerPane::clearLoudness(int slot)
 {
     if (slot != 0 && slot != slot_)
         return;
-    loudnessText_.clear();
-    loudnessAttention_ = loudnessDamaged_ = loudnessPending_ = false;
+    loudnessDamaged_ = loudnessPending_ = false;
+    readout_.set(juce::String::fromUTF8("LUFS \xe2\x80\x94"), false, false,
+                 "Not measured yet. Measure reads this loop's loudness; nothing is written.");
     updateLoudnessButtons();
-    repaint();
+}
+
+// The readout sits right after the name and takes what is left of the row
+// before the buttons; the name keeps priority, the readout truncates.
+void PlayerPane::layoutReadout()
+{
+    const auto row = getLocalBounds().removeFromTop(kTransportRowHeight);
+    juce::GlyphArrangement glyphs;
+    glyphs.addLineOfText(juce::Font(juce::FontOptions(13.0f)), title_, 0.0f, 0.0f);
+    const int titleWidth =
+        juce::jlimit(0, juce::jmax(0, row.getWidth() - 244 - 420),
+                     juce::roundToInt(glyphs.getBoundingBox(0, -1, true).getWidth()));
+    readout_.setBounds(
+        row.withTrimmedLeft(244 + titleWidth + 8)
+            .withTrimmedRight(tempoNote_.isNotEmpty() ? kReadoutRight + 280 : kReadoutRight));
 }
 
 // One zone, two modes: [Reset][Trim] while a selection is active,
@@ -206,6 +262,7 @@ void PlayerPane::updateLoudnessButtons()
     const bool show = engine_.hasSource() && slot_ > 0 && !markersActive();
     measureButton_.setVisible(show);
     normalizeButton_.setVisible(show);
+    readout_.setVisible(show);
     measureButton_.setEnabled(!loudnessPending_);
     normalizeButton_.setEnabled(!loudnessPending_ && !loudnessDamaged_);
 }
@@ -215,6 +272,7 @@ void PlayerPane::setTempoNote(const juce::String& note)
     if (tempoNote_ == note)
         return;
     tempoNote_ = note;
+    layoutReadout(); // the note takes room from the readout
     repaint();
 }
 
@@ -329,29 +387,12 @@ void PlayerPane::paint(juce::Graphics& g)
     const auto row = getLocalBounds().removeFromTop(kTransportRowHeight);
     g.setFont(juce::FontOptions(13.0f));
     if (title_.isNotEmpty()) {
-        const auto titleZone = row.withTrimmedLeft(244).withTrimmedRight(420);
+        // The loudness readout (readout_, a child) rides after the name while
+        // no selection owns the row (issue #61) — a meter beside the
+        // waveform, DAW-style. layoutReadout() places it past the name.
         g.setColour(kText);
-        g.drawText(title_, titleZone, juce::Justification::centredLeft, true);
-        // The loudness readout rides after the name while no selection owns
-        // the row (issue #61) — a meter beside the waveform, DAW-style. The
-        // name has priority: the readout takes what is left and truncates.
-        if (engine_.hasSource() && !markersActive()) {
-            juce::GlyphArrangement glyphs;
-            glyphs.addLineOfText(g.getCurrentFont(), title_, 0.0f, 0.0f);
-            const int titleWidth = juce::jmin(
-                titleZone.getWidth(), juce::roundToInt(glyphs.getBoundingBox(0, -1, true).getWidth()));
-            const juce::String text =
-                loudnessPending_          ? juce::String::fromUTF8("measuring\xe2\x80\xa6")
-                : loudnessText_.isNotEmpty() ? loudnessText_
-                                             : juce::String::fromUTF8("LUFS \xe2\x80\x94");
-            g.setColour(loudnessAttention_ && !loudnessPending_ ? felitronics::appkit::brand::orange
-                                                                : kDim);
-            g.drawText(juce::String::fromUTF8("\xc2\xb7  ") + text,
-                       row.withTrimmedLeft(244 + titleWidth + 10)
-                           .withTrimmedRight(tempoNote_.isNotEmpty() ? kReadoutRight + 280
-                                                                     : kReadoutRight),
-                       juce::Justification::centredLeft, true);
-        }
+        g.drawText(title_, row.withTrimmedLeft(244).withTrimmedRight(420),
+                   juce::Justification::centredLeft, true);
     }
     if (tempoNote_.isNotEmpty()) {
         // Right-aligned into the gap before the operation buttons — visible
@@ -473,6 +514,7 @@ void PlayerPane::resized()
         ops.withTrimmedLeft(kOpsZone - 116).withTrimmedRight(58).reduced(2, 0));
     normalizeButton_.setBounds(ops.withTrimmedLeft(kOpsZone - 94).reduced(2, 0));
     measureButton_.setBounds(ops.withTrimmedRight(94).reduced(2, 0));
+    layoutReadout();
 }
 
 // --- mouse: markers grab first, everything else seeks ---

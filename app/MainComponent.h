@@ -154,7 +154,8 @@ private:
         juce::String cellText; // the column: "-22.8", "damaged", "n/a"
         juce::String rowText;  // the player row: "-22.8 LUFS · 4.8 dB below target -18"
         juce::String noteText; // the toast: the row text plus the peak
-        bool attention = false; // off target or damaged — drawn to be noticed
+        juce::String tooltipText; // the hint: what the tight row cannot say
+        bool attention = false; // Normalize would change this — drawn to be noticed
         bool damaged = false;
     };
     static LoudnessReport describeReading(const wav::LoudnessReading& reading, double targetLufs);
@@ -190,6 +191,7 @@ private:
     SlotInspector inspector;
     Toast toast;
     BatchOverlay batchOverlay;
+    juce::TooltipWindow tooltips { this, 600 }; // hover hints (the player's loudness readout first)
 
     // The running batch (issue #61): id 0 = none. Results are credited by the
     // id the worker hands back, never by parsing descriptions.
