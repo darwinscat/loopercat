@@ -74,6 +74,11 @@ public:
         juce::String description;                          // for the result banner
         int slot = 0;                                      // affected slot (0 = none) — row busy indication
         std::function<void(const volume::fs::path&)> work; // runs on the worker, volume resolved fresh
+        // A line the job may add to its own success story ("normalized
+        // -3.2 dB…"): `work` writes it on the worker thread before returning,
+        // the result path reads it after — never concurrently. Empty or
+        // absent = the plain description.
+        std::shared_ptr<juce::String> note = nullptr;
     };
 
     // `explicitVolume` pins the volume path (the --volume CLI override;
@@ -244,7 +249,10 @@ private:
                     error = juce::String::fromUTF8(e.what()); // core messages carry typographic dashes
                 }
                 maybeDeliverSnapshot(scanAdvanced());
-                deliver([cb = onJobResult, d = job->description, error] {
+                juce::String described = job->description;
+                if (error.isEmpty() && job->note != nullptr && job->note->isNotEmpty())
+                    described << juce::String::fromUTF8(" \xe2\x80\x94 ") << *job->note;
+                deliver([cb = onJobResult, d = described, error] {
                     if (cb)
                         cb(d, error);
                 });

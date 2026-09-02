@@ -3,6 +3,7 @@
 
 #include "MainComponent.h"
 
+#include "OperationsLog.h"
 #include "Strings.h"
 #include "WavImport.h"
 
@@ -24,6 +25,33 @@ namespace
     // because most players use it; Play Count-In waits to be asked for.
     constexpr auto kOneShotColumnKey = "columnOneShot";
     constexpr auto kCountInColumnKey = "columnPlayCountIn";
+
+    // Normalize-on-upload (issue #53): OFF by default so every existing
+    // workflow keeps the byte-exact pass-through; -18 LUFS is ReplayGain
+    // 2.0's reference — the modern spelling of the "89 dB" the request
+    // arrived in.
+    constexpr auto kNormalizeOnUploadKey = "normalizeOnUpload";
+    constexpr auto kNormalizeTargetLufsKey = "normalizeTargetLufs";
+    constexpr double kDefaultTargetLufs = -18.0;
+
+    // The story a normalization tells the toast and the operations log.
+    juce::String describeNormalize(const wavimport::NormalizeOutcome& outcome, double targetLufs)
+    {
+        const auto lufs = [](double v) { return juce::String(v, 1); };
+        if (!outcome.measurable)
+            return "not normalized: too short or too quiet to measure";
+        if (outcome.untouched)
+            return "already at " + lufs(targetLufs) + " LUFS (measured "
+                 + lufs(outcome.measuredLufs) + "), file untouched";
+        juce::String story = "normalized " + juce::String(outcome.gainDb >= 0.0 ? "+" : "")
+                           + juce::String(outcome.gainDb, 1) + " dB ("
+                           + lufs(outcome.measuredLufs)
+                           + juce::String::fromUTF8(" \xe2\x86\x92 ")
+                           + lufs(outcome.measuredLufs + outcome.gainDb) + " LUFS)";
+        if (outcome.cappedByPeak)
+            story << ", boost capped at the -1 dB peak ceiling";
+        return story;
+    }
 
     // The window background — the family's near-black stage (the brand mark's
     // dark disc is 0xff0b0b11; the stage sits just above it).
@@ -1036,12 +1064,20 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
 {
     const auto enqueuePush = [this, slot, sourcePath](bool force) {
         releasePlayerIfHolding(slot, slot); // a replace rewrites the WAV under preview (issue #26)
+        // The normalize preference is read HERE, when the player acts — a
+        // settings change mid-queue must not rewrite jobs already promised.
+        std::optional<double> normalizeTarget;
+        if (auto* file = settings.file();
+            file != nullptr && file->getBoolValue(kNormalizeOnUploadKey, false))
+            normalizeTarget = file->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs);
+        auto note = std::make_shared<juce::String>();
         worker.enqueue({ "Push " + juce::File(sourcePath).getFileName() + " to slot "
                              + juce::String(slot),
                          slot,
-                         [source = sourcePath, slot, force,
+                         [source = sourcePath, slot, force, normalizeTarget, note,
                           options = makeWriteOptions(),
                           importTmp = settings.dataDir().getChildFile("import-tmp"),
+                          logDir = settings.dataDir(),
                           trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
                              const volume::fs::path& volumePath) {
                              // DAW exports arrive as anything — convert off the
@@ -1049,7 +1085,8 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                              // (issue #20). The temp conversion dies with the job.
                              wavimport::Prepared prepared;
                              const juce::Result ok =
-                                 wavimport::prepare(juce::File(source), importTmp, prepared);
+                                 wavimport::prepare(juce::File(source), importTmp, prepared,
+                                                    { .normalizeTargetLufs = normalizeTarget });
                              if (ok.failed())
                                  throw Error(ok.getErrorMessage().toStdString());
                              try {
@@ -1065,7 +1102,15 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                              }
                              if (prepared.converted)
                                  prepared.file.deleteFile();
-                         } });
+                             if (prepared.normalize.has_value() && normalizeTarget.has_value()) {
+                                 *note = describeNormalize(*prepared.normalize, *normalizeTarget);
+                                 oplog::append(logDir,
+                                               "push " + juce::File(source).getFileName()
+                                                   + " to slot " + juce::String(slot) + ": "
+                                                   + *note);
+                             }
+                         },
+                         note });
     };
 
     if (!slotOccupied) {
@@ -1209,6 +1254,17 @@ void MainComponent::openSettings()
                 file->saveIfNeeded();
             }
             applyColumnPreferences();
+        },
+        { settings.file() != nullptr && settings.file()->getBoolValue(kNormalizeOnUploadKey, false),
+          settings.file() != nullptr
+              ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
+              : kDefaultTargetLufs },
+        [this](SettingsDialog::ImportPrefs prefs) {
+            if (auto* file = settings.file()) {
+                file->setValue(kNormalizeOnUploadKey, prefs.normalizeOnUpload);
+                file->setValue(kNormalizeTargetLufsKey, prefs.targetLufs);
+                file->saveIfNeeded();
+            }
         }));
     options.dialogTitle = "Settings";
     options.dialogBackgroundColour = kBackground;
