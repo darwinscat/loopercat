@@ -207,10 +207,10 @@ A few things worth knowing:
   loop's peak would hit -1 dB, so a quiet-but-peaky track lands a little short
   of target instead of distorting — the toast says so when it happens.
 - To check where a loop sits without changing anything: select it and look at
-  the player row — after the name it shows the loudness and how far it sits
-  from the target. **Measure** reads it (read-only), **Normalize…** levels
-  it; both share the row with Trim, and step aside while a trim selection is
-  active.
+  the player row — as the waveform finishes loading, the loudness appears
+  after the name with how far it sits from the target (the same read draws
+  both; nothing is written). **Normalize…** levels it; it shares the row with
+  Trim and steps aside while a trim selection is active.
 - To check a whole setlist: select the slots (⌘A / Ctrl-A takes them all),
   right-click → **Check loudness**. It runs in the background — rows pulse as
   they are read, you keep working — and fills the **LUFS** column (switch it

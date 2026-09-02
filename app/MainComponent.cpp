@@ -266,7 +266,10 @@ MainComponent::MainComponent(std::string explicitVolume)
             toggleCountIn(slot, row->info.countIn);
     };
     table.onLoudnessCellDoubleClicked = [this](int slot) { measureSlotLoudness(slot); };
-    player.onMeasure = [this](int slot) { measureSlotLoudness(slot); };
+    // The player read the file for its waveform anyway; the meter rode along.
+    player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading) {
+        applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
+    };
     player.onNormalize = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             normalizeSlot(slot, trimmedName(*row));
@@ -1553,11 +1556,12 @@ void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, 
     }
 }
 
-// One slot's read (issue #53): the inspector's Measure button, the menu's
-// Check loudness, a double-click on the LUFS dash. A worker job like every
-// mutation — same row pulse, same error banner, serialized against rewrites
-// so it can never read a half-written take — but it writes nothing: no
-// trash, no journal line, no Disconnect hint, no lock.
+// One slot's read (issue #53) on demand: the menu's Check loudness, a
+// double-click on the LUFS dash. A worker job like every mutation — same row
+// pulse, same error banner, serialized against rewrites so it can never read
+// a half-written take — but it writes nothing: no trash, no journal line, no
+// Disconnect hint, no lock. (The loaded slot needs none of this: the player's
+// own read pass meters it along with the waveform.)
 void MainComponent::measureSlotLoudness(int slot)
 {
     enqueueLoudnessRead(slot, currentTargetLufs(), 0);
