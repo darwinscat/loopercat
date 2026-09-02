@@ -14,6 +14,8 @@
 
 #include <BinaryData.h>
 
+#include <cmath>
+
 namespace loopercat
 {
 
@@ -257,6 +259,7 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             toggleCountIn(slot, row->info.countIn);
     };
+    inspector.onMeasureRequested = [this](int slot) { measureSlotLoudness(slot); };
 
     settingsButton.onClick = [this] { openSettings(); };
     bottomTabs.onTabChanged = [this](int index) { showBottomTab(index); };
@@ -437,6 +440,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     worker.onJobResult = [this](juce::String description, juce::String error) {
         if (error.isNotEmpty()) {
             banners.showError(banners::Source::job, description + ": " + error);
+            inspector.clearLoudness(); // a failed measure must not stay "measuring…"
             return;
         }
         banners.clearJobError(); // a later mutation succeeded — the story moved on
@@ -464,8 +468,10 @@ MainComponent::MainComponent(std::string explicitVolume)
                                     && description.contains("file untouched"));
         if (description.startsWith("Trim"))
             player.reload(); // same path, new bytes — fresh reader + thumbnail
-        if (wroteToPedal)
+        if (wroteToPedal) {
             note << juce::String::fromUTF8(" \xe2\x80\x94 Disconnect to hear it on the pedal.");
+            inspector.clearLoudness(); // the audio moved on; the reading did not
+        }
         toast.show(note);
     };
 
@@ -1275,6 +1281,40 @@ void MainComponent::enqueueNormalize(int slot, double target)
                   { .trashRoot = trash, .targetLufs = target, .write = options });
               *note = describeNormalize(result, target);
               oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
+          },
+          note });
+}
+
+// The Measure button (issue #53): the inspector's loudness row answers only
+// when asked, because the answer costs reading the whole WAV off the card. It
+// runs as a worker job like every mutation — same busy pulse, same error
+// banner, and serialized against rewrites so it can never read a half-written
+// take — but it writes nothing: no trash, no journal line, no Disconnect hint.
+void MainComponent::measureSlotLoudness(int slot)
+{
+    auto note = std::make_shared<juce::String>();
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue(
+        { "Measure slot " + juce::String(slot) + " loudness", slot,
+          [slot, note, safe](const volume::fs::path& volumePath) {
+              const std::vector<std::string> files = volume::listSlotWavs(volumePath, slot);
+              if (files.empty())
+                  throw Error("slot " + std::to_string(slot) + " has no audio to measure");
+              const std::string raw =
+                  commands::readFileBytes(volume::wavDir(volumePath, slot) / files.front());
+              const wav::LoudnessReading reading = wav::measureLoudness(wav::BytesView(
+                  reinterpret_cast<const unsigned char*>(raw.data()), raw.size()));
+              juce::String text;
+              if (!reading.integratedLufs.has_value())
+                  text = "silent or too short to measure";
+              else
+                  text = juce::String(*reading.integratedLufs, 1) + " LUFS, peak "
+                       + juce::String(20.0 * std::log10(double(reading.samplePeak)), 1) + " dB";
+              *note = text;
+              juce::MessageManager::callAsync([safe, slot, text] {
+                  if (safe != nullptr)
+                      safe->inspector.setLoudness(slot, text);
+              });
           },
           note });
 }

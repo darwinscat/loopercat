@@ -81,7 +81,6 @@ public:
                              felitronics::appkit::brand::violet);
         normalize_.onClick = [this] {
             importPrefs_.normalizeOnUpload = normalize_.getToggleState();
-            target_.setEnabled(importPrefs_.normalizeOnUpload);
             commitImport();
         };
         addChildComponent(normalize_);
@@ -91,10 +90,14 @@ public:
         targetCaption_.setColour(juce::Label::textColourId, juce::Colour(0xff8a8a92));
         addChildComponent(targetCaption_);
 
+        // The target field does NOT follow the switch: the switch governs
+        // uploads only, while the same target drives the right-click
+        // Normalize command — which works with uploads left untouched. A
+        // field greyed out by an unrelated switch would deny that player the
+        // knob (field report, 2026-09-01).
         target_.setInputRestrictions(6, "-0123456789.");
         target_.setJustification(juce::Justification::centredRight);
         target_.setText(formatLufs(importPrefs_.targetLufs), juce::dontSendNotification);
-        target_.setEnabled(importPrefs_.normalizeOnUpload);
         target_.onReturnKey = [this] { parseTarget(); };
         target_.onFocusLost = [this] { parseTarget(); };
         addChildComponent(target_);

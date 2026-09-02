@@ -38,6 +38,14 @@ public:
     std::function<void(int, long long)> onTempoCommitted;
     std::function<void(int)> onOneShotToggled;
     std::function<void(int)> onCountInToggled;
+    std::function<void(int)> onMeasureRequested; // the Measure button: read this slot's loudness
+
+    // The measurement answer, delivered async by the owner. Ignored unless
+    // `slot` is still the one on display — the player may have moved on.
+    void setLoudness(int slot, const juce::String& text);
+    // Back to the idle dash: the reading is a snapshot of a moment, and any
+    // mutation (or a failed measure) makes that moment history.
+    void clearLoudness();
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -53,9 +61,12 @@ private:
     bool hasSlot_ = false;
     catalog::SlotInfo info_ {};
     bool busy_ = false;
+    bool measuring_ = false;
 
     juce::Label nameCaption_, tempoCaption_, barsHint_, footer_;
     juce::TextEditor nameEditor_, tempoEditor_;
+    juce::Label loudnessCaption_, loudnessValue_;
+    juce::TextButton measure_ { "Measure" };
     UseCaseCard countIn_ { "Play Count-In" };
     UseCaseCard oneShot_ { "One Shot" };
 
