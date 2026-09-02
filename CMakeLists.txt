@@ -67,7 +67,7 @@ target_compile_features(loopercat_core INTERFACE cxx_std_20)
 include(FetchContent)
 set(LOOPERCAT_FELITRONICS_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../felitronics-core" CACHE PATH
     "Local felitronics-core checkout (used if present); else the pinned release is fetched")
-set(LOOPERCAT_FELITRONICS_CORE_TAG "v0.22.1" CACHE STRING
+set(LOOPERCAT_FELITRONICS_CORE_TAG "v0.23.0" CACHE STRING
     "felitronics-core git tag to fetch when no local checkout is present")
 if(LOOPERCAT_FELITRONICS_CORE_DIR AND EXISTS "${LOOPERCAT_FELITRONICS_CORE_DIR}/CMakeLists.txt")
     message(STATUS "felitronics-core: local checkout — ${LOOPERCAT_FELITRONICS_CORE_DIR}")

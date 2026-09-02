@@ -157,6 +157,14 @@ public:
     // sentinel.
     std::optional<double> integratedLufs() const
     {
+        // Belt and braces over the capacity check in process(): the family meter counts the
+        // gating blocks it could not keep, and this adapter promised never to let a program
+        // reach that point — a non-zero count here is a wrong guard, not a long file.
+        if (loudness_.droppedBlocks() != 0)
+            throw Error("internal: the loudness meter dropped "
+                        + std::to_string(loudness_.droppedBlocks())
+                        + " gating block(s) past its capacity — the adapter's capacity guard "
+                          "let a program through");
         const double lufs = loudness_.integratedLufs();
         if (lufs <= kAbsoluteGateLufs)
             return std::nullopt;
