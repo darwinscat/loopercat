@@ -151,7 +151,9 @@ private:
     // inspector's Measure is a foreground read of one slot; the check is a
     // background run over a selection. Both land the same report.
     struct LoudnessReport {
-        juce::String inspectorText, cellText;
+        juce::String cellText; // the column: "-22.8", "damaged", "n/a"
+        juce::String rowText;  // the player row: "-22.8 LUFS · 4.8 dB below target -18"
+        juce::String noteText; // the toast: the row text plus the peak
         bool attention = false; // off target or damaged — drawn to be noticed
         bool damaged = false;
     };

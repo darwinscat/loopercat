@@ -118,6 +118,12 @@ void SlotTable::clearAllLoudness()
     table_.repaint();
 }
 
+const SlotTable::LoudnessCell* SlotTable::loudnessFor(int slot) const
+{
+    const auto found = loudness_.find(slot);
+    return found == loudness_.end() ? nullptr : &found->second;
+}
+
 void SlotTable::selectAll()
 {
     if (!rows_.empty())

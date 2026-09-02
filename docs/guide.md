@@ -206,9 +206,11 @@ A few things worth knowing:
 - Quiet loops are turned up, loud ones turned down. A boost stops where the
   loop's peak would hit -1 dB, so a quiet-but-peaky track lands a little short
   of target instead of distorting — the toast says so when it happens.
-- To check where a loop sits without changing anything: select it, open
-  **Slot settings** (⌘I) and press **Measure** — the loudness and peak of
-  exactly what is on the card, read-only.
+- To check where a loop sits without changing anything: select it and look at
+  the player row — after the name it shows the loudness and how far it sits
+  from the target. **Measure** reads it (read-only), **Normalize…** levels
+  it; both share the row with Trim, and step aside while a trim selection is
+  active.
 - To check a whole setlist: select the slots (⌘A / Ctrl-A takes them all),
   right-click → **Check loudness**. It runs in the background — rows pulse as
   they are read, you keep working — and fills the **LUFS** column (switch it

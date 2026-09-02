@@ -265,8 +265,12 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             toggleCountIn(slot, row->info.countIn);
     };
-    inspector.onMeasureRequested = [this](int slot) { measureSlotLoudness(slot); };
     table.onLoudnessCellDoubleClicked = [this](int slot) { measureSlotLoudness(slot); };
+    player.onMeasure = [this](int slot) { measureSlotLoudness(slot); };
+    player.onNormalize = [this](int slot) {
+        if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
+            normalizeSlot(slot, trimmedName(*row));
+    };
 
     settingsButton.onClick = [this] { openSettings(); };
     bottomTabs.onTabChanged = [this](int index) { showBottomTab(index); };
@@ -453,10 +457,9 @@ MainComponent::MainComponent(std::string explicitVolume)
         const bool inCheck = checkId != 0 && batch == checkId;
         if (error.isNotEmpty()) {
             banners.showError(banners::Source::job, description + ": " + error);
-            if (description.startsWith("Check slot")) {
-                inspector.clearLoudness(); // a failed read must not stay "measuring…"
-                if (slot > 0)
-                    table.clearPendingLoudness(slot); // …nor its cell "…"
+            if (description.startsWith("Check slot") && slot > 0) {
+                player.clearLoudness(slot);       // a failed read must not stay "measuring…"
+                table.clearPendingLoudness(slot); // …nor its cell "…"
             }
             if (inBatch) {
                 ++batchFailed;
@@ -509,11 +512,13 @@ MainComponent::MainComponent(std::string explicitVolume)
                                || description.startsWith("Clear")
                                || description.startsWith("Swap");
         if (changedAudio) {
-            inspector.clearLoudness();
-            if (description.startsWith("Swap"))
+            if (description.startsWith("Swap")) {
                 table.clearAllLoudness();
-            else if (slot > 0)
+                player.clearLoudness();
+            } else if (slot > 0) {
                 table.clearLoudness(slot);
+                player.clearLoudness(slot);
+            }
         }
         if (inCheck) {
             // The reading already landed in the column (applyLoudnessReport
@@ -1074,6 +1079,14 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
         player.setSlot(row.info.slot, juce::File(path), title, row.info.oneShot, row.info.frames);
     }
     player.setTempoNote(tempoNoteFor(row.info));
+    // The loudness readout follows the loaded loop: whatever the column knows
+    // about it — a check's answer, a read in flight — shows in the player row.
+    if (const SlotTable::LoudnessCell* cell = table.loudnessFor(row.info.slot)) {
+        if (cell->pending)
+            player.setLoudnessPending(row.info.slot);
+        else
+            player.setLoudness(row.info.slot, cell->detail, cell->attention, cell->damaged);
+    }
     if (startPlaying && engine.hasSource() && !engine.isPlaying())
         engine.play();
 }
@@ -1443,20 +1456,34 @@ double MainComponent::currentTargetLufs()
 MainComponent::LoudnessReport MainComponent::describeReading(const wav::LoudnessReading& reading,
                                                              double targetLufs)
 {
-    if (reading.wildSamples > 0)
+    const juce::String target = SettingsDialog::formatLufs(targetLufs);
+    if (reading.wildSamples > 0) {
         // The number the meter would print here is real — and meaningless:
         // 2.4e38 is not a loudness, it is a foreign header read as float
         // (the 2026-09-02 recovered card).
-        return { "damaged audio: " + juce::String(reading.wildSamples)
-                     + " impossible sample value(s)",
-                 "damaged", true, true };
+        const juce::String what = "damaged audio: " + juce::String(reading.wildSamples)
+                                + " impossible sample value(s)";
+        return { "damaged",
+                 what + juce::String::fromUTF8(" \xe2\x80\x94 re-push it from the original"), what,
+                 true, true };
+    }
     if (!reading.integratedLufs.has_value())
-        return { "silent or too short to measure", "n/a", false, false };
+        return { "n/a", "silent or too short to measure", "silent or too short to measure", false,
+                 false };
     const double lufs = *reading.integratedLufs;
-    return { juce::String(lufs, 1) + " LUFS, peak "
-                 + juce::String(20.0 * std::log10(double(reading.samplePeak)), 1) + " dB",
-             juce::String(lufs, 1),
-             std::abs(lufs - targetLufs) >= loudness::kAlreadyAtTargetLu, false };
+    const double delta = lufs - targetLufs;
+    const bool attention = std::abs(delta) >= loudness::kAlreadyAtTargetLu;
+    // The row says what the number MEANS against the target — the player
+    // reads a distance, not a scale.
+    const juce::String row = juce::String(lufs, 1) + juce::String::fromUTF8(" LUFS \xc2\xb7 ")
+                           + (attention ? juce::String(std::abs(delta), 1) + " dB "
+                                              + (delta < 0.0 ? "below" : "above") + " target "
+                                              + target
+                                        : "at target " + target);
+    return { juce::String(lufs, 1), row,
+             row + ", peak " + juce::String(20.0 * std::log10(double(reading.samplePeak)), 1)
+                 + " dB",
+             attention, false };
 }
 
 void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
@@ -1465,6 +1492,7 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
     // lock the UI. The cell says "…" until the answer lands, and the one in
     // flight breathes (SlotTable::paintCell).
     table.setLoudness(slot, { juce::String::fromUTF8("\xe2\x80\xa6"), false, true });
+    player.setLoudnessPending(slot); // ignored unless that slot is loaded
     auto note = std::make_shared<juce::String>();
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue(
@@ -1479,7 +1507,7 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
               const wav::LoudnessReading reading = wav::measureLoudness(wav::BytesView(
                   reinterpret_cast<const unsigned char*>(raw.data()), raw.size()));
               const LoudnessReport report = describeReading(reading, target);
-              *note = report.inspectorText;
+              *note = report.noteText;
               juce::MessageManager::callAsync([safe, slot, report, batch] {
                   if (safe != nullptr)
                       safe->applyLoudnessReport(slot, report, batch);
@@ -1490,8 +1518,10 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
 
 void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)
 {
-    table.setLoudness(slot, { report.cellText, report.attention });
-    inspector.setLoudness(slot, report.inspectorText); // ignored unless that slot is on display
+    table.setLoudness(slot, { report.cellText, report.attention, false, report.rowText,
+                              report.damaged });
+    player.setLoudness(slot, report.rowText, report.attention,
+                       report.damaged); // ignored unless that slot is loaded
     if (checkId != 0 && batch == checkId) {
         if (report.attention)
             ++checkAttention;

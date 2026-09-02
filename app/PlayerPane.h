@@ -62,6 +62,17 @@ public:
     void releaseFile();
     std::function<void(int, juce::int64, juce::int64)> onTrim;       // (slot, inFrame, outFrame)
 
+    // Loudness of the loaded loop (issue #61): a readout after the title and
+    // the Measure / Normalize… pair — the audio toolbar's other half. Shown
+    // while no trim selection is active: the selection owns the row then,
+    // and Normalize is whole-loop work that must not read as "the selection".
+    // All three ignore a slot that is not the loaded one.
+    void setLoudness(int slot, const juce::String& text, bool attention, bool damaged);
+    void setLoudnessPending(int slot);
+    void clearLoudness(int slot = 0); // 0 = whatever is loaded
+    std::function<void(int)> onMeasure;   // Measure pressed for this slot
+    std::function<void(int)> onNormalize; // Normalize… pressed for this slot
+
     void paint(juce::Graphics& g) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent& e) override;
@@ -83,6 +94,7 @@ private:
     double secondsAt(float x) const;
     juce::Rectangle<int> waveArea() const;
     void updateTransportRow();
+    void updateLoudnessButtons();
 
     AudioEngine& engine_;
     juce::AudioThumbnailCache thumbnailCache_ { 8 };
@@ -94,7 +106,11 @@ private:
     juce::Rectangle<int> volumeIconArea_; // the speaker glyph, drawn in paint()
     juce::TextButton trimButton_ { "Trim" };
     juce::TextButton resetButton_ { "Reset" };
+    juce::TextButton measureButton_ { "Measure" };
+    juce::TextButton normalizeButton_ { juce::String::fromUTF8("Normalize\xe2\x80\xa6") };
     juce::String title_, error_, currentPath_, tempoNote_;
+    juce::String loudnessText_; // empty = not measured
+    bool loudnessAttention_ = false, loudnessDamaged_ = false, loudnessPending_ = false;
     int slot_ = 0;
     long long slotFrames_ = 0;
     bool oneShot_ = false;

@@ -66,6 +66,21 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
         markersChanged();
     };
 
+    // The loudness pair (issue #61) shares the trim pair's zone and styling:
+    // the quiet read on the left, the accented rewrite on the right.
+    measureButton_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
+    measureButton_.onClick = [this] {
+        if (onMeasure && slot_ > 0)
+            onMeasure(slot_);
+    };
+    normalizeButton_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2a2440));
+    normalizeButton_.setColour(juce::TextButton::textColourOffId,
+                               felitronics::appkit::brand::lilac);
+    normalizeButton_.onClick = [this] {
+        if (onNormalize && slot_ > 0)
+            onNormalize(slot_);
+    };
+
 
     thumbnail_.addChangeListener(this); // repaint as the background build progresses
 
@@ -74,6 +89,8 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     addAndMakeVisible(volumeSlider_);
     addChildComponent(trimButton_);  // appear with active markers
     addChildComponent(resetButton_);
+    addChildComponent(measureButton_);   // appear with a loaded loop and no markers
+    addChildComponent(normalizeButton_);
 
     startTimerHz(30);
 }
@@ -106,6 +123,7 @@ void PlayerPane::applyFile(const juce::File& wav)
     currentPath_.clear();
     thumbnail_.clear();
     inSeconds_ = outSeconds_ = 0.0;
+    clearLoudness(); // new bytes (or a new slot): the owner re-feeds what it knows
 
     const juce::Result loaded = engine_.load(wav);
     if (loaded.failed()) {
@@ -138,6 +156,52 @@ void PlayerPane::releaseFile()
     updateTransportRow();
 }
 
+// --- loudness (issue #61) ---
+
+void PlayerPane::setLoudness(int slot, const juce::String& text, bool attention, bool damaged)
+{
+    if (slot != slot_)
+        return; // an answer for a slot no longer loaded
+    loudnessText_ = text;
+    loudnessAttention_ = attention;
+    loudnessDamaged_ = damaged;
+    loudnessPending_ = false;
+    updateLoudnessButtons();
+    repaint();
+}
+
+void PlayerPane::setLoudnessPending(int slot)
+{
+    if (slot != slot_)
+        return;
+    loudnessPending_ = true;
+    updateLoudnessButtons();
+    repaint();
+}
+
+void PlayerPane::clearLoudness(int slot)
+{
+    if (slot != 0 && slot != slot_)
+        return;
+    loudnessText_.clear();
+    loudnessAttention_ = loudnessDamaged_ = loudnessPending_ = false;
+    updateLoudnessButtons();
+    repaint();
+}
+
+// One zone, two modes: [Reset][Trim] while a selection is active,
+// [Measure][Normalize…] otherwise. Normalize stays offered for an unmeasured
+// loop (the command measures for itself) and is withheld for a damaged one
+// (the command would refuse — better not to offer).
+void PlayerPane::updateLoudnessButtons()
+{
+    const bool show = engine_.hasSource() && slot_ > 0 && !markersActive();
+    measureButton_.setVisible(show);
+    normalizeButton_.setVisible(show);
+    measureButton_.setEnabled(!loudnessPending_);
+    normalizeButton_.setEnabled(!loudnessPending_ && !loudnessDamaged_);
+}
+
 void PlayerPane::setTempoNote(const juce::String& note)
 {
     if (tempoNote_ == note)
@@ -157,6 +221,7 @@ void PlayerPane::clear()
     slot_ = 0;
     slotFrames_ = 0;
     inSeconds_ = outSeconds_ = 0.0;
+    clearLoudness();
     updateTransportRow();
     repaint();
 }
@@ -200,6 +265,7 @@ void PlayerPane::markersChanged()
         engine_.clearSection();
     trimButton_.setVisible(active);
     resetButton_.setVisible(active);
+    updateLoudnessButtons(); // the other mode of the same zone
     repaint();
 }
 
@@ -234,6 +300,7 @@ void PlayerPane::updateTransportRow()
                                                                          : "\xe2\x96\xb6")); // play triangle
     loopButton_.setToggleState(engine_.isLooping(), juce::dontSendNotification);
     lastPaintedPlaying_ = engine_.isPlaying();
+    updateLoudnessButtons();
 }
 
 void PlayerPane::timerCallback()
@@ -254,16 +321,35 @@ void PlayerPane::paint(juce::Graphics& g)
     const auto row = getLocalBounds().removeFromTop(kTransportRowHeight);
     g.setFont(juce::FontOptions(13.0f));
     if (title_.isNotEmpty()) {
+        const auto titleZone = row.withTrimmedLeft(244).withTrimmedRight(420);
         g.setColour(kText);
-        g.drawText(title_, row.withTrimmedLeft(244).withTrimmedRight(420),
-                   juce::Justification::centredLeft, true);
+        g.drawText(title_, titleZone, juce::Justification::centredLeft, true);
+        // The loudness readout rides after the name while no selection owns
+        // the row (issue #61) — a meter beside the waveform, DAW-style. The
+        // name has priority: the readout takes what is left and truncates.
+        if (engine_.hasSource() && !markersActive()) {
+            juce::GlyphArrangement glyphs;
+            glyphs.addLineOfText(g.getCurrentFont(), title_, 0.0f, 0.0f);
+            const int titleWidth = juce::jmin(
+                titleZone.getWidth(), juce::roundToInt(glyphs.getBoundingBox(0, -1, true).getWidth()));
+            const juce::String text =
+                loudnessPending_          ? juce::String::fromUTF8("measuring\xe2\x80\xa6")
+                : loudnessText_.isNotEmpty() ? loudnessText_
+                                             : juce::String::fromUTF8("LUFS \xe2\x80\x94");
+            g.setColour(loudnessAttention_ && !loudnessPending_ ? felitronics::appkit::brand::orange
+                                                                : kDim);
+            g.drawText(juce::String::fromUTF8("\xc2\xb7  ") + text,
+                       row.withTrimmedLeft(244 + titleWidth + 10)
+                           .withTrimmedRight(tempoNote_.isNotEmpty() ? 560 : 280),
+                       juce::Justification::centredLeft, true);
+        }
     }
     if (tempoNote_.isNotEmpty()) {
-        // Right-aligned into the gap between the title zone and the time
-        // readout — visible exactly while the pedal and the preview disagree.
+        // Right-aligned into the gap before the operation buttons — visible
+        // exactly while the pedal and the preview disagree.
         g.setColour(kDim);
         g.setFont(juce::FontOptions(12.0f));
-        g.drawText(tempoNote_, row.withTrimmedLeft(row.getWidth() - 414).withTrimmedRight(136),
+        g.drawText(tempoNote_, row.withTrimmedLeft(row.getWidth() - 560).withTrimmedRight(280),
                    juce::Justification::centredRight, true);
         g.setFont(juce::FontOptions(13.0f));
     }
@@ -310,7 +396,7 @@ void PlayerPane::paint(juce::Graphics& g)
             if (colour != felitronics::appkit::brand::orange)
                 trimButton_.setEnabled(true);
             g.setColour(colour);
-            g.drawText(readout, row.withTrimmedRight(240), juce::Justification::centredRight, false);
+            g.drawText(readout, row.withTrimmedRight(280), juce::Justification::centredRight, false);
         }
         g.setColour(kDim);
         g.drawText(formatSeconds(engine_.positionSeconds()) + " / "
@@ -367,8 +453,13 @@ void PlayerPane::resized()
     volumeIconArea_ = row.removeFromLeft(16);
     volumeSlider_.setBounds(row.removeFromLeft(84).reduced(0, 3));
     row.removeFromRight(96); // the time readout, drawn in paint()
-    trimButton_.setBounds(row.removeFromRight(58).reduced(2, 0));
-    resetButton_.setBounds(row.removeFromRight(58).reduced(2, 0));
+    // One zone, two modes (issue #61): [Reset][Trim] while a selection is
+    // active, [Measure][Normalize…] otherwise — never both at once.
+    const auto ops = row.removeFromRight(164);
+    trimButton_.setBounds(ops.withTrimmedLeft(164 - 58).reduced(2, 0));
+    resetButton_.setBounds(ops.withTrimmedLeft(164 - 116).withTrimmedRight(58).reduced(2, 0));
+    normalizeButton_.setBounds(ops.withTrimmedLeft(164 - 94).reduced(2, 0));
+    measureButton_.setBounds(ops.withTrimmedRight(94).reduced(2, 0));
 }
 
 // --- mouse: markers grab first, everything else seeks ---
