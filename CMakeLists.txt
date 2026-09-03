@@ -65,6 +65,36 @@ target_compile_features(loopercat_core INTERFACE cxx_std_20)
 # PROJECT_IS_TOP_LEVEL upstream).
 # ----------------------------------------------------------------------------
 include(FetchContent)
+
+# What the About window says about a dependency: the version it was built from, whether that was
+# the pinned release ("pin") or a sibling checkout ("local"), and — for a checkout — the commit,
+# which a tag alone cannot tell. `git describe` on the checkout gives the version (a tag, or a tag
+# plus the commits since); the pin's version is its tag. Sets <prefix>_VERSION / _STATE / _COMMIT.
+function(loopercat_dependency_stamp prefix local_dir tag)
+    set(_version "${tag}")
+    set(_state "pin")
+    set(_commit "")
+    if(local_dir AND EXISTS "${local_dir}/CMakeLists.txt")
+        set(_state "local")
+        if(GIT_EXECUTABLE)
+            execute_process(COMMAND ${GIT_EXECUTABLE} -C "${local_dir}" describe --tags --always --dirty
+                RESULT_VARIABLE _rc OUTPUT_VARIABLE _out OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            if(_rc EQUAL 0 AND NOT _out STREQUAL "")
+                set(_version "${_out}")
+            endif()
+            execute_process(COMMAND ${GIT_EXECUTABLE} -C "${local_dir}" rev-parse --short HEAD
+                RESULT_VARIABLE _rc OUTPUT_VARIABLE _out OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            if(_rc EQUAL 0 AND NOT _out STREQUAL "")
+                set(_commit "g${_out}")
+            endif()
+        endif()
+    endif()
+    set(${prefix}_VERSION "${_version}" PARENT_SCOPE)
+    set(${prefix}_STATE "${_state}" PARENT_SCOPE)
+    set(${prefix}_COMMIT "${_commit}" PARENT_SCOPE)
+endfunction()
+find_package(Git QUIET)
+
 set(LOOPERCAT_FELITRONICS_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../felitronics-core" CACHE PATH
     "Local felitronics-core checkout (used if present); else the pinned release is fetched")
 set(LOOPERCAT_FELITRONICS_CORE_TAG "v0.23.0" CACHE STRING
@@ -81,6 +111,7 @@ else()
 endif()
 FetchContent_MakeAvailable(felitronics_core)
 target_link_libraries(loopercat_core INTERFACE felitronics::analysis)
+loopercat_dependency_stamp(LOOPERCAT_DEP_FCORE "${LOOPERCAT_FELITRONICS_CORE_DIR}" "${LOOPERCAT_FELITRONICS_CORE_TAG}")
 
 # ----------------------------------------------------------------------------
 # minimp3 (fetched, pinned, CC0-1.0) — the APP-tier MP3 decoder behind
@@ -95,9 +126,11 @@ target_link_libraries(loopercat_core INTERFACE felitronics::analysis)
 # warning gate.
 # ----------------------------------------------------------------------------
 include(FetchContent)
+set(LOOPERCAT_MINIMP3_COMMIT ea99364f61c14656440e8d77e9c233ccf3124633)   # minimp3 has no tags: pinned by commit
 FetchContent_Declare(minimp3
     GIT_REPOSITORY https://github.com/lieff/minimp3.git
-    GIT_TAG        ea99364f61c14656440e8d77e9c233ccf3124633)
+    GIT_TAG        ${LOOPERCAT_MINIMP3_COMMIT})
+string(SUBSTRING "${LOOPERCAT_MINIMP3_COMMIT}" 0 7 LOOPERCAT_MINIMP3_SHORT)
 FetchContent_MakeAvailable(minimp3)
 add_library(minimp3_headers INTERFACE)
 target_include_directories(minimp3_headers SYSTEM INTERFACE "${minimp3_SOURCE_DIR}")
@@ -199,7 +232,7 @@ if(LOOPERCAT_BUILD_APP)
 include(FetchContent)
 set(LOOPERCAT_APPKIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../felitronics-appkit" CACHE PATH
     "Local felitronics-appkit checkout (used if present); else the pinned release is fetched")
-set(LOOPERCAT_APPKIT_TAG "v0.11.1" CACHE STRING
+set(LOOPERCAT_APPKIT_TAG "v0.14.0" CACHE STRING
     "felitronics-appkit git tag to fetch when no local checkout is present")
 if(LOOPERCAT_APPKIT_DIR AND EXISTS "${LOOPERCAT_APPKIT_DIR}/CMakeLists.txt")
     message(STATUS "felitronics-appkit: local checkout — ${LOOPERCAT_APPKIT_DIR}")
@@ -212,6 +245,7 @@ else()
         GIT_SHALLOW    TRUE)
 endif()
 FetchContent_MakeAvailable(felitronics_appkit)
+loopercat_dependency_stamp(LOOPERCAT_DEP_APPKIT "${LOOPERCAT_APPKIT_DIR}" "${LOOPERCAT_APPKIT_TAG}")
 
 set(LOOPERCAT_JUCE_TAG "8.0.14" CACHE STRING "JUCE git tag")   # the family's pinned JUCE
 FetchContent_Declare(juce
@@ -226,7 +260,10 @@ FetchContent_MakeAvailable(juce)
 juce_add_binary_data(LooperCatAssets
     SOURCES
         "${felitronics_appkit_SOURCE_DIR}/assets/catlogo.svg"
-        "${felitronics_appkit_SOURCE_DIR}/assets/Michroma-Regular.ttf")
+        "${felitronics_appkit_SOURCE_DIR}/assets/Michroma-Regular.ttf"
+        # The trademark notice the About window shows, as a file rather than a string literal:
+        # it is the sentence the README carries word for word, and a file can be diffed against it.
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/notice.txt")
 
 # ----------------------------------------------------------------------------
 # Configure-time build stamp for the version badge: short hash + dirty flag +
@@ -363,7 +400,16 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_BUILD_COUNT=${LOOPERCAT_BUILD_COUNT}
     LOOPERCAT_BUILD_OS="${CMAKE_SYSTEM_NAME}"
     LOOPERCAT_BUILD_ARCH="${LOOPERCAT_BUILD_ARCH}"
-    LOOPERCAT_BUILDER="${LOOPERCAT_BUILDER}")
+    LOOPERCAT_BUILDER="${LOOPERCAT_BUILDER}"
+    # The About window's dependency table (felitronics-appkit VersionBadge::Config::dependencies).
+    LOOPERCAT_DEP_FCORE_VERSION="${LOOPERCAT_DEP_FCORE_VERSION}"
+    LOOPERCAT_DEP_FCORE_STATE="${LOOPERCAT_DEP_FCORE_STATE}"
+    LOOPERCAT_DEP_FCORE_COMMIT="${LOOPERCAT_DEP_FCORE_COMMIT}"
+    LOOPERCAT_DEP_APPKIT_VERSION="${LOOPERCAT_DEP_APPKIT_VERSION}"
+    LOOPERCAT_DEP_APPKIT_STATE="${LOOPERCAT_DEP_APPKIT_STATE}"
+    LOOPERCAT_DEP_APPKIT_COMMIT="${LOOPERCAT_DEP_APPKIT_COMMIT}"
+    LOOPERCAT_DEP_JUCE_VERSION="${LOOPERCAT_JUCE_TAG}"
+    LOOPERCAT_DEP_MINIMP3_COMMIT="g${LOOPERCAT_MINIMP3_SHORT}")
 
 target_link_libraries(LooperCat PRIVATE
     loopercat::core

@@ -23,6 +23,10 @@ namespace
 {
     constexpr auto kProductUrl = "https://darwinscat.com/loopercat";
 
+    // What the version badge calls this binary's wrapper — a plugin says VST3 or AU here; an app
+    // says App. The badge shows it under the version and signs the family tip jar with it.
+    constexpr auto kBadgeFormat = "App";
+
     // Which behaviour columns the table shows. One Shot is on out of the box
     // because most players use it; Play Count-In waits to be asked for.
     constexpr auto kOneShotColumnKey = "columnOneShot";
@@ -127,11 +131,37 @@ namespace
                  .os = LOOPERCAT_BUILD_OS,
                  .arch = LOOPERCAT_BUILD_ARCH,
                  .builder = LOOPERCAT_BUILDER,
+                 .licence = "AGPL-3.0-or-later",
+                 // The dependency table: each row's version, whether the build took the
+                 // pinned release or a sibling checkout, and the checkout's commit when
+                 // it did — stamped by CMake, which is the one party that knows.
+                 .dependencies = { { .label = "felitronics-core",
+                                     .version = LOOPERCAT_DEP_FCORE_VERSION,
+                                     .ownerRepo = "darwinscat/felitronics-core",
+                                     .commit = LOOPERCAT_DEP_FCORE_COMMIT,
+                                     .state = LOOPERCAT_DEP_FCORE_STATE },
+                                   { .label = "felitronics-appkit",
+                                     .version = LOOPERCAT_DEP_APPKIT_VERSION,
+                                     .ownerRepo = "darwinscat/felitronics-appkit",
+                                     .commit = LOOPERCAT_DEP_APPKIT_COMMIT,
+                                     .state = LOOPERCAT_DEP_APPKIT_STATE },
+                                   { .label = "JUCE",
+                                     .version = LOOPERCAT_DEP_JUCE_VERSION,
+                                     .ownerRepo = "juce-framework/JUCE",
+                                     .state = "pin" },
+                                   { .label = "minimp3",
+                                     .version = LOOPERCAT_DEP_MINIMP3_COMMIT,
+                                     .ownerRepo = "lieff/minimp3",
+                                     .commit = LOOPERCAT_DEP_MINIMP3_COMMIT,
+                                     .state = "pin" } },
                  // The popover mirrors the window header: the ears, not the
                  // family-default orbit the hook falls back to.
                  .drawMark = [](juce::Graphics& g, float cx, float cy, float d) {
                      ui::drawLoopMark(g, cx, cy, d);
-                 } };
+                 },
+                 // The trademark sentence the README carries, as the window's small print.
+                 .notice = juce::String::fromUTF8(BinaryData::notice_txt, BinaryData::notice_txtSize)
+                               .trim() };
     }
 
     juce::String trimmedName(const SlotRow& row)
@@ -156,7 +186,7 @@ MainComponent::MainComponent(std::string explicitVolume)
     : header(BinaryData::catlogo_svg, BinaryData::catlogo_svgSize,
              BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize,
              "LooperCat", kProductUrl),
-      badge(updateChecker, badgeConfig(), "App"),
+      badge(updateChecker, badgeConfig(), kBadgeFormat),
       worker(std::move(explicitVolume), [this](const PedalSnapshot& s) { applySnapshot(s); })
 {
     badge.setBrandTypeface(juce::Typeface::createSystemTypefaceFor(
@@ -330,7 +360,11 @@ MainComponent::MainComponent(std::string explicitVolume)
         .backup = [this] { runBackup(); },
         .cleanJunk = [this] { runCleanJunk(); },
         .feedTheCat = [] {
-            felitronics::appkit::brand::feedTheCatLink("LooperCat").launchInDefaultBrowser();
+            // Signed like the badge's own link: which app, which machine, which wrapper.
+            felitronics::appkit::brand::feedTheCatLink("LooperCat",
+                                                       felitronics::appkit::brand::feedTheCatUrl,
+                                                       kBadgeFormat)
+                .launchInDefaultBrowser();
         },
         .maintenanceEnabled = [this] {
             return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
@@ -870,15 +904,9 @@ void MainComponent::runCleanJunk()
 
 void MainComponent::showAbout()
 {
-    // The About popover is the badge's click handler; appkit keeps its
-    // showPopup() private, so the menu routes through the same public click
-    // path the mouse takes. TODO(appkit): expose showPopup() and drop the
-    // synthetic event.
-    const auto source = juce::Desktop::getInstance().getMainMouseSource();
-    const auto now = juce::Time::getCurrentTime();
-    const juce::MouseEvent event(source, {}, juce::ModifierKeys(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-                                 &badge, &badge, now, {}, now, 1, false);
-    badge.mouseUp(event);
+    // The About popover is the badge's own; appkit v0.11.3 made showPopup()
+    // public so a menu can cast it without faking a click.
+    badge.showPopup();
 }
 
 // A ghost cannot heal by itself: the stale mount blocks the next attach.
