@@ -149,8 +149,10 @@ namespace
                                      .version = LOOPERCAT_DEP_JUCE_VERSION,
                                      .ownerRepo = "juce-framework/JUCE",
                                      .state = "pin" },
+                                   // minimp3 has no releases: the commit IS the version, and the
+                                   // version column — which links to a release tag — stays blank
+                                   // rather than pointing at a tag that does not exist.
                                    { .label = "minimp3",
-                                     .version = LOOPERCAT_DEP_MINIMP3_COMMIT,
                                      .ownerRepo = "lieff/minimp3",
                                      .commit = LOOPERCAT_DEP_MINIMP3_COMMIT,
                                      .state = "pin" } },
