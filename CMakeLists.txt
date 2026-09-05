@@ -232,7 +232,7 @@ if(LOOPERCAT_BUILD_APP)
 include(FetchContent)
 set(LOOPERCAT_APPKIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../felitronics-appkit" CACHE PATH
     "Local felitronics-appkit checkout (used if present); else the pinned release is fetched")
-set(LOOPERCAT_APPKIT_TAG "v0.15.0" CACHE STRING
+set(LOOPERCAT_APPKIT_TAG "v0.16.0" CACHE STRING
     "felitronics-appkit git tag to fetch when no local checkout is present")
 if(LOOPERCAT_APPKIT_DIR AND EXISTS "${LOOPERCAT_APPKIT_DIR}/CMakeLists.txt")
     message(STATUS "felitronics-appkit: local checkout — ${LOOPERCAT_APPKIT_DIR}")
