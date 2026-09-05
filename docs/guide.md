@@ -204,8 +204,10 @@ loops under stage noise).
 A few things worth knowing:
 
 - Quiet loops are turned up, loud ones turned down. A boost stops where the
-  loop's peak would hit -1 dB, so a quiet-but-peaky track lands a little short
-  of target instead of distorting — the toast says so when it happens.
+  loop's true peak would hit -1 dBTP — the peak of the waveform between the
+  samples, the one a DAC actually reconstructs — so a quiet-but-peaky track
+  lands a little short of target instead of distorting; the toast says so
+  when it happens.
 - To check where a loop sits without changing anything: select it and look at
   the player row — as the waveform finishes loading, the loudness appears
   after the name with how far it sits from the target (the same read draws
@@ -218,7 +220,7 @@ A few things worth knowing:
   that slot). Orange means Normalize would change the loop: off target, or
   audio that is damaged — bytes that are not sound, which Normalize will
   refuse to touch until the loop is re-pushed from its original. A quiet loop
-  whose peaks already touch the −1 dB ceiling stays grey with a note: it is
+  whose peaks already touch the −1 dBTP ceiling stays grey with a note: it is
   below target, but there is nothing to gain without clipping. Esc, or right-click →
   **Stop loudness check**, stops it; a reading is dropped the moment its
   loop's audio changes.

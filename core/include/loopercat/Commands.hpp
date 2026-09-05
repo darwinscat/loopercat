@@ -651,7 +651,7 @@ struct NormalizeOptions {
 
 struct NormalizeResult {
     bool applied = false;       // false: nothing was written — see gainDb/cappedByPeak for why
-    bool cappedByPeak = false;  // the boost stopped at the -1 dB sample-peak ceiling
+    bool cappedByPeak = false;  // the boost stopped at the -1 dBTP true-peak ceiling
     double measuredLufs = 0.0;
     double gainDb = 0.0;        // the gain baked in; 0 with applied=false means "already there"
     fs::path trashedOriginal;   // empty when nothing was written
@@ -670,7 +670,7 @@ struct NormalizeResult {
 // they are answers, not failures, and a bulk apply must be able to walk over
 // them: already within kAlreadyAtTargetLu of the target (nothing audible to
 // gain), and a wanted boost fully swallowed by the peak ceiling (the loop
-// already peaks at -1 dB — there is nothing to give it). An unmeasurable
+// already peaks at -1 dBTP — there is nothing to give it). An unmeasurable
 // slot — silence, or under one gating block — IS an error: the player asked
 // to normalize this slot, and no gain would do what they asked.
 inline NormalizeResult normalize(const fs::path& volume, int slot,
@@ -726,7 +726,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
         return result; // already there — applied=false, gainDb=0
 
     const double gainDb = loudness::normalizeGainDb(result.measuredLufs, options.targetLufs,
-                                                    reading.samplePeak,
+                                                    reading.truePeakDb,
                                                     loudness::kPeakCeilingDb);
     result.cappedByPeak = wanted > 0.0 && gainDb + 1.0e-9 < wanted;
     if (std::abs(gainDb) < 1.0e-9)

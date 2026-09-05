@@ -3,26 +3,25 @@
 //
 // Loudness measurement for the normalize feature (issue #53): ITU-R BS.1770-4
 // gated integrated loudness — the measure behind EBU R128 and ReplayGain 2.0,
-// whose reference of -18 LUFS is the modern spelling of mp3gain's "89 dB".
+// whose reference of -18 LUFS is the modern spelling of mp3gain's "89 dB" —
+// and the true (inter-sample) peak that bounds how far a loop may be raised.
 //
-// Why hand-rolled: the algorithm is small and fully specified — two fixed
-// biquads (K-weighting), 400 ms windows at 75 % overlap, two gates — and the
-// conformance signals of EBU Tech 3341 Table 1 are defined mathematically
-// (997 Hz sines with expected readings ±0.1 LU), so the test suite can
-// synthesize its fixtures from theory, the house style. A library dependency
-// would buy nothing the spec does not already give away.
-//
-// Where every constant comes from:
-//   * K-weighting stage 1 (the high shelf modelling the acoustic effect of
-//     the head) and stage 2 (the RLB high-pass): BS.1770-4 prints digital
-//     coefficients for 48 kHz only. This file derives them at the meter's own
-//     sample rate via the bilinear transform from the analog prototype
-//     constants (f0, G, Q) pinned by the libebur128 re-derivation — plugging
-//     48000 into these formulas reproduces the spec's published table.
-//   * -0.691: the spec's own calibration term, chosen so a full-scale 997 Hz
-//     sine reads 0 LUFS through the K-filter's +0.691 dB gain at 997 Hz.
-//   * 400 ms blocks, 75 % overlap, -70 LUFS absolute gate, -10 LU relative
-//     gate: BS.1770-4 Annex 1 (the gating annex).
+// The meters are the family's, from felitronics-core:
+//   * felitronics::analysis::LoudnessMeter — K-weighting recomputed at the
+//     meter's own rate from the BS.1770 analog prototype, 400 ms blocks at
+//     75 % overlap, the -70 LUFS absolute and -10 LU relative gates of
+//     Annex 1;
+//   * felitronics::analysis::TruePeakMeter — the waveform between the
+//     samples, per Annex 2: 4x oversampled at the pedal's 44.1 kHz, so the
+//     overs a DAC reconstructs and a sample meter never sees are measured,
+//     not guessed at.
+// This header is the product's adapter over them. It speaks the app's
+// interleaved stereo stream, adds the one measurement the suite does not
+// make (samples that cannot be audio), turns the meters' sentinels into typed
+// absence, and owns the policy: the boost ceiling and the gain rule. The EBU
+// Tech 3341 conformance suite in tests/loudness_tests runs the family meter
+// through this adapter — the gate that let the first release's hand-rolled
+// meter go.
 //
 // The meter is stereo by charter: it measures the exact two-channel stream
 // the app writes to the card (channel weights are 1.0 for left and right in
@@ -30,38 +29,33 @@
 // is the whole feature: a setlist with no volume jumps between songs.
 //
 // The gain rule (normalizeGainDb) is the rsgain/loudgain lineage: a cut
-// applies in full; a boost stops where the peak would cross the ceiling, so a
-// quiet-but-peaky track lands short of target instead of distorting; and the
-// cap never turns a boost into a cut. Sample peak is the v1 peak meter; the
-// ceiling stays at -1 dB so inter-sample overs — which a true-peak
-// (oversampled) meter would catch exactly — keep headroom until that upgrade
-// (issue #53).
+// applies in full; a boost stops where the true peak would cross the
+// ceiling, so a quiet-but-peaky track lands short of target instead of
+// distorting; and the cap never turns a boost into a cut.
 
 #pragma once
 
 #include "Error.hpp"
 
+#include <felitronics/analysis/LoudnessMeter.h>
+#include <felitronics/analysis/TruePeakMeter.h>
+#include <felitronics/core/Config.h>
+
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <numbers>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace loopercat::loudness {
 
-// BS.1770-4 Annex 1: gating blocks are 400 ms at 75 % overlap, i.e. a new
-// block every 100 ms — so the meter accumulates energy in 100 ms sub-blocks
-// and every run of four consecutive sub-blocks is one gating block.
-inline constexpr std::size_t kSubBlocksPerBlock = 4;
-
 inline constexpr double kAbsoluteGateLufs = -70.0; // BS.1770-4 Annex 1
-inline constexpr double kRelativeGateLu = 10.0;    // BS.1770-4 Annex 1
-inline constexpr double kCalibrationDb = -0.691;   // BS.1770-4 eq. (2)
 
-// The boost ceiling for normalizeGainDb (issue #53): -1 dB of headroom
-// against inter-sample overs, until a true-peak meter measures them exactly.
+// The boost ceiling for normalizeGainDb, in dBTP: EBU R128's maximum
+// permitted true peak. Measured on the oversampled waveform, so it carries no
+// guess-headroom for inter-sample overs — the meter sees them.
 inline constexpr double kPeakCeilingDb = -1.0;
 
 // A track already within this much of the target is left alone: rewriting
@@ -79,74 +73,75 @@ inline constexpr double kAlreadyAtTargetLu = 0.2;
 // of computing a "gain" from it.
 inline constexpr float kWildSampleThreshold = 8.0f;
 
-// ITU-R BS.1770-4 gated integrated loudness over a stereo float stream.
-// Feed interleaved frames in any chunking; read integratedLufs() at the end.
+// The longest program one meter accepts. The gated measure keeps every
+// 400 ms block's energy to the end (the relative gate is computed over all of
+// them), so the family meter pre-allocates for a stated maximum and past it
+// would silently stop recording blocks; this adapter refuses instead, at the
+// sample where the program runs over. Four hours covers every file the
+// pedal's format can hold — RIFF's 4 GiB ceiling is 3.4 hours of 44.1 kHz
+// stereo float32 — for 1.2 MB of block energies.
+inline constexpr double kMaxProgramSeconds = 4.0 * 3600.0;
+
+// ITU-R BS.1770-4 gated integrated loudness and true peak over a stereo float
+// stream. Feed interleaved frames in any chunking; read the results at the
+// end.
 class Meter {
 public:
-    // The sample rate must make the 100 ms sub-block an integral number of
+    // The sample rate must make the 100 ms gating hop an integral number of
     // frames — true of every rate the app meets (the pedal's world is
-    // 44100 Hz, wav::kSampleRate).
-    explicit Meter(int sampleRate)
+    // 44100 Hz, wav::kSampleRate). The family meter would round; this
+    // adapter refuses, so a reading is never taken over approximate blocks.
+    explicit Meter(int sampleRate, double maxProgramSeconds = kMaxProgramSeconds)
     {
         if (sampleRate <= 0 || sampleRate % 10 != 0)
             throw Error("loudness meter needs a positive sample rate divisible by 10 "
                         "(100 ms gating sub-blocks), got "
                         + std::to_string(sampleRate));
-        subFrames_ = static_cast<std::size_t>(sampleRate) / 10;
-
-        // K-weighting stage 1: high shelf. Analog prototype constants from
-        // the libebur128 re-derivation of the BS.1770 filter; bilinear
-        // transform at our rate.
-        const double pi = std::numbers::pi;
-        {
-            const double f0 = 1681.974450955533;
-            const double g = 3.999843853973347;
-            const double q = 0.7071752369554196;
-            const double k = std::tan(pi * f0 / sampleRate);
-            const double vh = std::pow(10.0, g / 20.0);
-            const double vb = std::pow(vh, 0.4996667741545416);
-            const double a0 = 1.0 + k / q + k * k;
-            shelf_ = { (vh + vb * k / q + k * k) / a0, 2.0 * (k * k - vh) / a0,
-                       (vh - vb * k / q + k * k) / a0, 2.0 * (k * k - 1.0) / a0,
-                       (1.0 - k / q + k * k) / a0 };
-        }
-        // K-weighting stage 2: the RLB high-pass. The numerator {1, -2, 1} is
-        // deliberately unnormalized — exactly as the spec's 48 kHz table
-        // prints it (the response is calibrated by kCalibrationDb, not here).
-        {
-            const double f0 = 38.13547087602444;
-            const double q = 0.5003270373238773;
-            const double k = std::tan(pi * f0 / sampleRate);
-            const double a0 = 1.0 + k / q + k * k;
-            highpass_ = { 1.0, -2.0, 1.0, 2.0 * (k * k - 1.0) / a0,
-                          (1.0 - k / q + k * k) / a0 };
-        }
+        if (!(maxProgramSeconds > 0.0))
+            throw Error("loudness meter needs a positive program capacity in seconds, got "
+                        + std::to_string(maxProgramSeconds));
+        capacitySeconds_ = maxProgramSeconds;
+        capacityFrames_ = static_cast<std::int64_t>(
+            std::ceil(maxProgramSeconds * static_cast<double>(sampleRate)));
+        loudness_.prepare(static_cast<double>(sampleRate), kChannels, maxProgramSeconds);
+        truePeak_.prepare(static_cast<double>(sampleRate), static_cast<int>(kSliceFrames),
+                          kChannels);
     }
 
+    // Throws Error the moment the program exceeds the meter's capacity: a
+    // reading over a silently truncated program would be a wrong number
+    // with a straight face.
     void process(const float* interleavedStereo, std::size_t frames)
     {
-        for (std::size_t i = 0; i < frames; ++i) {
-            const float left = interleavedStereo[2 * i];
-            const float right = interleavedStereo[2 * i + 1];
-            const float absLeft = std::abs(left), absRight = std::abs(right);
-            // `!(a <= t)` is true for NaN as well as for the merely absurd.
-            if (!(absLeft <= kWildSampleThreshold))
-                ++wild_;
-            if (!(absRight <= kWildSampleThreshold))
-                ++wild_;
-            peak_ = std::max(peak_, std::max(absLeft, absRight));
+        if (framesFed_ + static_cast<std::int64_t>(frames) > capacityFrames_)
+            throw Error("audio runs past the loudness meter's capacity of "
+                        + std::to_string(std::llround(capacitySeconds_)) + " s");
 
-            const double kl = step(highpass_, hpState_[0],
-                                   step(shelf_, shelfState_[0], static_cast<double>(left)));
-            const double kr = step(highpass_, hpState_[1],
-                                   step(shelf_, shelfState_[1], static_cast<double>(right)));
-            subSum_ += kl * kl + kr * kr;
-
-            if (++subFill_ == subFrames_) {
-                subSums_.push_back(subSum_);
-                subSum_ = 0.0;
-                subFill_ = 0;
+        // The family meters take planar channels in blocks; the app's stream
+        // is interleaved and chunked however the caller pleased. Slices no
+        // larger than the family's block bound keep the scratch fixed and
+        // the caller's chunking irrelevant to the reading.
+        while (frames > 0) {
+            const std::size_t n = std::min(frames, kSliceFrames);
+            for (std::size_t i = 0; i < n; ++i) {
+                const float left = interleavedStereo[2 * i];
+                const float right = interleavedStereo[2 * i + 1];
+                left_[i] = left;
+                right_[i] = right;
+                const float absLeft = std::abs(left), absRight = std::abs(right);
+                // `!(a <= t)` is true for NaN as well as for the merely absurd.
+                if (!(absLeft <= kWildSampleThreshold))
+                    ++wild_;
+                if (!(absRight <= kWildSampleThreshold))
+                    ++wild_;
+                peak_ = std::max(peak_, std::max(absLeft, absRight));
             }
+            const float* planar[kChannels] = { left_.data(), right_.data() };
+            loudness_.process(planar, kChannels, static_cast<int>(n));
+            truePeak_.process(planar, kChannels, static_cast<int>(n));
+            interleavedStereo += 2 * n;
+            frames -= n;
+            framesFed_ += static_cast<std::int64_t>(n);
         }
     }
 
@@ -155,109 +150,76 @@ public:
     // absolute gate (digital silence, or signal too quiet to meter). The
     // caller decides what "unmeasurable" means for its operation — the meter
     // does not guess.
+    //
+    // The family meter answers that state with -120. Any real gated mean lies
+    // above the absolute gate by construction — it averages blocks that each
+    // passed it — so the gate itself is the line between a reading and the
+    // sentinel.
     std::optional<double> integratedLufs() const
     {
-        if (subSums_.size() < kSubBlocksPerBlock)
+        // Belt and braces over the capacity check in process(): the family meter counts the
+        // gating blocks it could not keep, and this adapter promised never to let a program
+        // reach that point — a non-zero count here is a wrong guard, not a long file.
+        if (loudness_.droppedBlocks() != 0)
+            throw Error("internal: the loudness meter dropped "
+                        + std::to_string(loudness_.droppedBlocks())
+                        + " gating block(s) past its capacity — the adapter's capacity guard "
+                          "let a program through");
+        const double lufs = loudness_.integratedLufs();
+        if (lufs <= kAbsoluteGateLufs)
             return std::nullopt;
-
-        // Block power = sum over both channels of the per-channel mean square
-        // (channel weights 1.0), i.e. total energy / frames-per-block.
-        const double blockFrames = static_cast<double>(kSubBlocksPerBlock * subFrames_);
-        std::vector<double> powers;
-        powers.reserve(subSums_.size() - (kSubBlocksPerBlock - 1));
-        for (std::size_t j = 0; j + kSubBlocksPerBlock <= subSums_.size(); ++j) {
-            double energy = 0.0;
-            for (std::size_t s = 0; s < kSubBlocksPerBlock; ++s)
-                energy += subSums_[j + s];
-            powers.push_back(energy / blockFrames);
-        }
-
-        const auto lufsOf = [](double power) { return kCalibrationDb + 10.0 * std::log10(power); };
-        const double absoluteGatePower
-            = std::pow(10.0, (kAbsoluteGateLufs - kCalibrationDb) / 10.0);
-
-        double gatedSum = 0.0;
-        std::size_t gatedCount = 0;
-        for (const double p : powers) {
-            if (p > absoluteGatePower) {
-                gatedSum += p;
-                ++gatedCount;
-            }
-        }
-        if (gatedCount == 0)
-            return std::nullopt;
-
-        // Relative gate: -10 LU below the loudness of the absolutely-gated
-        // mean. In the power domain that is exactly mean / 10^(10/10).
-        const double relativeGatePower
-            = (gatedSum / static_cast<double>(gatedCount)) / std::pow(10.0, kRelativeGateLu / 10.0);
-
-        double sum = 0.0;
-        std::size_t count = 0;
-        for (const double p : powers) {
-            if (p > absoluteGatePower && p > relativeGatePower) {
-                sum += p;
-                ++count;
-            }
-        }
-        if (count == 0) // unreachable in exact math (max >= mean), kept for totality
-            return std::nullopt;
-        return lufsOf(sum / static_cast<double>(count));
+        return lufs;
     }
 
-    // Largest |sample| seen across both channels, unweighted — the v1 peak
-    // meter behind the boost ceiling.
+    // Largest |sample| seen across both channels, unweighted, exact — the
+    // grid's own maximum. The true peak is never below it.
     float samplePeak() const { return peak_; }
 
+    // True peak in dBTP: the largest |sample| of the waveform reconstructed
+    // between the grid points (BS.1770-4 Annex 2), across both channels. For
+    // digital silence it is -inf — 20·log10(0), the value, not a sentinel.
+    double truePeakDb() const { return 20.0 * std::log10(truePeak_.truePeakLinear()); }
+
     // Samples that cannot be audio (see kWildSampleThreshold). Non-zero means
-    // the loudness and peak above describe bytes, not music — act on that
+    // the loudness and peaks above describe bytes, not music — act on that
     // first.
     std::int64_t wildSamples() const { return wild_; }
 
 private:
-    struct Biquad {
-        double b0, b1, b2, a1, a2;
-    };
-    struct BiquadState {
-        double z1 = 0.0, z2 = 0.0;
-    };
+    static constexpr int kChannels = 2;
+    // The family's own bound for block-scoped scratch — the slice the
+    // adapter hands its meters at a time.
+    static constexpr std::size_t kSliceFrames
+        = static_cast<std::size_t>(felitronics::core::kMaxBlockSize);
 
-    // Transposed direct form II — one state pair per channel per stage.
-    static double step(const Biquad& c, BiquadState& s, double x)
-    {
-        const double y = c.b0 * x + s.z1;
-        s.z1 = c.b1 * x - c.a1 * y + s.z2;
-        s.z2 = c.b2 * x - c.a2 * y;
-        return y;
-    }
-
-    Biquad shelf_ {}, highpass_ {};
-    BiquadState shelfState_[2] {}, hpState_[2] {};
-    std::size_t subFrames_ = 0; // frames per 100 ms sub-block
-    std::size_t subFill_ = 0;   // frames accumulated into the current sub-block
-    double subSum_ = 0.0;       // energy of the current sub-block, both channels
-    std::vector<double> subSums_;
+    felitronics::analysis::LoudnessMeter loudness_;
+    felitronics::analysis::TruePeakMeter truePeak_;
+    std::vector<float> left_ = std::vector<float>(kSliceFrames);
+    std::vector<float> right_ = std::vector<float>(kSliceFrames);
+    double capacitySeconds_ = 0.0;
+    std::int64_t capacityFrames_ = 0;
+    std::int64_t framesFed_ = 0;
     float peak_ = 0.0f;
     std::int64_t wild_ = 0;
 };
 
 // The one constant gain (dB) that takes a track from its measured loudness to
-// the target — rsgain/loudgain clipping semantics:
+// the target — rsgain/loudgain clipping semantics, against the true peak:
 //   * a cut (gain <= 0) applies in full, unconditionally;
-//   * a boost is capped so samplePeak lands at or below ceilingDb;
+//   * a boost is capped so peakDb (dBTP) lands at or below ceilingDb;
 //   * the cap floors at zero — it never turns a boost into a cut, so a track
 //     that already peaks above the ceiling is left as loud as it was, not
 //     "rescued" uninvited.
-inline double normalizeGainDb(double measuredLufs, double targetLufs, float samplePeak,
+inline double normalizeGainDb(double measuredLufs, double targetLufs, double peakDb,
                               double ceilingDb)
 {
     const double gain = targetLufs - measuredLufs;
     if (gain <= 0.0)
         return gain;
-    if (!(samplePeak > 0.0f))
-        throw Error("normalize boost needs a positive sample peak; a measurable track "
-                    "cannot be all zeros — measure and peak must come from the same pass");
-    const double headroom = ceilingDb - 20.0 * std::log10(static_cast<double>(samplePeak));
+    if (!std::isfinite(peakDb))
+        throw Error("normalize boost needs a finite peak level; a measurable track "
+                    "cannot be silent — measure and peak must come from the same pass");
+    const double headroom = ceilingDb - peakDb;
     return std::min(gain, std::max(headroom, 0.0));
 }
 

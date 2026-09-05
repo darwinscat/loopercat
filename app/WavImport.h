@@ -45,7 +45,7 @@ struct NormalizeOutcome {
     bool measurable = false;   // false: silence, or shorter than one 400 ms
                                // gating block — imported with no gain applied
     bool untouched = false;    // pedal-ready and already at target: byte-exact
-    bool cappedByPeak = false; // the boost stopped at the -1 dB sample-peak
+    bool cappedByPeak = false; // the boost stopped at the -1 dBTP true-peak
                                // ceiling, short of target — loud peaks, quiet body
     double measuredLufs = 0;   // valid when measurable
     double gainDb = 0;         // gain actually baked in (0 when untouched/unmeasurable)

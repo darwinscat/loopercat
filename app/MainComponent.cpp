@@ -57,7 +57,7 @@ namespace
                            + juce::String::fromUTF8(" \xe2\x86\x92 ")
                            + lufs(outcome.measuredLufs + outcome.gainDb) + " LUFS)";
         if (outcome.cappedByPeak)
-            story << ", boost capped at the -1 dB peak ceiling";
+            story << ", boost capped at the -1 dBTP peak ceiling";
         return story;
     }
 
@@ -68,7 +68,7 @@ namespace
         const auto lufs = [](double v) { return juce::String(v, 1); };
         if (!result.applied)
             return result.cappedByPeak
-                     ? "already peaking at the -1 dB ceiling (measured "
+                     ? "already peaking at the -1 dBTP ceiling (measured "
                            + lufs(result.measuredLufs) + " LUFS), nothing to give it, file untouched"
                      : "already at " + lufs(targetLufs) + " LUFS (measured "
                            + lufs(result.measuredLufs) + "), file untouched";
@@ -78,7 +78,7 @@ namespace
                            + juce::String::fromUTF8(" \xe2\x86\x92 ")
                            + lufs(result.measuredLufs + result.gainDb) + " LUFS)";
         if (result.cappedByPeak)
-            story << ", boost capped at the -1 dB peak ceiling";
+            story << ", boost capped at the -1 dBTP peak ceiling";
         return story;
     }
 
@@ -1485,8 +1485,8 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
     // painted orange that the command then rightly refused); it reads grey
     // with the reason, and a partial boost says how much is actually there.
     const double gain = !offTarget ? 0.0
-                      : reading.samplePeak > 0.0f
-                          ? loudness::normalizeGainDb(lufs, targetLufs, reading.samplePeak,
+                      : std::isfinite(reading.truePeakDb)
+                          ? loudness::normalizeGainDb(lufs, targetLufs, reading.truePeakDb,
                                                       loudness::kPeakCeilingDb)
                           : wanted;
     const bool wouldChange = offTarget && std::abs(gain) > 1.0e-9;
@@ -1503,7 +1503,7 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
             row << juce::String::fromUTF8(" \xc2\xb7 only +") << juce::String(gain, 1)
                 << " dB possible";
     }
-    const juce::String peak = juce::String(20.0 * std::log10(double(reading.samplePeak)), 1) + " dB";
+    const juce::String peak = juce::String(reading.truePeakDb, 1) + " dBTP";
     juce::String tip = "Peak " + peak + juce::String::fromUTF8(" \xc2\xb7 target ") + target + " LUFS.";
     if (offTarget && !wouldChange)
         tip << " Cannot be raised without clipping.";

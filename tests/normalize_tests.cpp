@@ -123,11 +123,15 @@ int main()
         CHECK_NEAR(*reading.integratedLufs, -23.0, 0.1);
     }
     {
-        // The peak meter reads the raw spike bit-exactly.
+        // The peak meter reads the raw spike bit-exactly — and the true peak
+        // of a lone grid sample IS that sample: a band-limited impulse crests
+        // on its own grid point, so the reconstruction adds nothing above
+        // -6.02 dBTP (the -40 dBFS body underneath is 34 dB down).
         const auto bytes = sineWav(44100, -40.0, 0.5f);
         const wav::LoudnessReading reading = wav::measureLoudness(view(bytes));
         CHECK_EQ(std::bit_cast<std::uint32_t>(reading.samplePeak),
                  std::bit_cast<std::uint32_t>(0.5f));
+        CHECK_NEAR(reading.truePeakDb, 20.0 * std::log10(0.5), 0.2);
     }
     {
         // Digital silence: measurable is an answer, and the answer is no.
@@ -136,6 +140,7 @@ int main()
         CHECK(!reading.integratedLufs.has_value());
         CHECK_EQ(std::bit_cast<std::uint32_t>(reading.samplePeak),
                  std::bit_cast<std::uint32_t>(0.0f));
+        CHECK(std::isinf(reading.truePeakDb) && reading.truePeakDb < 0.0);
     }
     {
         // Shorter than one 400 ms gating block: no reading, not a guess.

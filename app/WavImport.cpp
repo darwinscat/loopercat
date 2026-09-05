@@ -132,7 +132,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
                 out = { source, false, outcome };
                 return juce::Result::ok();
             }
-            gainDb = loudness::normalizeGainDb(*measured, target, meter.samplePeak(),
+            gainDb = loudness::normalizeGainDb(*measured, target, meter.truePeakDb(),
                                                loudness::kPeakCeilingDb);
             outcome = NormalizeOutcome { .measurable = true,
                                          .cappedByPeak = wanted > 0.0 && gainDb + 1.0e-9 < wanted,

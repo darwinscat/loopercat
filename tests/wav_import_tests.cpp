@@ -147,10 +147,10 @@ std::vector<unsigned char> sineWav(int frames, int channels, float amp, float sp
     return b;
 }
 
-// Integrated loudness (and optionally the sample peak) of a written file,
+// Integrated loudness (and optionally the true peak, dBTP) of a written file,
 // through the same core meter the import used — the check is that the OUTPUT
 // lands on target, not that the code multiplied by what it said.
-std::optional<double> measureLufs(const juce::File& f, float* peakOut = nullptr)
+std::optional<double> measureLufs(const juce::File& f, double* truePeakDbOut = nullptr)
 {
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
@@ -167,8 +167,8 @@ std::optional<double> measureLufs(const juce::File& f, float* peakOut = nullptr)
     }
     loudness::Meter meter(44100);
     meter.process(interleaved.data(), static_cast<std::size_t>(frames));
-    if (peakOut != nullptr)
-        *peakOut = meter.samplePeak();
+    if (truePeakDbOut != nullptr)
+        *truePeakDbOut = meter.truePeakDb();
     return meter.integratedLufs();
 }
 
@@ -353,8 +353,8 @@ int main()
     }
 
     // The cap: a quiet body with one loud peak wants +22 dB but may only have
-    // what the -1 dB ceiling leaves above the 0.5 spike — and the written
-    // file's peak proves it.
+    // what the -1 dBTP ceiling leaves above the 0.5 spike — and the written
+    // file's true peak proves it.
     {
         const juce::File src =
             writeTemp(work, "peaky.wav", sineWav(44100, 2, dbAmp(-40.0), 0.5f));
@@ -364,9 +364,9 @@ int main()
         CHECK(p.normalize.has_value());
         CHECK(p.normalize->cappedByPeak);
         CHECK_NEAR(p.normalize->gainDb, -1.0 - 20.0 * std::log10(0.5), 0.1);
-        float peak = 0.0f;
-        measureLufs(p.file, &peak);
-        CHECK(peak <= static_cast<float>(std::pow(10.0, -1.0 / 20.0)) + 1.0e-4f);
+        double truePeakDb = 0.0;
+        measureLufs(p.file, &truePeakDb);
+        CHECK(truePeakDb <= -1.0 + 1.0e-3);
     }
 
     // Mono is measured as the stereo sum it will actually play as (issue

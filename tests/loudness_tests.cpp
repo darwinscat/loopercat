@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // The BS.1770 meter (issue #53) against the THEORY of the measure, never the
-// implementation:
+// implementation. The meter behind loudness::Meter is the family's
+// (felitronics::analysis); this suite is the conformance gate it must pass
+// through Looper Cat's adapter, whoever does the arithmetic:
 //
 //   1. EBU Tech 3341 Table 1 defines the conformance signals mathematically —
 //      997 Hz sines at set levels and durations, expected integrated loudness
@@ -17,8 +19,13 @@
 //      signal wholly under the -70 LUFS gate — never a made-up number;
 //   5. chunking must not matter: the same stream fed in odd-sized pieces
 //      reads identically;
-//   6. the gain rule is the rsgain/loudgain contract: cuts in full, boosts
-//      capped by the peak ceiling, and the cap never inverts a boost.
+//   6. the true peak is the waveform BETWEEN the samples (BS.1770-4 Annex 2):
+//      the canonical fs/4 case whose samples straddle the crest reads ~0 dBTP
+//      where a sample meter says -3, and it is never below the sample peak;
+//   7. a program past the meter's capacity is refused at the sample where it
+//      runs over — never silently truncated into a wrong number;
+//   8. the gain rule is the rsgain/loudgain contract: cuts in full, boosts
+//      capped by the true-peak ceiling, and the cap never inverts a boost.
 
 #include "support.hpp"
 
@@ -255,28 +262,116 @@ int main()
         CHECK_EQ(meter.wildSamples(), 0);
     }
 
+    // --- true peak: the waveform between the samples (BS.1770-4 Annex 2)
+
+    {
+        // The canonical inter-sample case: a full-scale fs/4 sine sampled a
+        // quarter-cycle off its crest, so every sample is +/-0.707 (sample
+        // peak -3.01 dBFS) while the waveform between them reaches 0 dBFS.
+        // A sample meter reports -3; a true-peak meter must recover ~0 dBTP.
+        loudness::Meter meter(kRate);
+        constexpr std::size_t frames = 8000;
+        std::vector<float> buf(2 * frames);
+        for (std::size_t i = 0; i < frames; ++i) {
+            const auto v = static_cast<float>(std::sin(
+                std::numbers::pi / 2.0 * static_cast<double>(i) + std::numbers::pi / 4.0));
+            buf[2 * i] = v;
+            buf[2 * i + 1] = v;
+        }
+        meter.process(buf.data(), frames);
+        const double samplePeakDb = 20.0 * std::log10(static_cast<double>(meter.samplePeak()));
+        CHECK_NEAR(samplePeakDb, -3.0103, 0.05);
+        CHECK(meter.truePeakDb() > -0.5);
+        CHECK(meter.truePeakDb() < 0.3);
+        CHECK(meter.truePeakDb() - samplePeakDb > 2.5);
+    }
+    {
+        // A steady low tone has nothing hiding between its samples: 997 Hz at
+        // -23 dBFS reads -23 dBTP — the interpolator's pass-band is flat.
+        loudness::Meter meter(kRate);
+        long long n = 0;
+        feedSine(meter, kToneHz, -23.0, 2.0, n);
+        CHECK_NEAR(meter.truePeakDb(), -23.0, 0.1);
+    }
+    {
+        // Never below the sample peak: the reconstruction passes through the
+        // grid points, so its maximum is taken over a superset of them.
+        // Deterministic noise, the shape most likely to catch an interpolator
+        // that under-reads.
+        loudness::Meter meter(kRate);
+        std::uint64_t s = 5;
+        std::vector<float> buf(2 * 6000);
+        for (auto& v : buf) {
+            s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+            v = 0.6f * (static_cast<float>((s >> 40) & 0xffff) / 32768.0f - 1.0f);
+        }
+        meter.process(buf.data(), 6000);
+        const double samplePeakDb = 20.0 * std::log10(static_cast<double>(meter.samplePeak()));
+        CHECK(meter.truePeakDb() >= samplePeakDb - 1e-4);
+    }
+    {
+        // Digital silence has no peak: -inf, the value of 20*log10(0), not a
+        // stand-in number a caller could mistake for a level.
+        loudness::Meter meter(kRate);
+        const std::vector<float> zeros(2 * 4410, 0.0f);
+        meter.process(zeros.data(), 4410);
+        CHECK(std::isinf(meter.truePeakDb()));
+        CHECK(meter.truePeakDb() < 0.0);
+    }
+
+    // --- a program past the meter's capacity is refused, never truncated
+
+    {
+        // One second of capacity: exactly one second fits, and reads what the
+        // uncapped meter reads; the very next frame is refused.
+        loudness::Meter capped(kRate, 1.0);
+        loudness::Meter open(kRate);
+        long long n1 = 0, n2 = 0;
+        feedSine(capped, kToneHz, -23.0, 1.0, n1);
+        feedSine(open, kToneHz, -23.0, 1.0, n2);
+        const auto a = capped.integratedLufs();
+        const auto b = open.integratedLufs();
+        CHECK(a.has_value() && b.has_value());
+        CHECK_NEAR(a.value_or(0.0), b.value_or(1.0), 1e-9);
+        const float oneFrame[2] = { 0.0f, 0.0f };
+        CHECK_THROWS(capped.process(oneFrame, 1), "capacity");
+    }
+    {
+        CHECK_THROWS(loudness::Meter(kRate, 0.0), "positive program capacity");
+        CHECK_THROWS(loudness::Meter(kRate, -1.0), "positive program capacity");
+    }
+
     // --- normalizeGainDb: cuts in full, boosts capped, cap never inverts
 
     {
         // A cut ignores the peak entirely — attenuation cannot clip.
-        CHECK_NEAR(loudness::normalizeGainDb(-10.0, -18.0, 1.0f, loudness::kPeakCeilingDb), -8.0,
+        CHECK_NEAR(loudness::normalizeGainDb(-10.0, -18.0, 0.0, loudness::kPeakCeilingDb), -8.0,
                    1e-12);
-        // A boost with headroom applies in full: peak 0.05 is ~-26 dBFS,
-        // +12 dB keeps it far under the -1 dB ceiling.
-        CHECK_NEAR(loudness::normalizeGainDb(-30.0, -18.0, 0.05f, loudness::kPeakCeilingDb), 12.0,
-                   1e-12);
-        // A quiet-but-peaky track: +12 dB wanted, but peak 0.5 (-6.02 dBFS)
-        // caps the boost at ceiling - peak = -1 + 6.0206 dB.
-        CHECK_NEAR(loudness::normalizeGainDb(-30.0, -18.0, 0.5f, loudness::kPeakCeilingDb),
+        // A boost with headroom applies in full: a -26 dBTP peak leaves
+        // +12 dB far under the -1 dBTP ceiling.
+        CHECK_NEAR(loudness::normalizeGainDb(-30.0, -18.0, 20.0 * std::log10(0.05),
+                                             loudness::kPeakCeilingDb),
+                   12.0, 1e-12);
+        // A quiet-but-peaky track: +12 dB wanted, but a -6.02 dBTP peak caps
+        // the boost at ceiling - peak = -1 + 6.0206 dB.
+        CHECK_NEAR(loudness::normalizeGainDb(-30.0, -18.0, 20.0 * std::log10(0.5),
+                                             loudness::kPeakCeilingDb),
                    -1.0 - 20.0 * std::log10(0.5), 1e-6);
         // Already peaking above the ceiling: the boost collapses to zero —
         // never into a cut the player did not ask for.
-        CHECK_NEAR(loudness::normalizeGainDb(-20.0, -18.0, 1.0f, loudness::kPeakCeilingDb), 0.0,
+        CHECK_NEAR(loudness::normalizeGainDb(-20.0, -18.0, 0.0, loudness::kPeakCeilingDb), 0.0,
                    1e-12);
-        // A boost from a zero peak is a contradiction (a measurable track has
-        // signal) — typed error, not a guess.
-        CHECK_THROWS(loudness::normalizeGainDb(-30.0, -18.0, 0.0f, loudness::kPeakCeilingDb),
-                     "positive sample peak");
+        // A boost from no peak at all (-inf: silence) or from a non-number is
+        // a contradiction — a measurable track has signal — and a typed
+        // error, not a guess.
+        CHECK_THROWS(loudness::normalizeGainDb(-30.0, -18.0,
+                                               -std::numeric_limits<double>::infinity(),
+                                               loudness::kPeakCeilingDb),
+                     "finite peak");
+        CHECK_THROWS(loudness::normalizeGainDb(-30.0, -18.0,
+                                               std::numeric_limits<double>::quiet_NaN(),
+                                               loudness::kPeakCeilingDb),
+                     "finite peak");
     }
 
     return testkit::summary("loudness");
