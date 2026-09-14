@@ -45,7 +45,8 @@ This is only about what gets merged *here*.
 ## Third-party code
 
 Third-party dependencies keep their own licences and are unaffected by the policy above. New ones
-must be AGPL-compatible (BSD / MIT / Apache-2.0 / MPL-2.0).
+must be AGPL-compatible (BSD / MIT / Apache-2.0 / MPL-2.0) and are recorded in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 The LooperCat and Darwin's Cat names and logos are trademarks and are *not* covered by the code
 licence.
