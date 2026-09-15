@@ -21,6 +21,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The job token gets only what this workflow needs: it checks out and builds, it never
+# writes to the repository. CodeQL's one finding in this family, ever, was a workflow
+# without this block.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
