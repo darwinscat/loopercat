@@ -12,10 +12,24 @@
 # are unprivileged, which is what makes those checks mean anything here.
 name: CI
 
+# PULL REQUESTS ONLY. `push: ['**']` plus `pull_request` meant a branch with a PR open bought TWO full
+# runs of every job for one commit, and a branch without one bought a run nobody was going to read. The
+# pull_request event already covers every branch, and covers it MERGED INTO main, which is the stricter
+# object to test. One live run per branch: a push on top of a push cancels the run it replaced instead of
+# finishing it against code nobody will merge.
 on:
-  push:
-    branches: ['**']
   pull_request:
+  workflow_dispatch:
+
+# The job token gets only what this workflow needs: it checks out and builds, it never
+# writes to the repository. CodeQL's one finding in this family, ever, was a workflow
+# without this block.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   core-linux:
@@ -28,7 +42,7 @@ jobs:
         run: cmake -B build -DLOOPERCAT_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build -j
+        run: cmake --build build -j4   # a BARE -j is unlimited, not "use the cores" — see the note below
 
       - name: Test (all core suites)
         run: ctest --test-dir build --output-on-failure
@@ -154,7 +168,10 @@ jobs:
         run: cmake -B build -DLOOPERCAT_BUILD_APP=OFF
 
       - name: Build
-        run: cmake --build build --config Release
+        # WITHOUT -j THIS IS SERIAL. The default generator here is Visual Studio, so `cmake --build`
+        # becomes MSBuild, and MSBuild without /m builds one project at a time. The Linux lanes have
+        # asked for -j4 all along; these two never did.
+        run: cmake --build build --config Release -j 4
 
       - name: Test (all core suites)
         run: ctest --test-dir build -C Release --output-on-failure
@@ -173,7 +190,9 @@ jobs:
         run: cmake -B build -DLOOPERCAT_BUILD_TESTS=ON
 
       - name: Build the app
-        run: cmake --build build --config Release
+        # -j 4, for the reason spelled out in core-windows above: this step was the single longest thing
+        # in the whole workflow at 14.0 minutes, against 3.8 for the same build on Linux with -j4.
+        run: cmake --build build --config Release -j 4
 
       - name: Test (all suites)
         run: ctest --test-dir build -C Release --output-on-failure
