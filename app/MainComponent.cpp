@@ -3,6 +3,7 @@
 
 #include "MainComponent.h"
 
+#include "OperationId.h"
 #include "OperationsLog.h"
 #include "Strings.h"
 #include "WavImport.h"
@@ -887,7 +888,7 @@ void MainComponent::runBackup()
 {
     worker.enqueue({ "Backup configs", 0,
                      [options = makeWriteOptions()](const volume::fs::path& volumePath) {
-                         commands::backup(volumePath, options.backupRoot, options.stamp);
+                         commands::backup(volumePath, options.backupRoot, options.opId);
                      } });
 }
 
@@ -1127,11 +1128,15 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
 
 // --- mutations ---
 
+// A fresh identity per operation. The clock is only the readable head of it:
+// a bulk apply enqueues several operations inside one second, and when the
+// second WAS the identity they shared a backup directory and overwrote each
+// other's pre-state (issue #72).
 commands::WriteOptions MainComponent::makeWriteOptions()
 {
-    const juce::String stamp = juce::Time::getCurrentTime().formatted("%Y-%m-%dT%H-%M-%S");
+    const juce::String label = juce::Time::getCurrentTime().formatted("%Y-%m-%dT%H-%M-%S");
     return { .backupRoot = settings.dataDir().getChildFile("backups").getFullPathName().toStdString(),
-             .stamp = stamp.toStdString() };
+             .opId = opid::make(label.toStdString()) };
 }
 
 void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)

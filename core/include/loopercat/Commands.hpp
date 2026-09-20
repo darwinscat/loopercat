@@ -7,8 +7,8 @@
 // own trailer markers, verify by re-reading, sweep AppleDouble junk.
 //
 // The core stays clock- and home-directory-free: callers supply the backup/
-// trash roots and the timestamp string (the app derives them from its
-// settings location and wall clock; tests pin them).
+// trash roots and the operation id (the app derives the roots from its
+// settings location and mints one id per operation; tests pin both).
 //
 // Behavior source: rc5cat lib/commands.js, byte-for-byte where it matters.
 
@@ -107,6 +107,20 @@ inline void copyContent(const fs::path& src, const fs::path& dst)
     writeFileBytes(dst, readFileBytes(src));
 }
 
+// The archive never overwrites itself. Operation ids name its directories, and
+// two operations that share one would otherwise replace each other's
+// pre-state in silence: the identity used to be a wall clock at one-second
+// resolution, and a bulk normalize of slots 32, 33 and 34 left ONE backup
+// directory for the three operations. Minting a unique id is the caller's job;
+// making a reused one loud is this one's.
+inline void requireFreshArchivePath(const fs::path& dest)
+{
+    std::error_code ec;
+    if (fs::exists(dest, ec))
+        throw Error("the archive already holds " + dest.string()
+                    + " — two operations are running under one id");
+}
+
 // --- reading ---
 
 // A specific bank, pinned — the doctor and the tests look at each in turn.
@@ -159,14 +173,14 @@ struct BackupResult {
     std::vector<std::string> copied;
 };
 
-// Copy every non-junk file from ROLAND/DATA into <backupRoot>/<stamp>/.
+// Copy every non-junk file from ROLAND/DATA into <backupRoot>/<opId>/.
 inline BackupResult backup(const fs::path& volume, const fs::path& backupRoot,
-                           const std::string& stamp)
+                           const std::string& opId)
 {
-    if (backupRoot.empty() || stamp.empty())
-        throw Error("backup requires a destination root and a timestamp");
+    if (backupRoot.empty() || opId.empty())
+        throw Error("backup requires a destination root and an operation id");
     BackupResult result;
-    result.dest = backupRoot / stamp;
+    result.dest = backupRoot / opId;
     std::error_code ec;
     fs::create_directories(result.dest, ec);
     if (ec)
@@ -176,6 +190,7 @@ inline BackupResult backup(const fs::path& volume, const fs::path& backupRoot,
         const std::string name = it->path().filename().string();
         if (volume::isJunkName(name) || it->is_directory())
             continue;
+        requireFreshArchivePath(result.dest / name);
         copyContent(it->path(), result.dest / name);
         result.copied.push_back(name);
     }
@@ -186,7 +201,11 @@ inline BackupResult backup(const fs::path& volume, const fs::path& backupRoot,
 
 struct WriteOptions {
     fs::path backupRoot;    // where pre-write backups land; empty ONLY with skipBackup
-    std::string stamp;      // timestamp label for backup/trash directories
+    // The identity of this operation, and the name of its backup and trash
+    // directories. It must be unique per operation — a wall clock is not, and
+    // reusing one costs a pre-state (see requireFreshArchivePath). Any
+    // readability inside it is decoration: the core only compares it.
+    std::string opId;
     bool skipBackup = false;
 };
 
@@ -214,7 +233,7 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
 {
     WriteResult result;
     if (!options.skipBackup)
-        result.backedUp = backup(volume, options.backupRoot, options.stamp);
+        result.backedUp = backup(volume, options.backupRoot, options.opId);
     std::uint32_t base = 0x37; // one below the factory pair: a fresh volume lands on 0x38/0x39
     for (const int fileNo : { 1, 2 }) {
         try {
@@ -391,10 +410,10 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
         throw Error("slot " + std::to_string(slot) + " already has audio (" + files
                     + "); pass force to replace");
     }
-    if (!existing.empty() && (options.trashRoot.empty() || options.write.stamp.empty()))
+    if (!existing.empty() && (options.trashRoot.empty() || options.write.opId.empty()))
         throw Error("replacing slot " + std::to_string(slot)
-                    + " requires a trash root and a timestamp — the current audio moves to the"
-                      " trash, it is never deleted outright");
+                    + " requires a trash root and an operation id — the current audio moves to"
+                      " the trash, it is never deleted outright");
 
     // All checks passed — the writes begin. The replaced audio's safety net
     // comes first: copy into the trash, remove from the slot only after the
@@ -407,10 +426,11 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     PushResult result { info, dir / wavPath.filename(), false, slotParams, {}, std::nullopt };
     for (const auto& old : existing) {
         const fs::path trashDir =
-            options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+            options.trashRoot / options.write.opId / volume::slotDirName(slot);
         fs::create_directories(trashDir, ec);
         if (ec)
             throw Error("cannot create " + trashDir.string());
+        requireFreshArchivePath(trashDir / old);
         copyContent(dir / old, trashDir / old);
         result.trashed.push_back(trashDir / old);
         if (!fs::remove(dir / old, ec) || ec)
@@ -518,8 +538,8 @@ struct TrimResult {
 inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame,
                        std::int64_t endFrame, const TrimOptions& options)
 {
-    if (options.trashRoot.empty() || options.write.stamp.empty())
-        throw Error("trim requires a trash root and a timestamp");
+    if (options.trashRoot.empty() || options.write.opId.empty())
+        throw Error("trim requires a trash root and an operation id");
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -547,13 +567,14 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
 
     // All checks passed — the writes begin. Trash copy first: the original
     // must be safe before anything replaces it.
-    const fs::path trashDir = options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+    const fs::path trashDir = options.trashRoot / options.write.opId / volume::slotDirName(slot);
     std::error_code ec;
     fs::create_directories(trashDir, ec);
     if (ec)
         throw Error("cannot create " + trashDir.string());
     TrimResult result { trashDir / files.front(), info.frames,
                         { static_cast<int>(bars), static_cast<int>(tempoTenths) }, {} };
+    requireFreshArchivePath(result.trashedOriginal);
     writeFileBytes(result.trashedOriginal, raw);
 
     writeFileBytes(source,
@@ -598,8 +619,8 @@ struct DownmixResult {
 inline DownmixResult downmixToMono(const fs::path& volume, int slot,
                                    const DownmixOptions& options)
 {
-    if (options.trashRoot.empty() || options.write.stamp.empty())
-        throw Error("downmix requires a trash root and a timestamp");
+    if (options.trashRoot.empty() || options.write.opId.empty())
+        throw Error("downmix requires a trash root and an operation id");
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -622,12 +643,13 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
 
     // All checks passed — the writes begin. Trash copy first: the original
     // must be safe before anything replaces it.
-    const fs::path trashDir = options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+    const fs::path trashDir = options.trashRoot / options.write.opId / volume::slotDirName(slot);
     std::error_code ec;
     fs::create_directories(trashDir, ec);
     if (ec)
         throw Error("cannot create " + trashDir.string());
     DownmixResult result { trashDir / files.front(), info.frames, {} };
+    requireFreshArchivePath(result.trashedOriginal);
     writeFileBytes(result.trashedOriginal, raw);
 
     writeFileBytes(source,
@@ -676,8 +698,8 @@ struct NormalizeResult {
 inline NormalizeResult normalize(const fs::path& volume, int slot,
                                  const NormalizeOptions& options)
 {
-    if (options.trashRoot.empty() || options.write.stamp.empty())
-        throw Error("normalize requires a trash root and a timestamp");
+    if (options.trashRoot.empty() || options.write.opId.empty())
+        throw Error("normalize requires a trash root and an operation id");
     // 0.0 is what an unset field reads as, and no loudness war ever pushed a
     // target out of this window — outside it is a bug, not a taste.
     if (options.targetLufs >= loudness::kPeakCeilingDb
@@ -741,12 +763,13 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
 
     // All checks passed — the writes begin. Trash copy first: the original
     // must be safe before anything replaces it.
-    const fs::path trashDir = options.trashRoot / options.write.stamp / volume::slotDirName(slot);
+    const fs::path trashDir = options.trashRoot / options.write.opId / volume::slotDirName(slot);
     std::error_code ec;
     fs::create_directories(trashDir, ec);
     if (ec)
         throw Error("cannot create " + trashDir.string());
     result.trashedOriginal = trashDir / files.front();
+    requireFreshArchivePath(result.trashedOriginal);
     writeFileBytes(result.trashedOriginal, raw, segment(0.60, 0.78));
 
     writeFileBytes(source,
@@ -784,8 +807,8 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
 {
     if (options.trash && options.trashRoot.empty())
         throw Error("clear requires a trash root (or trash=false)");
-    if (options.trash && options.write.stamp.empty())
-        throw Error("clear requires a timestamp for the trash directory");
+    if (options.trash && options.write.opId.empty())
+        throw Error("clear requires an operation id for the trash directory");
     std::string text = readMemory(volume);
 
     struct Plan {
@@ -812,11 +835,12 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
             const fs::path src = volume::wavDir(volume, plan.slot) / file;
             if (options.trash) {
                 const fs::path destDir =
-                    options.trashRoot / options.write.stamp / volume::slotDirName(plan.slot);
+                    options.trashRoot / options.write.opId / volume::slotDirName(plan.slot);
                 std::error_code ec;
                 fs::create_directories(destDir, ec);
                 if (ec)
                     throw Error("cannot create " + destDir.string());
+                requireFreshArchivePath(destDir / file);
                 copyContent(src, destDir / file);
                 result.trashed.push_back(destDir / file);
             } else {
@@ -906,7 +930,7 @@ inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
 
     std::optional<BackupResult> backedUp;
     if (!options.skipBackup)
-        backedUp = backup(volume, options.backupRoot, options.stamp);
+        backedUp = backup(volume, options.backupRoot, options.opId);
     WriteOptions afterBackup = options;
     afterBackup.skipBackup = true; // taken above, before anything moved
 
