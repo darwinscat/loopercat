@@ -212,6 +212,7 @@ private:
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
+    juce::String otherLooperOnBus;    // another RC model on USB ("RC-500"), named, not connected
     connect::Attempt connectAttempt;  // the supervised Connect (issue #2)
     juce::String lastConnectSendError; // last enter-storage send result — the honest give-up
     std::int64_t connectHoldUntilMs = 0; // Connect held while the pedal re-boots its MIDI face

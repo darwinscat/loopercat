@@ -39,9 +39,9 @@ namespace loopercat::pedallink {
 namespace {
 
     // "hw:<card>,<device>,0" for the first rawmidi OUTPUT whose port name
-    // names the pedal — the same "RC-5" match findPedal() uses, so both
-    // halves agree on what the pedal is. The walk mirrors what `amidi -l`
-    // does: every card, every rawmidi device on it.
+    // names the pedal — the same portname::isRc5 rule findPedal() uses, so
+    // both halves agree on what the pedal is. The walk mirrors what
+    // `amidi -l` does: every card, every rawmidi device on it.
     std::optional<std::string> findPedalRawMidi()
     {
         int card = -1;
@@ -65,7 +65,7 @@ namespace {
                 const char* sub = snd_rawmidi_info_get_subdevice_name(info);
                 const std::string haystack = std::string(name != nullptr ? name : "") + " "
                                            + std::string(sub != nullptr ? sub : "");
-                if (haystack.find("RC-5") != std::string::npos)
+                if (portname::isRc5(haystack))
                     found = cardName + "," + std::to_string(device) + ",0";
             }
             snd_ctl_close(control);

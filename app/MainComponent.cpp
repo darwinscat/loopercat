@@ -5,6 +5,7 @@
 
 #include "OperationId.h"
 #include "OperationsLog.h"
+#include "PedalPortName.h"
 #include "Strings.h"
 #include "WavImport.h"
 
@@ -646,18 +647,31 @@ void MainComponent::timerCallback()
 
 // The pedal outside STORAGE is still visible — as a USB-MIDI device. Knowing
 // the difference between "no pedal at all" and "pedal here, wrong mode" turns
-// the empty state from a shrug into an instruction.
+// the empty state from a shrug into an instruction. Another RC model on the
+// bus is named for what it is: greeting an RC-500 as "RC-5 detected" offered
+// a Connect the pedal never answers.
 void MainComponent::pollMidiPresence()
 {
     bool present = false;
-    for (const auto& device : juce::MidiInput::getAvailableDevices())
-        present = present || device.name.containsIgnoreCase("RC-5");
-    if (present == midiPedalPresent)
+    juce::String other;
+    for (const auto& device : juce::MidiInput::getAvailableDevices()) {
+        const std::string name = device.name.toStdString();
+        if (portname::isRc5(name))
+            present = true;
+        else if (const auto model = portname::announcedModel(name); model && other.isEmpty())
+            other = juce::String(*model);
+    }
+    if (present == midiPedalPresent && other == otherLooperOnBus)
         return;
     midiPedalPresent = present;
+    otherLooperOnBus = other;
     hint.setText(midiPedalPresent
                      ? juce::String::fromUTF8("RC-5 detected \xe2\x80\x94 click Connect "
                                               "to browse loops")
+                 : otherLooperOnBus.isNotEmpty()
+                     ? otherLooperOnBus
+                           + juce::String::fromUTF8(" detected \xe2\x80\x94 LooperCat only "
+                                                    "speaks RC-5")
                      : juce::String("Connect your looper via USB"),
                  juce::dontSendNotification);
     updateStatusText();
@@ -978,6 +992,9 @@ void MainComponent::updateStatusText()
         status.setText(midiPedalPresent
                            ? juce::String::fromUTF8(
                                  "RC-5 on USB \xe2\x80\x94 ready to connect")
+                       : otherLooperOnBus.isNotEmpty()
+                           ? otherLooperOnBus
+                                 + juce::String::fromUTF8(" on USB \xe2\x80\x94 not an RC-5")
                            : juce::String("No looper found"),
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
