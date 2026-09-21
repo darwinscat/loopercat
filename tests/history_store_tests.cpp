@@ -108,6 +108,18 @@ int main()
         CHECK_EQ(schema::pragmaInteger(store.db(), "main.user_version"), schema::kVersion);
     }
 
+    // --- a directory named outside Latin letters (a player's account name on
+    //     Windows): the files land exactly there, under their real name ---
+    {
+        TempDir tmp;
+        const fs::path dir = tmp.path / fs::path(u8"\u03b9\u03c3\u03c4\u03bf\u03c1\u03af\u03b1-\u97f3"); // Greek, and a CJK sign
+        { HistoryStore store(dir); }
+        CHECK(fs::exists(dir / "history.db"));
+        CHECK(fs::exists(dir / "audio.db"));
+        HistoryStore reopened(dir); // and it opens again from the same place
+        CHECK_EQ(schema::pragmaInteger(reopened.db(), "main.user_version"), schema::kVersion);
+    }
+
     // --- the key is SHA-256, checked against the published vectors ---
     {
         CHECK_EQ(hex(HistoryStore::contentHash("")),

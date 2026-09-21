@@ -28,6 +28,15 @@
 namespace loopercat::sqlite
 {
 
+// SQLite takes file names as UTF-8 on every platform. path::string() is the
+// ANSI code page on Windows, which mangles any name outside it — a player
+// whose account is not named in Latin letters would lose their history.
+inline std::string utf8(const std::filesystem::path& file)
+{
+    const std::u8string text = file.u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
 [[noreturn]] inline void fail(sqlite3* db, std::string_view what)
 {
     throw Error(std::string(what) + ": "
@@ -40,13 +49,13 @@ public:
     static Db open(const std::filesystem::path& file)
     {
         sqlite3* raw = nullptr;
-        const int rc = sqlite3_open_v2(file.string().c_str(), &raw,
+        const int rc = sqlite3_open_v2(utf8(file).c_str(), &raw,
                                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
                                            | SQLITE_OPEN_FULLMUTEX,
                                        nullptr);
         Db db(raw); // owns it even on failure: sqlite3_open_v2 hands one back regardless
         if (rc != SQLITE_OK)
-            fail(raw, "cannot open " + file.string());
+            fail(raw, "cannot open " + utf8(file));
         sqlite3_extended_result_codes(raw, 1);
         return db;
     }

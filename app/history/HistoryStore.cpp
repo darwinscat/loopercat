@@ -40,7 +40,7 @@ HistoryStore::HistoryStore(const std::filesystem::path& dir)
     db_.exec("PRAGMA foreign_keys = ON");
 
     sqlite::Statement attach(db_, "ATTACH DATABASE ?1 AS audio");
-    attach.bindText(1, (dir / "audio.db").string()).run();
+    attach.bindText(1, sqlite::utf8(dir / "audio.db")).run();
     // Both take effect only on a file that has no tables yet, which is the
     // whole point: they are set before migrate() creates the first one.
     db_.exec("PRAGMA audio.page_size = 16384");

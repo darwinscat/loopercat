@@ -52,7 +52,7 @@ std::int64_t HistoryRecorder::sessionFor(const std::filesystem::path& volume)
     std::filesystem::path named = volume;
     if (named.filename().empty())
         named = named.parent_path(); // "/Volumes/BOSS RC-5/" names its card too
-    const std::string label = named.filename().string();
+    const std::string label = sqlite::utf8(named.filename());
     if (label.empty())
         throw Error("cannot name the card mounted at " + volume.string());
     session_ = store().openSession(store().card(model_, label, now), now);
