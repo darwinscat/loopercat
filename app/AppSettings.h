@@ -10,6 +10,11 @@
 // ~/Library/Application Support/Darwin's Cat/LooperCat/LooperCat.settings
 // (same shape as OrbitCab's). Today its only client is the update badge
 // persistence (see UpdateCheck.h); app preferences join it when they exist.
+//
+// `dataOverride` (the --data CLI seam) moves the whole home — settings,
+// history, trash, backups — to another directory, so a verification run on a
+// synthetic pedal never writes into the player's own data. Empty = the
+// platform location, which is the only one a normal launch ever uses.
 //==============================================================================
 namespace loopercat
 {
@@ -17,12 +22,14 @@ namespace loopercat
 class AppSettings
 {
 public:
-    AppSettings()
+    explicit AppSettings(const juce::File& dataOverride = {})
     {
         juce::PropertiesFile::Options options;
         options.applicationName = "LooperCat";
         options.filenameSuffix = ".settings";
-        options.folderName = "Darwin's Cat/LooperCat";
+        // An absolute folderName is taken as-is by PropertiesFile (File::getChildFile).
+        options.folderName = dataOverride == juce::File() ? juce::String("Darwin's Cat/LooperCat")
+                                                          : dataOverride.getFullPathName();
         options.osxLibrarySubFolder = "Application Support";
         properties.setStorageParameters(options);
     }

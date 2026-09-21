@@ -191,8 +191,9 @@ namespace
     }
 } // namespace
 
-MainComponent::MainComponent(std::string explicitVolume)
-    : header(BinaryData::catlogo_svg, BinaryData::catlogo_svgSize,
+MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride)
+    : settings(dataOverride),
+      header(BinaryData::catlogo_svg, BinaryData::catlogo_svgSize,
              BinaryData::MichromaRegular_ttf, BinaryData::MichromaRegular_ttfSize,
              "LooperCat", kProductUrl),
       badge(updateChecker, badgeConfig(), kBadgeFormat),

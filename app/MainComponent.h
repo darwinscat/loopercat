@@ -62,7 +62,7 @@ class MainComponent final : public juce::Component,
 {
 public:
     // `explicitVolume` pins the pedal path (--volume override); empty = autodetect.
-    explicit MainComponent(std::string explicitVolume = {});
+    explicit MainComponent(std::string explicitVolume = {}, juce::File dataOverride = {});
     ~MainComponent() override;
 
     // The headless seams (--snapshot / --select): one synchronous scan+apply,

@@ -40,6 +40,14 @@ public:
         const int volumeFlag = args.indexOf("--volume");
         const juce::String explicitVolume = volumeFlag >= 0 ? args[volumeFlag + 1] : juce::String();
 
+        // --data <dir>: the app's whole data home (settings, history, trash,
+        // backups) in another directory — the partner of --volume, so a run
+        // against a synthetic pedal writes nothing into the player's own data.
+        const int dataFlag = args.indexOf("--data");
+        const juce::File dataOverride = dataFlag >= 0
+            ? juce::File::getCurrentWorkingDirectory().getChildFile(args[dataFlag + 1])
+            : juce::File();
+
         // --snapshot <file.png>: render the main content offscreen and exit.
         // The headless proof that the window actually draws — no display
         // permissions involved; used by the DoD check and CI screenshots.
@@ -77,7 +85,7 @@ public:
         // screen and impossible to screenshot reliably, but they are the only
         // record of what went wrong.
         if (args.contains("--cycle")) {
-            setApplicationReturnValue(runCycle(explicitVolume));
+            setApplicationReturnValue(runCycle(explicitVolume, dataOverride));
             quit();
             return;
         }
@@ -87,13 +95,14 @@ public:
             const int selectFlag = args.indexOf("--select");
             const int slot = selectFlag >= 0 ? args[selectFlag + 1].getIntValue() : 0;
             setApplicationReturnValue(
-                writeSnapshot(args[snapshotFlag + 1], explicitVolume.toStdString(), slot));
+                writeSnapshot(args[snapshotFlag + 1], explicitVolume.toStdString(), slot,
+                              dataOverride));
             quit();
             return;
         }
 
         mainWindow = std::make_unique<MainWindow>(getApplicationName(),
-                                                  explicitVolume.toStdString());
+                                                  explicitVolume.toStdString(), dataOverride);
     }
 
     void shutdown() override { mainWindow = nullptr; }
@@ -133,9 +142,9 @@ private:
         return state;
     }
 
-    static int runCycle(const juce::String& explicitVolume)
+    static int runCycle(const juce::String& explicitVolume, const juce::File& dataOverride)
     {
-        MainComponent content(explicitVolume.toStdString());
+        MainComponent content(explicitVolume.toStdString(), dataOverride);
         content.refreshNow();
 
         std::vector<std::string> seen;
@@ -192,13 +201,13 @@ private:
     }
 
     static int writeSnapshot(const juce::String& path, const std::string& explicitVolume,
-                             const int selectSlot)
+                             const int selectSlot, const juce::File& dataOverride)
     {
         if (path.isEmpty()) {
             std::cerr << "--snapshot requires a target file path\n";
             return 2;
         }
-        MainComponent content(explicitVolume);
+        MainComponent content(explicitVolume, dataOverride);
         content.refreshNow();
         if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--properties"))
             content.showProperties();
@@ -262,11 +271,11 @@ private:
     class MainWindow final : public juce::DocumentWindow
     {
     public:
-        MainWindow(const juce::String& name, std::string explicitVolume)
+        MainWindow(const juce::String& name, std::string explicitVolume, juce::File dataOverride)
             : DocumentWindow(name, juce::Colour(0xff121218), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar(true);
-            auto* main = new MainComponent(std::move(explicitVolume));
+            auto* main = new MainComponent(std::move(explicitVolume), std::move(dataOverride));
             content = main;
             setContentOwned(main, true);
             setResizable(true, true);
