@@ -4,6 +4,7 @@
 #include "MainComponent.h"
 
 #include "OperationId.h"
+#include "history/HistoryRecorder.h"
 #include "OperationsLog.h"
 #include "Strings.h"
 #include "WavImport.h"
@@ -247,20 +248,23 @@ MainComponent::MainComponent(std::string explicitVolume)
     table.onRenameCommitted = [this](int slot, juce::String newName) {
         if (pedalBusy || slotRowFor(slot) == nullptr)
             return;
-        worker.enqueue({ "Rename slot " + juce::String(slot), slot,
-                         [name = newName.toStdString(), options = makeWriteOptions(),
-                          slot](const volume::fs::path& volumePath) {
-                             commands::rename(volumePath, slot, name, options);
-                         } });
+        const auto options = makeWriteOptions();
+        worker.enqueue(recorded("rename", options,
+                                { "Rename slot " + juce::String(slot), slot,
+                                  [name = newName.toStdString(), options,
+                                   slot](const volume::fs::path& volumePath) {
+                                      commands::rename(volumePath, slot, name, options);
+                                  } }));
     };
     table.onTempoCommitted = [this](int slot, long long tenths) {
         if (pedalBusy || slotRowFor(slot) == nullptr)
             return;
-        worker.enqueue({ "Set tempo on slot " + juce::String(slot), slot,
-                         [slot, tenths, options = makeWriteOptions()](
-                             const volume::fs::path& volumePath) {
-                             commands::setTempo(volumePath, slot, tenths, options);
-                         } });
+        const auto options = makeWriteOptions();
+        worker.enqueue(recorded("tempo", options,
+                                { "Set tempo on slot " + juce::String(slot), slot,
+                                  [slot, tenths, options](const volume::fs::path& volumePath) {
+                                      commands::setTempo(volumePath, slot, tenths, options);
+                                  } }));
     };
     table.onAudioDropped = [this](int slot, juce::String path) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
@@ -277,11 +281,13 @@ MainComponent::MainComponent(std::string explicitVolume)
         if (!player.isThumbnailReady())
             player.clear();
         releasePlayerIfHolding(from, to); // the swap renames their folders (issue #26)
-        worker.enqueue({ "Swap slots " + juce::String(from) + " and " + juce::String(to), from,
-                         [from, to, options = makeWriteOptions()](
-                             const volume::fs::path& volumePath) {
-                             commands::swap(volumePath, from, to, options);
-                         } });
+        const auto options = makeWriteOptions();
+        worker.enqueue(recorded("swap", options,
+                                { "Swap slots " + juce::String(from) + " and " + juce::String(to),
+                                  from,
+                                  [from, to, options](const volume::fs::path& volumePath) {
+                                      commands::swap(volumePath, from, to, options);
+                                  } }));
     };
     table.onEmptyWavCellClicked = [this](int slot) {
         if (!pedalBusy && slotRowFor(slot) != nullptr)
@@ -343,11 +349,12 @@ MainComponent::MainComponent(std::string explicitVolume)
                 // Keep the pane's state: the completion path reload()s the
                 // trimmed bytes into the same slot view.
                 player.releaseFile();
-                worker.enqueue(
+                worker.enqueue(recorded(
+                    "trim", options,
                     { "Trim slot " + juce::String(slot), slot,
                       [slot, inFrame, outFrame, options](const volume::fs::path& volumePath) {
                           commands::trim(volumePath, slot, inFrame, outFrame, { .write = options });
-                      } });
+                      } }));
             });
     };
 
@@ -888,9 +895,14 @@ void MainComponent::updateToolbar()
 
 void MainComponent::runBackup()
 {
+    // A snapshot on request changes nothing on the card, so it is not an
+    // operation for the history — just a fresh directory of its own.
     worker.enqueue({ "Backup configs", 0,
-                     [options = makeWriteOptions()](const volume::fs::path& volumePath) {
-                         commands::backup(volumePath, options.backupRoot, options.opId);
+                     [root = settings.dataDir().getChildFile("backups").getFullPathName().toStdString(),
+                      id = opid::make(juce::Time::getCurrentTime()
+                                          .formatted("%Y-%m-%dT%H-%M-%S")
+                                          .toStdString())](const volume::fs::path& volumePath) {
+                         commands::backup(volumePath, root, id);
                      } });
 }
 
@@ -1137,12 +1149,28 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
 commands::WriteOptions MainComponent::makeWriteOptions()
 {
     const juce::String label = juce::Time::getCurrentTime().formatted("%Y-%m-%dT%H-%M-%S");
-    std::string opId = opid::make(label.toStdString());
+    const std::string opId = opid::make(label.toStdString());
     const juce::File data = settings.dataDir();
-    return { .backupRoot = data.getChildFile("backups").getFullPathName().toStdString(),
-             .opId = opId,
-             .archive = commands::trashFolder(
-                 data.getChildFile("trash").getFullPathName().toStdString(), opId) };
+    // A replaced take goes to the history first, then to the trash folder:
+    // the folder stays the player's only door to it until the History tab
+    // (#50) opens the database. backups/ stays for the same reason.
+    return history::withHistory(
+        recorder,
+        { .backupRoot = data.getChildFile("backups").getFullPathName().toStdString(), .opId = opId },
+        commands::trashFolder(data.getChildFile("trash").getFullPathName().toStdString(), opId));
+}
+
+// The operation opens in the history once the worker has let the job through
+// and before it touches the card, and closes with the job's outcome.
+PedalWorker::Job MainComponent::recorded(const char* kind, const commands::WriteOptions& options,
+                                         PedalWorker::Job job)
+{
+    job.before = [rec = recorder, id = options.opId, k = std::string(kind)](
+                     const volume::fs::path& volumePath) { rec->begin(id, k, volumePath); };
+    job.after = [rec = recorder, id = options.opId](const std::string& error) {
+        rec->finish(id, error);
+    };
+    return job;
 }
 
 void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
@@ -1213,24 +1241,26 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
 
 void MainComponent::toggleOneShot(int slot, bool currentlyOn)
 {
-    worker.enqueue({ juce::String(currentlyOn ? "Disable" : "Enable") + " One Shot on slot "
-                         + juce::String(slot),
-                     slot,
-                     [slot, on = !currentlyOn, options = makeWriteOptions()](
-                         const volume::fs::path& volumePath) {
-                         commands::setOneShot(volumePath, { slot }, on, options);
-                     } });
+    const auto options = makeWriteOptions();
+    worker.enqueue(recorded("oneshot", options,
+                            { juce::String(currentlyOn ? "Disable" : "Enable")
+                                  + " One Shot on slot " + juce::String(slot),
+                              slot,
+                              [slot, on = !currentlyOn, options](const volume::fs::path& volumePath) {
+                                  commands::setOneShot(volumePath, { slot }, on, options);
+                              } }));
 }
 
 void MainComponent::toggleCountIn(int slot, bool currentlyOn)
 {
-    worker.enqueue({ juce::String(currentlyOn ? "Disable" : "Enable") + " Play Count-In on slot "
-                         + juce::String(slot),
-                     slot,
-                     [slot, on = !currentlyOn, options = makeWriteOptions()](
-                         const volume::fs::path& volumePath) {
-                         commands::setCountIn(volumePath, { slot }, on, options);
-                     } });
+    const auto options = makeWriteOptions();
+    worker.enqueue(recorded("countin", options,
+                            { juce::String(currentlyOn ? "Disable" : "Enable")
+                                  + " Play Count-In on slot " + juce::String(slot),
+                              slot,
+                              [slot, on = !currentlyOn, options](const volume::fs::path& volumePath) {
+                                  commands::setCountIn(volumePath, { slot }, on, options);
+                              } }));
 }
 
 void MainComponent::choosePushWav(int slot, bool slotOccupied)
@@ -1271,11 +1301,12 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
             file != nullptr && file->getBoolValue(kNormalizeOnUploadKey, false))
             normalizeTarget = file->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs);
         auto note = std::make_shared<juce::String>();
-        worker.enqueue({ "Push " + juce::File(sourcePath).getFileName() + " to slot "
+        const auto options = makeWriteOptions();
+        worker.enqueue(recorded("push", options, { "Push " + juce::File(sourcePath).getFileName() + " to slot "
                              + juce::String(slot),
                          slot,
                          [source = sourcePath, slot, force, normalizeTarget, note,
-                          options = makeWriteOptions(),
+                          options,
                           importTmp = settings.dataDir().getChildFile("import-tmp"),
                           logDir = settings.dataDir()](
                              const volume::fs::path& volumePath) {
@@ -1308,7 +1339,7 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                                                    + *note);
                              }
                          },
-                         note });
+                         note }));
     };
 
     if (!slotOccupied) {
@@ -1370,13 +1401,14 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
             if (button != 1)
                 return;
             releasePlayerIfHolding(slot, slot); // the fold rewrites the WAV under preview (issue #26)
-            worker.enqueue(
+            const auto options = makeWriteOptions();
+            worker.enqueue(recorded(
+                "downmix", options,
                 { "Downmix slot " + juce::String(slot) + " to mono, " + where, slot,
-                  [slot, placement, options = makeWriteOptions()](
-                      const volume::fs::path& volumePath) {
+                  [slot, placement, options](const volume::fs::path& volumePath) {
                       commands::downmixToMono(volumePath, slot,
                                               { .placement = placement, .write = options });
-                  } });
+                  } }));
         });
 }
 
@@ -1421,9 +1453,11 @@ void MainComponent::enqueueNormalize(int slot, double target, int batch,
 {
     releasePlayerIfHolding(slot, slot); // the rewrite happens under preview (issue #26)
     auto note = std::make_shared<juce::String>();
-    worker.enqueue(
+    const auto options = makeWriteOptions();
+    worker.enqueue(recorded(
+        "normalize", options,
         { "Normalize slot " + juce::String(slot), slot,
-          [slot, target, note, filePermille, options = makeWriteOptions(),
+          [slot, target, note, filePermille, options,
            logDir = settings.dataDir()](
               const volume::fs::path& volumePath) {
               if (filePermille != nullptr)
@@ -1439,7 +1473,7 @@ void MainComponent::enqueueNormalize(int slot, double target, int batch,
               *note = describeNormalize(result, target);
               oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
           },
-          note, batch });
+          note, batch }));
 }
 
 // Batch takeover (issue #61): the overlay swallows every click until the last
@@ -1760,11 +1794,12 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
         const bool useTrash = choice == 1;
         const auto options = makeWriteOptions();
         releasePlayerIfHolding(slot, slot); // the clear moves or deletes its WAV (issue #26)
-        worker.enqueue(
+        worker.enqueue(recorded(
+            "clear", options,
             { juce::String("Clear slot ") + juce::String(slot), slot,
               [slot, options, useTrash](const volume::fs::path& volumePath) {
                   commands::clear(volumePath, { slot }, { .trash = useTrash, .write = options });
-              } });
+              } }));
     }), true);
 }
 

@@ -370,6 +370,7 @@ juce_add_gui_app(LooperCat
 
 target_sources(LooperCat PRIVATE
     app/Main.cpp
+    app/history/HistoryRecorder.cpp
     app/history/HistoryStore.cpp
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
@@ -559,6 +560,26 @@ target_link_libraries(history_store_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_store_tests COMMAND history_store_tests)
+
+# The recorder end to end: real core commands on a synthetic pedal, wired
+# through history::withHistory as the app wires them, read back from the store.
+juce_add_console_app(history_recorder_tests PRODUCT_NAME "history_recorder_tests")
+target_sources(history_recorder_tests PRIVATE tests/history_recorder_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_recorder_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_recorder_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
 # ----------------------------------------------------------------------------
 # MP3 import (issue #52): theory tests for Mp3AudioFormat + the import chain —
