@@ -126,7 +126,7 @@ private:
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
-    // write options (backup root + timestamp under the app data dir).
+    // write options (backup root + a fresh operation id, under the app data dir).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
     void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
     void updateInspector();                 // push the selected row into the panel

@@ -22,6 +22,8 @@
 
 #include "support.hpp"
 
+#include "../app/OperationId.h"
+
 #include <loopercat/Commands.hpp>
 
 #include <algorithm>
@@ -205,15 +207,88 @@ std::map<std::string, std::string> volumeBytes(const fs::path& volume)
     return map;
 }
 
-commands::WriteOptions writeOpts(const fs::path& root, const std::string& stamp = "stamp-1")
+// Every call mints a fresh id, exactly as the app does — through the app's own
+// generator, so the suite exercises the thing that ships. Sharing one id
+// between two operations is a bug, and a test has to ask for it by name.
+commands::WriteOptions writeOpts(const fs::path& root, std::string opId = opid::make("op"))
 {
-    return { .backupRoot = root / "backups", .stamp = stamp };
+    return { .backupRoot = root / "backups", .opId = std::move(opId) };
 }
 
 } // namespace
 
 int main()
 {
+    // --- operation identity: the archive is never shared, never overwritten ---
+    //
+    // The identity used to be the wall clock at one-second resolution, and a
+    // bulk apply enqueues all its jobs inside one second: slots 32, 33 and 34
+    // normalized together left ONE backup directory and two pre-states were
+    // gone (issue #72). Theory: an operation owns its archive, and a reused id
+    // is loud rather than destructive.
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+
+        // Both ids are minted in the same second, from the same label.
+        const std::string label = "2026-09-01T21-35-46";
+        const commands::WriteOptions first = writeOpts(tmp.path, opid::make(label));
+        const commands::WriteOptions second = writeOpts(tmp.path, opid::make(label));
+        CHECK(first.opId != second.opId);
+
+        const std::string before = commands::readFileBytes(volume::memoryPath(volume, 1));
+        commands::rename(volume, 3, "First", first);
+        const std::string between = commands::readFileBytes(volume::memoryPath(volume, 1));
+        commands::rename(volume, 4, "Second", second);
+
+        CHECK(before != between); // the two operations really did differ
+        CHECK(commands::readFileBytes(tmp.path / "backups" / first.opId / "MEMORY1.RC0")
+              == before);
+        CHECK(commands::readFileBytes(tmp.path / "backups" / second.opId / "MEMORY1.RC0")
+              == between);
+    }
+
+    {
+        // A reused id refuses, and refuses BEFORE it has cost anything.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const commands::WriteOptions shared = writeOpts(tmp.path, "one-id-for-two");
+
+        const std::string before = commands::readFileBytes(volume::memoryPath(volume, 1));
+        commands::rename(volume, 3, "First", shared);
+        const std::string kept = commands::readMemory(volume);
+
+        CHECK_THROWS(commands::rename(volume, 4, "Second", shared), "under one id");
+        CHECK(commands::readFileBytes(tmp.path / "backups" / shared.opId / "MEMORY1.RC0")
+              == before);
+        CHECK(rc0::slotBody(commands::readMemory(volume), 4) == rc0::slotBody(kept, 4));
+    }
+
+    {
+        // The case that loses audio outright: one id touching one slot twice.
+        // The first take is in the archive, and nothing may write over it.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 5, "005_1.WAV", { .tag = 3, .bits = 32, .frames = 4410 });
+        const std::string firstTake =
+            commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV");
+
+        commands::ClearOptions options { .trashRoot = tmp.path / "trash",
+                                         .write = writeOpts(tmp.path, "one-id-twice") };
+        const auto cleared = commands::clear(volume, { 5 }, options);
+        CHECK(commands::readFileBytes(cleared.trashed.front()) == firstTake);
+
+        // A second take lands in the same slot, and the same id clears it.
+        putWav(volume, 5, "005_1.WAV", { .tag = 3, .bits = 32, .frames = 8820 });
+        CHECK_THROWS(commands::clear(volume, { 5 }, options), "under one id");
+
+        // The first take is still the first take, and the refusal kept the
+        // second one on the card rather than deleting it into nothing.
+        CHECK(commands::readFileBytes(cleared.trashed.front()) == firstTake);
+        CHECK(volume::listSlotWavs(volume, 5).size() == 1);
+    }
+
     // --- writeMemoryPair: the whole discipline in one call ---
 
     {
@@ -553,10 +628,10 @@ int main()
 
         // Occupied slot: refused without force; force without a trash root is
         // refused too — the replaced take must have somewhere safe to go.
-        CHECK_THROWS(commands::push(volume, source, 9, { .write = writeOpts(tmp.path, "stamp-2") }),
+        CHECK_THROWS(commands::push(volume, source, 9, { .write = writeOpts(tmp.path, "op-2") }),
                      "already has audio");
         CHECK_THROWS(commands::push(volume, source, 9,
-                                    { .force = true, .write = writeOpts(tmp.path, "stamp-2") }),
+                                    { .force = true, .write = writeOpts(tmp.path, "op-2") }),
                      "trash root");
         CHECK_EQ(volume::listSlotWavs(volume, 9).size(), 1u);
 
@@ -564,12 +639,12 @@ int main()
         // push never deletes audio outright.
         const auto forced = commands::push(volume, source, 9,
                                            { .force = true, .trashRoot = tmp.path / "trash",
-                                             .write = writeOpts(tmp.path, "stamp-3") });
+                                             .write = writeOpts(tmp.path, "op-3") });
         CHECK_EQ(volume::listSlotWavs(volume, 9).size(), 1u);
         CHECK(forced.configured);
         CHECK_EQ(forced.trashed.size(), 1u);
         CHECK(commands::readFileBytes(forced.trashed.front()) == pushed);
-        CHECK(forced.trashed.front().string().find("stamp-3") != std::string::npos);
+        CHECK(forced.trashed.front().string().find("op-3") != std::string::npos);
     }
 
     // --- push failure leaves the volume byte-identical ---
@@ -690,9 +765,9 @@ int main()
         CHECK(rc0::slotBody(text, 5) == rc0::factorySlotBody(5));
 
         // keepName: factory values, surviving name.
-        commands::rename(volume, 6, "Keep Me", writeOpts(tmp.path, "stamp-2"));
+        commands::rename(volume, 6, "Keep Me", writeOpts(tmp.path, "op-2"));
         commands::ClearOptions keep { .keepName = true, .trashRoot = tmp.path / "trash",
-                                      .write = writeOpts(tmp.path, "stamp-3") };
+                                      .write = writeOpts(tmp.path, "op-3") };
         commands::clear(volume, { 6 }, keep);
         const std::string after = commands::readMemory(volume);
         CHECK_EQ(rc0::decodeName(rc0::slotBody(after, 6)), "Keep Me     ");
@@ -700,7 +775,7 @@ int main()
 
         // No trash root -> fail fast before touching anything.
         putWav(volume, 8, "safe.wav");
-        commands::ClearOptions bad { .write = writeOpts(tmp.path, "stamp-4") };
+        commands::ClearOptions bad { .write = writeOpts(tmp.path, "op-4") };
         CHECK_THROWS(commands::clear(volume, { 8 }, bad), "trash root");
         CHECK_EQ(volume::listSlotWavs(volume, 8).size(), 1u);
     }
@@ -778,7 +853,7 @@ int main()
 
         commands::trim(volume, 5, 0, 1323000,
                        { .trashRoot = tmp.path / "trash",
-                         .write = { .stamp = "qa4", .skipBackup = true } });
+                         .write = { .opId = "qa4", .skipBackup = true } });
 
         // 30 s at the KEPT 112.0 BPM = 56 beats = 14 bars. The hardware QA
         // run caught trim re-running the import formula here (16 bars at
@@ -876,7 +951,7 @@ int main()
 
         // Swapping back restores the document and the audio exactly (only the
         // write generations keep counting).
-        commands::swap(volume, 3, 7, writeOpts(tmp.path, "stamp-2"));
+        commands::swap(volume, 3, 7, writeOpts(tmp.path, "op-2"));
         CHECK(rc0::splitFile(commands::readMemory(volume)).document
               == rc0::splitFile(before).document);
         CHECK(commands::readFileBytes(volume::wavDir(volume, 3) / "003_1.WAV") == wav3);
@@ -909,7 +984,7 @@ int main()
         CHECK(commands::doctor(volume).empty());
 
         // And back: the other direction of the move.
-        commands::swap(volume, 15, 12, writeOpts(tmp.path, "stamp-2"));
+        commands::swap(volume, 15, 12, writeOpts(tmp.path, "op-2"));
         CHECK(volume::listSlotWavs(volume, 12) == std::vector<std::string> { "012_1.WAV" });
         CHECK(!fs::exists(volume::wavDir(volume, 15)));
         CHECK(rc0::splitFile(commands::readMemory(volume)).document
@@ -932,7 +1007,7 @@ int main()
         putWav(volume, 2, "a.wav");
         putWav(volume, 4, "b.wav");
         fs::create_directories(volume / "ROLAND" / "WAVE" / commands::kSwapParkName);
-        CHECK_THROWS(commands::swap(volume, 2, 4, writeOpts(tmp.path, "stamp-2")),
+        CHECK_THROWS(commands::swap(volume, 2, 4, writeOpts(tmp.path, "op-2")),
                      "interrupted swap");
         CHECK_EQ(volume::listSlotWavs(volume, 2).front(), "a.wav");
         CHECK_EQ(volume::listSlotWavs(volume, 4).front(), "b.wav");
@@ -1040,7 +1115,7 @@ int main()
                         fs::perm_options::replace);
         CHECK_THROWS(commands::push(volume, source, 9,
                                     { .force = true, .trashRoot = tmp.path / "trash",
-                                      .write = { .stamp = "fi-push", .skipBackup = true } }),
+                                      .write = { .opId = "fi-push", .skipBackup = true } }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -1066,7 +1141,7 @@ int main()
                         fs::perm_options::replace);
         CHECK_THROWS(commands::trim(volume, 4, 0, 661500,
                                     { .trashRoot = tmp.path / "trash",
-                                      .write = { .stamp = "fi-trim", .skipBackup = true } }),
+                                      .write = { .opId = "fi-trim", .skipBackup = true } }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -1089,7 +1164,7 @@ int main()
                         fs::perm_options::replace);
         CHECK_THROWS(commands::clear(volume, { 6 },
                                      { .trashRoot = tmp.path / "trash",
-                                       .write = { .stamp = "fi-clear", .skipBackup = true } }),
+                                       .write = { .opId = "fi-clear", .skipBackup = true } }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
