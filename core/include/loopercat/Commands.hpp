@@ -207,6 +207,30 @@ inline BackupResult backup(const fs::path& volume, const fs::path& backupRoot,
 // is the caller's business; the order is the core's guarantee.
 using Archive = std::function<void(int slot, const std::string& fileName, std::string_view bytes)>;
 
+// What a write does to one slot: its body as the card holds it, and the body
+// the write puts in its place. Bodies are the <mem> blocks, byte for byte.
+struct SlotChange {
+    int slot;
+    std::string before;
+    std::string after;
+};
+
+// What a command tells the history while it runs. Each resource is reported
+// before IT changes: a take goes to the archive before its file does, and
+// the bodies are reported before the memory pair is written — until then
+// the old bodies are still on the card, whatever happened to the audio. Both
+// are observers, nothing in the write depends on them, except that a throw
+// from either stops the command where it stands: a history that cannot keep
+// up must not be outrun.
+struct Journal {
+    // Just before the memory pair is written. Empty when the write only
+    // restamps the pair — downmix and normalize change audio alone.
+    std::function<void(const std::vector<SlotChange>&)> bodiesChanging;
+    // After a take has landed on the card, with its bytes: the post-state's
+    // audio, so the history never has to read it back over USB.
+    std::function<void(int slot, const std::string& fileName, std::string_view bytes)> audioWritten;
+};
+
 struct WriteOptions {
     fs::path backupRoot;    // where pre-write backups land; empty ONLY with skipBackup
     // The identity of this operation, and the name of its backup directory.
@@ -219,6 +243,7 @@ struct WriteOptions {
     // occupied slot, trim, downmix, normalize, clear): a take is never
     // destroyed without having been handed here first.
     Archive archive;
+    Journal journal;
 };
 
 // The archive as it has always looked on disk: <root>/<opId>/<NNN_1>/<file>.
@@ -258,6 +283,30 @@ struct WriteResult {
     std::vector<fs::path> sweepFailed; // junk still on the volume — a warning, the write succeeded
 };
 
+// Every slot whose body differs between the document on the card and the one
+// about to replace it — and a refusal if they differ ANYWHERE else. The
+// history records a write as the slot bodies it changed, so a change outside
+// them is one no row could describe; it is stopped here rather than recorded
+// as less than it was. The trailer is the one exception by design: the write
+// stamps it (see writeMemoryPair), and it belongs to no slot.
+inline std::vector<SlotChange> slotChanges(std::string_view current, std::string_view next)
+{
+    std::vector<SlotChange> changes;
+    std::string patched(current);
+    for (int slot = 1; slot <= rc0::kSlotCount; ++slot) {
+        std::string before = rc0::slotBody(current, slot);
+        std::string after = rc0::slotBody(next, slot);
+        if (before == after)
+            continue;
+        patched = rc0::replaceSlotBody(patched, slot, after);
+        changes.push_back({ slot, std::move(before), std::move(after) });
+    }
+    if (rc0::splitFile(patched).document != rc0::splitFile(next).document)
+        throw Error("the write changes the memory document outside its slots — the history"
+                    " could not describe it");
+    return changes;
+}
+
 // The mutation tail shared by every command: back up, write the SAME document
 // to both memory files, verify each byte-for-byte by re-reading, sweep junk.
 // The sweep is best-effort and runs after the pair write has succeeded: a
@@ -274,9 +323,14 @@ struct WriteResult {
 inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text,
                                    const WriteOptions& options)
 {
+    // Described before anything is written: a write the history could not
+    // describe is refused with the volume as it was.
+    const std::vector<SlotChange> changes = slotChanges(readMemory(volume), text);
     WriteResult result;
     if (!options.skipBackup)
         result.backedUp = backup(volume, options.backupRoot, options.opId);
+    if (options.journal.bodiesChanging)
+        options.journal.bodiesChanging(changes);
     std::uint32_t base = 0x37; // one below the factory pair: a fresh volume lands on 0x38/0x39
     for (const int fileNo : { 1, 2 }) {
         try {
@@ -471,8 +525,10 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
         if (!fs::remove(dir / old, ec) || ec)
             throw Error("cannot remove " + (dir / old).string());
     }
-    writeFileBytes(result.dest,
-                   std::string_view(reinterpret_cast<const char*>(wavBytes.data()), wavBytes.size()));
+    const std::string_view landed(reinterpret_cast<const char*>(wavBytes.data()), wavBytes.size());
+    writeFileBytes(result.dest, landed);
+    if (options.write.journal.audioWritten)
+        options.write.journal.audioWritten(slot, result.dest.filename().string(), landed);
 
     if (!options.writeConfig) {
         // Best-effort sweep; survivors keep the volume boot-risky, and
@@ -605,8 +661,10 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
                         { static_cast<int>(bars), static_cast<int>(tempoTenths) }, {} };
     archiveTake(options.write, "trim", slot, files.front(), raw);
 
-    writeFileBytes(source,
-                   std::string_view(reinterpret_cast<const char*>(slice.data()), slice.size()));
+    const std::string_view landed(reinterpret_cast<const char*>(slice.data()), slice.size());
+    writeFileBytes(source, landed);
+    if (options.write.journal.audioWritten)
+        options.write.journal.audioWritten(slot, files.front(), landed);
 
     result.written = writeMemoryPair(volume, newDocument, options.write);
     return result;
@@ -673,8 +731,10 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
     DownmixResult result { files.front(), info.frames, {} };
     archiveTake(options.write, "downmix", slot, files.front(), raw);
 
-    writeFileBytes(source,
-                   std::string_view(reinterpret_cast<const char*>(folded.data()), folded.size()));
+    const std::string_view landed(reinterpret_cast<const char*>(folded.data()), folded.size());
+    writeFileBytes(source, landed);
+    if (options.write.journal.audioWritten)
+        options.write.journal.audioWritten(slot, files.front(), landed);
 
     result.written = writeMemoryPair(volume, memoryText, options.write);
     return result;
@@ -787,10 +847,11 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     archiveTake(options.write, "normalize", slot, files.front(), raw);
     report(0.78);
 
-    writeFileBytes(source,
-                   std::string_view(reinterpret_cast<const char*>(rewritten.data()),
-                                    rewritten.size()),
-                   segment(0.78, 0.96));
+    const std::string_view landed(reinterpret_cast<const char*>(rewritten.data()),
+                                  rewritten.size());
+    writeFileBytes(source, landed, segment(0.78, 0.96));
+    if (options.write.journal.audioWritten)
+        options.write.journal.audioWritten(slot, files.front(), landed);
 
     result.applied = true;
     result.gainDb = gainDb;

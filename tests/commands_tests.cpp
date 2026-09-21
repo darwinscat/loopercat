@@ -34,6 +34,8 @@
 #include <filesystem>
 #include <map>
 #include <numbers>
+#include <optional>
+#include <utility>
 #include <vector>
 
 using namespace loopercat;
@@ -457,6 +459,160 @@ int main()
         CHECK(commands::readFileBytes(tmp.path / "trash" / "op-x" / "007_1" / "take.wav") == "first");
         CHECK_THROWS(commands::trashFolder({}, "op-x"), "needs a root and an operation id");
         CHECK_THROWS(commands::trashFolder(tmp.path / "trash", ""), "needs a root and an operation id");
+    }
+
+    // --- the journal: what a write changes, told before it changes it ---
+    //
+    // Theory: the history records a write as the slot bodies it changed, each
+    // reported while the card still holds the old one, plus the audio that
+    // landed. A write that changes the document anywhere else could not be
+    // described, so it must not happen at all.
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const std::string original = commands::readMemory(volume);
+
+        // rename: exactly one slot, before and after byte-exact, and the card
+        // still held the old body when the journal heard about it.
+        std::vector<commands::SlotChange> heard;
+        std::string cardWhenHeard;
+        commands::WriteOptions options = writeOpts(tmp.path);
+        options.journal.bodiesChanging = [&](const std::vector<commands::SlotChange>& changes) {
+            heard = changes;
+            cardWhenHeard = commands::readMemory(volume);
+        };
+        commands::rename(volume, 7, "Heard", options);
+        CHECK_EQ(heard.size(), 1u);
+        if (heard.size() == 1u) {
+            CHECK_EQ(heard.front().slot, 7);
+            CHECK(heard.front().before == rc0::slotBody(original, 7));
+            CHECK(heard.front().after == rc0::slotBody(commands::readMemory(volume), 7));
+            CHECK(heard.front().before != heard.front().after);
+        }
+        CHECK(cardWhenHeard == original);
+    }
+
+    {
+        // Several slots in one write: every changed slot, in slot order, and
+        // not one slot more — slot 9 is in the list but already off.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        commands::setOneShot(volume, { 9 }, false, writeOpts(tmp.path));
+        std::vector<commands::SlotChange> heard;
+        commands::WriteOptions options = writeOpts(tmp.path);
+        options.journal.bodiesChanging = [&](const std::vector<commands::SlotChange>& c) { heard = c; };
+        commands::setOneShot(volume, { 40, 9, 3 }, true, options);
+        std::vector<int> slots;
+        for (const auto& change : heard)
+            slots.push_back(change.slot);
+        CHECK((slots == std::vector<int> { 3, 9, 40 }));
+    }
+
+    {
+        // swap: both slots, each after-body being the other's before-body.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        commands::rename(volume, 3, "Three", writeOpts(tmp.path));
+        commands::rename(volume, 7, "Seven", writeOpts(tmp.path));
+        std::vector<commands::SlotChange> heard;
+        commands::WriteOptions options = writeOpts(tmp.path);
+        options.journal.bodiesChanging = [&](const std::vector<commands::SlotChange>& c) { heard = c; };
+        commands::swap(volume, 3, 7, options);
+        CHECK_EQ(heard.size(), 2u);
+        if (heard.size() == 2u) {
+            CHECK_EQ(heard[0].slot, 3);
+            CHECK_EQ(heard[1].slot, 7);
+            CHECK(heard[0].after == heard[1].before);
+            CHECK(heard[1].after == heard[0].before);
+        }
+    }
+
+    {
+        // A journal that cannot keep up stops the write: the volume is as it was.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const auto before = volumeBytes(volume);
+        commands::WriteOptions options = writeOpts(tmp.path);
+        options.skipBackup = true;
+        options.journal.bodiesChanging = [](const std::vector<commands::SlotChange>&) {
+            throw Error("the history is unavailable");
+        };
+        CHECK_THROWS(commands::rename(volume, 7, "Never", options), "the history is unavailable");
+        CHECK(volumeBytes(volume) == before);
+        // swap moved its audio before the pair write; the refusal moves it back
+        putWav(volume, 3, "003_1.WAV");
+        const auto withAudio = volumeBytes(volume);
+        CHECK_THROWS(commands::swap(volume, 3, 7, options), "the history is unavailable");
+        CHECK(volumeBytes(volume) == withAudio);
+    }
+
+    {
+        // A change outside every slot is one no row could describe: refused,
+        // before anything is written.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const auto before = volumeBytes(volume);
+        std::string text = commands::readMemory(volume);
+        const auto closing = text.find("</database>");
+        CHECK(closing != std::string::npos);
+        text.insert(closing, "<stray/>");
+        CHECK_THROWS(commands::writeMemoryPair(volume, text, writeOpts(tmp.path)),
+                     "outside its slots");
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(tmp.path / "backups")); // refused before the backup, too
+    }
+
+    {
+        // Audio-only rewrites restamp the pair without touching a body — the
+        // journal hears an empty list, and hears the audio instead.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putStereoFloatWav(volume, 13, "stereo.wav", 256);
+        putSineFloatWav(volume, 14, "quiet.wav", 44100, -23.0);
+
+        std::optional<std::vector<commands::SlotChange>> bodies;
+        std::vector<std::pair<int, std::string>> landedName;
+        std::vector<std::string> landedBytes;
+        const auto listening = [&](commands::WriteOptions options) {
+            options.journal.bodiesChanging = [&](const std::vector<commands::SlotChange>& c) {
+                bodies = c;
+            };
+            options.journal.audioWritten = [&](int slot, const std::string& name,
+                                               std::string_view bytes) {
+                landedName.emplace_back(slot, name);
+                landedBytes.emplace_back(bytes);
+            };
+            return options;
+        };
+
+        commands::downmixToMono(volume, 13, { .write = listening(writeOpts(tmp.path)) });
+        CHECK(bodies.has_value() && bodies->empty());
+        CHECK_EQ(landedName.size(), 1u);
+        CHECK((landedName.back() == std::pair<int, std::string> { 13, "stereo.wav" }));
+        CHECK(landedBytes.back() == commands::readFileBytes(volume::wavDir(volume, 13) / "stereo.wav"));
+
+        bodies.reset();
+        commands::normalize(volume, 14, { .targetLufs = -18.0, .write = listening(writeOpts(tmp.path)) });
+        CHECK(bodies.has_value() && bodies->empty());
+        CHECK_EQ(landedName.size(), 2u);
+        CHECK((landedName.back() == std::pair<int, std::string> { 14, "quiet.wav" }));
+        CHECK(landedBytes.back() == commands::readFileBytes(volume::wavDir(volume, 14) / "quiet.wav"));
+
+        // push and trim: the take that landed is the take on the card
+        const auto sourceBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 132300 });
+        const fs::path source = tmp.path / "incoming.wav";
+        commands::writeFileBytes(source,
+                                 std::string_view(reinterpret_cast<const char*>(sourceBytes.data()),
+                                                  sourceBytes.size()));
+        commands::push(volume, source, 20, { .write = listening(writeOpts(tmp.path)) });
+        CHECK((landedName.back() == std::pair<int, std::string> { 20, "incoming.wav" }));
+        CHECK(landedBytes.back() == commands::readFileBytes(volume::wavDir(volume, 20) / "incoming.wav"));
+
+        commands::trim(volume, 20, 0, 88200, { .write = listening(writeOpts(tmp.path)) });
+        CHECK((landedName.back() == std::pair<int, std::string> { 20, "incoming.wav" }));
+        CHECK(landedBytes.back() == commands::readFileBytes(volume::wavDir(volume, 20) / "incoming.wav"));
+        CHECK_EQ(landedName.size(), 4u); // one per take written, never more
     }
 
     // --- writeMemoryPair: the whole discipline in one call ---
