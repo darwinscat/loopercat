@@ -173,6 +173,109 @@ int main()
         CHECK_EQ(edited.substr(at + 13), body.substr(body.find("<Pan>50</Pan>") + 13));
     }
 
+    // --- section-scoped fields ---
+
+    // <Level> is both MASTER's and RHYTHM's. Unscoped it is ambiguous and
+    // refused; scoped, each section answers with its own value.
+    {
+        const std::string body = "\n<MASTER>\n\t<Tempo>1200</Tempo>\n\t<Level>100</Level>\n</MASTER>\n"
+                                 "<RHYTHM>\n\t<Level>37</Level>\n\t<State>0</State>\n</RHYTHM>\n";
+        CHECK_THROWS(rc0::field(body, "Level"), "occurs 2 times");
+        CHECK_EQ(rc0::sectionField(body, rc0::kSectionMaster, "Level"), 100);
+        CHECK_EQ(rc0::sectionField(body, rc0::kSectionRhythm, "Level"), 37);
+
+        // A tag that lives only in another section is absent here — the
+        // lookup never leaks past its own section's bounds.
+        CHECK_THROWS(rc0::sectionField(body, rc0::kSectionMaster, "State"), "occurs 0 times");
+        CHECK_THROWS(rc0::sectionField(body, rc0::kSectionRhythm, "Tempo"), "occurs 0 times");
+
+        // Writing RHYTHM's Level leaves MASTER's alone, and every byte
+        // outside the one field is reproduced.
+        const std::string edited = rc0::setSectionField(body, rc0::kSectionRhythm, "Level", 50);
+        CHECK_EQ(rc0::sectionField(edited, rc0::kSectionRhythm, "Level"), 50);
+        CHECK_EQ(rc0::sectionField(edited, rc0::kSectionMaster, "Level"), 100);
+        const auto at = body.find("<Level>37</Level>");
+        CHECK_EQ(edited, body.substr(0, at) + "<Level>50</Level>" + body.substr(at + 17));
+    }
+
+    // A memory with a second track carries every TRACK field twice: each
+    // track reads its own, and writing one never moves the other's bytes.
+    {
+        const std::string body = "\n<TRACK1>\n\t<WavStat>1</WavStat>\n\t<WavLen>641408</WavLen>\n</TRACK1>\n"
+                                 "<TRACK2>\n\t<WavStat>0</WavStat>\n\t<WavLen>0</WavLen>\n</TRACK2>\n";
+        CHECK_THROWS(rc0::field(body, "WavLen"), "occurs 2 times");
+        CHECK_EQ(rc0::sectionField(body, "TRACK1", "WavLen"), 641408);
+        CHECK_EQ(rc0::sectionField(body, "TRACK2", "WavLen"), 0);
+        const std::string edited = rc0::setSectionField(body, "TRACK2", "WavLen", 12345);
+        CHECK_EQ(section(edited, "TRACK1"), section(body, "TRACK1"));
+        CHECK_EQ(rc0::sectionField(edited, "TRACK2", "WavLen"), 12345);
+        CHECK_EQ(rc0::sectionField(edited, "TRACK2", "WavStat"), 0);
+    }
+
+    // The same shape one level up: a SYSTEM file's control blocks share tag
+    // names (<Ctl1>, <Exp>) between sections.
+    {
+        const std::string sys = "<sys>\n<CTL>\n\t<Ctl1>44</Ctl1>\n\t<Exp>13</Exp>\n</CTL>\n"
+                                "<PREF>\n\t<Ctl1>1</Ctl1>\n\t<Exp>1</Exp>\n</PREF>\n</sys>\n";
+        CHECK_EQ(rc0::sectionField(sys, "CTL", "Ctl1"), 44);
+        CHECK_EQ(rc0::sectionField(sys, "PREF", "Ctl1"), 1);
+        CHECK_EQ(rc0::sectionField(rc0::setSectionField(sys, "CTL", "Exp", 0), "PREF", "Exp"), 1);
+    }
+
+    // Asked across the whole memory file, a section appears 99 times: refused,
+    // not the first memory's quietly taken.
+    CHECK_THROWS(rc0::sectionField(FILE_TEXT, rc0::kSectionTrack1, "Pan"), "more than once");
+    CHECK_THROWS(rc0::setSectionField(FILE_TEXT, rc0::kSectionTrack1, "Pan", 1), "more than once");
+
+    // A missing or unterminated section is a malformed body, said by name.
+    CHECK_THROWS(rc0::sectionField("<MASTER><Tempo>1</Tempo></MASTER>", "RHYTHM", "Level"),
+                 "missing <RHYTHM> section");
+    CHECK_THROWS(rc0::sectionField("<MASTER><Tempo>1</Tempo>", "MASTER", "Tempo"),
+                 "unterminated <MASTER> section");
+
+    // Inside its section the one-occurrence rule still holds.
+    CHECK_THROWS(rc0::sectionField("<MASTER><Tempo>1</Tempo><Tempo>2</Tempo></MASTER>", "MASTER",
+                                   "Tempo"),
+                 "occurs 2 times");
+
+    // Section names match whole: <ASSIGN1> is not the start of <ASSIGN10>,
+    // and </TRACK1> is not an opener.
+    {
+        const std::string body = "<ASSIGN10><Sw>0</Sw></ASSIGN10><ASSIGN1><Sw>1</Sw></ASSIGN1>";
+        CHECK_EQ(rc0::sectionField(body, "ASSIGN1", "Sw"), 1);
+        CHECK_EQ(rc0::sectionField(body, "ASSIGN10", "Sw"), 0);
+        CHECK_THROWS(rc0::sectionField("</TRACK1><Pan>5</Pan>", "TRACK1", "Pan"), "missing");
+    }
+
+    // On the RC-5's own shape, scoping changes no answer: for every memory and
+    // every field of its three numeric sections, the scoped read equals the
+    // unscoped one wherever the tag is unique in the body.
+    {
+        int compared = 0;
+        int differed = 0;
+        for (int slot = 1; slot <= rc0::kSlotCount; ++slot) {
+            const std::string body = rc0::slotBody(FILE_TEXT, slot);
+            for (const std::string_view sec :
+                 { rc0::kSectionTrack1, rc0::kSectionMaster, rc0::kSectionRhythm }) {
+                const std::string block = section(body, std::string(sec));
+                std::size_t from = 0;
+                while ((from = block.find("\n\t<", from)) != std::string::npos) {
+                    const auto nameBegin = from + 3;
+                    const auto nameEnd = block.find('>', nameBegin);
+                    const std::string tag = block.substr(nameBegin, nameEnd - nameBegin);
+                    from = nameEnd;
+                    if (tag == "Level")
+                        continue; // the one tag two sections share — covered above
+                    ++compared;
+                    if (rc0::sectionField(body, sec, tag) != rc0::field(body, tag))
+                        ++differed;
+                }
+            }
+        }
+        CHECK_EQ(compared, 99 * (13 + 9 + 18)); // TRACK1 13, MASTER 10 − Level, RHYTHM 19 − Level
+        CHECK_EQ(differed, 0);
+    }
+
     // --- names ---
 
     CHECK_THROWS(rc0::encodeName("ThirteenChars"), "longer than 12");
