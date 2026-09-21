@@ -145,15 +145,19 @@ namespace detail {
 //
 // Every RC-series pedal exports the same ROLAND/DATA card layout, and the
 // RC-500's MEMORY*.RC0 is near-identical to ours: the same 99 <mem id="0..98">
-// entries, the same <NAME>/C01..C12 block, the same TRACK1 field names — close
-// enough to parse cleanly here while its numbers obey different arithmetic
-// (the RC-5's `Measure = MeasLen + 7` does not hold there, and its audio is
-// two-track). Mutating such a card with RC-5 semantics is data corruption, so
-// a foreign card is refused at the door, by name. The one honest discriminator
-// is the root element's name attribute: the RC-5 writes
-// `<database name="RC-5" revision="0">` (hardware dumps, mirrored by the test
-// fixtures), the RC-500 writes `name="RC-500"` plus a <TRACK2> section per
-// memory (the boss-rc500-editor template, quoted in issue #35).
+// entries, the same <NAME>/C01..C12 block, the same TRACK1 field names, even
+// the same `Measure = MeasLen + 7` — hardware dumps of the two-track family
+// obey it on every recorded track (an earlier note here, taken from a
+// template, said they did not). What differs is the shape: a second track per
+// memory, with its own <TRACK2> section and its own audio directory, plus
+// sections the RC-5 does not have. Mutating such a card with one-track
+// semantics is data corruption — a swap would carry one track's audio across
+// and leave the other behind — so a foreign card is refused at the door, by
+// name. The one honest discriminator is the root element's name attribute:
+// the RC-5 writes `<database name="RC-5" revision="0">` (hardware dumps,
+// mirrored by the test fixtures), the RC-500 writes `name="RC-500"` plus a
+// <TRACK2> section per memory (hardware dumps and the boss-rc500-editor
+// template quoted in issue #35 agree).
 
 // The family this whole app speaks. The root opener must carry exactly these
 // bytes as its name attribute — no case folding, no whitespace forgiveness:
