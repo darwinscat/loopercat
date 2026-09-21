@@ -218,6 +218,9 @@ loopercat_core_test(usecase_count_in_tests)
 # lane, not just on a machine that happens to have /proc and /sys.
 loopercat_core_test(mount_table_tests)
 loopercat_core_test(linux_device_rules_tests)
+# The pedal's MIDI port name: which model is on the bus. Pure, like the
+# rules above, so every lane checks that an RC-500 is not taken for an RC-5.
+loopercat_core_test(pedal_port_name_tests)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 

@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "PedalPortName.h"
+
 #include <loopercat/Sysex.hpp>
 
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -22,11 +24,12 @@
 //==============================================================================
 namespace loopercat::pedallink {
 
-// The RC-5's MIDI output endpoint, if the pedal is on the bus. MESSAGE THREAD.
+// The RC-5's MIDI output endpoint, if the pedal is on the bus — never another
+// RC model that happens to share the prefix (PedalPortName.h). MESSAGE THREAD.
 inline std::optional<juce::MidiDeviceInfo> findPedal()
 {
     for (const auto& device : juce::MidiOutput::getAvailableDevices())
-        if (device.name.containsIgnoreCase("RC-5"))
+        if (portname::isRc5(device.name.toStdString()))
             return device;
     return std::nullopt;
 }
