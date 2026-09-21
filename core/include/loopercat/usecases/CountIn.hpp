@@ -28,14 +28,31 @@
 
 namespace loopercat::usecases::countin {
 
+// All three fields are RHYTHM's, and they are read and written inside that
+// section only (rc0::sectionField) — a tag of the same name elsewhere in the
+// memory is none of this feature's business.
+namespace detail {
+
+    inline long long rhythm(std::string_view slotBody, std::string_view tag)
+    {
+        return rc0::sectionField(slotBody, rc0::kSectionRhythm, tag);
+    }
+
+    inline std::string setRhythm(std::string_view slotBody, std::string_view tag, long long value)
+    {
+        return rc0::setSectionField(slotBody, rc0::kSectionRhythm, tag, value);
+    }
+
+} // namespace detail
+
 // Will the musician hear a count before this memory plays? PlayCount alone
 // is not enough: with the rhythm section off, nothing of it reaches the
 // output. The manual's domain for PlayCount is off / 1MEAS — no third value
 // exists to guess at.
 inline bool isOn(std::string_view slotBody)
 {
-    return rc0::field(slotBody, "State") == rc0::kRhythmStateOn
-        && rc0::field(slotBody, "PlayCount") == rc0::kRhythmPlayCount1Meas;
+    return detail::rhythm(slotBody, "State") == rc0::kRhythmStateOn
+        && detail::rhythm(slotBody, "PlayCount") == rc0::kRhythmPlayCount1Meas;
 }
 
 // The groove that switching the count ON would replace, if any. Only a
@@ -45,8 +62,8 @@ inline bool isOn(std::string_view slotBody)
 // (fixtures/golden.json) — reporting it would cry wolf on a fresh pedal.
 inline std::optional<long long> patternAtRisk(std::string_view slotBody)
 {
-    const long long pattern = rc0::field(slotBody, "Pattern");
-    if (rc0::field(slotBody, "State") == rc0::kRhythmStateOn)
+    const long long pattern = detail::rhythm(slotBody, "Pattern");
+    if (detail::rhythm(slotBody, "State") == rc0::kRhythmStateOn)
         return std::nullopt;
     if (pattern == rc0::kRhythmPatternBlank || pattern == 0)
         return std::nullopt;
@@ -62,24 +79,24 @@ inline std::optional<long long> patternAtRisk(std::string_view slotBody)
 inline std::string apply(std::string_view slotBody, bool on)
 {
     std::string body(slotBody);
-    const bool rhythmPlaying = rc0::field(body, "State") == rc0::kRhythmStateOn;
-    const bool rhythmSilent = rc0::field(body, "Pattern") == rc0::kRhythmPatternBlank;
+    const bool rhythmPlaying = detail::rhythm(body, "State") == rc0::kRhythmStateOn;
+    const bool rhythmSilent = detail::rhythm(body, "Pattern") == rc0::kRhythmPatternBlank;
 
     if (on) {
-        body = rc0::setField(body, "PlayCount", rc0::kRhythmPlayCount1Meas);
+        body = detail::setRhythm(body, "PlayCount", rc0::kRhythmPlayCount1Meas);
         if (!rhythmPlaying) {
-            body = rc0::setField(body, "State", rc0::kRhythmStateOn);
-            body = rc0::setField(body, "Pattern", rc0::kRhythmPatternBlank);
+            body = detail::setRhythm(body, "State", rc0::kRhythmStateOn);
+            body = detail::setRhythm(body, "Pattern", rc0::kRhythmPatternBlank);
         }
         return body;
     }
 
-    body = rc0::setField(body, "PlayCount", 0);
+    body = detail::setRhythm(body, "PlayCount", 0);
     // Hand State/Pattern back only if they were borrowed FOR the count: a
     // rhythm that was on without a count-in is the user's, off or not.
     if (isOn(slotBody) && rhythmSilent) {
-        body = rc0::setField(body, "State", 0);
-        body = rc0::setField(body, "Pattern", 0);
+        body = detail::setRhythm(body, "State", 0);
+        body = detail::setRhythm(body, "Pattern", 0);
     }
     return body;
 }

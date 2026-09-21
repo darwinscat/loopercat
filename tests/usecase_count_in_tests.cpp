@@ -44,6 +44,16 @@ namespace
             after = rc0::setField(after, tag, rc0::field(before, tag));
         return after == before;
     }
+
+    // One section's bytes, opener to closer — the unit of "untouched".
+    std::string section(const std::string& body, const std::string& tag)
+    {
+        const auto open = body.find("<" + tag + ">");
+        const auto close = body.find("</" + tag + ">", open);
+        if (open == std::string::npos || close == std::string::npos)
+            throw loopercat::Error("test fixture: missing section <" + tag + ">");
+        return body.substr(open, close - open + tag.size() + 3);
+    }
 }
 
 int main()
@@ -162,6 +172,22 @@ int main()
     // A playing groove is never at risk: we do not touch Pattern at all there.
     CHECK(!usecases::countin::patternAtRisk(bodyWith(rc0::kRhythmStateOn, 0, kSomeGroove))
                .has_value());
+
+    // The count-in is RHYTHM's. A tag of the same name in another section of
+    // the memory neither reads as the rhythm's state nor is written by the
+    // feature — the section is the address, not the tag.
+    {
+        const std::string other = "<OTHER>\n\t<State>1</State>\n\t<PlayCount>1</PlayCount>\n"
+                                  "\t<Pattern>5</Pattern>\n</OTHER>\n";
+        std::string body = bodyWith(0, 0, 0);
+        body.insert(body.find("<RHYTHM>"), other);
+        CHECK(!usecases::countin::isOn(body));
+        CHECK(!usecases::countin::patternAtRisk(body).has_value());
+        const std::string on = usecases::countin::apply(body, true);
+        CHECK(usecases::countin::isOn(on));
+        CHECK_EQ(section(on, "OTHER"), section(body, "OTHER"));
+        CHECK(usecases::countin::apply(on, false) == body);
+    }
 
     return testkit::summary("usecase_count_in_tests");
 }

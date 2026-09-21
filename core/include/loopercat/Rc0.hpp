@@ -145,15 +145,19 @@ namespace detail {
 //
 // Every RC-series pedal exports the same ROLAND/DATA card layout, and the
 // RC-500's MEMORY*.RC0 is near-identical to ours: the same 99 <mem id="0..98">
-// entries, the same <NAME>/C01..C12 block, the same TRACK1 field names — close
-// enough to parse cleanly here while its numbers obey different arithmetic
-// (the RC-5's `Measure = MeasLen + 7` does not hold there, and its audio is
-// two-track). Mutating such a card with RC-5 semantics is data corruption, so
-// a foreign card is refused at the door, by name. The one honest discriminator
-// is the root element's name attribute: the RC-5 writes
-// `<database name="RC-5" revision="0">` (hardware dumps, mirrored by the test
-// fixtures), the RC-500 writes `name="RC-500"` plus a <TRACK2> section per
-// memory (the boss-rc500-editor template, quoted in issue #35).
+// entries, the same <NAME>/C01..C12 block, the same TRACK1 field names, even
+// the same `Measure = MeasLen + 7` — hardware dumps of the two-track family
+// obey it on every recorded track (an earlier note here, taken from a
+// template, said they did not). What differs is the shape: a second track per
+// memory, with its own <TRACK2> section and its own audio directory, plus
+// sections the RC-5 does not have. Mutating such a card with one-track
+// semantics is data corruption — a swap would carry one track's audio across
+// and leave the other behind — so a foreign card is refused at the door, by
+// name. The one honest discriminator is the root element's name attribute:
+// the RC-5 writes `<database name="RC-5" revision="0">` (hardware dumps,
+// mirrored by the test fixtures), the RC-500 writes `name="RC-500"` plus a
+// <TRACK2> section per memory (hardware dumps and the boss-rc500-editor
+// template quoted in issue #35 agree).
 
 // The family this whole app speaks. The root opener must carry exactly these
 // bytes as its name attribute — no case folding, no whitespace forgiveness:
@@ -307,6 +311,70 @@ inline std::string setField(std::string_view body, std::string_view tag, long lo
     out.append("<").append(tag).append(">").append(std::to_string(value))
        .append("</").append(tag).append(">");
     out.append(body.substr(match.end));
+    return out;
+}
+
+// --- section-scoped fields ---
+//
+// A memory body is a run of flat sections — <NAME>, <TRACK1>, <MASTER> and
+// <RHYTHM> on the RC-5 (fixtures/golden.json) — and SYSTEM*.RC0 is the same
+// shape one level up (<SETUP>, <MIDI>, <CTL>). Tag names are NOT unique across
+// sections: <Level> is MASTER's and RHYTHM's both, and a memory with a second
+// track carries every TRACK field twice. So a field is addressed by its
+// section first, and inside the section field()'s one-occurrence rule holds
+// exactly as before.
+//
+// The section itself must occur exactly once in the text it is looked up in.
+// Asked for <TRACK1> across a whole memory file, the 99 of them are refused
+// rather than the first one quietly taken — the caller meant one memory's.
+
+inline constexpr std::string_view kSectionTrack1 = "TRACK1";
+inline constexpr std::string_view kSectionMaster = "MASTER";
+inline constexpr std::string_view kSectionRhythm = "RHYTHM";
+
+namespace detail {
+
+    struct SectionRegion {
+        std::size_t bodyStart; // one past '>' of the opening tag
+        std::size_t bodyEnd;   // offset of '<' of the closing tag
+    };
+
+    inline SectionRegion sectionRegion(std::string_view text, std::string_view section)
+    {
+        const std::string open = "<" + std::string(section) + ">";
+        const std::string close = "</" + std::string(section) + ">";
+        const auto start = text.find(open);
+        if (start == std::string_view::npos)
+            throw Error("missing <" + std::string(section) + "> section");
+        if (text.find(open, start + open.size()) != std::string_view::npos)
+            throw Error("<" + std::string(section) + "> section occurs more than once");
+        const auto end = text.find(close, start + open.size());
+        if (end == std::string_view::npos)
+            throw Error("unterminated <" + std::string(section) + "> section");
+        return { start + open.size(), end };
+    }
+
+} // namespace detail
+
+inline long long sectionField(std::string_view text, std::string_view section,
+                              std::string_view tag)
+{
+    const auto region = detail::sectionRegion(text, section);
+    return field(text.substr(region.bodyStart, region.bodyEnd - region.bodyStart), tag);
+}
+
+// Rewrite one field inside one section; every byte outside that field's
+// <tag>value</tag> is reproduced exactly.
+inline std::string setSectionField(std::string_view text, std::string_view section,
+                                   std::string_view tag, long long value)
+{
+    const auto region = detail::sectionRegion(text, section);
+    std::string out;
+    out.reserve(text.size());
+    out.append(text.substr(0, region.bodyStart));
+    out.append(setField(text.substr(region.bodyStart, region.bodyEnd - region.bodyStart), tag,
+                        value));
+    out.append(text.substr(region.bodyEnd));
     return out;
 }
 
