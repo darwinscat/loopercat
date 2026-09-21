@@ -6,9 +6,10 @@
 // back up, edit MEMORY1's content, write it to BOTH memory files with their
 // own trailer markers, verify by re-reading, sweep AppleDouble junk.
 //
-// The core stays clock- and home-directory-free: callers supply the backup/
-// trash roots and the operation id (the app derives the roots from its
-// settings location and mints one id per operation; tests pin both).
+// The core stays clock- and home-directory-free: callers supply the backup
+// root, the operation id and the archive a replaced take goes to (the app
+// derives them from its settings location and its history store, and mints
+// one id per operation; tests pin all three).
 //
 // Behavior source: rc5cat lib/commands.js, byte-for-byte where it matters.
 
@@ -199,15 +200,57 @@ inline BackupResult backup(const fs::path& volume, const fs::path& backupRoot,
     return result;
 }
 
+// Where a command puts a take it is about to replace or remove. It is called
+// BEFORE the file on the card changes, with the whole take, and the card
+// changes only after it returns: an archive that throws aborts the command
+// with the take still in its slot. What "kept" means — a folder, a database —
+// is the caller's business; the order is the core's guarantee.
+using Archive = std::function<void(int slot, const std::string& fileName, std::string_view bytes)>;
+
 struct WriteOptions {
     fs::path backupRoot;    // where pre-write backups land; empty ONLY with skipBackup
-    // The identity of this operation, and the name of its backup and trash
-    // directories. It must be unique per operation — a wall clock is not, and
-    // reusing one costs a pre-state (see requireFreshArchivePath). Any
-    // readability inside it is decoration: the core only compares it.
+    // The identity of this operation, and the name of its backup directory.
+    // It must be unique per operation — a wall clock is not, and reusing one
+    // costs a pre-state (see requireFreshArchivePath). Any readability inside
+    // it is decoration: the core only compares it.
     std::string opId;
     bool skipBackup = false;
+    // REQUIRED by every command that replaces or removes audio (push over an
+    // occupied slot, trim, downmix, normalize, clear): a take is never
+    // destroyed without having been handed here first.
+    Archive archive;
 };
+
+// The archive as it has always looked on disk: <root>/<opId>/<NNN_1>/<file>.
+// It stays through the move to the history store (#72): until the History tab
+// (#50) opens the database, this folder is the only door a player has to a
+// take the app replaced.
+inline Archive trashFolder(const fs::path& root, const std::string& opId)
+{
+    if (root.empty() || opId.empty())
+        throw Error("the trash folder needs a root and an operation id");
+    return [operationDir = root / opId](int slot, const std::string& fileName,
+                                        std::string_view bytes) {
+        const fs::path dir = operationDir / volume::slotDirName(slot);
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (ec)
+            throw Error("cannot create " + dir.string());
+        requireFreshArchivePath(dir / fileName);
+        writeFileBytes(dir / fileName, bytes);
+    };
+}
+
+// The one entry point every command uses, so the refusal reads the same
+// wherever a take is about to go.
+inline void archiveTake(const WriteOptions& options, const char* command, int slot,
+                        const std::string& fileName, std::string_view bytes)
+{
+    if (!options.archive)
+        throw Error(std::string(command) + " on slot " + std::to_string(slot)
+                    + " needs an archive — a take is never destroyed without one");
+    options.archive(slot, fileName, bytes);
+}
 
 struct WriteResult {
     std::optional<BackupResult> backedUp;
@@ -348,9 +391,7 @@ struct PushOptions {
     std::optional<std::string> name; // also rename the slot
     bool oneShot = false;
     bool writeConfig = true;         // false = drop the file only, let the pedal index it on boot
-    bool force = false;              // replace existing slot audio (it moves to trashRoot first)
-    fs::path trashRoot;              // REQUIRED with force on an occupied slot: the replaced
-                                     // audio lands here — it is never deleted outright
+    bool force = false;              // replace existing slot audio (it goes to write.archive first)
     WriteOptions write;
 };
 
@@ -359,7 +400,7 @@ struct PushResult {
     fs::path dest;
     bool configured;
     std::optional<params::SlotParams> slotParams;
-    std::vector<fs::path> trashed;   // where the replaced audio went (force only)
+    std::vector<std::string> archived; // the replaced takes, by file name (force only)
     std::optional<WriteResult> written;
 };
 
@@ -369,7 +410,7 @@ struct PushResult {
 // config document — before the first write: a failed push must leave the
 // pedal exactly as it was, and a slot whose config cannot be edited must
 // fail while the volume is still untouched, not after the audio landed.
-// Replacing occupied audio moves the old wav into the trash root first,
+// Replacing occupied audio hands the old wav to the archive first,
 // clear-style — push never destroys a take.
 inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot,
                        const PushOptions& options)
@@ -410,14 +451,14 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
         throw Error("slot " + std::to_string(slot) + " already has audio (" + files
                     + "); pass force to replace");
     }
-    if (!existing.empty() && (options.trashRoot.empty() || options.write.opId.empty()))
+    if (!existing.empty() && !options.write.archive)
         throw Error("replacing slot " + std::to_string(slot)
-                    + " requires a trash root and an operation id — the current audio moves to"
-                      " the trash, it is never deleted outright");
+                    + " needs an archive — the current audio is kept first, it is never"
+                      " deleted outright");
 
     // All checks passed — the writes begin. The replaced audio's safety net
-    // comes first: copy into the trash, remove from the slot only after the
-    // copy landed.
+    // comes first: hand it to the archive, remove it from the slot only after
+    // the archive has it.
     const fs::path dir = volume::wavDir(volume, slot);
     std::error_code ec;
     fs::create_directories(dir, ec);
@@ -425,14 +466,8 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
         throw Error("cannot create " + dir.string());
     PushResult result { info, dir / wavPath.filename(), false, slotParams, {}, std::nullopt };
     for (const auto& old : existing) {
-        const fs::path trashDir =
-            options.trashRoot / options.write.opId / volume::slotDirName(slot);
-        fs::create_directories(trashDir, ec);
-        if (ec)
-            throw Error("cannot create " + trashDir.string());
-        requireFreshArchivePath(trashDir / old);
-        copyContent(dir / old, trashDir / old);
-        result.trashed.push_back(trashDir / old);
+        archiveTake(options.write, "push", slot, old, readFileBytes(dir / old));
+        result.archived.push_back(old);
         if (!fs::remove(dir / old, ec) || ec)
             throw Error("cannot remove " + (dir / old).string());
     }
@@ -514,12 +549,11 @@ inline std::vector<PullJob> pull(const fs::path& volume, const std::vector<int>&
 // --- trim ---
 
 struct TrimOptions {
-    fs::path trashRoot; // REQUIRED: the original wav lands here first (the undo)
-    WriteOptions write;
+    WriteOptions write; // write.archive REQUIRED: the original goes there first (the undo)
 };
 
 struct TrimResult {
-    fs::path trashedOriginal;
+    std::string archivedOriginal; // the file name the archive was handed
     std::int64_t frames;
     params::SlotParams slotParams; // what the config now carries: kept tempo + derived bars
     WriteResult written;
@@ -538,8 +572,8 @@ struct TrimResult {
 inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame,
                        std::int64_t endFrame, const TrimOptions& options)
 {
-    if (options.trashRoot.empty() || options.write.opId.empty())
-        throw Error("trim requires a trash root and an operation id");
+    if (!options.write.archive)
+        throw Error("trim needs an archive — the original is kept first, it is the undo");
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -565,17 +599,11 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
     body = rc0::setField(body, "LpLen", bars);
     const std::string newDocument = rc0::replaceSlotBody(memoryText, slot, body);
 
-    // All checks passed — the writes begin. Trash copy first: the original
+    // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
-    const fs::path trashDir = options.trashRoot / options.write.opId / volume::slotDirName(slot);
-    std::error_code ec;
-    fs::create_directories(trashDir, ec);
-    if (ec)
-        throw Error("cannot create " + trashDir.string());
-    TrimResult result { trashDir / files.front(), info.frames,
+    TrimResult result { files.front(), info.frames,
                         { static_cast<int>(bars), static_cast<int>(tempoTenths) }, {} };
-    requireFreshArchivePath(result.trashedOriginal);
-    writeFileBytes(result.trashedOriginal, raw);
+    archiveTake(options.write, "trim", slot, files.front(), raw);
 
     writeFileBytes(source,
                    std::string_view(reinterpret_cast<const char*>(slice.data()), slice.size()));
@@ -587,13 +615,12 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
 // --- downmix ---
 
 struct DownmixOptions {
-    fs::path trashRoot; // REQUIRED: the stereo original lands here first (the undo)
     wav::Placement placement = wav::Placement::BothOutputs;
-    WriteOptions write;
+    WriteOptions write; // write.archive REQUIRED: the stereo original goes there first (the undo)
 };
 
 struct DownmixResult {
-    fs::path trashedOriginal;
+    std::string archivedOriginal; // the file name the archive was handed
     std::int64_t frames;
     WriteResult written;
 };
@@ -619,8 +646,8 @@ struct DownmixResult {
 inline DownmixResult downmixToMono(const fs::path& volume, int slot,
                                    const DownmixOptions& options)
 {
-    if (options.trashRoot.empty() || options.write.opId.empty())
-        throw Error("downmix requires a trash root and an operation id");
+    if (!options.write.archive)
+        throw Error("downmix needs an archive — the stereo original is kept first, it is the undo");
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -641,16 +668,10 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
     // state no undo describes.
     const std::string memoryText = readMemory(volume);
 
-    // All checks passed — the writes begin. Trash copy first: the original
+    // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
-    const fs::path trashDir = options.trashRoot / options.write.opId / volume::slotDirName(slot);
-    std::error_code ec;
-    fs::create_directories(trashDir, ec);
-    if (ec)
-        throw Error("cannot create " + trashDir.string());
-    DownmixResult result { trashDir / files.front(), info.frames, {} };
-    requireFreshArchivePath(result.trashedOriginal);
-    writeFileBytes(result.trashedOriginal, raw);
+    DownmixResult result { files.front(), info.frames, {} };
+    archiveTake(options.write, "downmix", slot, files.front(), raw);
 
     writeFileBytes(source,
                    std::string_view(reinterpret_cast<const char*>(folded.data()), folded.size()));
@@ -662,9 +683,8 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
 // --- normalize ---
 
 struct NormalizeOptions {
-    fs::path trashRoot; // REQUIRED: the original lands here first (the undo)
     double targetLufs = 0.0; // REQUIRED: 0 is not a target and is refused as one
-    WriteOptions write;
+    WriteOptions write;      // write.archive REQUIRED: the original goes there first (the undo)
     // Optional observer: hears 0..1 across the whole command — the measure
     // pass as the first half, the rewrite as the second — on the calling
     // thread. The batch overlay's current-file bar (issue #61).
@@ -676,7 +696,7 @@ struct NormalizeResult {
     bool cappedByPeak = false;  // the boost stopped at the -1 dBTP true-peak ceiling
     double measuredLufs = 0.0;
     double gainDb = 0.0;        // the gain baked in; 0 with applied=false means "already there"
-    fs::path trashedOriginal;   // empty when nothing was written
+    std::string archivedOriginal; // the file name the archive was handed; empty when nothing was written
     WriteResult written;        // empty when nothing was written
 };
 
@@ -698,8 +718,8 @@ struct NormalizeResult {
 inline NormalizeResult normalize(const fs::path& volume, int slot,
                                  const NormalizeOptions& options)
 {
-    if (options.trashRoot.empty() || options.write.opId.empty())
-        throw Error("normalize requires a trash root and an operation id");
+    if (!options.write.archive)
+        throw Error("normalize needs an archive — the original is kept first, it is the undo");
     // 0.0 is what an unset field reads as, and no loudness war ever pushed a
     // target out of this window — outside it is a bug, not a taste.
     if (options.targetLufs >= loudness::kPeakCeilingDb
@@ -761,16 +781,11 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     // in a state no undo describes.
     const std::string memoryText = readMemory(volume);
 
-    // All checks passed — the writes begin. Trash copy first: the original
+    // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
-    const fs::path trashDir = options.trashRoot / options.write.opId / volume::slotDirName(slot);
-    std::error_code ec;
-    fs::create_directories(trashDir, ec);
-    if (ec)
-        throw Error("cannot create " + trashDir.string());
-    result.trashedOriginal = trashDir / files.front();
-    requireFreshArchivePath(result.trashedOriginal);
-    writeFileBytes(result.trashedOriginal, raw, segment(0.60, 0.78));
+    result.archivedOriginal = files.front();
+    archiveTake(options.write, "normalize", slot, files.front(), raw);
+    report(0.78);
 
     writeFileBytes(source,
                    std::string_view(reinterpret_cast<const char*>(rewritten.data()),
@@ -788,27 +803,24 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
 
 struct ClearOptions {
     bool keepName = false;
-    fs::path trashRoot;     // REQUIRED unless trash=false: cleared audio lands here first
-    bool trash = true;
-    WriteOptions write;
+    bool trash = true;      // false: "Delete permanently" — the take is removed unkept
+    WriteOptions write;     // write.archive REQUIRED unless trash=false
 };
 
 struct ClearResult {
-    std::vector<fs::path> trashed;
-    std::vector<fs::path> deleted;
+    std::vector<std::string> archived; // file names handed to the archive
+    std::vector<fs::path> deleted;     // trash=false: removed without a copy
     WriteResult written;
 };
 
 // Clear slots back to factory state (what MEMORY CLEAR on the device does).
-// The wav is never deleted outright: it is moved into the trash root on the
-// computer first — the only command that removes audio, so it gets a net.
+// The wav is never deleted outright unless the player said so: it goes to the
+// archive first — the only command that removes audio, so it gets a net.
 inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
                          const ClearOptions& options)
 {
-    if (options.trash && options.trashRoot.empty())
-        throw Error("clear requires a trash root (or trash=false)");
-    if (options.trash && options.write.opId.empty())
-        throw Error("clear requires an operation id for the trash directory");
+    if (options.trash && !options.write.archive)
+        throw Error("clear needs an archive (or trash=false)");
     std::string text = readMemory(volume);
 
     struct Plan {
@@ -834,15 +846,8 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
         for (const auto& file : plan.files) {
             const fs::path src = volume::wavDir(volume, plan.slot) / file;
             if (options.trash) {
-                const fs::path destDir =
-                    options.trashRoot / options.write.opId / volume::slotDirName(plan.slot);
-                std::error_code ec;
-                fs::create_directories(destDir, ec);
-                if (ec)
-                    throw Error("cannot create " + destDir.string());
-                requireFreshArchivePath(destDir / file);
-                copyContent(src, destDir / file);
-                result.trashed.push_back(destDir / file);
+                archiveTake(options.write, "clear", plan.slot, file, readFileBytes(src));
+                result.archived.push_back(file);
             } else {
                 result.deleted.push_back(src);
             }

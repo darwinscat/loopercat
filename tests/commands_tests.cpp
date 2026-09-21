@@ -210,9 +210,26 @@ std::map<std::string, std::string> volumeBytes(const fs::path& volume)
 // Every call mints a fresh id, exactly as the app does — through the app's own
 // generator, so the suite exercises the thing that ships. Sharing one id
 // between two operations is a bug, and a test has to ask for it by name.
+// The archive is the transitional trash folder under the same root, so a
+// test finds a kept take exactly where the app would have put it.
 commands::WriteOptions writeOpts(const fs::path& root, std::string opId = opid::make("op"))
 {
-    return { .backupRoot = root / "backups", .opId = std::move(opId) };
+    commands::Archive archive = commands::trashFolder(root / "trash", opId);
+    return { .backupRoot = root / "backups", .opId = std::move(opId), .archive = std::move(archive) };
+}
+
+// The same options with the archive taken away — what every refusal is about.
+commands::WriteOptions withoutArchive(commands::WriteOptions write)
+{
+    write.archive = nullptr;
+    return write;
+}
+
+// Where writeOpts' trash folder keeps a take the operation archived.
+fs::path keptTake(const fs::path& root, const commands::WriteOptions& write, int slot,
+                  const std::string& fileName)
+{
+    return root / "trash" / write.opId / volume::slotDirName(slot) / fileName;
 }
 
 } // namespace
@@ -274,10 +291,10 @@ int main()
         const std::string firstTake =
             commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV");
 
-        commands::ClearOptions options { .trashRoot = tmp.path / "trash",
-                                         .write = writeOpts(tmp.path, "one-id-twice") };
+        commands::ClearOptions options { .write = writeOpts(tmp.path, "one-id-twice") };
         const auto cleared = commands::clear(volume, { 5 }, options);
-        CHECK(commands::readFileBytes(cleared.trashed.front()) == firstTake);
+        const fs::path kept = keptTake(tmp.path, options.write, 5, cleared.archived.front());
+        CHECK(commands::readFileBytes(kept) == firstTake);
 
         // A second take lands in the same slot, and the same id clears it.
         putWav(volume, 5, "005_1.WAV", { .tag = 3, .bits = 32, .frames = 8820 });
@@ -285,8 +302,161 @@ int main()
 
         // The first take is still the first take, and the refusal kept the
         // second one on the card rather than deleting it into nothing.
-        CHECK(commands::readFileBytes(cleared.trashed.front()) == firstTake);
+        CHECK(commands::readFileBytes(kept) == firstTake);
         CHECK(volume::listSlotWavs(volume, 5).size() == 1);
+    }
+
+    // --- the archive comes BEFORE the card changes ---
+    //
+    // Theory: a take is handed to the archive while it is still in its slot,
+    // whole and byte-identical, and the card changes only after the archive
+    // returns. An archive that throws therefore costs nothing: the command
+    // stops with the volume exactly as it was. The recording archive below
+    // looks at the card at the moment it is called — that is the ordering
+    // proof, not just "a copy exists somewhere afterwards".
+
+    {
+        struct Kept {
+            int slot;
+            std::string name;
+            std::string bytes;      // what the archive was handed
+            std::string onCardThen; // what the slot's file held at that moment
+        };
+        const auto recording = [](const fs::path& volume, std::vector<Kept>& kept) {
+            return commands::WriteOptions {
+                .opId = opid::make("rec"),
+                .skipBackup = true,
+                .archive = [&volume, &kept](int slot, const std::string& name,
+                                            std::string_view bytes) {
+                    const fs::path onCard = volume::wavDir(volume, slot) / name;
+                    kept.push_back({ slot, name, std::string(bytes),
+                                     fs::exists(onCard) ? commands::readFileBytes(onCard)
+                                                        : std::string("<gone>") });
+                },
+            };
+        };
+        const auto takeOf = [](const fs::path& volume, int slot, const std::string& name) {
+            return commands::readFileBytes(volume::wavDir(volume, slot) / name);
+        };
+        const auto keptBeforeTheCardChanged = [](const std::vector<Kept>& kept, int slot,
+                                                 const std::string& name,
+                                                 const std::string& original) {
+            CHECK_EQ(kept.size(), 1u);
+            if (kept.size() != 1u)
+                return;
+            CHECK_EQ(kept.front().slot, slot);
+            CHECK_EQ(kept.front().name, name);
+            CHECK(kept.front().bytes == original);      // the whole take, byte for byte
+            CHECK(kept.front().onCardThen == original); // and the card still held it
+        };
+
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        // 3 s: long enough that the pedal's 160 BPM ceiling allows it a measure
+        const auto sourceBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 132300 });
+        const fs::path source = tmp.path / "incoming.wav";
+        commands::writeFileBytes(source,
+                                 std::string_view(reinterpret_cast<const char*>(sourceBytes.data()),
+                                                  sourceBytes.size()));
+
+        {   // push over an occupied slot
+            putWav(volume, 11, "old.wav");
+            const std::string original = takeOf(volume, 11, "old.wav");
+            std::vector<Kept> kept;
+            commands::push(volume, source, 11, { .force = true, .write = recording(volume, kept) });
+            keptBeforeTheCardChanged(kept, 11, "old.wav", original);
+        }
+        {   // trim
+            putWav(volume, 12, "take.wav");
+            const std::string original = takeOf(volume, 12, "take.wav");
+            std::vector<Kept> kept;
+            commands::trim(volume, 12, 0, 2205, { .write = recording(volume, kept) });
+            keptBeforeTheCardChanged(kept, 12, "take.wav", original);
+        }
+        {   // downmix
+            putStereoFloatWav(volume, 13, "stereo.wav", 256);
+            const std::string original = takeOf(volume, 13, "stereo.wav");
+            std::vector<Kept> kept;
+            commands::downmixToMono(volume, 13, { .write = recording(volume, kept) });
+            keptBeforeTheCardChanged(kept, 13, "stereo.wav", original);
+        }
+        {   // normalize
+            putSineFloatWav(volume, 14, "quiet.wav", 44100, -23.0);
+            const std::string original = takeOf(volume, 14, "quiet.wav");
+            std::vector<Kept> kept;
+            const auto result = commands::normalize(
+                volume, 14, { .targetLufs = -18.0, .write = recording(volume, kept) });
+            CHECK(result.applied);
+            keptBeforeTheCardChanged(kept, 14, "quiet.wav", original);
+        }
+        {   // clear
+            putWav(volume, 15, "gone.wav");
+            const std::string original = takeOf(volume, 15, "gone.wav");
+            std::vector<Kept> kept;
+            commands::clear(volume, { 15 }, { .write = recording(volume, kept) });
+            keptBeforeTheCardChanged(kept, 15, "gone.wav", original);
+        }
+        {   // clear with trash=false is the player's "Delete permanently":
+            // nothing is handed over, and the file is reported as deleted
+            putWav(volume, 16, "unkept.wav");
+            std::vector<Kept> kept;
+            const auto result = commands::clear(
+                volume, { 16 }, { .trash = false, .write = recording(volume, kept) });
+            CHECK(kept.empty());
+            CHECK_EQ(result.deleted.size(), 1u);
+        }
+    }
+
+    {
+        // An archive that fails stops the command before the card changes —
+        // for every command that would have destroyed a take.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 11, "old.wav");
+        putWav(volume, 12, "take.wav");
+        putStereoFloatWav(volume, 13, "stereo.wav", 256);
+        putSineFloatWav(volume, 14, "quiet.wav", 44100, -23.0);
+        putWav(volume, 15, "gone.wav");
+        // 3 s: long enough that the pedal's 160 BPM ceiling allows it a measure
+        const auto sourceBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 132300 });
+        const fs::path source = tmp.path / "incoming.wav";
+        commands::writeFileBytes(source,
+                                 std::string_view(reinterpret_cast<const char*>(sourceBytes.data()),
+                                                  sourceBytes.size()));
+        const auto before = volumeBytes(volume);
+
+        const commands::WriteOptions failing {
+            .opId = "archive-fails",
+            .skipBackup = true,
+            .archive = [](int, const std::string&, std::string_view) {
+                throw Error("the archive is full");
+            },
+        };
+        CHECK_THROWS(commands::push(volume, source, 11, { .force = true, .write = failing }),
+                     "the archive is full");
+        CHECK_THROWS(commands::trim(volume, 12, 0, 2205, { .write = failing }),
+                     "the archive is full");
+        CHECK_THROWS(commands::downmixToMono(volume, 13, { .write = failing }),
+                     "the archive is full");
+        CHECK_THROWS(commands::normalize(volume, 14, { .targetLufs = -18.0, .write = failing }),
+                     "the archive is full");
+        CHECK_THROWS(commands::clear(volume, { 15 }, { .write = failing }), "the archive is full");
+
+        CHECK(volumeBytes(volume) == before);
+    }
+
+    {
+        // The transitional folder keeps the on-disk shape the guide describes:
+        // <root>/<operation>/<NNN_1>/<file>, byte-identical, and never over
+        // itself.
+        TempDir tmp;
+        const commands::Archive folder = commands::trashFolder(tmp.path / "trash", "op-x");
+        folder(7, "take.wav", "first");
+        CHECK(commands::readFileBytes(tmp.path / "trash" / "op-x" / "007_1" / "take.wav") == "first");
+        CHECK_THROWS(folder(7, "take.wav", "second"), "under one id");
+        CHECK(commands::readFileBytes(tmp.path / "trash" / "op-x" / "007_1" / "take.wav") == "first");
+        CHECK_THROWS(commands::trashFolder({}, "op-x"), "needs a root and an operation id");
+        CHECK_THROWS(commands::trashFolder(tmp.path / "trash", ""), "needs a root and an operation id");
     }
 
     // --- writeMemoryPair: the whole discipline in one call ---
@@ -626,25 +796,25 @@ int main()
         CHECK_EQ(rc0::field(body, "One"), 1);
         CHECK_EQ(rc0::decodeName(body), "My Song     ");
 
-        // Occupied slot: refused without force; force without a trash root is
+        // Occupied slot: refused without force; force without an archive is
         // refused too — the replaced take must have somewhere safe to go.
         CHECK_THROWS(commands::push(volume, source, 9, { .write = writeOpts(tmp.path, "op-2") }),
                      "already has audio");
         CHECK_THROWS(commands::push(volume, source, 9,
-                                    { .force = true, .write = writeOpts(tmp.path, "op-2") }),
-                     "trash root");
+                                    { .force = true,
+                                      .write = withoutArchive(writeOpts(tmp.path, "op-2")) }),
+                     "needs an archive");
         CHECK_EQ(volume::listSlotWavs(volume, 9).size(), 1u);
 
-        // Forced replace: the old take lands in the trash byte-identical —
+        // Forced replace: the old take lands in the archive byte-identical —
         // push never deletes audio outright.
-        const auto forced = commands::push(volume, source, 9,
-                                           { .force = true, .trashRoot = tmp.path / "trash",
-                                             .write = writeOpts(tmp.path, "op-3") });
+        const commands::WriteOptions replacing = writeOpts(tmp.path, "op-3");
+        const auto forced = commands::push(volume, source, 9, { .force = true, .write = replacing });
         CHECK_EQ(volume::listSlotWavs(volume, 9).size(), 1u);
         CHECK(forced.configured);
-        CHECK_EQ(forced.trashed.size(), 1u);
-        CHECK(commands::readFileBytes(forced.trashed.front()) == pushed);
-        CHECK(forced.trashed.front().string().find("op-3") != std::string::npos);
+        CHECK_EQ(forced.archived.size(), 1u);
+        CHECK(commands::readFileBytes(keptTake(tmp.path, replacing, 9, forced.archived.front()))
+              == pushed);
     }
 
     // --- push failure leaves the volume byte-identical ---
@@ -751,14 +921,14 @@ int main()
         const std::string wavBytesBefore =
             commands::readFileBytes(volume::wavDir(volume, 5) / "gone.wav");
 
-        commands::ClearOptions options { .trashRoot = tmp.path / "trash",
-                                         .write = writeOpts(tmp.path) };
+        commands::ClearOptions options { .write = writeOpts(tmp.path) };
         const auto result = commands::clear(volume, { 5 }, options);
 
-        // The audio is out of the slot but safe in the trash, byte-identical.
+        // The audio is out of the slot but safe in the archive, byte-identical.
         CHECK(volume::listSlotWavs(volume, 5).empty());
-        CHECK_EQ(result.trashed.size(), 1u);
-        CHECK(commands::readFileBytes(result.trashed.front()) == wavBytesBefore);
+        CHECK_EQ(result.archived.size(), 1u);
+        CHECK(commands::readFileBytes(keptTake(tmp.path, options.write, 5, result.archived.front()))
+              == wavBytesBefore);
 
         // The slot body is EXACTLY the factory one (byte-level, not field-level).
         const std::string text = commands::readMemory(volume);
@@ -766,17 +936,16 @@ int main()
 
         // keepName: factory values, surviving name.
         commands::rename(volume, 6, "Keep Me", writeOpts(tmp.path, "op-2"));
-        commands::ClearOptions keep { .keepName = true, .trashRoot = tmp.path / "trash",
-                                      .write = writeOpts(tmp.path, "op-3") };
+        commands::ClearOptions keep { .keepName = true, .write = writeOpts(tmp.path, "op-3") };
         commands::clear(volume, { 6 }, keep);
         const std::string after = commands::readMemory(volume);
         CHECK_EQ(rc0::decodeName(rc0::slotBody(after, 6)), "Keep Me     ");
         CHECK_EQ(rc0::field(rc0::slotBody(after, 6), "Measure"), 1); // factory value
 
-        // No trash root -> fail fast before touching anything.
+        // No archive -> fail fast before touching anything.
         putWav(volume, 8, "safe.wav");
-        commands::ClearOptions bad { .write = writeOpts(tmp.path, "op-4") };
-        CHECK_THROWS(commands::clear(volume, { 8 }, bad), "trash root");
+        commands::ClearOptions bad { .write = withoutArchive(writeOpts(tmp.path, "op-4")) };
+        CHECK_THROWS(commands::clear(volume, { 8 }, bad), "needs an archive");
         CHECK_EQ(volume::listSlotWavs(volume, 8).size(), 1u);
     }
 
@@ -804,8 +973,7 @@ int main()
         const std::string originalBytes =
             commands::readFileBytes(volume::wavDir(volume, 4) / "take.wav");
 
-        commands::TrimOptions options { .trashRoot = tmp.path / "trash",
-                                        .write = writeOpts(tmp.path, "trim-1") };
+        commands::TrimOptions options { .write = writeOpts(tmp.path, "trim-1") };
         const auto result = commands::trim(volume, 4, 1000000, 4000000, options);
 
         // Same filename, canonical header, exactly the requested 3M frames.
@@ -815,8 +983,9 @@ int main()
         CHECK_EQ(static_cast<unsigned char>(after[kCanonicalHeader + 2999999u * kFrameBytes]), 0xcd);           // old frame 3999999
         CHECK_EQ(result.frames, 3000000);
 
-        // The original is in the trash, byte-identical — the undo.
-        CHECK(commands::readFileBytes(result.trashedOriginal) == originalBytes);
+        // The original is in the archive, byte-identical — the undo.
+        CHECK(commands::readFileBytes(keptTake(tmp.path, options.write, 4, result.archivedOriginal))
+              == originalBytes);
 
         // Trim preserves the slot's tempo (QA-4): Tempo/RecTmp keep their
         // 120.0 BPM, and only the length fields follow the new duration —
@@ -852,8 +1021,9 @@ int main()
         commands::setTempo(volume, 5, 1120, { .skipBackup = true }); // the TRUE 112.0 BPM
 
         commands::trim(volume, 5, 0, 1323000,
-                       { .trashRoot = tmp.path / "trash",
-                         .write = { .opId = "qa4", .skipBackup = true } });
+                       { .write = { .opId = "qa4",
+                                    .skipBackup = true,
+                                    .archive = commands::trashFolder(tmp.path / "trash", "qa4") } });
 
         // 30 s at the KEPT 112.0 BPM = 56 beats = 14 bars. The hardware QA
         // run caught trim re-running the import formula here (16 bars at
@@ -875,13 +1045,12 @@ int main()
         const fs::path volume = makePedal(tmp.path);
         putWav(volume, 4, "take.wav", { .frames = 1323000 });
         const auto before = volumeBytes(volume);
-        const commands::TrimOptions options { .trashRoot = tmp.path / "trash",
-                                              .write = writeOpts(tmp.path, "trim-2") };
+        const commands::TrimOptions options { .write = writeOpts(tmp.path, "trim-2") };
 
         CHECK_THROWS(commands::trim(volume, 4, 500, 100, options), "bad frame range");
         CHECK_THROWS(commands::trim(volume, 5, 0, 1000, options), "no audio to trim");
-        commands::TrimOptions noTrash { .write = writeOpts(tmp.path, "trim-3") };
-        CHECK_THROWS(commands::trim(volume, 4, 0, 1323000, noTrash), "trash root");
+        commands::TrimOptions noArchive { .write = withoutArchive(writeOpts(tmp.path, "trim-3")) };
+        CHECK_THROWS(commands::trim(volume, 4, 0, 1323000, noArchive), "needs an archive");
 
         CHECK(volumeBytes(volume) == before);
         CHECK(!fs::exists(tmp.path / "trash"));
@@ -1114,8 +1283,11 @@ int main()
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
                         fs::perm_options::replace);
         CHECK_THROWS(commands::push(volume, source, 9,
-                                    { .force = true, .trashRoot = tmp.path / "trash",
-                                      .write = { .opId = "fi-push", .skipBackup = true } }),
+                                    { .force = true,
+                                      .write = { .opId = "fi-push",
+                                                 .skipBackup = true,
+                                                 .archive = commands::trashFolder(
+                                                     tmp.path / "trash", "fi-push") } }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -1128,7 +1300,7 @@ int main()
     }
 
     // trim with an unwritable MEMORY1: the original is already safe in the
-    // trash and the slot holds the slice — recoverable, honestly reported.
+    // archive and the slot holds the slice — recoverable, honestly reported.
     {
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
@@ -1140,8 +1312,10 @@ int main()
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
                         fs::perm_options::replace);
         CHECK_THROWS(commands::trim(volume, 4, 0, 661500,
-                                    { .trashRoot = tmp.path / "trash",
-                                      .write = { .opId = "fi-trim", .skipBackup = true } }),
+                                    { .write = { .opId = "fi-trim",
+                                                 .skipBackup = true,
+                                                 .archive = commands::trashFolder(
+                                                     tmp.path / "trash", "fi-trim") } }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -1152,7 +1326,7 @@ int main()
     }
 
     // clear with an unwritable MEMORY1: the audio left the slot but its
-    // trash copy landed first — the take survives the failed command.
+    // archive copy landed first — the take survives the failed command.
     {
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
@@ -1163,8 +1337,10 @@ int main()
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
                         fs::perm_options::replace);
         CHECK_THROWS(commands::clear(volume, { 6 },
-                                     { .trashRoot = tmp.path / "trash",
-                                       .write = { .opId = "fi-clear", .skipBackup = true } }),
+                                     { .write = { .opId = "fi-clear",
+                                                  .skipBackup = true,
+                                                  .archive = commands::trashFolder(
+                                                      tmp.path / "trash", "fi-clear") } }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -1314,7 +1490,7 @@ int main()
 
         const auto result = commands::downmixToMono(
             volume, 6,
-            { .trashRoot = tmp.path / "trash", .write = writeOpts(tmp.path, "fold-1") });
+            { .write = writeOpts(tmp.path, "fold-1") });
 
         // Same filename, canonical float32, same number of frames.
         const std::string after = commands::readFileBytes(volume::wavDir(volume, 6) / "take.wav");
@@ -1335,8 +1511,10 @@ int main()
                 break;
             }
 
-        // The stereo original is in the trash, byte-identical — the undo.
-        CHECK(commands::readFileBytes(result.trashedOriginal) == originalBytes);
+        // The stereo original is in the archive, byte-identical — the undo.
+        CHECK(commands::readFileBytes(
+                  tmp.path / "trash" / "fold-1" / volume::slotDirName(6) / result.archivedOriginal)
+              == originalBytes);
 
         // Folding moves no frame, so the length story in the config is
         // untouched — that is what lets this command skip the recompute trim
@@ -1360,8 +1538,7 @@ int main()
                { .tag = 3, .channels = 2, .bits = 32, .frames = 128 }); // silence: already mono
 
         const auto before = volumeBytes(volume);
-        const commands::DownmixOptions options { .trashRoot = tmp.path / "trash",
-                                                 .write = writeOpts(tmp.path, "fold-2") };
+        const commands::DownmixOptions options { .write = writeOpts(tmp.path, "fold-2") };
 
         CHECK_THROWS(commands::downmixToMono(volume, 9, options), "no audio to fold");
         CHECK_THROWS(commands::downmixToMono(volume, 3, options), "32-bit float");
@@ -1370,17 +1547,14 @@ int main()
         // but a foldable take is not, and must not be refused.
         CHECK_THROWS(commands::downmixToMono(
                          volume, 4,
-                         { .trashRoot = tmp.path / "trash",
-                           .placement = wav::Placement::OutputAOnly,
+                         { .placement = wav::Placement::OutputAOnly,
                            .write = writeOpts(tmp.path, "fold-2b") }),
                      "already folded to OUTPUT A only");
         // A fold with nowhere to put the original must not touch the audio.
         CHECK_THROWS(commands::downmixToMono(volume, 2,
-                                             { .trashRoot = {}, .write = writeOpts(tmp.path) }),
-                     "requires a trash root");
-        CHECK_THROWS(commands::downmixToMono(
-                         volume, 2, { .trashRoot = tmp.path / "trash", .write = {} }),
-                     "requires a trash root");
+                                             { .write = withoutArchive(writeOpts(tmp.path)) }),
+                     "needs an archive");
+        CHECK_THROWS(commands::downmixToMono(volume, 2, { .write = {} }), "needs an archive");
 
         CHECK(volumeBytes(volume) == before);
     }
@@ -1394,8 +1568,7 @@ int main()
         putUncancellingStereoFloatWav(volume, 7, "take.wav", frames);
 
         commands::downmixToMono(volume, 7,
-                                { .trashRoot = tmp.path / "trash",
-                                  .placement = wav::Placement::OutputBOnly,
+                                { .placement = wav::Placement::OutputBOnly,
                                   .write = writeOpts(tmp.path, "fold-b") });
 
         const std::string after = commands::readFileBytes(volume::wavDir(volume, 7) / "take.wav");
@@ -1429,7 +1602,7 @@ int main()
 
         const auto result = commands::downmixToMono(
             volume, 5,
-            { .trashRoot = tmp.path / "trash", .write = writeOpts(tmp.path, "fold-3") });
+            { .write = writeOpts(tmp.path, "fold-3") });
 
         // Backed up, and the sidecar macOS left behind is gone: a fold is a
         // mutation like any other, not a side door around the discipline.
@@ -1491,8 +1664,7 @@ int main()
         std::vector<double> ticks; // the overlay's current-file bar (issue #61)
         const auto result = commands::normalize(
             volume, 6,
-            { .trashRoot = tmp.path / "trash",
-              .targetLufs = -18.0,
+            { .targetLufs = -18.0,
               .write = writeOpts(tmp.path, "norm-1"),
               .progress = [&ticks](double v) { ticks.push_back(v); } });
 
@@ -1524,8 +1696,10 @@ int main()
         CHECK(reading.integratedLufs.has_value());
         CHECK(std::abs(*reading.integratedLufs - (-18.0)) <= 0.1);
 
-        // The original is in the trash, byte-identical — the undo.
-        CHECK(commands::readFileBytes(result.trashedOriginal) == originalBytes);
+        // The original is in the archive, byte-identical — the undo.
+        CHECK(commands::readFileBytes(
+                  tmp.path / "trash" / "norm-1" / volume::slotDirName(6) / result.archivedOriginal)
+              == originalBytes);
 
         // A gain moves no frame: the config's whole length-and-tempo story is
         // untouched, like the fold's.
@@ -1545,8 +1719,7 @@ int main()
         putWav(volume, 3, "pcm.wav", { .frames = 128 });        // pcm16 — not the pedal's own
         putSineFloatWav(volume, 7, "damaged.wav", 44100, -23.0, 1.0e20f); // one impossible sample
         const auto before = volumeBytes(volume);
-        const commands::NormalizeOptions options { .trashRoot = tmp.path / "trash",
-                                                   .targetLufs = -18.0,
+        const commands::NormalizeOptions options { .targetLufs = -18.0,
                                                    .write = writeOpts(tmp.path, "norm-2") };
 
         // Already at target: an answer, not an error — and not a write.
@@ -1567,8 +1740,7 @@ int main()
         // the overlay's file bar must not claim work that never ran.
         std::vector<double> ticks;
         (void) commands::normalize(volume, 6,
-                                   { .trashRoot = tmp.path / "trash",
-                                     .targetLufs = -18.0,
+                                   { .targetLufs = -18.0,
                                      .write = writeOpts(tmp.path, "norm-3"),
                                      .progress = [&ticks](double v) { ticks.push_back(v); } });
         CHECK(!ticks.empty());
@@ -1587,18 +1759,16 @@ int main()
         // of a 1e20 sample would bake in hundreds of dB and silence the take.
         CHECK_THROWS(commands::normalize(volume, 7, options), "impossible sample");
         CHECK_THROWS(commands::normalize(
-                         volume, 6, { .trashRoot = {}, .targetLufs = -18.0,
-                                      .write = writeOpts(tmp.path) }),
-                     "requires a trash root");
+                         volume, 6, { .targetLufs = -18.0,
+                                      .write = withoutArchive(writeOpts(tmp.path)) }),
+                     "needs an archive");
         // A default-constructed target (0.0) is a bug wearing a number.
-        CHECK_THROWS(commands::normalize(volume, 6,
-                                         { .trashRoot = tmp.path / "trash",
-                                           .write = writeOpts(tmp.path) }),
+        CHECK_THROWS(commands::normalize(volume, 6, { .write = writeOpts(tmp.path) }),
                      "between -70 and -1");
 
         // Every answer and every refusal above left the volume byte-identical.
         CHECK(volumeBytes(volume) == before);
-        CHECK(!fs::exists(tmp.path / "trash")); // and no trash copy was spent
+        CHECK(!fs::exists(tmp.path / "trash")); // and no archive copy was spent
     }
 
     return testkit::summary("commands");

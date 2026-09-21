@@ -345,11 +345,8 @@ MainComponent::MainComponent(std::string explicitVolume)
                 player.releaseFile();
                 worker.enqueue(
                     { "Trim slot " + juce::String(slot), slot,
-                      [slot, inFrame, outFrame, options,
-                       trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
-                          const volume::fs::path& volumePath) {
-                          commands::trim(volumePath, slot, inFrame, outFrame,
-                                         { .trashRoot = trash, .write = options });
+                      [slot, inFrame, outFrame, options](const volume::fs::path& volumePath) {
+                          commands::trim(volumePath, slot, inFrame, outFrame, { .write = options });
                       } });
             });
     };
@@ -1140,8 +1137,12 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
 commands::WriteOptions MainComponent::makeWriteOptions()
 {
     const juce::String label = juce::Time::getCurrentTime().formatted("%Y-%m-%dT%H-%M-%S");
-    return { .backupRoot = settings.dataDir().getChildFile("backups").getFullPathName().toStdString(),
-             .opId = opid::make(label.toStdString()) };
+    std::string opId = opid::make(label.toStdString());
+    const juce::File data = settings.dataDir();
+    return { .backupRoot = data.getChildFile("backups").getFullPathName().toStdString(),
+             .opId = opId,
+             .archive = commands::trashFolder(
+                 data.getChildFile("trash").getFullPathName().toStdString(), opId) };
 }
 
 void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
@@ -1276,8 +1277,7 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                          [source = sourcePath, slot, force, normalizeTarget, note,
                           options = makeWriteOptions(),
                           importTmp = settings.dataDir().getChildFile("import-tmp"),
-                          logDir = settings.dataDir(),
-                          trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                          logDir = settings.dataDir()](
                              const volume::fs::path& volumePath) {
                              // DAW exports arrive as anything — convert off the
                              // message thread, on this worker, before the push
@@ -1292,8 +1292,7 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                                  commands::push(volumePath,
                                                 prepared.file.getFullPathName().toStdString(),
                                                 slot,
-                                                { .force = force, .trashRoot = trash,
-                                                  .write = options });
+                                                { .force = force, .write = options });
                              } catch (...) {
                                  if (prepared.converted)
                                      prepared.file.deleteFile();
@@ -1373,12 +1372,10 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
             releasePlayerIfHolding(slot, slot); // the fold rewrites the WAV under preview (issue #26)
             worker.enqueue(
                 { "Downmix slot " + juce::String(slot) + " to mono, " + where, slot,
-                  [slot, placement, options = makeWriteOptions(),
-                   trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+                  [slot, placement, options = makeWriteOptions()](
                       const volume::fs::path& volumePath) {
-                      commands::downmixToMono(
-                          volumePath, slot,
-                          { .trashRoot = trash, .placement = placement, .write = options });
+                      commands::downmixToMono(volumePath, slot,
+                                              { .placement = placement, .write = options });
                   } });
         });
 }
@@ -1427,14 +1424,13 @@ void MainComponent::enqueueNormalize(int slot, double target, int batch,
     worker.enqueue(
         { "Normalize slot " + juce::String(slot), slot,
           [slot, target, note, filePermille, options = makeWriteOptions(),
-           logDir = settings.dataDir(),
-           trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
+           logDir = settings.dataDir()](
               const volume::fs::path& volumePath) {
               if (filePermille != nullptr)
                   filePermille->store(0); // this job's file starts from zero
               const commands::NormalizeResult result = commands::normalize(
                   volumePath, slot,
-                  { .trashRoot = trash, .targetLufs = target, .write = options,
+                  { .targetLufs = target, .write = options,
                     .progress = filePermille != nullptr
                         ? std::function<void(double)>([filePermille](double v) {
                               filePermille->store(static_cast<int>(v * 1000.0));
@@ -1766,13 +1762,8 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
         releasePlayerIfHolding(slot, slot); // the clear moves or deletes its WAV (issue #26)
         worker.enqueue(
             { juce::String("Clear slot ") + juce::String(slot), slot,
-              [slot, options, useTrash,
-               trash = settings.dataDir().getChildFile("trash").getFullPathName().toStdString()](
-                  const volume::fs::path& volumePath) {
-                  commands::clear(volumePath, { slot },
-                                  { .trashRoot = useTrash ? trash : std::string(),
-                                    .trash = useTrash,
-                                    .write = options });
+              [slot, options, useTrash](const volume::fs::path& volumePath) {
+                  commands::clear(volumePath, { slot }, { .trash = useTrash, .write = options });
               } });
     }), true);
 }
