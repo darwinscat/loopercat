@@ -156,6 +156,11 @@ namespace
                                    { .label = "minimp3",
                                      .ownerRepo = "lieff/minimp3",
                                      .commit = LOOPERCAT_DEP_MINIMP3_COMMIT,
+                                     .state = "pin" },
+                                   // SQLite lives at sqlite.org, not on GitHub: no ownerRepo,
+                                   // so the row is plain text rather than a link to a mirror.
+                                   { .label = "SQLite",
+                                     .version = LOOPERCAT_DEP_SQLITE_VERSION,
                                      .state = "pin" } },
                  // The popover mirrors the window header: the ears, not the
                  // family-default orbit the hook falls back to.

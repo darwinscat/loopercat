@@ -135,6 +135,27 @@ FetchContent_MakeAvailable(minimp3)
 add_library(minimp3_headers INTERFACE)
 target_include_directories(minimp3_headers SYSTEM INTERFACE "${minimp3_SOURCE_DIR}")
 
+# ----------------------------------------------------------------------------
+# SQLite (fetched, pinned by SHA3-256, public domain) — the history store
+# behind app/history (issue #72). The official amalgamation, one C file built
+# once into a static library: the same engine on all three platforms instead
+# of whichever libsqlite3 a distribution or macOS happens to ship. Outside
+# both guards for the minimp3 reason — the app links it, and so do the store's
+# own tests. SYSTEM include keeps its C internals out of our warning gate.
+# The hash is the one sqlite.org publishes next to the download.
+# ----------------------------------------------------------------------------
+set(LOOPERCAT_SQLITE_VERSION "3.53.4")
+FetchContent_Declare(sqlite3
+    URL      https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
+    URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(sqlite3)
+add_library(loopercat_sqlite3 STATIC "${sqlite3_SOURCE_DIR}/sqlite3.c")
+target_include_directories(loopercat_sqlite3 SYSTEM PUBLIC "${sqlite3_SOURCE_DIR}")
+target_compile_definitions(loopercat_sqlite3 PRIVATE
+    SQLITE_DQS=0                  # a double-quoted string is an identifier, never a literal
+    SQLITE_OMIT_LOAD_EXTENSION)   # nothing is ever loaded into the store at runtime
+
 enable_testing()
 
 if(LOOPERCAT_BUILD_TESTS)
@@ -410,7 +431,8 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_DEP_APPKIT_STATE="${LOOPERCAT_DEP_APPKIT_STATE}"
     LOOPERCAT_DEP_APPKIT_COMMIT="${LOOPERCAT_DEP_APPKIT_COMMIT}"
     LOOPERCAT_DEP_JUCE_VERSION="${LOOPERCAT_JUCE_TAG}"
-    LOOPERCAT_DEP_MINIMP3_COMMIT="g${LOOPERCAT_MINIMP3_SHORT}")
+    LOOPERCAT_DEP_MINIMP3_COMMIT="g${LOOPERCAT_MINIMP3_SHORT}"
+    LOOPERCAT_DEP_SQLITE_VERSION="${LOOPERCAT_SQLITE_VERSION}")
 
 target_link_libraries(LooperCat PRIVATE
     loopercat::core
