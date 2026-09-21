@@ -108,6 +108,22 @@ int main()
     // readSlot agrees with listSlots.
     CHECK(catalog::readSlot(text, 7) == slots.at(6));
 
+    // Each number comes from the section that owns it. A memory carrying a
+    // second track (the two-track RC shape) holds every TRACK field twice;
+    // the slot's loop facts are TRACK1's, and TRACK2's never leak into them.
+    {
+        const std::string track2 = "<TRACK2>\n\t<One>1</One>\n\t<MeasLen>64</MeasLen>\n"
+                                   "\t<RecTmp>900</RecTmp>\n\t<WavStat>1</WavStat>\n"
+                                   "\t<WavLen>999999</WavLen>\n</TRACK2>\n";
+        std::string body = rc0::slotBody(text, 7);
+        body.insert(body.find("<MASTER>"), track2);
+        const std::string twoTrack = rc0::replaceSlotBody(text, 7, body);
+        const catalog::SlotInfo info = catalog::readSlot(twoTrack, 7);
+        CHECK(info == slots.at(6));
+        CHECK_EQ(info.frames, 6860867);
+        CHECK(!info.oneShot);
+    }
+
     // Malformed input propagates as a typed error, never a default.
     CHECK_THROWS(catalog::readSlot(text, 0), "out of range");
     CHECK_THROWS(catalog::listSlots("<database></database>"), "missing <mem");

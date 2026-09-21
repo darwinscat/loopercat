@@ -42,19 +42,24 @@ struct SlotInfo {
     bool operator==(const SlotInfo&) const = default;
 };
 
+// Every number is read from the section that owns it (rc0::sectionField):
+// the loop's facts from TRACK1, the playback tempo from MASTER.
 inline SlotInfo readSlot(std::string_view memoryText, int slot)
 {
     const std::string body = rc0::slotBody(memoryText, slot);
+    const auto track = [&body](std::string_view tag) {
+        return rc0::sectionField(body, rc0::kSectionTrack1, tag);
+    };
     return { slot,
              rc0::decodeName(body),
-             rc0::field(body, "WavStat") == 1,
-             rc0::field(body, "WavLen"),
-             rc0::field(body, "One") == 1,
+             track("WavStat") == 1,
+             track("WavLen"),
+             track("One") == 1,
              usecases::countin::isOn(body),
              usecases::countin::patternAtRisk(body).has_value(),
-             rc0::field(body, "Tempo"),
-             rc0::field(body, "MeasLen"),
-             rc0::field(body, "RecTmp") };
+             rc0::sectionField(body, rc0::kSectionMaster, "Tempo"),
+             track("MeasLen"),
+             track("RecTmp") };
 }
 
 inline std::vector<SlotInfo> listSlots(std::string_view memoryText)
