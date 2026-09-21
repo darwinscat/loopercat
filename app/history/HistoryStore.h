@@ -16,8 +16,8 @@
 
 //==============================================================================
 // loopercat::history::HistoryStore — the operation journal and the archive of
-// takes, in two SQLite files under one directory (issue #72; the tables and
-// why there are two files: Schema.h).
+// takes, in one SQLite file (issue #72; the tables, and why one file with a
+// rollback journal: Schema.h).
 //
 // The store records; it does not decide. The core reports what a command did
 // (commands::Archive, commands::Journal) and the recorder hands that here, one
@@ -45,9 +45,9 @@ enum class OpStatus { done, failed };
 class HistoryStore
 {
 public:
-    // <dir>/history.db with <dir>/audio.db attached. Creates both when absent,
-    // verifies every storage property it relies on, and refuses a store it
-    // cannot read correctly rather than reading it on a guess.
+    // <dir>/history.db. Creates it when absent, verifies every storage
+    // property it relies on, and refuses a store it cannot read correctly
+    // rather than reading it on a guess.
     explicit HistoryStore(const std::filesystem::path& dir);
 
     // SHA-256 of the bytes, raw (32 bytes): the audio store's key.

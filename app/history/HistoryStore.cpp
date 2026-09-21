@@ -14,8 +14,8 @@ namespace
 {
 
 // Every storage property the store's promises rest on, read back rather than
-// assumed: a pragma that silently did not take is how a "rollback journal"
-// ends up WAL and a transaction over both files stops being atomic.
+// assumed: a pragma that silently did not take is how a file meant to return
+// space never can, or a foreign key meant to hold does not.
 void requirePragma(sqlite::Db& db, const std::string& pragma, const std::string& expected)
 {
     const std::string found = schema::pragmaText(db, pragma);
@@ -35,38 +35,30 @@ HistoryStore::HistoryStore(const std::filesystem::path& dir)
       }())
 {
     sqlite3_busy_timeout(db_.raw(), 5000);
-    db_.exec("PRAGMA main.journal_mode = DELETE");
-    db_.exec("PRAGMA main.synchronous = FULL");
-    db_.exec("PRAGMA foreign_keys = ON");
-
-    sqlite::Statement attach(db_, "ATTACH DATABASE ?1 AS audio");
-    attach.bindText(1, sqlite::utf8(dir / "audio.db")).run();
     // Both take effect only on a file that has no tables yet, which is the
     // whole point: they are set before migrate() creates the first one.
-    db_.exec("PRAGMA audio.page_size = 16384");
-    db_.exec("PRAGMA audio.auto_vacuum = INCREMENTAL");
-    db_.exec("PRAGMA audio.journal_mode = DELETE");
-    db_.exec("PRAGMA audio.synchronous = FULL");
+    db_.exec("PRAGMA page_size = 16384");
+    db_.exec("PRAGMA auto_vacuum = INCREMENTAL");
+    db_.exec("PRAGMA journal_mode = DELETE");
+    db_.exec("PRAGMA synchronous = FULL");
+    db_.exec("PRAGMA foreign_keys = ON");
 
-    // A pair that does not belong together is refused before anything is
-    // created in it: a fresh journal next to an audio store that already
-    // holds takes would describe none of them.
-    if (schema::pragmaInteger(db_, "main.user_version") == 0) {
-        sqlite::Statement existing(
-            db_, "SELECT count(*) FROM audio.sqlite_master WHERE type = 'table'");
+    // A file that holds tables but no store version is some other program's
+    // database: refused before anything is created in it.
+    if (schema::pragmaInteger(db_, "user_version") == 0) {
+        sqlite::Statement existing(db_, "SELECT count(*) FROM sqlite_master WHERE type = 'table'");
         existing.step();
         if (existing.integer(0) != 0)
-            throw Error("the audio store already holds tables the history does not know — "
-                        "history.db and audio.db are not a pair");
+            throw Error((dir / "history.db").string()
+                        + " holds tables but is not a LooperCat history");
     }
 
     schema::migrate(db_);
 
-    requirePragma(db_, "main.journal_mode", "delete");
-    requirePragma(db_, "audio.journal_mode", "delete");
+    requirePragma(db_, "journal_mode", "delete");
     requirePragma(db_, "foreign_keys", "1");
-    requirePragma(db_, "audio.auto_vacuum", "2"); // INCREMENTAL
-    requirePragma(db_, "audio.page_size", "16384");
+    requirePragma(db_, "auto_vacuum", "2"); // INCREMENTAL
+    requirePragma(db_, "page_size", "16384");
 
     db_.exec("UPDATE ops SET status = 'interrupted' WHERE status = 'pending'");
 }
@@ -136,10 +128,7 @@ void HistoryStore::keepAudio(std::int64_t op, int slot, int track, const std::st
     meta.bindBlob(1, hash);
     const bool known = meta.step();
     const bool released = known && meta.integer(0) != 0;
-    if (!known || released) {
-        sqlite::Statement put(db_, "INSERT INTO audio.blobs(hash, bytes) VALUES (?1, ?2)");
-        put.bindBlob(1, hash).bindBlob(2, bytes).run();
-    }
+    // Metadata first: the bytes' foreign key points at it.
     if (!known) {
         sqlite::Statement add(db_, "INSERT INTO blobs_meta(hash, size, created, pinned) "
                                    "VALUES (?1, ?2, ?3, 0)");
@@ -147,6 +136,10 @@ void HistoryStore::keepAudio(std::int64_t op, int slot, int track, const std::st
     } else if (released) {
         sqlite::Statement back(db_, "UPDATE blobs_meta SET released = NULL WHERE hash = ?1");
         back.bindBlob(1, hash).run();
+    }
+    if (!known || released) {
+        sqlite::Statement put(db_, "INSERT INTO blobs(hash, bytes) VALUES (?1, ?2)");
+        put.bindBlob(1, hash).bindBlob(2, bytes).run();
     }
 
     sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
@@ -195,7 +188,7 @@ void HistoryStore::finishOp(std::int64_t op, OpStatus status, const std::string&
 
 std::optional<std::string> HistoryStore::takeBytes(const std::string& hash)
 {
-    sqlite::Statement read(db_, "SELECT bytes FROM audio.blobs WHERE hash = ?1");
+    sqlite::Statement read(db_, "SELECT bytes FROM blobs WHERE hash = ?1");
     read.bindBlob(1, hash);
     if (!read.step())
         return std::nullopt;

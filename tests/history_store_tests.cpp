@@ -4,17 +4,16 @@
 // The history store (issue #72), attacked from what it promises rather than
 // from how it is written:
 //
-//   - the storage properties it rests on are real, read back from the files:
-//     a rollback journal on BOTH (a WAL file takes no part in an atomic commit
-//     over attached databases), and an audio store that can return space
+//   - the storage properties it rests on are real, read back from the file:
+//     one file, a rollback journal, 16 KB pages, incremental vacuum
 //   - a take and the row naming it land together or not at all — a failed row
-//     leaves no bytes behind
+//     leaves no bytes behind — and bytes never exist without their metadata
 //   - a kept take comes back byte-exact, is kept once however often it
 //     arrives, and survives reopening
 //   - the lifecycle cannot lie: an op the app never finished reads as
 //     interrupted, never as done; nothing finishes twice
-//   - the store refuses what it cannot read correctly: a newer version, an
-//     audio file without incremental vacuum, two files that are not a pair
+//   - the store refuses what it cannot read correctly: a newer version, a file
+//     that could never return space, another program's database
 
 #include "support.hpp"
 
@@ -94,18 +93,22 @@ struct Ready {
 
 int main()
 {
-    // --- a fresh directory becomes a verified pair ---
+    // --- a fresh directory becomes one verified file ---
     {
         TempDir tmp;
         HistoryStore store(tmp.path / "history");
         CHECK(fs::exists(tmp.path / "history" / "history.db"));
-        CHECK(fs::exists(tmp.path / "history" / "audio.db"));
-        CHECK_EQ(schema::pragmaText(store.db(), "main.journal_mode"), std::string("delete"));
-        CHECK_EQ(schema::pragmaText(store.db(), "audio.journal_mode"), std::string("delete"));
-        CHECK_EQ(schema::pragmaInteger(store.db(), "audio.auto_vacuum"), 2); // INCREMENTAL
-        CHECK_EQ(schema::pragmaInteger(store.db(), "audio.page_size"), 16384);
+        std::size_t files = 0;
+        for (const auto& entry : fs::directory_iterator(tmp.path / "history")) {
+            (void) entry;
+            ++files;
+        }
+        CHECK_EQ(files, 1u); // one file: no second store, no WAL, no journal left over
+        CHECK_EQ(schema::pragmaText(store.db(), "journal_mode"), std::string("delete"));
+        CHECK_EQ(schema::pragmaInteger(store.db(), "auto_vacuum"), 2); // INCREMENTAL
+        CHECK_EQ(schema::pragmaInteger(store.db(), "page_size"), 16384);
         CHECK_EQ(schema::pragmaInteger(store.db(), "foreign_keys"), 1);
-        CHECK_EQ(schema::pragmaInteger(store.db(), "main.user_version"), schema::kVersion);
+        CHECK_EQ(schema::pragmaInteger(store.db(), "user_version"), schema::kVersion);
     }
 
     // --- a directory named outside Latin letters (a player's account name on
@@ -115,7 +118,6 @@ int main()
         const fs::path dir = tmp.path / fs::path(u8"\u03b9\u03c3\u03c4\u03bf\u03c1\u03af\u03b1-\u97f3"); // Greek, and a CJK sign
         { HistoryStore store(dir); }
         CHECK(fs::exists(dir / "history.db"));
-        CHECK(fs::exists(dir / "audio.db"));
         HistoryStore reopened(dir); // and it opens again from the same place
         CHECK_EQ(schema::pragmaInteger(reopened.db(), "main.user_version"), schema::kVersion);
     }
@@ -158,7 +160,7 @@ int main()
         const auto op2 = r.store.beginOp(r.session, "op-2", "normalize", 2001);
         r.store.keepAudio(op2, 33, 1, "033_1.WAV", same, 2001);
         r.store.keepAudio(op2, 34, 1, "034_1.WAV", take(50000, 4), 2001);
-        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM audio.blobs"), 2);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 2);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs_meta"), 2);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM slot_audio"), 3);
     }
@@ -171,7 +173,7 @@ int main()
         TempDir tmp;
         Ready r(tmp.path);
         CHECK_THROWS(r.store.keepAudio(9999, 5, 1, "orphan.wav", take(20000, 9), 2000), "");
-        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM audio.blobs"), 0);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 0);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs_meta"), 0);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM slot_audio"), 0);
 
@@ -180,8 +182,19 @@ int main()
         CHECK_THROWS(r.store.keepAudio(op, 100, 1, "x.wav", take(1000, 1), 2000), "");
         CHECK_THROWS(r.store.keepAudio(op, 0, 1, "x.wav", take(1000, 1), 2000), "");
         CHECK_THROWS(r.store.keepAudio(op, 5, 0, "x.wav", take(1000, 1), 2000), "");
-        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM audio.blobs"), 0);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 0);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs_meta"), 0);
+    }
+
+    // --- bytes never exist without their metadata: the schema says so ---
+    {
+        TempDir tmp;
+        HistoryStore store(tmp.path);
+        const std::string stray = HistoryStore::contentHash("stray");
+        sqlite::Statement put(store.db(), "INSERT INTO blobs(hash, bytes) VALUES (?1, x'00')");
+        put.bindBlob(1, stray);
+        CHECK_THROWS(put.run(), "FOREIGN KEY");
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM blobs"), 0);
     }
 
     // --- bodies are kept byte for byte, before and after ---
@@ -217,7 +230,7 @@ int main()
         CHECK_EQ(read.text(0), std::string("after"));
         CHECK_EQ(read.integer(1), 30000);
         CHECK(read.blob(2) == HistoryStore::contentHash(landed));
-        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM audio.blobs"), 0);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 0);
     }
 
     // --- the lifecycle cannot lie ---
@@ -279,7 +292,7 @@ int main()
         {
             // what #74 will do: drop the bytes, mark the metadata
             sqlite::Transaction tx(r.store.db());
-            sqlite::Statement drop(r.store.db(), "DELETE FROM audio.blobs WHERE hash = ?1");
+            sqlite::Statement drop(r.store.db(), "DELETE FROM blobs WHERE hash = ?1");
             drop.bindBlob(1, hash).run();
             sqlite::Statement mark(r.store.db(), "UPDATE blobs_meta SET released = 3000 WHERE hash = ?1");
             mark.bindBlob(1, hash).run();
@@ -313,29 +326,27 @@ int main()
         CHECK_THROWS(HistoryStore(tmp.path), "newer LooperCat");
     }
     {
-        // an audio store that could never give space back
+        // a store that could never give space back: our version stamp, but
+        // created without incremental vacuum
         TempDir tmp;
-        { HistoryStore store(tmp.path); }
-        fs::remove(tmp.path / "audio.db");
         {
-            auto raw = sqlite::Db::open(tmp.path / "audio.db");
-            raw.exec("CREATE TABLE blobs(hash BLOB PRIMARY KEY, bytes BLOB NOT NULL)");
+            auto raw = sqlite::Db::open(tmp.path / "history.db");
+            raw.exec(schema::kTables);
+            raw.exec("PRAGMA user_version = " + std::to_string(schema::kVersion));
         }
-        CHECK_THROWS(HistoryStore(tmp.path), "audio.auto_vacuum");
+        CHECK_THROWS(HistoryStore(tmp.path), "auto_vacuum");
     }
     {
-        // a journal that is new next to an audio store that already holds takes
+        // another program's database under our file name: tables, no version
         TempDir tmp;
         {
-            auto raw = sqlite::Db::open(tmp.path / "audio.db");
-            raw.exec("CREATE TABLE blobs(hash BLOB PRIMARY KEY, bytes BLOB NOT NULL)");
+            auto raw = sqlite::Db::open(tmp.path / "history.db");
+            raw.exec("CREATE TABLE contacts(name TEXT)");
         }
-        CHECK_THROWS(HistoryStore(tmp.path), "not a pair");
-        // and the refusal created nothing in the journal it declined to start
-        if (fs::exists(tmp.path / "history.db")) {
-            auto leftover = sqlite::Db::open(tmp.path / "history.db");
-            CHECK_EQ(count(leftover, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 0);
-        }
+        CHECK_THROWS(HistoryStore(tmp.path), "not a LooperCat history");
+        // and the refusal created nothing in it
+        auto leftover = sqlite::Db::open(tmp.path / "history.db");
+        CHECK_EQ(count(leftover, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 1);
     }
 
     return testkit::summary("history_store_tests");

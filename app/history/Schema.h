@@ -9,11 +9,11 @@
 #include <string>
 
 //==============================================================================
-// loopercat::history::schema — the two stores' tables, and the one rule for
-// their version: a store written by a newer LooperCat is refused, never read
-// on a guess.
+// loopercat::history::schema — the store's tables, and the one rule for its
+// version: a store written by a newer LooperCat is refused, never read on a
+// guess.
 //
-// history.db (main) holds the timeline:
+// One file, history.db, holds the timeline and the bytes:
 //   cards        a pedal's card, by model; identity signals arrive in #72's
 //                connect stage, until then a card is its volume label
 //   sessions     one per connection
@@ -23,16 +23,24 @@
 //                row, so every recorded op can be undone on its own
 //   slot_audio   which takes a slot held on either side of an op: name, size,
 //                and the content hash when the bytes passed through the app
-//   blobs_meta   what the audio store keeps, and what is pinned or released
+//   blobs_meta   what the store keeps, and what is pinned or released
+//   blobs        the bytes, by content hash — never without their blobs_meta
+//                row, which the foreign key enforces
 //
-// audio.db (attached as `audio`) holds the bytes, by content hash.
+// A rollback journal (DELETE), not WAL, and one file rather than two. A row
+// and the bytes it names must land together or not at all; inside one file
+// every transaction is atomic. Across two files it holds only through a
+// super-journal, in which a WAL file takes no part: a crash injected mid-commit
+// with a WAL timeline and a DELETE audio file left the row without its take.
+// WAL for the bytes was measured out too — a permanent +24% on disk, twice
+// the write time, and a VACUUM that does not give space back. What one file
+// costs: a second connection cannot read while a take is being written. The
+// store has one connection, on the pedal worker, so nothing waits on it.
 //
-// Both stores run a rollback journal, not WAL: SQLite commits a transaction
-// over attached databases atomically only through a super-journal, and a WAL
-// database takes no part in one (see vdbeCommit). A row and the bytes it
-// names land together or not at all — the property the store exists for.
-// audio.db is created with auto_vacuum=INCREMENTAL, which cannot be switched
-// on once a table exists; freeing space (#74) depends on it.
+// The file is created with 16 KB pages and auto_vacuum=INCREMENTAL, both set
+// before the first table: the page size suits multi-megabyte takes, and
+// incremental vacuum cannot be switched on once a table exists — freeing
+// space (#74) depends on it.
 //
 // `track` is reserved for multi-track pedals (RC-500, RC-600: NNN_1..NNN_n);
 // the RC-5 writes 1. The body is stored verbatim, so a multi-track <mem>
@@ -43,7 +51,7 @@ namespace loopercat::history::schema
 
 inline constexpr std::int64_t kVersion = 1;
 
-inline constexpr const char* kHistoryTables = R"sql(
+inline constexpr const char* kTables = R"sql(
 CREATE TABLE cards(
     id          INTEGER PRIMARY KEY,
     model       TEXT    NOT NULL,
@@ -101,11 +109,9 @@ CREATE TABLE blobs_meta(
     pinned   INTEGER NOT NULL CHECK (pinned IN (0, 1)),
     released INTEGER
 ) STRICT;
-)sql";
 
-inline constexpr const char* kAudioTables = R"sql(
-CREATE TABLE audio.blobs(
-    hash  BLOB PRIMARY KEY CHECK (length(hash) = 32),
+CREATE TABLE blobs(
+    hash  BLOB PRIMARY KEY REFERENCES blobs_meta(hash),
     bytes BLOB NOT NULL
 ) STRICT;
 )sql";
@@ -126,8 +132,8 @@ inline std::string pragmaText(sqlite::Db& db, const std::string& pragma)
     return read.text(0);
 }
 
-// Brings a freshly opened pair to version kVersion, or refuses. Idempotent:
-// an up-to-date pair is left exactly as it is.
+// Brings a freshly opened store to version kVersion, or refuses. Idempotent:
+// an up-to-date store is left exactly as it is.
 inline void migrate(sqlite::Db& db)
 {
     const std::int64_t found = pragmaInteger(db, "main.user_version");
@@ -138,10 +144,9 @@ inline void migrate(sqlite::Db& db)
     if (found == kVersion)
         return;
 
-    // Only version 0 — a brand-new pair — reaches here today.
+    // Only version 0 — a brand-new store — reaches here today.
     sqlite::Transaction tx(db);
-    db.exec(kHistoryTables);
-    db.exec(kAudioTables);
+    db.exec(kTables);
     db.exec("PRAGMA main.user_version = " + std::to_string(kVersion));
     tx.commit();
 }

@@ -187,7 +187,7 @@ int main()
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes sc JOIN ops o ON o.seq = sc.op "
                            "WHERE o.id = 'op-swap'"),
                  2);
-        CHECK_EQ(count(db, "SELECT count(*) FROM audio.blobs"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM blobs"), 0);
         CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE status = 'done'"), 2);
         CHECK(!fs::exists(tmp.path / "trash"));
     }
@@ -206,7 +206,7 @@ int main()
         CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-bad'"), std::string("failed"));
         CHECK(text(db, "SELECT note FROM ops WHERE id = 'op-bad'").find("bad frame range")
               != std::string::npos);
-        CHECK_EQ(count(db, "SELECT count(*) FROM audio.blobs"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM blobs"), 0);
     }
 
     // --- a command that failed AFTER keeping the take: failed, and the take is safe ---
