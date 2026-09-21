@@ -154,7 +154,11 @@ add_library(loopercat_sqlite3 STATIC "${sqlite3_SOURCE_DIR}/sqlite3.c")
 target_include_directories(loopercat_sqlite3 SYSTEM PUBLIC "${sqlite3_SOURCE_DIR}")
 target_compile_definitions(loopercat_sqlite3 PRIVATE
     SQLITE_DQS=0                  # a double-quoted string is an identifier, never a literal
-    SQLITE_OMIT_LOAD_EXTENSION)   # nothing is ever loaded into the store at runtime
+    SQLITE_OMIT_LOAD_EXTENSION    # nothing is ever loaded into the store at runtime
+    # The default ceiling on one value is 1 GB, and a long take on a pedal with
+    # hours of storage can pass it. 2 GB is SQLite's own hard limit; a take past
+    # it is refused by the archive, loudly, with the card untouched.
+    SQLITE_MAX_LENGTH=2147483647)
 
 enable_testing()
 
@@ -366,13 +370,14 @@ juce_add_gui_app(LooperCat
 
 target_sources(LooperCat PRIVATE
     app/Main.cpp
+    app/history/HistoryStore.cpp
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
     app/PlayerPane.cpp
     app/SlotInspector.cpp
     app/SlotTable.cpp
     app/WavImport.cpp)
-target_link_libraries(LooperCat PRIVATE minimp3_headers)
+target_link_libraries(LooperCat PRIVATE minimp3_headers loopercat_sqlite3)
 
 # JUCE's two-entry icns renders as noise in Sequoia's Launchpad (see
 # art/icon/make-icns.sh); overwrite it with a full iconutil-built set.
@@ -439,6 +444,7 @@ target_link_libraries(LooperCat PRIVATE
     felitronics::appkit                 # BrandHeader / VersionBadge / UpdateChecker / AudioSettingsPanel
     LooperCatAssets                     # embedded brand assets (cat logo + Michroma)
     juce::juce_audio_utils              # playback chain, AudioThumbnail, device selector
+    juce::juce_cryptography             # SHA-256: the history store's content hash
     juce::juce_gui_basics
     juce::juce_events
     juce::juce_data_structures
@@ -531,6 +537,28 @@ target_link_libraries(wav_import_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME wav_import_tests COMMAND wav_import_tests)
+
+# ----------------------------------------------------------------------------
+# The history store (issue #72): theory tests against real SQLite files — the
+# storage properties read back, atomicity of a take and its row, dedup,
+# lifecycle, and the stores it must refuse. JUCE only for SHA-256.
+# ----------------------------------------------------------------------------
+juce_add_console_app(history_store_tests PRODUCT_NAME "history_store_tests")
+target_sources(history_store_tests PRIVATE tests/history_store_tests.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_store_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_store_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_store_tests COMMAND history_store_tests)
 
 # ----------------------------------------------------------------------------
 # MP3 import (issue #52): theory tests for Mp3AudioFormat + the import chain —
