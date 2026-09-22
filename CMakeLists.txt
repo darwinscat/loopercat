@@ -135,6 +135,31 @@ FetchContent_MakeAvailable(minimp3)
 add_library(minimp3_headers INTERFACE)
 target_include_directories(minimp3_headers SYSTEM INTERFACE "${minimp3_SOURCE_DIR}")
 
+# ----------------------------------------------------------------------------
+# SQLite (fetched, pinned by SHA3-256, public domain) — the history store
+# behind app/history (issue #72). The official amalgamation, one C file built
+# once into a static library: the same engine on all three platforms instead
+# of whichever libsqlite3 a distribution or macOS happens to ship. Outside
+# both guards for the minimp3 reason — the app links it, and so do the store's
+# own tests. SYSTEM include keeps its C internals out of our warning gate.
+# The hash is the one sqlite.org publishes next to the download.
+# ----------------------------------------------------------------------------
+set(LOOPERCAT_SQLITE_VERSION "3.53.4")
+FetchContent_Declare(sqlite3
+    URL      https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
+    URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(sqlite3)
+add_library(loopercat_sqlite3 STATIC "${sqlite3_SOURCE_DIR}/sqlite3.c")
+target_include_directories(loopercat_sqlite3 SYSTEM PUBLIC "${sqlite3_SOURCE_DIR}")
+target_compile_definitions(loopercat_sqlite3 PRIVATE
+    SQLITE_DQS=0                  # a double-quoted string is an identifier, never a literal
+    SQLITE_OMIT_LOAD_EXTENSION    # nothing is ever loaded into the store at runtime
+    # The default ceiling on one value is 1 GB, and a long take on a pedal with
+    # hours of storage can pass it. 2 GB is SQLite's own hard limit; a take past
+    # it is refused by the archive, loudly, with the card untouched.
+    SQLITE_MAX_LENGTH=2147483647)
+
 enable_testing()
 
 if(LOOPERCAT_BUILD_TESTS)
@@ -348,13 +373,15 @@ juce_add_gui_app(LooperCat
 
 target_sources(LooperCat PRIVATE
     app/Main.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
     app/PlayerPane.cpp
     app/SlotInspector.cpp
     app/SlotTable.cpp
     app/WavImport.cpp)
-target_link_libraries(LooperCat PRIVATE minimp3_headers)
+target_link_libraries(LooperCat PRIVATE minimp3_headers loopercat_sqlite3)
 
 # JUCE's two-entry icns renders as noise in Sequoia's Launchpad (see
 # art/icon/make-icns.sh); overwrite it with a full iconutil-built set.
@@ -413,13 +440,15 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_DEP_APPKIT_STATE="${LOOPERCAT_DEP_APPKIT_STATE}"
     LOOPERCAT_DEP_APPKIT_COMMIT="${LOOPERCAT_DEP_APPKIT_COMMIT}"
     LOOPERCAT_DEP_JUCE_VERSION="${LOOPERCAT_JUCE_TAG}"
-    LOOPERCAT_DEP_MINIMP3_COMMIT="g${LOOPERCAT_MINIMP3_SHORT}")
+    LOOPERCAT_DEP_MINIMP3_COMMIT="g${LOOPERCAT_MINIMP3_SHORT}"
+    LOOPERCAT_DEP_SQLITE_VERSION="${LOOPERCAT_SQLITE_VERSION}")
 
 target_link_libraries(LooperCat PRIVATE
     loopercat::core
     felitronics::appkit                 # BrandHeader / VersionBadge / UpdateChecker / AudioSettingsPanel
     LooperCatAssets                     # embedded brand assets (cat logo + Michroma)
     juce::juce_audio_utils              # playback chain, AudioThumbnail, device selector
+    juce::juce_cryptography             # SHA-256: the history store's content hash
     juce::juce_gui_basics
     juce::juce_events
     juce::juce_data_structures
@@ -512,6 +541,48 @@ target_link_libraries(wav_import_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME wav_import_tests COMMAND wav_import_tests)
+
+# ----------------------------------------------------------------------------
+# The history store (issue #72): theory tests against real SQLite files — the
+# storage properties read back, atomicity of a take and its row, dedup,
+# lifecycle, and the stores it must refuse. JUCE only for SHA-256.
+# ----------------------------------------------------------------------------
+juce_add_console_app(history_store_tests PRODUCT_NAME "history_store_tests")
+target_sources(history_store_tests PRIVATE tests/history_store_tests.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_store_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_store_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_store_tests COMMAND history_store_tests)
+
+# The recorder end to end: real core commands on a synthetic pedal, wired
+# through history::withHistory as the app wires them, read back from the store.
+juce_add_console_app(history_recorder_tests PRODUCT_NAME "history_recorder_tests")
+target_sources(history_recorder_tests PRIVATE tests/history_recorder_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_recorder_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_recorder_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
 # ----------------------------------------------------------------------------
 # MP3 import (issue #52): theory tests for Mp3AudioFormat + the import chain —

@@ -90,6 +90,13 @@ public:
         // the UI. Still serialized on this thread — it can never read a take
         // mid-rewrite.
         bool background = false;
+        // Around `work`, for the history (#72): `before` runs once the gate has
+        // let the job through and the volume is resolved, and a throw from it
+        // stops the job before it touches the card; `after` always runs,
+        // with the job's error (empty = success), and a throw from it is
+        // appended to that error rather than hiding it.
+        std::function<void(const volume::fs::path&)> before = nullptr;
+        std::function<void(const std::string& error)> after = nullptr;
     };
 
     // `explicitVolume` pins the volume path (the --volume CLI override;
@@ -278,9 +285,19 @@ private:
                     const auto found = resolveVolume();
                     if (!found || !volume::looksLikePedal(*found))
                         throw Error("no pedal volume mounted");
+                    if (job->before)
+                        job->before(*found);
                     job->work(*found);
                 } catch (const std::exception& e) {
                     error = juce::String::fromUTF8(e.what()); // core messages carry typographic dashes
+                }
+                if (job->after) {
+                    try {
+                        job->after(error.toStdString());
+                    } catch (const std::exception& e) {
+                        error << (error.isEmpty() ? "" : "; ") << "history: "
+                              << juce::String::fromUTF8(e.what());
+                    }
                 }
                 maybeDeliverSnapshot(scanAdvanced());
                 juce::String described = job->description;

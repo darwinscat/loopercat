@@ -17,6 +17,7 @@
 #include "PedalLight.h"
 #include "PedalLink.h"
 #include "PedalWorker.h"
+#include "history/HistoryRecorder.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
 #include "SettingsDialog.h"
@@ -61,7 +62,7 @@ class MainComponent final : public juce::Component,
 {
 public:
     // `explicitVolume` pins the pedal path (--volume override); empty = autodetect.
-    explicit MainComponent(std::string explicitVolume = {});
+    explicit MainComponent(std::string explicitVolume = {}, juce::File dataOverride = {});
     ~MainComponent() override;
 
     // The headless seams (--snapshot / --select): one synchronous scan+apply,
@@ -166,6 +167,8 @@ private:
     void stopLoudnessCheck();
     void finishLoudnessCheck();
     commands::WriteOptions makeWriteOptions();
+    PedalWorker::Job recorded(const char* kind, const commands::WriteOptions& options,
+                              PedalWorker::Job job);
 
     // Declaration order is lifetime order: settings outlives the checker
     // (its Config captures it), the checker outlives the badge; the engine
@@ -225,6 +228,13 @@ private:
     std::shared_ptr<bool> uiAlive = std::make_shared<bool>(true);
     std::unique_ptr<AppMenu> appMenu; // after the components its actions touch
     app::DeviceWatcher deviceWatcher; // before the worker: its probe runs on the worker thread
+    // The history (#72). Only the worker thread touches it; declared before the
+    // worker so it outlives the thread, and shared with every queued job's
+    // hooks so a job can never outlive it either.
+    std::shared_ptr<history::HistoryRecorder> recorder = std::make_shared<history::HistoryRecorder>(
+        std::filesystem::path(settings.dataDir().getChildFile("history").getFullPathName().toStdString()),
+        "RC-5",
+        [] { return static_cast<std::int64_t>(juce::Time::currentTimeMillis()); });
     PedalWorker worker;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
