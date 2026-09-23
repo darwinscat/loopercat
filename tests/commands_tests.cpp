@@ -1151,8 +1151,9 @@ int main()
     // tempo the player set survives where push would have replaced it with
     // the import guess. The other 98 slots belong to the present. The body
     // and the take are one unit: a WavLen that does not count the take's
-    // frames is refused with the card untouched, and so is a body that
-    // claims audio without bringing it.
+    // frames is refused with the card untouched, so is a body whose WavStat
+    // claims a take it does not bring (or denies the one it does), and so is
+    // a take the pedal would not play.
 
     {
         TempDir tmp;
@@ -1234,6 +1235,7 @@ int main()
         CHECK(volume::listSlotWavs(volume, 9).empty());
         CHECK(rc0::slotBody(commands::readMemory(volume), 9) == rc0::factorySlotBody(9));
         CHECK_EQ(result.frames, 0);
+        CHECK(commands::doctor(volume).empty()); // the body and the empty folder agree
 
         const auto empty = commands::restore(volume, 10, { rc0::factorySlotBody(10), std::nullopt },
                                              withoutArchive(writeOpts(tmp.path)));
@@ -1269,7 +1271,38 @@ int main()
                      "WavLen=4410 but it carries no take");
         // A take beside a body that says the slot is empty.
         CHECK_THROWS(commands::restore(volume, 5, { rc0::factorySlotBody(5), whole.take }, options),
-                     "WavLen=0 but its take");
+                     "WavStat=0, WavLen=0 but its take");
+        // WavStat is what the pedal — and doctor — read as "this slot holds a
+        // take": a body that claims one beside no take (the slot doctor
+        // reports as "configured with audio but its folder is empty"), or
+        // denies the one it brings, is not a unit either, whatever WavLen says.
+        CHECK_THROWS(commands::restore(volume, 5,
+                                       { rc0::setField(rc0::factorySlotBody(5), "WavStat", 1),
+                                         std::nullopt },
+                                       options),
+                     "WavStat=1, WavLen=0 but it carries no take");
+        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavStat", 0), whole.take },
+                                       options),
+                     "WavStat=0, WavLen=4410 but its take");
+        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavStat", 2), whole.take },
+                                       options),
+                     "WavStat=2, WavLen=4410 but its take");
+        // A take the pedal does not play — 16-bit, or mono — is refused at the
+        // door exactly as push refuses it, frames matching or not: no state
+        // recorded from a card looks like this, and the pedal would discard
+        // it at its next boot rather than index it (issue #44).
+        CHECK_THROWS(commands::restore(volume, 5,
+                                       { body, commands::Take { "005_1.WAV",
+                                                                bytesOf(testkit::syntheticWav(
+                                                                    { .tag = 1, .bits = 16, .frames = 4410 })) } },
+                                       options),
+                     "32-bit float");
+        CHECK_THROWS(commands::restore(volume, 5,
+                                       { body, commands::Take { "005_1.WAV",
+                                                                bytesOf(testkit::syntheticWav(
+                                                                    { .tag = 3, .channels = 1, .bits = 32, .frames = 4410 })) } },
+                                       options),
+                     "stereo");
 
         // Crooked inputs.
         CHECK_THROWS(commands::restore(volume, 0, whole, options), "out of range");

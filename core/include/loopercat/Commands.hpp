@@ -975,9 +975,17 @@ inline bool isTakeFileName(std::string_view name)
 // beside somebody else's audio is how a slot ends up unplayable, and it is
 // the natural result of "restore the settings" and "restore the take" being
 // two buttons — so there is one primitive, and it refuses a state that
-// disagrees with itself: the body's WavLen must equal the frames of the take
-// that will sit in the slot, and 0 when there is none. WavStat is the
-// pedal's own index state: it goes back as recorded and is not judged.
+// disagrees with itself. The body's audio fields must describe the take that
+// will sit in the slot: WavStat=1 and WavLen equal to its frames with a take,
+// WavStat=0 and WavLen=0 without one. WavStat is what the pedal — and
+// doctor — read as "this slot holds a take", push sets it together with the
+// audio, and a body that claims a take beside an empty folder is exactly the
+// slot doctor reports. The take itself must be in the pedal's own format —
+// float32, stereo, 44.1 kHz, the gate push uses: no state recorded from a
+// card fails it (the pedal records and indexes nothing else), and what the
+// app puts on a card is the pedal's format and nothing else (issue #44). A
+// state that arrives from elsewhere is refused here rather than discarded by
+// the pedal at its next boot.
 //
 // Discipline as everywhere: everything validates before the first write; the
 // takes the slot holds go to the archive before they leave the card; the
@@ -1006,16 +1014,21 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
         const wav::BytesView takeView(
             reinterpret_cast<const unsigned char*>(state.take->bytes.data()),
             state.take->bytes.size());
-        frames = wav::readWavInfo(takeView).frames; // validates the shape too
+        // The shape first (the frames come from it), then the pedal's format.
+        frames = wav::assertUploadable(wav::readWavInfo(takeView)).frames;
     }
-    const long long wavLen = rc0::field(state.body, "WavLen"); // exactly one, or the body is not one
-    if (wavLen != frames) {
+    // Each field exactly once, or the body is not one.
+    const long long wavStat = rc0::field(state.body, "WavStat");
+    const long long wavLen = rc0::field(state.body, "WavLen");
+    const long long wavStatForTake = state.take ? rc0::kWavStatIndexed : rc0::kWavStatNone;
+    if (wavStat != wavStatForTake || wavLen != frames) {
         const std::string held = state.take
             ? "its take \"" + state.take->fileName + "\" holds " + std::to_string(frames) + " frames"
             : "it carries no take";
-        throw Error(where + " refused: the body says WavLen=" + std::to_string(wavLen) + " but "
-                    + held + " — a body and a take that disagree would leave the slot unplayable,"
-                      " and they are only restored together");
+        throw Error(where + " refused: the body says WavStat=" + std::to_string(wavStat)
+                    + ", WavLen=" + std::to_string(wavLen) + " but " + held
+                    + " — a body and a take that disagree would leave the slot unplayable, and"
+                      " they are only restored together");
     }
 
     const std::string memoryText = readMemory(volume);
