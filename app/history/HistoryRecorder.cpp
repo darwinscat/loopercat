@@ -95,14 +95,16 @@ void HistoryRecorder::landed(const std::string& opId, int slot, const std::strin
     store().recordLanded(opRow(opId), slot, kTrack, fileName, bytes);
 }
 
-void HistoryRecorder::finish(const std::string& opId, const std::string& error)
+void HistoryRecorder::finish(const std::string& opId, const std::string& error,
+                             const std::string& note)
 {
     const auto found = ops_.find(opId);
     if (found == ops_.end())
         return; // never began: the worker refused the job before it reached the card
     const std::int64_t row = found->second;
     ops_.erase(found);
-    store().finishOp(row, error.empty() ? OpStatus::done : OpStatus::failed, error);
+    store().finishOp(row, error.empty() ? OpStatus::done : OpStatus::failed,
+                     error.empty() ? note : error);
 }
 
 commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recorder,

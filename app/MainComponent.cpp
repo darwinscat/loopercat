@@ -1185,8 +1185,12 @@ PedalWorker::Job MainComponent::recorded(const char* kind, const commands::Write
 {
     job.before = [rec = recorder, id = options.opId, k = std::string(kind)](
                      const volume::fs::path& volumePath) { rec->begin(id, k, volumePath); };
-    job.after = [rec = recorder, id = options.opId](const std::string& error) {
-        rec->finish(id, error);
+    // The job's own line goes into the history with it. Without it an
+    // operation that wrote nothing — a normalize that found the slot already
+    // at target — leaves a row that says only "normalize", and the reason
+    // lives nowhere but a toast that is already gone.
+    job.after = [rec = recorder, id = options.opId, note = job.note](const std::string& error) {
+        rec->finish(id, error, note != nullptr ? note->toStdString() : std::string());
     };
     return job;
 }
