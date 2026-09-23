@@ -325,6 +325,38 @@ int main()
         CHECK(reopened.takeBytes(HistoryStore::contentHash(take)) == take);
     }
 
+    // --- the job's own line reaches the history ---
+    //
+    // An operation can finish having changed nothing on the card — normalize
+    // finds the slot already at target and writes no byte. Its row then has no
+    // slot_changes and no slot_audio to speak through, and the line the app
+    // wrote about it is the only record there is.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+
+        rec->begin("op-said", "normalize", volume);
+        rec->finish("op-said", "", "already at -18.0 LUFS");
+
+        rec->begin("op-quiet", "rename", volume);
+        rec->finish("op-quiet", "", "");
+
+        rec->begin("op-broke", "trim", volume);
+        rec->finish("op-broke", "cannot write MEMORY1.RC0", "trimmed to 12.0 s");
+
+        sqlite::Db& db = rec->store().db();
+        CHECK_EQ(text(db, "SELECT note FROM ops WHERE id = 'op-said'"),
+                 std::string("already at -18.0 LUFS"));
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-said'"), std::string("done"));
+        // nothing to say: NULL, not an empty string pretending to be a line
+        CHECK_EQ(text(db, "SELECT note FROM ops WHERE id = 'op-quiet'"), std::string("<null>"));
+        // a failure keeps its reason: it outranks the story
+        CHECK_EQ(text(db, "SELECT note FROM ops WHERE id = 'op-broke'"),
+                 std::string("cannot write MEMORY1.RC0"));
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-broke'"), std::string("failed"));
+    }
+
     // --- the wiring refuses to be built without what it needs ---
     {
         TempDir tmp;

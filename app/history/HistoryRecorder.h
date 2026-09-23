@@ -54,9 +54,13 @@ public:
     void bodies(const std::string& opId, const std::vector<commands::SlotChange>& changes);
     void landed(const std::string& opId, int slot, const std::string& fileName,
                 std::string_view bytes);
-    // `error` empty = the job succeeded. An operation that never began (the
-    // worker's gate refused the job first) has nothing to close.
-    void finish(const std::string& opId, const std::string& error);
+    // `error` empty = the job succeeded, and `note` is the line the job wrote
+    // about itself ("normalized -3.2 dB", "already at -18.0 LUFS") — the only
+    // record of an operation that decided to change nothing, and empty for the
+    // ones whose rows already say everything. A failed job keeps its error
+    // there instead: the reason outranks the story. An operation that never
+    // began (the worker's gate refused the job first) has nothing to close.
+    void finish(const std::string& opId, const std::string& error, const std::string& note = {});
 
     HistoryStore& store();
 
