@@ -50,6 +50,14 @@ inline constexpr long long kRhythmStateOn = 1;
 inline constexpr long long kRhythmPlayCount1Meas = 1;
 inline constexpr long long kRhythmPatternBlank = 57;
 
+// TRACK1.WavStat, the pedal's own index state for the slot's take: 0 = no take,
+// 1 = a take indexed and playable, 2 = a file present the pedal would not
+// index (a non-float32 upload). Pedal-owned; values seen on hardware
+// (docs/pedal-settings.md). push sets 1 together with the audio it writes, the
+// catalog and doctor read 1 as "this slot holds a take".
+inline constexpr long long kWavStatNone = 0;
+inline constexpr long long kWavStatIndexed = 1;
+
 // The factory-fresh generation pair (golden.json tailMarkers). The trailer
 // is really a write-generation counter — see setTailGeneration; this
 // pair is where a pedal starts counting and where a healed volume restarts.

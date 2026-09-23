@@ -922,6 +922,145 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
     return result;
 }
 
+// --- restore ---
+
+// The take a slot's folder holds: its on-card file name and the whole file.
+// The name is whatever the pedal or a push left there ("005_1.WAV",
+// "My Song.wav"); a restored take goes back under that same name.
+struct Take {
+    std::string fileName;
+    std::string bytes;
+};
+
+// A slot's state as ONE unit: the <mem> body byte for byte, and the take
+// that sat in the slot with it — none for a slot that held no audio. This is
+// the pair the history keeps on each side of an operation, and the pair the
+// pedal needs to agree with itself: the body's WavLen counts the frames of
+// the file next to it.
+struct SlotState {
+    std::string body;
+    std::optional<Take> take;
+};
+
+struct RestoreResult {
+    std::vector<std::string> archived; // the takes the slot held, by file name — kept first
+    std::int64_t frames;               // frames the slot now holds; 0 without a take
+    WriteResult written;
+};
+
+// A file name a take can carry inside its slot folder: a bare name, not a
+// path — a state is data the app stored, and a name with a directory in it
+// would write outside the slot — and not one the sweep would delete.
+inline bool isTakeFileName(std::string_view name)
+{
+    if (name.empty() || name == "." || name == "..")
+        return false;
+    const fs::path asPath { std::string(name) };
+    return asPath.filename() == asPath && !volume::isJunkName(name);
+}
+
+// Put a recorded slot state back (issue #50). The body is spliced into the
+// LIVE memory document through slotBody/replaceSlotBody — the other 98 slots
+// belong to the present, an old document is never written wholesale — and
+// the take goes back into the slot's folder under its own name, byte for
+// byte.
+//
+// This is not push. push derives Tempo, RecTmp, MeasLen and Measure from the
+// frame count, which is right for an import and wrong here: the state
+// carries the tempo the player had, and a restore that recomputed it would
+// undo the Set tempo they did. Nothing in the body is recomputed and nothing
+// in the take is canonicalized: what was recorded is what goes back.
+//
+// The body and the take are restored TOGETHER or not at all. A body restored
+// beside somebody else's audio is how a slot ends up unplayable, and it is
+// the natural result of "restore the settings" and "restore the take" being
+// two buttons — so there is one primitive, and it refuses a state that
+// disagrees with itself. The body's audio fields must describe the take that
+// will sit in the slot: WavStat=1 and WavLen equal to its frames with a take,
+// WavStat=0 and WavLen=0 without one. WavStat is what the pedal — and
+// doctor — read as "this slot holds a take", push sets it together with the
+// audio, and a body that claims a take beside an empty folder is exactly the
+// slot doctor reports. The take itself must be in the pedal's own format —
+// float32, stereo, 44.1 kHz, the gate push uses: no state recorded from a
+// card fails it (the pedal records and indexes nothing else), and what the
+// app puts on a card is the pedal's format and nothing else (issue #44). A
+// state that arrives from elsewhere is refused here rather than discarded by
+// the pedal at its next boot.
+//
+// Discipline as everywhere: everything validates before the first write; the
+// takes the slot holds go to the archive before they leave the card; the
+// journal hears the body change from the pair write. A restore is an
+// operation like any other, so it can be undone in turn. It is not refused
+// for changing nothing — the caller holds both states and decides that.
+inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& state,
+                             const WriteOptions& options)
+{
+    const fs::path dir = volume::wavDir(volume, slot); // validates the slot range
+    const std::string where = "restore of slot " + std::to_string(slot);
+    if (state.body.empty())
+        throw Error(where + " needs a slot body");
+    // A body is what lies between a <mem> opener and its closer, and nothing
+    // more: one carrying either would splice as a different document.
+    if (state.body.find("<mem id=\"") != std::string::npos
+        || state.body.find("</mem>") != std::string::npos)
+        throw Error(where + ": the body is not the content of one <mem> block");
+
+    // The frames the slot will hold, counted from the take that will sit there.
+    std::int64_t frames = 0;
+    if (state.take) {
+        if (!isTakeFileName(state.take->fileName))
+            throw Error(where + ": \"" + state.take->fileName
+                        + "\" is not a file name a take can carry");
+        const wav::BytesView takeView(
+            reinterpret_cast<const unsigned char*>(state.take->bytes.data()),
+            state.take->bytes.size());
+        // The shape first (the frames come from it), then the pedal's format.
+        frames = wav::assertUploadable(wav::readWavInfo(takeView)).frames;
+    }
+    // Each field exactly once, or the body is not one.
+    const long long wavStat = rc0::field(state.body, "WavStat");
+    const long long wavLen = rc0::field(state.body, "WavLen");
+    const long long wavStatForTake = state.take ? rc0::kWavStatIndexed : rc0::kWavStatNone;
+    if (wavStat != wavStatForTake || wavLen != frames) {
+        const std::string held = state.take
+            ? "its take \"" + state.take->fileName + "\" holds " + std::to_string(frames) + " frames"
+            : "it carries no take";
+        throw Error(where + " refused: the body says WavStat=" + std::to_string(wavStat)
+                    + ", WavLen=" + std::to_string(wavLen) + " but " + held
+                    + " — a body and a take that disagree would leave the slot unplayable, and"
+                      " they are only restored together");
+    }
+
+    const std::string memoryText = readMemory(volume);
+    const std::string newDocument = rc0::replaceSlotBody(memoryText, slot, state.body);
+
+    const std::vector<std::string> existing = volume::listSlotWavs(volume, slot);
+    if (!existing.empty() && !options.archive)
+        throw Error(where + " needs an archive — the take it replaces is kept first, it is never"
+                            " deleted outright");
+
+    // All checks passed — the writes begin. The archive first: whatever the
+    // slot holds is handed over whole, and leaves the card only after that.
+    RestoreResult result { {}, frames, {} };
+    std::error_code ec;
+    for (const auto& old : existing) {
+        archiveTake(options, "restore", slot, old, readFileBytes(dir / old));
+        result.archived.push_back(old);
+        if (!fs::remove(dir / old, ec) || ec)
+            throw Error("cannot remove " + (dir / old).string());
+    }
+    if (state.take) {
+        fs::create_directories(dir, ec);
+        if (ec)
+            throw Error("cannot create " + dir.string());
+        writeFileBytes(dir / state.take->fileName, state.take->bytes);
+        if (options.journal.audioWritten)
+            options.journal.audioWritten(slot, state.take->fileName, state.take->bytes);
+    }
+    result.written = writeMemoryPair(volume, newDocument, options);
+    return result;
+}
+
 // --- swap ---
 
 // The temporary address used while two occupied slots trade WAVE folders;
