@@ -25,6 +25,9 @@ public:
         std::function<void()> about;
         std::function<void()> backup;
         std::function<void()> cleanJunk;
+        // The folders from before the history (#72): the store is on this
+        // computer, so the item needs no pedal and is never greyed out.
+        std::function<void()> importLegacy;
         std::function<void()> feedTheCat;         // Help → the family tip jar, in the browser
         std::function<bool()> maintenanceEnabled; // pedal connected and idle
     };
@@ -58,6 +61,8 @@ public:
             const bool enabled = actions_.maintenanceEnabled && actions_.maintenanceEnabled();
             menu.addItem(kBackup, "Backup configs", enabled);
             menu.addItem(kCleanJunk, "Clean junk from the pedal", enabled);
+            menu.addSeparator();
+            menu.addItem(kImportLegacy, "Import the folders from before the history", true);
         } else if (name == "Help") {
             menu.addItem(kFeedTheCat, "Feed the Cat");
         }
@@ -70,12 +75,14 @@ public:
             actions_.backup();
         else if (itemId == kCleanJunk && actions_.cleanJunk)
             actions_.cleanJunk();
+        else if (itemId == kImportLegacy && actions_.importLegacy)
+            actions_.importLegacy();
         else if (itemId == kFeedTheCat && actions_.feedTheCat)
             actions_.feedTheCat();
     }
 
 private:
-    enum { kBackup = 1, kCleanJunk, kFeedTheCat };
+    enum { kBackup = 1, kCleanJunk, kImportLegacy, kFeedTheCat };
 
     const Actions actions_;
 
