@@ -905,9 +905,9 @@ void MainComponent::updateHistory()
                                               row.playable, row.restorable, row.op });
                          }
                          juce::MessageManager::callAsync(
-                             [safe, rows, entries = std::move(entries), slot, alive]() mutable {
+                             [safe, rows, loaded = std::move(entries), slot, alive]() mutable {
                                  if (*alive && safe != nullptr) {
-                                     safe->historyEntries = std::move(entries);
+                                     safe->historyEntries = std::move(loaded);
                                      safe->applyHistoryRows(std::move(rows), slot);
                                  }
                              });
