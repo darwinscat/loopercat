@@ -22,6 +22,7 @@
 #include "Normalize.hpp"
 #include "Params.hpp"
 #include "Rc0.hpp"
+#include "SystemFile.hpp"
 #include "Volume.hpp"
 #include "Wav.hpp"
 
@@ -124,12 +125,29 @@ inline void requireFreshArchivePath(const fs::path& dest)
 
 // --- reading ---
 
+// Validating a bank is the one thing that differs between the two kinds: a
+// memory file must carry its 99 <mem> entries, a settings file its single
+// <sys>, and each is refused where the other is expected (SystemFile.hpp).
+inline void assertBank(volume::Bank bank, std::string_view text)
+{
+    switch (bank) {
+    case volume::Bank::memory: rc0::assertMemoryFile(text); return;
+    case volume::Bank::system: sysfile::assertSystemFile(text); return;
+    }
+    throw Error("unknown bank");
+}
+
 // A specific bank, pinned — the doctor and the tests look at each in turn.
+inline std::string readBank(const fs::path& volume, volume::Bank bank, int fileNo)
+{
+    const std::string text = readFileBytes(volume::bankPath(volume, bank, fileNo));
+    assertBank(bank, text);
+    return text;
+}
+
 inline std::string readMemory(const fs::path& volume, int fileNo)
 {
-    const std::string text = readFileBytes(volume::memoryPath(volume, fileNo));
-    rc0::assertMemoryFile(text);
-    return text;
+    return readBank(volume, volume::Bank::memory, fileNo);
 }
 
 // THE database: the bank the write counters name as newest. The pedal writes
@@ -141,13 +159,13 @@ inline std::string readMemory(const fs::path& volume, int fileNo)
 // picks the newer counter across the wrap; an unreadable or trailer-less
 // bank simply loses the vote, and with neither readable the MEMORY1 error
 // propagates as before.
-inline std::string readMemory(const fs::path& volume)
+inline std::string readBank(const fs::path& volume, volume::Bank bank)
 {
     std::map<int, std::string> texts;
     std::map<int, std::uint32_t> generations;
     for (const int fileNo : { 1, 2 }) {
         try {
-            std::string text = readMemory(volume, fileNo);
+            std::string text = readBank(volume, bank, fileNo);
             if (const auto marker = rc0::tailMarker(text))
                 generations[fileNo] = *marker;
             texts[fileNo] = std::move(text);
@@ -156,7 +174,7 @@ inline std::string readMemory(const fs::path& volume)
         }
     }
     if (texts.empty())
-        return readMemory(volume, 1); // no bank readable: surface MEMORY1's error
+        return readBank(volume, bank, 1); // no bank readable: surface the first one's error
     if (generations.size() == 2) {
         const bool secondNewer =
             static_cast<std::int32_t>(generations[2] - generations[1]) > 0;
@@ -165,6 +183,18 @@ inline std::string readMemory(const fs::path& volume)
     if (generations.size() == 1)
         return texts[generations.begin()->first]; // a counted bank beats a trailer-less one
     return texts.contains(1) ? texts[1] : texts[2];
+}
+
+inline std::string readMemory(const fs::path& volume)
+{
+    return readBank(volume, volume::Bank::memory);
+}
+
+// The pedal's own settings, from the bank its counter names as newest — the
+// same rule, because it is the same pair mechanism (SystemFile.hpp).
+inline std::string readSystem(const fs::path& volume)
+{
+    return readBank(volume, volume::Bank::system);
 }
 
 // --- the write discipline ---
@@ -320,6 +350,45 @@ inline std::vector<SlotChange> slotChanges(std::string_view current, std::string
 // (the write is what heals it); with neither readable the count restarts at
 // the factory pair. The counter is a uint32 (field pedals sit far past one
 // byte — see Rc0.hpp); plain max and natural wrap at 2^32.
+namespace detail {
+
+    // The generation to continue from: the higher counter the volume carries,
+    // or no value when neither bank offers one (unreadable, or trailer-less).
+    inline std::optional<std::uint32_t> highestGeneration(const fs::path& volume,
+                                                          volume::Bank bank)
+    {
+        std::optional<std::uint32_t> base;
+        for (const int fileNo : { 1, 2 }) {
+            try {
+                if (const auto marker =
+                        rc0::tailMarker(readFileBytes(volume::bankPath(volume, bank, fileNo))))
+                    base = base ? std::max(*base, *marker) : *marker;
+            } catch (const Error&) {
+                // unreadable bank: no generation to continue from
+            }
+        }
+        return base;
+    }
+
+    // Both banks of one pair, stamped one generation apart and each verified
+    // by re-reading. Shared by the memory pair and the settings pair: the
+    // trailer mechanism is the card's, not one file kind's.
+    inline void writePairStamped(const fs::path& volume, volume::Bank bank,
+                                 std::string_view text, std::uint32_t base)
+    {
+        for (const int fileNo : { 1, 2 }) {
+            const std::string withTail =
+                rc0::setTailGeneration(text, base + static_cast<std::uint32_t>(fileNo));
+            const fs::path path = volume::bankPath(volume, bank, fileNo);
+            writeFileBytes(path, withTail);
+            if (readFileBytes(path) != withTail)
+                throw Error("verification failed: " + std::string(volume::bankStem(bank))
+                            + std::to_string(fileNo) + ".RC0 read back differently");
+        }
+    }
+
+} // namespace detail
+
 inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text,
                                    const WriteOptions& options)
 {
@@ -331,25 +400,44 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
         result.backedUp = backup(volume, options.backupRoot, options.opId);
     if (options.journal.bodiesChanging)
         options.journal.bodiesChanging(changes);
-    std::uint32_t base = 0x37; // one below the factory pair: a fresh volume lands on 0x38/0x39
-    for (const int fileNo : { 1, 2 }) {
-        try {
-            if (const auto marker =
-                    rc0::tailMarker(readFileBytes(volume::memoryPath(volume, fileNo))))
-                base = std::max(base, *marker);
-        } catch (const Error&) {
-            // unreadable bank: no generation to continue from
-        }
-    }
-    for (const int fileNo : { 1, 2 }) {
-        const std::string withTail =
-            rc0::setTailGeneration(text, base + static_cast<std::uint32_t>(fileNo));
-        const fs::path path = volume::memoryPath(volume, fileNo);
-        writeFileBytes(path, withTail);
-        if (readFileBytes(path) != withTail)
-            throw Error("verification failed: MEMORY" + std::to_string(fileNo)
-                        + ".RC0 read back differently");
-    }
+    // one below the factory pair: a fresh volume lands on 0x38/0x39
+    const std::uint32_t base = detail::highestGeneration(volume, volume::Bank::memory)
+                                  .value_or(rc0::tailMarkerFor(1) - 1);
+    detail::writePairStamped(volume, volume::Bank::memory, text, base);
+    volume::SweepResult sweep = volume::sweepJunk(volume);
+    result.swept = std::move(sweep.removed);
+    result.sweepFailed = std::move(sweep.failed);
+    return result;
+}
+
+// The settings pair, under the same discipline: validate, back the card up,
+// stamp both banks past the highest generation on the volume, verify each by
+// re-reading, sweep the sidecars macOS leaves behind.
+//
+// Two deliberate differences from the memory pair, both because we know less
+// here. There is no factory pair to restart from — the RC-5's own SYSTEM
+// counters sit wherever that pedal's history left them (0x0524/0x0525 on one
+// field unit, 0x21e on another), and inventing a starting point would hand
+// the pedal a settings file claiming to be older than the one it wrote. So a
+// volume whose settings banks cannot be read is refused rather than healed.
+// And there is no journal hook yet: #72's journal speaks in slots, and what a
+// settings change should record belongs with the feature that first makes one.
+//
+// Nothing in the app calls this yet. Writing a settings file to hardware is
+// unproven — the pedal has to still boot afterwards — and that experiment
+// belongs to the feature that needs it, with a backup at hand.
+inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text,
+                                   const WriteOptions& options)
+{
+    sysfile::assertSystemFile(text);
+    const auto base = detail::highestGeneration(volume, volume::Bank::system);
+    if (!base)
+        throw Error("refusing to write settings: neither SYSTEM bank on " + volume.string()
+                    + " can be read, so there is no write generation to continue from");
+    WriteResult result;
+    if (!options.skipBackup)
+        result.backedUp = backup(volume, options.backupRoot, options.opId);
+    detail::writePairStamped(volume, volume::Bank::system, text, *base);
     volume::SweepResult sweep = volume::sweepJunk(volume);
     result.swept = std::move(sweep.removed);
     result.sweepFailed = std::move(sweep.failed);
