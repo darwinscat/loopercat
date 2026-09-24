@@ -75,6 +75,30 @@ public:
     void recordPresentAudio(std::int64_t op, int slot, int track, const std::string& name,
                             std::int64_t size, const std::optional<std::string>& hash);
 
+    // One row of a slot's timeline, with everything the tab needs to write a
+    // sentence and to know what it may offer for it.
+    struct TimelineEntry {
+        std::int64_t op = 0;
+        std::int64_t at = 0; // wall clock, the order a player reads
+        std::string kind;
+        std::string actor;
+        std::string status;
+        std::string note;
+        std::optional<std::string> beforeBody;
+        std::optional<std::string> afterBody;
+        std::optional<int> swappedWith; // the slot a swap exchanged with
+        // The take this row's state holds. A legacy row has no state of its
+        // own, so it offers the take it archived instead — that is the only
+        // take it knows about.
+        std::string takeName;
+        std::optional<std::string> takeHash;
+        bool takeKept = false; // the bytes are in the store: it can be played
+    };
+
+    // Ordered by time, not by insertion: rows imported from the folders that
+    // predate the store are written last and belong first (#72).
+    std::vector<TimelineEntry> slotTimeline(int slot);
+
     // --- reads: what the tests look at today, and what #50 builds on ---
     std::optional<std::string> takeBytes(const std::string& hash);
     std::string opStatus(std::int64_t op);

@@ -234,6 +234,57 @@ std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slo
     return read.blob(0);
 }
 
+std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
+{
+    std::vector<TimelineEntry> rows;
+    sqlite::Statement read(db_,
+                           "SELECT o.seq, o.at, o.kind, o.actor, o.status, o.note, "
+                           "       c.before_body, c.after_body "
+                           "FROM ops o LEFT JOIN slot_changes c ON c.op = o.seq AND c.slot = ?1 "
+                           "WHERE o.seq IN (SELECT op FROM slot_changes WHERE slot = ?1 "
+                           "                UNION SELECT op FROM slot_audio WHERE slot = ?1) "
+                           "ORDER BY o.at, o.seq");
+    read.bind(1, slot);
+    while (read.step()) {
+        TimelineEntry row;
+        row.op = read.integer(0);
+        row.at = read.integer(1);
+        row.kind = read.text(2);
+        row.actor = read.text(3);
+        row.status = read.text(4);
+        row.note = read.isNull(5) ? std::string() : read.text(5);
+        if (!read.isNull(6))
+            row.beforeBody = read.blob(6);
+        if (!read.isNull(7))
+            row.afterBody = read.blob(7);
+        rows.push_back(std::move(row));
+    }
+
+    for (TimelineEntry& row : rows) {
+        // The take the row offers: the state's own, or — for a row that has
+        // no state, which is what a legacy import leaves — the one it kept.
+        sqlite::Statement take(db_, "SELECT name, hash, "
+                                    "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
+                                    "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
+                                    "ORDER BY CASE side WHEN 'after' THEN 0 ELSE 1 END LIMIT 1");
+        take.bind(1, row.op).bind(2, slot);
+        if (take.step()) {
+            row.takeName = take.text(0);
+            if (!take.isNull(1))
+                row.takeHash = take.blob(1);
+            row.takeKept = row.takeHash && take.integer(2) > 0;
+        }
+        if (row.kind == "swap") {
+            sqlite::Statement other(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
+                                         "AND slot <> ?2 LIMIT 1");
+            other.bind(1, row.op).bind(2, slot);
+            if (other.step())
+                row.swappedWith = static_cast<int>(other.integer(0));
+        }
+    }
+    return rows;
+}
+
 std::optional<std::string> HistoryStore::takeBytes(const std::string& hash)
 {
     sqlite::Statement read(db_, "SELECT bytes FROM blobs WHERE hash = ?1");

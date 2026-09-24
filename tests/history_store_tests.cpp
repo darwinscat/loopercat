@@ -350,5 +350,88 @@ int main()
         CHECK_EQ(count(leftover, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 1);
     }
 
+    // --- a slot's timeline: in the order a player reads it ---
+    //
+    // Rows imported from the folders that predate the store are written last
+    // and belong first: their operations really happened before the ones the
+    // app recorded, and a timeline sorted by insertion would put a take from
+    // September above one from last year.
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string old = take(20000, 41);
+        const std::string fresh = take(30000, 42);
+
+        // what the app did today
+        const auto live = r.store.beginOp(r.session, "op-live", "trim", 9000);
+        r.store.recordBodies(live, { { 5, "body-before", "body-after" } });
+        r.store.keepAudio(live, 5, 1, "005_1.WAV", old, 9000);
+        r.store.recordPresentAudio(live, 5, 1, "005_1.WAV",
+                                   static_cast<std::int64_t>(fresh.size()),
+                                   HistoryStore::contentHash(fresh));
+        r.store.finishOp(live, OpStatus::done, "trimmed");
+
+        // ...and what the import found afterwards, from a year before
+        const auto legacy = r.store.recordLegacyOp(r.session, "2025-05-01T10-00-00", 1000,
+                                                   "trash/2025-05-01T10-00-00");
+        r.store.keepLegacyTake(legacy, "trash/2025-05-01T10-00-00/005_1/005_1.WAV", 5, 1,
+                               "005_1.WAV", take(15000, 43), 1000);
+
+        const auto rows = r.store.slotTimeline(5);
+        CHECK_EQ(rows.size(), 2u);
+        if (rows.size() == 2u) {
+            CHECK_EQ(rows[0].kind, std::string("legacy")); // older by the clock, later by seq
+            CHECK_EQ(rows[0].actor, std::string("legacy"));
+            CHECK(rows[0].op > rows[1].op); // exactly the trap: insertion order would lie
+            CHECK_EQ(rows[1].kind, std::string("trim"));
+            CHECK_EQ(rows[1].note, std::string("trimmed"));
+            CHECK(rows[1].beforeBody.has_value() && *rows[1].beforeBody == "body-before");
+            CHECK(rows[1].afterBody.has_value() && *rows[1].afterBody == "body-after");
+            // the live row offers the take its state holds...
+            CHECK(rows[1].takeHash == HistoryStore::contentHash(fresh));
+            CHECK(!rows[1].takeKept); // ...whose bytes are on the card, not in the store
+            // ...and the legacy row offers the one it kept, which can be played
+            CHECK(rows[0].takeHash == HistoryStore::contentHash(take(15000, 43)));
+            CHECK(rows[0].takeKept);
+        }
+        // and nothing from another slot leaks in
+        CHECK(r.store.slotTimeline(6).empty());
+    }
+
+    {
+        // A swap row names the slot it exchanged with, from either side.
+        TempDir tmp;
+        Ready r(tmp.path);
+        const auto op = r.store.beginOp(r.session, "op-swap", "swap", 2000);
+        r.store.recordBodies(op, { { 3, "a-before", "a-after" }, { 7, "b-before", "b-after" } });
+        r.store.finishOp(op, OpStatus::done, "");
+        const auto three = r.store.slotTimeline(3);
+        const auto seven = r.store.slotTimeline(7);
+        CHECK_EQ(three.size(), 1u);
+        CHECK_EQ(seven.size(), 1u);
+        if (!three.empty() && !seven.empty()) {
+            CHECK(three.front().swappedWith == 7);
+            CHECK(seven.front().swappedWith == 3);
+        }
+    }
+
+    {
+        // A take whose bytes were released reads as a take that cannot be
+        // played — the row stays, the offer does not.
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string bytes = take(12000, 44);
+        const auto op = r.store.beginOp(r.session, "op-gone", "clear", 2000);
+        r.store.keepAudio(op, 9, 1, "009_1.WAV", bytes, 2000);
+        r.store.finishOp(op, OpStatus::done, "");
+        CHECK(r.store.slotTimeline(9).front().takeKept);
+        sqlite::Statement drop(r.store.db(), "DELETE FROM blobs WHERE hash = ?1");
+        drop.bindBlob(1, HistoryStore::contentHash(bytes)).run();
+        const auto after = r.store.slotTimeline(9);
+        CHECK_EQ(after.size(), 1u);
+        CHECK(after.front().takeHash.has_value()); // we still know which take it was
+        CHECK(!after.front().takeKept);            // and that its bytes are gone
+    }
+
     return testkit::summary("history_store_tests");
 }
