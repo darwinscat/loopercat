@@ -35,6 +35,8 @@
 //   legacy_files (version 2) the files the legacy import took out of the
 //                backups/ and trash/ folders, by path: the import's ledger,
 //                so a folder is recorded once however often it is offered
+//   ops.pinned   (version 3) a pinned operation holds every take its rows
+//                name against release (#74)
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -58,7 +60,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 2;
+inline constexpr std::int64_t kVersion = 3;
 
 // The schema as the sequence of its versions: step N takes a store at version
 // N to version N+1. A fresh store runs every step in order, so a store created
@@ -147,6 +149,13 @@ CREATE TABLE legacy_files(
     imported INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX legacy_files_by_op ON legacy_files(op);
+)sql",
+
+// 2 -> 3: a pin on an operation (issue #73's "pin a row"): while a row naming
+// a take is pinned, freeing space (#74) never releases its bytes. Added as a
+// column with a default, so every row that exists is unpinned, as it was.
+R"sql(
+ALTER TABLE ops ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));
 )sql",
 };
 

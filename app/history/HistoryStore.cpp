@@ -7,6 +7,8 @@
 
 #include <juce_cryptography/juce_cryptography.h>
 
+#include <algorithm>
+
 namespace loopercat::history
 {
 
@@ -23,15 +25,28 @@ void requirePragma(sqlite::Db& db, const std::string& pragma, const std::string&
         throw Error("the history store needs " + pragma + " = " + expected + ", found " + found);
 }
 
+std::string hex(std::string_view raw)
+{
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(raw.size() * 2);
+    for (const char c : raw) {
+        const auto b = static_cast<unsigned char>(c);
+        out += digits[b >> 4];
+        out += digits[b & 0xF];
+    }
+    return out;
+}
+
 } // namespace
 
 HistoryStore::HistoryStore(const std::filesystem::path& dir)
-    : db_([&dir] {
+    : file_(dir / "history.db"), db_([&dir, this] {
           std::error_code ec;
           std::filesystem::create_directories(dir, ec);
           if (ec)
               throw Error("cannot create the history directory " + dir.string());
-          return sqlite::Db::open(dir / "history.db");
+          return sqlite::Db::open(file_);
       }())
 {
     sqlite3_busy_timeout(db_.raw(), 5000);
@@ -311,6 +326,133 @@ bool HistoryStore::legacyFileImported(const std::string& path)
     sqlite::Statement read(db_, "SELECT 1 FROM legacy_files WHERE path = ?1");
     read.bindText(1, path);
     return read.step();
+}
+
+HistoryStore::Usage HistoryStore::usage()
+{
+    Usage out {};
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(file_, ec);
+    if (ec)
+        throw Error("cannot size " + file_.string() + ": " + ec.message());
+    out.fileBytes = static_cast<std::int64_t>(size);
+    const std::int64_t pageSize = schema::pragmaInteger(db_, "page_size");
+    out.freeBytes = schema::pragmaInteger(db_, "freelist_count") * pageSize;
+    // Joined on the key, so no take is read to be counted.
+    sqlite::Statement audio(db_, "SELECT coalesce(sum(m.size), 0) FROM blobs_meta m "
+                                 "JOIN blobs b ON b.hash = m.hash");
+    audio.step();
+    out.audioBytes = audio.integer(0);
+    out.otherBytes = std::max<std::int64_t>(0, out.fileBytes - out.freeBytes - out.audioBytes);
+    const auto space = std::filesystem::space(file_.parent_path(), ec);
+    if (ec)
+        throw Error("cannot read the free space under " + file_.parent_path().string() + ": "
+                    + ec.message());
+    out.diskAvailable = static_cast<std::int64_t>(space.available);
+    return out;
+}
+
+std::optional<std::int64_t> HistoryStore::offeredUndo()
+{
+    sqlite::Statement read(db_, "SELECT seq FROM ops WHERE status = 'done' AND actor != 'legacy' "
+                                "ORDER BY seq DESC LIMIT 1");
+    if (!read.step())
+        return std::nullopt;
+    return read.integer(0);
+}
+
+HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, std::optional<std::int64_t> undoOp)
+{
+    sqlite::Statement read(db_,
+        "SELECT "
+        "  (SELECT pinned FROM blobs_meta WHERE hash = ?1) "
+        "  OR EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
+        "             WHERE a.hash = ?1 AND o.pinned = 1) "
+        "  OR EXISTS (SELECT 1 FROM legacy_files l JOIN ops o ON o.seq = l.op "
+        "             WHERE l.hash = ?1 AND o.pinned = 1), "
+        "  EXISTS (SELECT 1 FROM slot_audio a WHERE a.hash = ?1 AND a.side = 'before' AND a.op = ?2), "
+        "  EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
+        "          WHERE a.hash = ?1 AND o.status = 'pending')");
+    read.bindBlob(1, hash);
+    if (undoOp)
+        read.bind(2, *undoOp);
+    else
+        read.bindNull(2);
+    read.step();
+    return Holds { read.integer(0) != 0, read.integer(1) != 0, read.integer(2) != 0 };
+}
+
+std::vector<retention::Blob> HistoryStore::keptBlobs(std::optional<std::int64_t> undoOp)
+{
+    std::vector<retention::Blob> out;
+    // References: every row that names the hash — a slot's audio on either
+    // side, and a legacy file (whose document has no slot_audio row).
+    sqlite::Statement read(db_, "SELECT m.hash, m.size, m.created, "
+                                "  (SELECT count(*) FROM slot_audio a WHERE a.hash = m.hash) "
+                                "  + (SELECT count(*) FROM legacy_files l WHERE l.hash = m.hash) "
+                                "FROM blobs_meta m JOIN blobs b ON b.hash = m.hash "
+                                "ORDER BY m.created, m.size DESC, m.hash");
+    while (read.step()) {
+        retention::Blob blob;
+        blob.hash = read.blob(0);
+        blob.size = read.integer(1);
+        blob.created = read.integer(2);
+        blob.references = static_cast<int>(read.integer(3));
+        const Holds holds = holdsOn(blob.hash, undoOp);
+        blob.pinned = holds.pinned;
+        blob.undo = holds.undo;
+        blob.inFlight = holds.inFlight;
+        out.push_back(std::move(blob));
+    }
+    return out;
+}
+
+void HistoryStore::pinOp(std::int64_t op, bool pinned)
+{
+    sqlite::Statement pin(db_, "UPDATE ops SET pinned = ?2 WHERE seq = ?1");
+    pin.bind(1, op).bind(2, pinned ? 1 : 0).run();
+    if (db_.changes() != 1)
+        throw Error("no operation " + std::to_string(op));
+}
+
+std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
+                                        std::optional<std::int64_t> undoOp, std::int64_t nowMs)
+{
+    sqlite::Transaction tx(db_);
+    std::int64_t freed = 0;
+    sqlite::Statement kept(db_, "SELECT m.size FROM blobs_meta m JOIN blobs b ON b.hash = m.hash "
+                                "WHERE m.hash = ?1");
+    sqlite::Statement drop(db_, "DELETE FROM blobs WHERE hash = ?1");
+    sqlite::Statement mark(db_, "UPDATE blobs_meta SET released = ?2 WHERE hash = ?1");
+    for (const std::string& hash : hashes) {
+        kept.bindBlob(1, hash);
+        if (!kept.step())
+            throw Error("no bytes are kept for take " + hex(hash));
+        const std::int64_t size = kept.integer(0);
+        kept.reset();
+        const Holds holds = holdsOn(hash, undoOp);
+        if (holds.pinned)
+            throw Error("take " + hex(hash) + " is pinned");
+        if (holds.undo)
+            throw Error("take " + hex(hash) + " is needed by the undo on offer");
+        if (holds.inFlight)
+            throw Error("take " + hex(hash) + " belongs to an operation still running");
+        drop.bindBlob(1, hash).run();
+        drop.reset();
+        mark.bindBlob(1, hash).bind(2, nowMs).run();
+        mark.reset();
+        freed += size;
+    }
+    tx.commit();
+    return freed;
+}
+
+std::int64_t HistoryStore::vacuum(int pages)
+{
+    if (pages < 1)
+        throw Error("a vacuum slice is at least one page");
+    db_.exec("PRAGMA incremental_vacuum(" + std::to_string(pages) + ")");
+    return schema::pragmaInteger(db_, "freelist_count");
 }
 
 } // namespace loopercat::history

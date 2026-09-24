@@ -123,10 +123,22 @@ CREATE TABLE blobs(
 // Not text: a NUL and two high bytes inside, so a text-shaped path would show.
 const std::string kTake = std::string("the take's bytes\0\xff\x01 with a NUL inside", 37);
 
+// What version 2 added (PR #88): the legacy import's ledger.
+constexpr const char* kVersion2Addition = R"sql(
+CREATE TABLE legacy_files(
+    path     TEXT    PRIMARY KEY,
+    op       INTEGER NOT NULL REFERENCES ops(seq),
+    kind     TEXT    NOT NULL CHECK (kind IN ('take', 'document')),
+    hash     BLOB    NOT NULL REFERENCES blobs_meta(hash),
+    imported INTEGER NOT NULL
+) STRICT;
+CREATE INDEX legacy_files_by_op ON legacy_files(op);
+)sql";
+
 // A version-1 history as LooperCat 0.9.x left it: the storage properties the
 // store demands, version 1's tables, and a life in them — a card, a session,
 // a finished op with its take and bodies, and an op the app never finished.
-void writeVersion1(const fs::path& dir)
+void writeVersion(const fs::path& dir, int version)
 {
     fs::create_directories(dir);
     auto db = sqlite::Db::open(dir / "history.db");
@@ -135,7 +147,9 @@ void writeVersion1(const fs::path& dir)
     db.exec("PRAGMA journal_mode = DELETE");
     db.exec("PRAGMA foreign_keys = ON");
     db.exec(kVersion1);
-    db.exec("PRAGMA user_version = 1");
+    if (version >= 2)
+        db.exec(kVersion2Addition);
+    db.exec("PRAGMA user_version = " + std::to_string(version));
     db.exec("INSERT INTO cards(id, model, label, first_seen, last_seen) "
             "VALUES (1, 'RC-5', 'BOSS RC-5', 1000, 2000)");
     db.exec("INSERT INTO sessions(id, card, connected_at, disconnected_at) VALUES (1, 1, 1000, 2000)");
@@ -152,7 +166,14 @@ void writeVersion1(const fs::path& dir)
     sqlite::Statement audio(db, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
                                 "VALUES (1, 42, 'before', 1, 'take.wav', ?2, ?1)");
     audio.bindBlob(1, hash).bind(2, static_cast<std::int64_t>(kTake.size())).run();
+    if (version >= 2) {
+        sqlite::Statement ledger(db, "INSERT INTO legacy_files(path, op, kind, hash, imported) "
+                                     "VALUES ('trash/2026-09-01T21-35-46/042_1/take.wav', 1, 'take', ?1, 1500)");
+        ledger.bindBlob(1, hash).run();
+    }
 }
+
+void writeVersion1(const fs::path& dir) { writeVersion(dir, 1); }
 
 } // namespace
 
@@ -170,9 +191,12 @@ int main()
 
         HistoryStore store(tmp.path / "history");
         sqlite::Db& db = store.db();
-        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 2);
-        CHECK_EQ(schema::kVersion, 2);
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 3);
+        CHECK_EQ(schema::kVersion, 3);
         CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'legacy_files'"), 1);
+        // version 3's column, unpinned on every row that was there
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE pinned = 0"), 2);
+        CHECK_THROWS(db.exec("UPDATE ops SET pinned = 2 WHERE seq = 1"), "CHECK");
 
         // nothing lost
         CHECK_EQ(count(db, "SELECT count(*) FROM cards WHERE model = 'RC-5' AND label = 'BOSS RC-5'"), 1);
@@ -222,7 +246,7 @@ int main()
         writeVersion1(tmp.path / "history");
         { HistoryStore first(tmp.path / "history"); }
         HistoryStore second(tmp.path / "history");
-        CHECK_EQ(schema::pragmaInteger(second.db(), "user_version"), 2);
+        CHECK_EQ(schema::pragmaInteger(second.db(), "user_version"), 3);
         CHECK_EQ(count(second.db(), "SELECT count(*) FROM ops"), 2);
         CHECK_EQ(count(second.db(), "SELECT count(*) FROM sqlite_master WHERE name = 'legacy_files'"), 1);
     }
@@ -240,7 +264,26 @@ int main()
         CHECK(a == b);
         CHECK(!a.empty());
         CHECK_EQ(count(fresh.db(), "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 8);
-        CHECK_EQ(schema::pragmaInteger(fresh.db(), "user_version"), 2);
+        CHECK_EQ(schema::pragmaInteger(fresh.db(), "user_version"), 3);
+    }
+
+    // --- a version-2 store (the ledger, no pins) opens as version 3, rows intact ---
+    {
+        TempDir tmp;
+        writeVersion(tmp.path / "history", 2);
+        HistoryStore store(tmp.path / "history");
+        sqlite::Db& db = store.db();
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 3);
+        CHECK_EQ(count(db, "SELECT count(*) FROM legacy_files WHERE kind = 'take'"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE pinned = 0"), 2);
+        CHECK(store.takeBytes(HistoryStore::contentHash(kTake)) == kTake);
+        store.pinOp(1, true);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE pinned = 1"), 1);
+        // and it is the same store a fresh one is
+        HistoryStore fresh(tmp.path / "fresh");
+        const std::string sql = "SELECT type || ' ' || name || ' ' || coalesce(sql, '') "
+                                "FROM sqlite_master ORDER BY type, name";
+        CHECK(column(db, sql) == column(fresh.db(), sql));
     }
 
     // --- version 1's storage properties are still demanded of an upgraded store ---
@@ -257,8 +300,9 @@ int main()
 
     // --- one step per version, and the released step is the one that shipped ---
     {
-        CHECK_EQ(sizeof(schema::kSteps) / sizeof(schema::kSteps[0]), 2u);
+        CHECK_EQ(sizeof(schema::kSteps) / sizeof(schema::kSteps[0]), 3u);
         CHECK_EQ(std::string(schema::kSteps[0]), std::string(kVersion1));
+        CHECK_EQ(std::string(schema::kSteps[1]), std::string(kVersion2Addition));
     }
 
     return testkit::summary("history_schema_tests");
