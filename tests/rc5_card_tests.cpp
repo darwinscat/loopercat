@@ -116,10 +116,12 @@ int main()
         CHECK_EQ(measureMode, 1);
         CHECK_EQ(factoryEmpty, 57);
         CHECK_EQ(audio, 41);
-        // One memory on this card carries a WavStat this app has never
-        // decided about. The browser shows it as holding no loop; whatever
-        // the value turns out to mean, that decision is made here, in the
-        // open, and not by an `== 1` somewhere far away.
+        // One memory carries WavStat=2: a file the pedal found and refused
+        // to index — here a 16-bit take from before #44, which the pedal
+        // reports as "unsupported" and will not play (hardware, 2026-09-24).
+        // docs/pedal-settings.md records the value; the browser shows no
+        // loop and doctor() explains the file. The count is pinned so this
+        // card keeps testing that path.
         CHECK_EQ(unindexed, 1);
         for (const auto& slot : slots)
             if (rc0::sectionField(rc0::slotBody(card, slot.slot), rc0::kSectionTrack1, "WavStat")
