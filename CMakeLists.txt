@@ -219,7 +219,8 @@ function(loopercat_core_test name)
     target_compile_options(${name} PRIVATE ${LOOPERCAT_STRICT_FLAGS})
     target_compile_definitions(${name} PRIVATE
         LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json"
-        LOOPERCAT_RC5_CARD="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/rc5-card.RC0")
+        LOOPERCAT_RC5_CARD="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/rc5-card.RC0"
+        LOOPERCAT_RC5_SYSTEM="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/rc5-system.RC0")
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -230,6 +231,8 @@ loopercat_core_test(quit_tests)
 loopercat_core_test(rc0_tests)
 # The same model against a whole real card, byte for byte (fixtures/rc5-card.RC0).
 loopercat_core_test(rc5_card_tests)
+# The pedal's settings file, against a real one (fixtures/rc5-system.RC0).
+loopercat_core_test(rc5_system_tests)
 loopercat_core_test(wav_tests)
 loopercat_core_test(volume_tests)
 loopercat_core_test(lifecycle_tests)
