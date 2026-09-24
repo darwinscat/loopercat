@@ -543,5 +543,48 @@ int main()
                  static_cast<std::int64_t>(big.size()));
     }
 
+    // --- the run in one sentence: what happened, never zeros dressed as news ---
+    {
+        legacy::Report none;
+        CHECK_EQ(legacy::describe(none), std::string("No folders from before the history were found."));
+
+        legacy::Report first;
+        first.operations = 360;
+        first.takes = 47;
+        first.documents = 1406;
+        first.deduplicated = 658;
+        first.skipped = std::vector<legacy::Skipped>(11, { "backups/x", "already in the history" });
+        CHECK_EQ(legacy::describe(first),
+                 std::string("Imported 360 operations: 47 takes and 1406 documents "
+                             "(658 already kept, counted once). "
+                             "11 folders skipped, the reasons are in operations.log."));
+
+        legacy::Report again;
+        again.alreadyImported = 1453;
+        again.skipped = std::vector<legacy::Skipped>(11, { "backups/x", "already in the history" });
+        CHECK_EQ(legacy::describe(again),
+                 std::string("Nothing new to import. 1453 files were already in the history. "
+                             "11 folders skipped, the reasons are in operations.log."));
+
+        legacy::Report one;
+        one.operations = 1;
+        one.takes = 1;
+        one.documents = 0;
+        one.alreadyImported = 1;
+        one.skipped = { { "trash/notes.txt", "not a folder" } };
+        CHECK_EQ(legacy::describe(one),
+                 std::string("Imported 1 operation: 1 take and 0 documents. "
+                             "1 file was already in the history. "
+                             "1 folder skipped, the reasons are in operations.log."));
+
+        legacy::Report onlySkipped;
+        onlySkipped.skipped = { { "backups/random", "not an operation folder" } };
+        CHECK_EQ(legacy::describe(onlySkipped),
+                 std::string("Nothing new to import. 1 folder skipped, the reasons are in operations.log."));
+        // the sentence is for a toast: skipped paths and reasons stay out of it
+        CHECK(legacy::describe(onlySkipped).find("random") == std::string::npos);
+        CHECK(legacy::describe(first).find("backups/x") == std::string::npos);
+    }
+
     return testkit::summary("legacy_import_tests");
 }
