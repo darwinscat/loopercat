@@ -331,7 +331,8 @@ int main()
         TempDir tmp;
         {
             auto raw = sqlite::Db::open(tmp.path / "history.db");
-            raw.exec(schema::kTables);
+            for (const char* step : schema::kSteps)
+                raw.exec(step);
             raw.exec("PRAGMA user_version = " + std::to_string(schema::kVersion));
         }
         CHECK_THROWS(HistoryStore(tmp.path), "auto_vacuum");

@@ -116,14 +116,8 @@ std::int64_t HistoryStore::beginOp(std::int64_t session, const std::string& opId
     return db_.lastInsertRowid();
 }
 
-void HistoryStore::keepAudio(std::int64_t op, int slot, int track, const std::string& name,
-                             std::string_view bytes, std::int64_t nowMs)
+bool HistoryStore::keepBlob(const std::string& hash, std::string_view bytes, std::int64_t nowMs)
 {
-    const std::string hash = contentHash(bytes);
-    sqlite::Transaction tx(db_);
-
-    // A take already kept is kept once; one released earlier (#74) gets its
-    // bytes back, since here they are again.
     sqlite::Statement meta(db_, "SELECT released IS NOT NULL FROM blobs_meta WHERE hash = ?1");
     meta.bindBlob(1, hash);
     const bool known = meta.step();
@@ -140,8 +134,17 @@ void HistoryStore::keepAudio(std::int64_t op, int slot, int track, const std::st
     if (!known || released) {
         sqlite::Statement put(db_, "INSERT INTO blobs(hash, bytes) VALUES (?1, ?2)");
         put.bindBlob(1, hash).bindBlob(2, bytes).run();
+        return true;
     }
+    return false;
+}
 
+void HistoryStore::keepAudio(std::int64_t op, int slot, int track, const std::string& name,
+                             std::string_view bytes, std::int64_t nowMs)
+{
+    const std::string hash = contentHash(bytes);
+    sqlite::Transaction tx(db_);
+    keepBlob(hash, bytes, nowMs);
     sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
                                "VALUES (?1, ?2, 'before', ?3, ?4, ?5, ?6)");
     row.bind(1, op).bind(2, slot).bind(3, track).bindText(4, name)
@@ -186,6 +189,51 @@ void HistoryStore::finishOp(std::int64_t op, OpStatus status, const std::string&
         throw Error("operation " + std::to_string(op) + " is not pending");
 }
 
+void HistoryStore::recordPresentAudio(std::int64_t op, int slot, int track,
+                                      const std::string& name, std::int64_t size,
+                                      const std::optional<std::string>& hash)
+{
+    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
+                               "VALUES (?1, ?2, 'after', ?3, ?4, ?5, ?6)");
+    row.bind(1, op).bind(2, slot).bind(3, track).bindText(4, name).bind(5, size);
+    if (hash)
+        row.bindBlob(6, *hash);
+    else
+        row.bindNull(6);
+    row.run();
+}
+
+std::vector<int> HistoryStore::touchedSlots(std::int64_t op)
+{
+    sqlite::Statement read(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
+                                "UNION SELECT slot FROM slot_audio WHERE op = ?1 ORDER BY slot");
+    read.bind(1, op);
+    std::vector<int> slots;
+    while (read.step())
+        slots.push_back(static_cast<int>(read.integer(0)));
+    return slots;
+}
+
+bool HistoryStore::hasAfterAudio(std::int64_t op, int slot)
+{
+    sqlite::Statement read(db_, "SELECT 1 FROM slot_audio WHERE op = ?1 AND slot = ?2 "
+                                "AND side = 'after' LIMIT 1");
+    read.bind(1, op).bind(2, slot);
+    return read.step();
+}
+
+std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot,
+                                                        const std::string& name, std::int64_t size)
+{
+    sqlite::Statement read(db_, "SELECT hash FROM slot_audio WHERE slot = ?2 AND side = 'after' "
+                                "AND name = ?3 AND size = ?4 AND op < ?1 AND hash IS NOT NULL "
+                                "ORDER BY op DESC LIMIT 1");
+    read.bind(1, op).bind(2, slot).bindText(3, name).bind(4, size);
+    if (!read.step())
+        return std::nullopt;
+    return read.blob(0);
+}
+
 std::optional<std::string> HistoryStore::takeBytes(const std::string& hash)
 {
     sqlite::Statement read(db_, "SELECT bytes FROM blobs WHERE hash = ?1");
@@ -202,6 +250,67 @@ std::string HistoryStore::opStatus(std::int64_t op)
     if (!read.step())
         throw Error("no operation " + std::to_string(op));
     return read.text(0);
+}
+
+std::optional<HistoryStore::OpIdentity> HistoryStore::findOp(const std::string& opId)
+{
+    sqlite::Statement read(db_, "SELECT seq, actor FROM ops WHERE id = ?1");
+    read.bindText(1, opId);
+    if (!read.step())
+        return std::nullopt;
+    return OpIdentity { read.integer(0), read.text(1) };
+}
+
+std::int64_t HistoryStore::recordLegacyOp(std::int64_t session, const std::string& opId,
+                                          std::int64_t atMs, const std::string& note)
+{
+    sqlite::Statement add(db_, "INSERT INTO ops(id, session, kind, actor, status, at, note) "
+                               "VALUES (?1, ?2, 'legacy', 'legacy', 'done', ?3, ?4)");
+    add.bindText(1, opId).bind(2, session).bind(3, atMs).bindText(4, note).run();
+    return db_.lastInsertRowid();
+}
+
+bool HistoryStore::recordLegacyFile(std::int64_t op, const std::string& path, const char* kind,
+                                    std::string_view bytes, std::int64_t nowMs,
+                                    const std::string& hash)
+{
+    const bool written = keepBlob(hash, bytes, nowMs);
+    sqlite::Statement ledger(db_, "INSERT INTO legacy_files(path, op, kind, hash, imported) "
+                                  "VALUES (?1, ?2, ?3, ?4, ?5)");
+    ledger.bindText(1, path).bind(2, op).bindText(3, kind).bindBlob(4, hash).bind(5, nowMs).run();
+    return written;
+}
+
+bool HistoryStore::keepLegacyTake(std::int64_t op, const std::string& path, int slot, int track,
+                                  const std::string& name, std::string_view bytes,
+                                  std::int64_t nowMs)
+{
+    const std::string hash = contentHash(bytes);
+    sqlite::Transaction tx(db_);
+    const bool written = recordLegacyFile(op, path, "take", bytes, nowMs, hash);
+    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
+                               "VALUES (?1, ?2, 'before', ?3, ?4, ?5, ?6)");
+    row.bind(1, op).bind(2, slot).bind(3, track).bindText(4, name)
+        .bind(5, static_cast<std::int64_t>(bytes.size())).bindBlob(6, hash).run();
+    tx.commit();
+    return written;
+}
+
+bool HistoryStore::keepLegacyDocument(std::int64_t op, const std::string& path,
+                                      std::string_view bytes, std::int64_t nowMs)
+{
+    const std::string hash = contentHash(bytes);
+    sqlite::Transaction tx(db_);
+    const bool written = recordLegacyFile(op, path, "document", bytes, nowMs, hash);
+    tx.commit();
+    return written;
+}
+
+bool HistoryStore::legacyFileImported(const std::string& path)
+{
+    sqlite::Statement read(db_, "SELECT 1 FROM legacy_files WHERE path = ?1");
+    read.bindText(1, path);
+    return read.step();
 }
 
 } // namespace loopercat::history

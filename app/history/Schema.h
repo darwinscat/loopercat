@@ -22,10 +22,19 @@
 //   slot_changes what an op did to a slot's body — before AND after in one
 //                row, so every recorded op can be undone on its own
 //   slot_audio   which takes a slot held on either side of an op: name, size,
-//                and the content hash when the bytes passed through the app
+//                and the content hash when the store knows those bytes.
+//                For an operation the app finished, the `after` rows are the
+//                whole truth about that slot: none means the slot holds no
+//                audio, never "we did not look". A hash is absent only when
+//                the bytes are strange to the store — a take the pedal
+//                recorded while the app was away — and is never guessed.
+//                Legacy rows (actor = 'legacy') promise none of this
 //   blobs_meta   what the store keeps, and what is pinned or released
 //   blobs        the bytes, by content hash — never without their blobs_meta
 //                row, which the foreign key enforces
+//   legacy_files (version 2) the files the legacy import took out of the
+//                backups/ and trash/ folders, by path: the import's ledger,
+//                so a folder is recorded once however often it is offered
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -49,9 +58,17 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 1;
+inline constexpr std::int64_t kVersion = 2;
 
-inline constexpr const char* kTables = R"sql(
+// The schema as the sequence of its versions: step N takes a store at version
+// N to version N+1. A fresh store runs every step in order, so a store created
+// today and one migrated from version 1 hold the same tables by construction —
+// there is no separate "current schema" for the upgrades to drift from. A
+// step, once released, is never edited: stores in the field sit at some
+// version, and the only way forward for them is the next step.
+inline constexpr const char* kSteps[] = {
+// 0 -> 1: the timeline and the bytes.
+R"sql(
 CREATE TABLE cards(
     id          INTEGER PRIMARY KEY,
     model       TEXT    NOT NULL,
@@ -114,7 +131,27 @@ CREATE TABLE blobs(
     hash  BLOB PRIMARY KEY REFERENCES blobs_meta(hash),
     bytes BLOB NOT NULL
 ) STRICT;
-)sql";
+)sql",
+
+// 1 -> 2: the legacy import's ledger (LegacyImport.h). `path` is the file's
+// path under the data home, '/'-separated; `op` the legacy op it was recorded
+// under; `kind` what the file was — a take out of trash/ or a document out of
+// backups/; `hash` the bytes it put through the store, so the folder's fate
+// (#74) can be decided by comparing, never by trusting.
+R"sql(
+CREATE TABLE legacy_files(
+    path     TEXT    PRIMARY KEY,
+    op       INTEGER NOT NULL REFERENCES ops(seq),
+    kind     TEXT    NOT NULL CHECK (kind IN ('take', 'document')),
+    hash     BLOB    NOT NULL REFERENCES blobs_meta(hash),
+    imported INTEGER NOT NULL
+) STRICT;
+CREATE INDEX legacy_files_by_op ON legacy_files(op);
+)sql",
+};
+
+static_assert(sizeof(kSteps) / sizeof(kSteps[0]) == kVersion,
+              "one step per version: kSteps[N] takes a store from version N to N + 1");
 
 inline std::int64_t pragmaInteger(sqlite::Db& db, const std::string& pragma)
 {
@@ -133,7 +170,9 @@ inline std::string pragmaText(sqlite::Db& db, const std::string& pragma)
 }
 
 // Brings a freshly opened store to version kVersion, or refuses. Idempotent:
-// an up-to-date store is left exactly as it is.
+// an up-to-date store is left exactly as it is. The steps from the version
+// found to kVersion run in one transaction with the version stamp, so a store
+// is at a version it fully has, or untouched — never between two.
 inline void migrate(sqlite::Db& db)
 {
     const std::int64_t found = pragmaInteger(db, "main.user_version");
@@ -144,9 +183,9 @@ inline void migrate(sqlite::Db& db)
     if (found == kVersion)
         return;
 
-    // Only version 0 — a brand-new store — reaches here today.
     sqlite::Transaction tx(db);
-    db.exec(kTables);
+    for (std::int64_t version = found; version < kVersion; ++version)
+        db.exec(kSteps[version]);
     db.exec("PRAGMA main.user_version = " + std::to_string(kVersion));
     tx.commit();
 }
