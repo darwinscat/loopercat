@@ -5,7 +5,7 @@
 
 #include "OperationId.h"
 #include "history/HistoryRecorder.h"
-#include "history/SlotStory.h"
+#include "history/SlotRows.h"
 #include "OperationsLog.h"
 #include "PedalPortName.h"
 #include "Strings.h"
@@ -893,34 +893,13 @@ void MainComponent::updateHistory()
                      0,
                      [rec = recorder, slot, safe, alive = uiAlive](const volume::fs::path&) {
                          std::vector<HistoryPane::Row> rows;
-                         const auto entries = rec->store().slotTimeline(slot);
-                         for (std::size_t i = 0; i < entries.size(); ++i) {
-                             const auto& entry = entries[i];
-                             const bool newest = i + 1 == entries.size();
-                             // The newest row's take is the one the slot holds
-                             // now; an older one's is in the store, or gone.
-                             history::story::Take take = history::story::Take::none;
-                             if (entry.takeHash || !entry.takeName.empty())
-                                 take = newest         ? history::story::Take::onCard
-                                     : entry.takeKept  ? history::story::Take::kept
-                                                       : history::story::Take::lost;
-                             const history::story::Line line =
-                                 history::story::tell({ .kind = entry.kind,
-                                                        .beforeBody = entry.beforeBody,
-                                                        .afterBody = entry.afterBody,
-                                                        .swappedWith = entry.swappedWith,
-                                                        .takeName = entry.takeName,
-                                                        .take = take,
-                                                        .note = entry.note });
-                             const juce::Time when(entry.at);
+                         for (const auto& row : history::rows::forSlot(rec->store().slotTimeline(slot))) {
+                             const juce::Time when(row.at);
                              const bool today = when.getDayOfYear()
                                  == juce::Time::getCurrentTime().getDayOfYear();
                              rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
-                                              line.action, line.detail, line.audio,
-                                              entry.takeKept,
-                                              entry.afterBody.has_value()
-                                                  && (!entry.takeHash || entry.takeKept || newest),
-                                              entry.op });
+                                              row.line.action, row.line.detail, row.line.audio,
+                                              row.playable, row.restorable, row.op });
                          }
                          juce::MessageManager::callAsync([safe, rows, slot, alive] {
                              if (*alive && safe != nullptr)

@@ -237,6 +237,10 @@ loopercat_core_test(sysex_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
 loopercat_core_test(slot_story_tests)
+loopercat_core_test(slot_rows_tests)
+# What the tab may offer for a row is decided over the store's own types, so
+# this one sees sqlite's header (SYSTEM: its C internals stay out of the gate).
+target_link_libraries(slot_rows_tests PRIVATE loopercat_sqlite3)
 loopercat_core_test(operation_id_tests)
 loopercat_core_test(downmix_tests)
 loopercat_core_test(loudness_tests)
