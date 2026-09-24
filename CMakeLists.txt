@@ -376,6 +376,7 @@ target_sources(LooperCat PRIVATE
     app/Main.cpp
     app/history/HistoryRecorder.cpp
     app/history/HistoryStore.cpp
+    app/history/LegacyImport.cpp
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
     app/PlayerPane.cpp
@@ -584,6 +585,45 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
+
+# The store's versions: a version-1 file built from version 1's own definition
+# opens, gains the new table, keeps every row.
+juce_add_console_app(history_schema_tests PRODUCT_NAME "history_schema_tests")
+target_sources(history_schema_tests PRIVATE tests/history_schema_tests.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_schema_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_schema_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_schema_tests COMMAND history_schema_tests)
+
+# The legacy import: the backups/ and trash/ folders from before the store,
+# recorded once, byte-exact, with nothing invented and nothing touched.
+juce_add_console_app(legacy_import_tests PRODUCT_NAME "legacy_import_tests")
+target_sources(legacy_import_tests PRIVATE tests/legacy_import_tests.cpp
+    app/history/HistoryStore.cpp
+    app/history/LegacyImport.cpp)
+target_compile_definitions(legacy_import_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(legacy_import_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME legacy_import_tests COMMAND legacy_import_tests)
 
 # ----------------------------------------------------------------------------
 # MP3 import (issue #52): theory tests for Mp3AudioFormat + the import chain —
