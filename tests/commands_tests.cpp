@@ -21,6 +21,10 @@
 //     overwrite without force
 //   - doctor reports junk, trailer damage, pair divergence, config/audio
 //     disagreements
+//   - on a real card (fixtures/rc5-card.RC0) a mutation changes exactly the
+//     fields it exists to write, each in the section that owns it, and no
+//     other byte; a same-named tag in a section the mutations do not own is
+//     neither read nor written
 
 #include "support.hpp"
 
@@ -257,6 +261,121 @@ commands::SlotState recordOnPedal(const fs::path& volume, int slot, const std::s
                               { .skipBackup = true });
     return { rc0::slotBody(commands::readMemory(volume), slot),
              commands::Take { name, commands::readFileBytes(volume::wavDir(volume, slot) / name) } };
+}
+
+// --- a real card, and the field-level view of a change ---
+
+// The real card, as the pedal wrote it (fixtures/rc5-card.RC0): 99 memories,
+// 41 of them a loop, every byte off an RC-5.
+std::string cardText()
+{
+    return commands::readFileBytes(LOOPERCAT_RC5_CARD);
+}
+
+// A scratch volume holding the real card in both banks: a mutation then
+// starts from exactly the bytes a pedal wrote.
+fs::path makePedalFromCard(const fs::path& root)
+{
+    const fs::path volume = root / "PEDAL";
+    fs::create_directories(volume / "ROLAND" / "WAVE");
+    fs::create_directories(volume::dataDir(volume));
+    const std::string card = cardText();
+    for (const int fileNo : { 1, 2 })
+        commands::writeFileBytes(volume::memoryPath(volume, fileNo), card);
+    return volume;
+}
+
+// One line of a memory body is one field — a tab, then <Tag>value</Tag> — or
+// one section's opener or closer on a line of its own: the shape every RC-5
+// writes (the card fixture; golden.json's factory slot). A field line taken
+// apart, or nothing for any other line.
+struct FieldLine {
+    std::string tag;
+    long long value;
+};
+
+std::optional<FieldLine> parseFieldLine(const std::string& line)
+{
+    if (line.size() < 2 || line[0] != '\t' || line[1] != '<')
+        return std::nullopt;
+    const auto tagEnd = line.find('>', 2);
+    if (tagEnd == std::string::npos)
+        return std::nullopt;
+    const std::string tag = line.substr(2, tagEnd - 2);
+    const std::string close = "</" + tag + ">";
+    const std::size_t valueBegin = tagEnd + 1;
+    if (line.size() < valueBegin + close.size()
+        || line.compare(line.size() - close.size(), close.size(), close) != 0)
+        return std::nullopt;
+    const std::string digits = line.substr(valueBegin, line.size() - close.size() - valueBegin);
+    std::size_t i = (!digits.empty() && digits[0] == '-') ? 1 : 0;
+    if (i == digits.size())
+        return std::nullopt;
+    for (; i < digits.size(); ++i)
+        if (digits[i] < '0' || digits[i] > '9')
+            return std::nullopt;
+    return FieldLine { tag, std::stoll(digits) };
+}
+
+// What changed between two bodies of one memory, as "SECTION.Tag before->after"
+// in the body's own order — or "shape" when the bodies differ in anything but
+// field values: a line added or lost, a tag renamed, a line outside any
+// section touched. A field's value is the only unit a mutation may change;
+// everything else about the body is the pedal's, byte for byte.
+std::string fieldChanges(const std::string& before, const std::string& after)
+{
+    const auto lines = [](const std::string& text) {
+        std::vector<std::string> out;
+        std::size_t from = 0;
+        while (true) {
+            const auto nl = text.find('\n', from);
+            if (nl == std::string::npos) {
+                out.push_back(text.substr(from));
+                return out;
+            }
+            out.push_back(text.substr(from, nl - from));
+            from = nl + 1;
+        }
+    };
+    const std::vector<std::string> a = lines(before);
+    const std::vector<std::string> b = lines(after);
+    if (a.size() != b.size())
+        return "shape";
+    std::string section;
+    std::string out;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i] == b[i]) {
+            // <X> on a line of its own opens section X; </X> closes it.
+            if (a[i].size() > 2 && a[i].front() == '<' && a[i].back() == '>'
+                && a[i].find('<', 1) == std::string::npos) {
+                if (a[i][1] == '/')
+                    section.clear();
+                else
+                    section = a[i].substr(1, a[i].size() - 2);
+            }
+            continue;
+        }
+        const auto fa = parseFieldLine(a[i]);
+        const auto fb = parseFieldLine(b[i]);
+        if (!fa || !fb || fa->tag != fb->tag || section.empty())
+            return "shape";
+        if (!out.empty())
+            out += ", ";
+        out += section + "." + fa->tag + " " + std::to_string(fa->value) + "->"
+             + std::to_string(fb->value);
+    }
+    return out;
+}
+
+// What one mutation of `slot` did to the memory document: that memory's field
+// changes, with every byte outside the memory asserted identical (the trailer
+// aside — every write stamps it).
+std::string slotChangesOnCard(const std::string& before, const std::string& after, int slot)
+{
+    const std::string afterBody = rc0::slotBody(after, slot);
+    CHECK(rc0::splitFile(rc0::replaceSlotBody(before, slot, afterBody)).document
+          == rc0::splitFile(after).document);
+    return fieldChanges(rc0::slotBody(before, slot), afterBody);
 }
 
 } // namespace
@@ -2194,6 +2313,176 @@ int main()
         // Every answer and every refusal above left the volume byte-identical.
         CHECK(volumeBytes(volume) == before);
         CHECK(!fs::exists(tmp.path / "trash")); // and no archive copy was spent
+    }
+
+    // --- a real card: a mutation changes what it exists to write, and no other byte ---
+    //
+    // fixtures/rc5-card.RC0 is a MEMORY1.RC0 off an RC-5 (fw 1.10): 41 loops in
+    // 99 memories, every byte as the pedal wrote it. Each mutation below runs
+    // on a volume holding that card, and what it did is read back as the field
+    // changes of the one memory it was given: the set must be exactly the
+    // fields the command exists to write, each in the section that owns it —
+    // the loop's facts in TRACK1, the tempo and loop length in MASTER — with
+    // every other line of the memory, and every other memory, reproduced byte
+    // for byte. The numbers are the card's own: memory 11 holds a 10888139-
+    // frame loop at 87.0 BPM, 90 bars, one-shot off; memory 42 is factory-
+    // empty. The expected values follow from the format, not from the code:
+    // bars = round(beats / 4) at the tempo, Measure = MeasLen + 7, and on an
+    // upload the pedal's boot indexing (golden.json) — the largest power-of-two
+    // bar count whose tempo stays at or below 160 BPM.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedalFromCard(tmp.path);
+        const std::string card = commands::readMemory(volume);
+        const auto memory = [&volume] { return commands::readMemory(volume); };
+
+        // setOneShot: TRACK1's <One>, on and off again — and the card's own
+        // document is back, to the byte.
+        commands::setOneShot(volume, { 11 }, true, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(card, memory(), 11), "TRACK1.One 0->1");
+        const std::string oneShotOn = memory();
+        commands::setOneShot(volume, { 11 }, false, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(oneShotOn, memory(), 11), "TRACK1.One 1->0");
+        CHECK(rc0::splitFile(memory()).document == rc0::splitFile(card).document);
+
+        // setTempo on the loop: 120.0 BPM over 10888139 frames is 246.90 s,
+        // 493.8 beats, 123 bars — Tempo in MASTER, RecTmp and the bars in
+        // TRACK1.
+        const std::string beforeTempo = memory();
+        commands::setTempo(volume, 11, 1200, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(beforeTempo, memory(), 11),
+                 "TRACK1.Measure 97->130, TRACK1.MeasLen 90->123, TRACK1.RecTmp 870->1200, "
+                 "MASTER.Tempo 870->1200");
+
+        // setTempo on the factory-empty memory: the two tempo fields and no
+        // bars — there is no loop to derive them from.
+        const std::string beforeEmptyTempo = memory();
+        commands::setTempo(volume, 42, 905, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(beforeEmptyTempo, memory(), 42),
+                 "TRACK1.RecTmp 1200->905, MASTER.Tempo 1200->905");
+
+        // push into the empty memory: a 30 s take, one-shot. Boot indexing
+        // gives 16 bars — 64 beats over 30 s is 128.0 BPM, 32 bars would be
+        // 256.0 — so TRACK1 takes the loop's facts and MASTER the tempo and
+        // the loop length.
+        {
+            const fs::path source = tmp.path / "take.wav";
+            const auto take = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 });
+            commands::writeFileBytes(source, bytesOf(take));
+            const std::string beforePush = memory();
+            commands::push(volume, source, 42, { .oneShot = true, .write = writeOpts(tmp.path) });
+            CHECK_EQ(slotChangesOnCard(beforePush, memory(), 42),
+                     "TRACK1.One 0->1, TRACK1.Measure 1->23, TRACK1.MeasLen 0->16, "
+                     "TRACK1.RecTmp 905->1280, TRACK1.WavStat 0->1, TRACK1.WavLen 0->1323000, "
+                     "MASTER.Tempo 905->1280, MASTER.LpLen 0->16");
+        }
+
+        // trim the loop in memory 11 to 10 s. The card came without its audio,
+        // so a 20 s take stands in: the config is what trim reads (the kept
+        // 120.0 BPM), the file is what it cuts. 10 s at 120.0 BPM is 20 beats,
+        // 5 bars: the length fields follow in TRACK1, the loop length in
+        // MASTER, and the tempo fields stay.
+        putWav(volume, 11, "011_1.WAV", { .tag = 3, .bits = 32, .frames = 882000 });
+        const std::string beforeTrim = memory();
+        commands::trim(volume, 11, 0, 441000, { .write = writeOpts(tmp.path) });
+        const std::string afterTrim = memory();
+        CHECK_EQ(slotChangesOnCard(beforeTrim, afterTrim, 11),
+                 "TRACK1.Measure 130->12, TRACK1.MeasLen 123->5, TRACK1.WavLen 10888139->441000, "
+                 "MASTER.LpLen 128->5");
+
+        // restore: the trimmed state recorded, a tempo change on top (90.5 BPM
+        // over 10 s is 15.1 beats, 4 bars), and the state put back — exactly
+        // the reverse of the tempo change, the take included.
+        const commands::SlotState trimmed {
+            rc0::slotBody(afterTrim, 11),
+            commands::Take { "011_1.WAV",
+                             commands::readFileBytes(volume::wavDir(volume, 11) / "011_1.WAV") }
+        };
+        commands::setTempo(volume, 11, 905, writeOpts(tmp.path));
+        const std::string beforeRestore = memory();
+        CHECK_EQ(slotChangesOnCard(afterTrim, beforeRestore, 11),
+                 "TRACK1.Measure 12->11, TRACK1.MeasLen 5->4, TRACK1.RecTmp 1200->905, "
+                 "MASTER.Tempo 1200->905");
+        commands::restore(volume, 11, trimmed, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(beforeRestore, memory(), 11),
+                 "TRACK1.Measure 11->12, TRACK1.MeasLen 4->5, TRACK1.RecTmp 905->1200, "
+                 "MASTER.Tempo 905->1200");
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 11) / "011_1.WAV")
+              == trimmed.take->bytes);
+    }
+
+    // --- the section is the address: a same-named tag elsewhere is not the field ---
+    //
+    // Tag names are not unique across a memory's sections — <Level> is
+    // MASTER's and RHYTHM's — and the two-track family carries every TRACK
+    // field twice. So a mutation addresses the section that owns its field,
+    // never the tag alone. A section the mutations do not own, carrying every
+    // tag they write, is neither read nor written by any of them: the loop's
+    // facts are TRACK1's, the tempo and loop length MASTER's, and the foreign
+    // section comes out byte for byte as it went in. Looked up by tag alone,
+    // each of these fields is found twice and the whole slot is refused.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const std::string other = "<OTHER>\n\t<One>1</One>\n\t<Tempo>1</Tempo>\n"
+                                  "\t<RecTmp>1</RecTmp>\n\t<WavStat>1</WavStat>\n"
+                                  "\t<WavLen>1</WavLen>\n\t<MeasLen>1</MeasLen>\n"
+                                  "\t<Measure>1</Measure>\n\t<LpLen>1</LpLen>\n</OTHER>\n";
+        for (const int fileNo : { 1, 2 }) {
+            const std::string text = commands::readFileBytes(volume::memoryPath(volume, fileNo));
+            std::string body = rc0::slotBody(text, 5);
+            body.insert(body.find("<RHYTHM>"), other);
+            commands::writeFileBytes(volume::memoryPath(volume, fileNo),
+                                     rc0::replaceSlotBody(text, 5, body));
+        }
+        const auto memory = [&volume] { return commands::readMemory(volume); };
+        // The field-change view sees OTHER as a section of its own: a write
+        // into it would read as OTHER.<tag>.
+
+        std::string before = memory();
+        commands::setOneShot(volume, { 5 }, true, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(before, memory(), 5), "TRACK1.One 0->1");
+
+        before = memory();
+        commands::setTempo(volume, 5, 905, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(before, memory(), 5),
+                 "TRACK1.RecTmp 1200->905, MASTER.Tempo 1200->905");
+
+        // push: a 30 s take, 16 bars at 128.0 BPM (see the card block above).
+        const fs::path source = tmp.path / "take.wav";
+        commands::writeFileBytes(
+            source, bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 })));
+        before = memory();
+        commands::push(volume, source, 5, { .write = writeOpts(tmp.path) });
+        const std::string pushed = memory();
+        CHECK_EQ(slotChangesOnCard(before, pushed, 5),
+                 "TRACK1.Measure 0->23, TRACK1.MeasLen 0->16, TRACK1.RecTmp 905->1280, "
+                 "TRACK1.WavStat 0->1, TRACK1.WavLen 0->1323000, MASTER.Tempo 905->1280, "
+                 "MASTER.LpLen 0->16");
+        const std::string takeName = volume::listSlotWavs(volume, 5).front();
+        const commands::SlotState pushedState {
+            rc0::slotBody(pushed, 5),
+            commands::Take { takeName,
+                             commands::readFileBytes(volume::wavDir(volume, 5) / takeName) }
+        };
+
+        // trim to 10 s at the kept 128.0 BPM: 21.3 beats, 5 bars.
+        commands::trim(volume, 5, 0, 441000, { .write = writeOpts(tmp.path) });
+        CHECK_EQ(slotChangesOnCard(pushed, memory(), 5),
+                 "TRACK1.Measure 23->12, TRACK1.MeasLen 16->5, TRACK1.WavLen 1323000->441000, "
+                 "MASTER.LpLen 16->5");
+
+        // restore reads the state's WavStat and WavLen from TRACK1 as well —
+        // the foreign section's pair would not match the take it brings.
+        before = memory();
+        commands::restore(volume, 5, pushedState, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(before, memory(), 5),
+                 "TRACK1.Measure 12->23, TRACK1.MeasLen 5->16, TRACK1.WavLen 441000->1323000, "
+                 "MASTER.LpLen 5->16");
+
+        // And through it all, the foreign section is the bytes it was.
+        const std::string body = rc0::slotBody(memory(), 5);
+        CHECK_EQ(body.substr(body.find("<OTHER>"), other.size()), other);
     }
 
     return testkit::summary("commands");

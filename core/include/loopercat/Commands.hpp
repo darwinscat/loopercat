@@ -357,6 +357,14 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
 }
 
 // --- mutations ---
+//
+// Every field a mutation reads or writes is addressed by the section that
+// owns it (rc0::sectionField / rc0::setSectionField): the loop's facts —
+// One, WavStat, WavLen, MeasLen, Measure, RecTmp — in TRACK1, the playback
+// tempo and loop length — Tempo, LpLen — in MASTER. Tag names are not unique
+// across sections, and a memory with a second track carries every TRACK
+// field twice: the section is the address, and the one-occurrence rule
+// holds inside it.
 
 inline WriteResult rename(const fs::path& volume, int slot, std::string_view name,
                           const WriteOptions& options)
@@ -373,7 +381,8 @@ inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& sl
     std::string text = readMemory(volume);
     for (const int slot : slots) {
         const std::string body = rc0::slotBody(text, slot);
-        text = rc0::replaceSlotBody(text, slot, rc0::setField(body, "One", on ? 1 : 0));
+        text = rc0::replaceSlotBody(
+            text, slot, rc0::setSectionField(body, rc0::kSectionTrack1, "One", on ? 1 : 0));
     }
     return writeMemoryPair(volume, text, options);
 }
@@ -429,12 +438,14 @@ inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTen
                     + std::to_string(tempoTenths / 10) + "." + std::to_string(tempoTenths % 10));
     std::string text = readMemory(volume);
     std::string body = rc0::slotBody(text, slot);
-    body = rc0::setField(body, "Tempo", tempoTenths);
-    body = rc0::setField(body, "RecTmp", tempoTenths);
-    if (rc0::field(body, "WavStat") == 1) {
-        const long long bars = barsFromTempo(tempoTenths, rc0::field(body, "WavLen"));
-        body = rc0::setField(body, "MeasLen", bars);
-        body = rc0::setField(body, "Measure", bars + params::kMeasureFieldOffset);
+    body = rc0::setSectionField(body, rc0::kSectionMaster, "Tempo", tempoTenths);
+    body = rc0::setSectionField(body, rc0::kSectionTrack1, "RecTmp", tempoTenths);
+    if (rc0::sectionField(body, rc0::kSectionTrack1, "WavStat") == 1) {
+        const long long bars =
+            barsFromTempo(tempoTenths, rc0::sectionField(body, rc0::kSectionTrack1, "WavLen"));
+        body = rc0::setSectionField(body, rc0::kSectionTrack1, "MeasLen", bars);
+        body = rc0::setSectionField(body, rc0::kSectionTrack1, "Measure",
+                                    bars + params::kMeasureFieldOffset);
     }
     return writeMemoryPair(volume, rc0::replaceSlotBody(text, slot, body), options);
 }
@@ -483,15 +494,16 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
         slotParams = params::computeSlotParams(info.frames);
         const std::string memoryText = readMemory(volume);
         std::string body = rc0::slotBody(memoryText, slot);
-        body = rc0::setField(body, "WavStat", 1);
-        body = rc0::setField(body, "WavLen", info.frames);
-        body = rc0::setField(body, "MeasLen", slotParams->measures);
-        body = rc0::setField(body, "Measure", slotParams->measureField());
-        body = rc0::setField(body, "RecTmp", slotParams->tempoTenths);
-        body = rc0::setField(body, "Tempo", slotParams->tempoTenths);
-        body = rc0::setField(body, "LpLen", slotParams->measures);
+        body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat", 1);
+        body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavLen", info.frames);
+        body = rc0::setSectionField(body, rc0::kSectionTrack1, "MeasLen", slotParams->measures);
+        body = rc0::setSectionField(body, rc0::kSectionTrack1, "Measure",
+                                    slotParams->measureField());
+        body = rc0::setSectionField(body, rc0::kSectionTrack1, "RecTmp", slotParams->tempoTenths);
+        body = rc0::setSectionField(body, rc0::kSectionMaster, "Tempo", slotParams->tempoTenths);
+        body = rc0::setSectionField(body, rc0::kSectionMaster, "LpLen", slotParams->measures);
         if (options.oneShot)
-            body = rc0::setField(body, "One", 1);
+            body = rc0::setSectionField(body, rc0::kSectionTrack1, "One", 1);
         if (options.name)
             body = rc0::setName(body, *options.name);
         newDocument = rc0::replaceSlotBody(memoryText, slot, body);
@@ -643,16 +655,17 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
 
     const std::string memoryText = readMemory(volume);
     std::string body = rc0::slotBody(memoryText, slot);
-    const long long tempoTenths = rc0::field(body, "Tempo");
+    const long long tempoTenths = rc0::sectionField(body, rc0::kSectionMaster, "Tempo");
     if (tempoTenths < kTempoTenthsMin || tempoTenths > kTempoTenthsMax)
         throw Error("slot " + std::to_string(slot) + " carries tempo "
                     + std::to_string(tempoTenths) + " tenths, outside the pedal's 40.0-300.0 BPM"
                       " range — not trimming a slot with a broken config");
     const long long bars = barsFromTempo(tempoTenths, info.frames);
-    body = rc0::setField(body, "WavLen", info.frames);
-    body = rc0::setField(body, "MeasLen", bars);
-    body = rc0::setField(body, "Measure", bars + params::kMeasureFieldOffset);
-    body = rc0::setField(body, "LpLen", bars);
+    body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavLen", info.frames);
+    body = rc0::setSectionField(body, rc0::kSectionTrack1, "MeasLen", bars);
+    body = rc0::setSectionField(body, rc0::kSectionTrack1, "Measure",
+                                bars + params::kMeasureFieldOffset);
+    body = rc0::setSectionField(body, rc0::kSectionMaster, "LpLen", bars);
     const std::string newDocument = rc0::replaceSlotBody(memoryText, slot, body);
 
     // All checks passed — the writes begin. The archive first: the original
@@ -1017,9 +1030,9 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
         // The shape first (the frames come from it), then the pedal's format.
         frames = wav::assertUploadable(wav::readWavInfo(takeView)).frames;
     }
-    // Each field exactly once, or the body is not one.
-    const long long wavStat = rc0::field(state.body, "WavStat");
-    const long long wavLen = rc0::field(state.body, "WavLen");
+    // Each field exactly once in the section that owns it, or the body is not one.
+    const long long wavStat = rc0::sectionField(state.body, rc0::kSectionTrack1, "WavStat");
+    const long long wavLen = rc0::sectionField(state.body, rc0::kSectionTrack1, "WavLen");
     const long long wavStatForTake = state.take ? rc0::kWavStatIndexed : rc0::kWavStatNone;
     if (wavStat != wavStatForTake || wavLen != frames) {
         const std::string held = state.take
