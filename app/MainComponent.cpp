@@ -5,6 +5,7 @@
 
 #include "OperationId.h"
 #include "history/HistoryRecorder.h"
+#include "history/SlotStory.h"
 #include "OperationsLog.h"
 #include "PedalPortName.h"
 #include "Strings.h"
@@ -613,6 +614,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(table);  // shown once a pedal is mounted
     addChildComponent(bottomTabs);
     addChildComponent(inspector);
+    addChildComponent(history);
     addChildComponent(player); // likewise
     addChildComponent(toast);  // fades in over everything on job success
     addChildComponent(batchOverlay); // over even that: the batch takeover (issue #61)
@@ -871,6 +873,73 @@ void MainComponent::updateTableRows()
 void MainComponent::updateInspector()
 {
     inspector.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
+    if (history.isVisible())
+        updateHistory();
+}
+
+// The selected slot's timeline, read on the worker like everything else that
+// touches the store — but without the card: the history is on this computer,
+// and a tab that went blank whenever the pedal was busy would be useless at
+// exactly the moment a player wants to look something up.
+void MainComponent::updateHistory()
+{
+    if (selectedSlot <= 0) {
+        history.clear();
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe(this);
+    const int slot = selectedSlot;
+    worker.enqueue({ "Read the history of slot " + juce::String(slot),
+                     0,
+                     [rec = recorder, slot, safe, alive = uiAlive](const volume::fs::path&) {
+                         std::vector<HistoryPane::Row> rows;
+                         const auto entries = rec->store().slotTimeline(slot);
+                         for (std::size_t i = 0; i < entries.size(); ++i) {
+                             const auto& entry = entries[i];
+                             const bool newest = i + 1 == entries.size();
+                             // The newest row's take is the one the slot holds
+                             // now; an older one's is in the store, or gone.
+                             history::story::Take take = history::story::Take::none;
+                             if (entry.takeHash || !entry.takeName.empty())
+                                 take = newest         ? history::story::Take::onCard
+                                     : entry.takeKept  ? history::story::Take::kept
+                                                       : history::story::Take::lost;
+                             const history::story::Line line =
+                                 history::story::tell({ .kind = entry.kind,
+                                                        .beforeBody = entry.beforeBody,
+                                                        .afterBody = entry.afterBody,
+                                                        .swappedWith = entry.swappedWith,
+                                                        .takeName = entry.takeName,
+                                                        .take = take,
+                                                        .note = entry.note });
+                             const juce::Time when(entry.at);
+                             const bool today = when.getDayOfYear()
+                                 == juce::Time::getCurrentTime().getDayOfYear();
+                             rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
+                                              line.action, line.detail, line.audio,
+                                              entry.takeKept,
+                                              entry.afterBody.has_value()
+                                                  && (!entry.takeHash || entry.takeKept || newest),
+                                              entry.op });
+                         }
+                         juce::MessageManager::callAsync([safe, rows, slot, alive] {
+                             if (*alive && safe != nullptr)
+                                 safe->applyHistoryRows(std::move(rows), slot);
+                         });
+                     },
+                     nullptr,
+                     0,
+                     true,      // background: a player did not sit down to wait for it
+                     true,      // quiet: only a failure is worth saying out loud
+                     false }); // and it needs no card
+}
+
+void MainComponent::applyHistoryRows(std::vector<HistoryPane::Row> rows, int slot)
+{
+    if (slot != selectedSlot)
+        return; // the player moved on while the worker was reading
+    historyRows = static_cast<int>(rows.size());
+    history.setRows(std::move(rows), slot);
 }
 
 // The bottom pane has two faces for the selected slot: listen to it (the
@@ -880,6 +949,9 @@ void MainComponent::showBottomTab(int index)
     const bool mounted = table.isVisible();
     player.setVisible(mounted && index == kAudioTab);
     inspector.setVisible(mounted && index == kPropertiesTab);
+    history.setVisible(mounted && index == kHistoryTab);
+    if (mounted && index == kHistoryTab)
+        updateHistory();
     resized();
 }
 
@@ -1925,6 +1997,7 @@ void MainComponent::resized()
     bottomTabs.setBounds(bottom.removeFromTop(26));
     player.setBounds(bottom);
     inspector.setBounds(bottom);
+    history.setBounds(bottom);
     area.removeFromBottom(8);
     table.setBounds(area.reduced(12, 0));
     hint.setBounds(area);

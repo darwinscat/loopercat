@@ -376,6 +376,7 @@ juce_add_gui_app(LooperCat
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>")
 
 target_sources(LooperCat PRIVATE
+    app/HistoryPane.cpp
     app/Main.cpp
     app/history/HistoryRecorder.cpp
     app/history/HistoryStore.cpp

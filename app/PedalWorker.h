@@ -90,6 +90,14 @@ public:
         // the UI. Still serialized on this thread — it can never read a take
         // mid-rewrite.
         bool background = false;
+        // A job nobody asked to be told about: it reports only failures. The
+        // history tab refreshes itself whenever a slot is selected, and a
+        // toast for each of those would push the app's real news off screen.
+        bool quiet = false;
+        // Reading the history needs no card: the store is on this computer.
+        // Such a job skips the lifecycle gate and is handed an empty path, so
+        // the tab keeps working while the pedal is busy, away, or ghosted.
+        bool needsVolume = true;
         // Around `work`, for the history (#72): `before` runs once the gate has
         // let the job through and the volume is resolved, and a throw from it
         // stops the job before it touches the card; `after` always runs,
@@ -279,15 +287,19 @@ private:
                     // The lifecycle gate: a ghost mount happily accepts writes
                     // into page cache that can never reach the pedal — the
                     // 2026-07-22 phantom "saved" toast. Only connected is honest.
-                    if (!machine_.writable())
+                    if (job->needsVolume && !machine_.writable())
                         throw Error(std::string("pedal is ") + lifecycle::stateName(machine_.state())
                                     + " — refusing to touch the volume");
-                    const auto found = resolveVolume();
-                    if (!found || !volume::looksLikePedal(*found))
-                        throw Error("no pedal volume mounted");
+                    volume::fs::path path;
+                    if (job->needsVolume) {
+                        const auto found = resolveVolume();
+                        if (!found || !volume::looksLikePedal(*found))
+                            throw Error("no pedal volume mounted");
+                        path = *found;
+                    }
                     if (job->before)
-                        job->before(*found);
-                    job->work(*found);
+                        job->before(path);
+                    job->work(path);
                 } catch (const std::exception& e) {
                     error = juce::String::fromUTF8(e.what()); // core messages carry typographic dashes
                 }
@@ -303,10 +315,12 @@ private:
                 juce::String described = job->description;
                 if (error.isEmpty() && job->note != nullptr && job->note->isNotEmpty())
                     described << juce::String::fromUTF8(" \xe2\x80\x94 ") << *job->note;
-                deliver([cb = onJobResult, d = described, error, b = job->batch, s = job->slot] {
-                    if (cb)
-                        cb(d, error, b, s);
-                });
+                if (!job->quiet || error.isNotEmpty())
+                    deliver([cb = onJobResult, d = described, error, b = job->batch,
+                             s = job->slot] {
+                        if (cb)
+                            cb(d, error, b, s);
+                    });
                 deliver([cb = onBusy, slot = job->slot, bg = job->background] {
                     if (cb)
                         cb(false, slot, bg);
