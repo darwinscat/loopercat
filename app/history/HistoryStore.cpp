@@ -387,9 +387,15 @@ std::vector<retention::Blob> HistoryStore::keptBlobs(std::optional<std::int64_t>
     std::vector<retention::Blob> out;
     // References: every row that names the hash — a slot's audio on either
     // side, and a legacy file (whose document has no slot_audio row).
+    // The label is for a person: the newest slot row naming the take, or the
+    // legacy file's path for a document no slot ever named.
     sqlite::Statement read(db_, "SELECT m.hash, m.size, m.created, "
                                 "  (SELECT count(*) FROM slot_audio a WHERE a.hash = m.hash) "
-                                "  + (SELECT count(*) FROM legacy_files l WHERE l.hash = m.hash) "
+                                "  + (SELECT count(*) FROM legacy_files l WHERE l.hash = m.hash), "
+                                "  coalesce((SELECT 'slot ' || a.slot || ' ' || a.name FROM slot_audio a "
+                                "            WHERE a.hash = m.hash ORDER BY a.op DESC LIMIT 1), "
+                                "           (SELECT l.path FROM legacy_files l WHERE l.hash = m.hash "
+                                "            ORDER BY l.imported DESC LIMIT 1), '') "
                                 "FROM blobs_meta m JOIN blobs b ON b.hash = m.hash "
                                 "ORDER BY m.created, m.size DESC, m.hash");
     while (read.step()) {
@@ -398,6 +404,7 @@ std::vector<retention::Blob> HistoryStore::keptBlobs(std::optional<std::int64_t>
         blob.size = read.integer(1);
         blob.created = read.integer(2);
         blob.references = static_cast<int>(read.integer(3));
+        blob.label = read.text(4);
         const Holds holds = holdsOn(blob.hash, undoOp);
         blob.pinned = holds.pinned;
         blob.undo = holds.undo;
@@ -445,6 +452,15 @@ std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
     }
     tx.commit();
     return freed;
+}
+
+std::vector<retention::Write> HistoryStore::writes()
+{
+    std::vector<retention::Write> out;
+    sqlite::Statement read(db_, "SELECT created, size FROM blobs_meta ORDER BY created");
+    while (read.step())
+        out.push_back({ read.integer(0), read.integer(1) });
+    return out;
 }
 
 std::int64_t HistoryStore::vacuum(int pages)

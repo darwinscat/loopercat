@@ -221,5 +221,99 @@ int main()
         CHECK_EQ(retention::bytesText(2 * GB - 1), std::string("2 GB"));
     }
 
+    // --- the forecast: weeks at the rate the history has grown, never "0 weeks" ---
+    {
+        using retention::Forecast;
+        using retention::Write;
+        const std::int64_t week = retention::kWeekMs;
+        const std::int64_t day = retention::kDayMs;
+        const std::int64_t now = 100 * week;
+
+        // nothing kept yet: no rate to go by
+        const Forecast none = retention::forecast({}, now, 0, 5 * GB, 100 * GB);
+        CHECK(none.nothingKept());
+        CHECK(!none.weeks.has_value());
+        CHECK_EQ(none.bytesPerWeek, 0);
+        CHECK_EQ(none.room, 5 * GB);
+        CHECK_EQ(retention::describeForecast(none),
+                 std::string("Nothing has been kept yet, so there is no rate to go by."));
+
+        // younger than a week: too early, whatever the burst — and no division by anything
+        const Forecast young = retention::forecast({ { now - 3 * day, 1700 * MB }, { now - 2 * day, 10 * MB } },
+                                                   now, 1710 * MB, 5 * GB, 100 * GB);
+        CHECK(young.tooYoung());
+        CHECK(!young.weeks.has_value());
+        CHECK_EQ(young.bytesPerWeek, 0);
+        CHECK_EQ(retention::describeForecast(young),
+                 std::string("The history is 3 days old: too early to tell its rate."));
+        const Forecast hours = retention::forecast({ { now - 3600 * 1000, 1 * GB } }, now, GB, 5 * GB, 100 * GB);
+        CHECK(contains(retention::describeForecast(hours), "less than a day old"));
+        const Forecast oneDay = retention::forecast({ { now - day, 1 * GB } }, now, GB, 5 * GB, 100 * GB);
+        CHECK(contains(retention::describeForecast(oneDay), "is 1 day old"));
+
+        // everything on one day, ten weeks ago: nothing in the window, so no rate is claimed
+        const Forecast idle = retention::forecast({ { now - 10 * week, 1700 * MB } }, now, 1700 * MB,
+                                                  5 * GB, 100 * GB);
+        CHECK(idle.idle());
+        CHECK(!idle.weeks.has_value());
+        CHECK_EQ(idle.measuredMs, 8 * week);
+        CHECK_EQ(retention::describeForecast(idle),
+                 std::string("Nothing was added in the last 8 weeks; at this rate the limit is not in sight."));
+
+        // everything on one day, four weeks ago: the rate is that burst over four weeks
+        const Forecast burst = retention::forecast({ { now - 4 * week, 400 * MB } }, now, 400 * MB,
+                                                   5 * GB, 100 * GB);
+        CHECK_EQ(burst.measuredMs, 4 * week);
+        CHECK_EQ(burst.bytesPerWeek, 100 * MB);
+        CHECK(burst.weeks.has_value());
+        CHECK(burst.weeks && *burst.weeks > 47.0 && *burst.weeks < 48.0); // (5 GB - 400 MB) / 100 MB
+        CHECK_EQ(retention::describeForecast(burst),
+                 std::string("About 47 weeks until the limit at the current rate (100 MB a week)."));
+
+        // a steady history older than the window: only the last eight weeks count
+        std::vector<Write> steady;
+        for (int w = 0; w < 30; ++w)
+            steady.push_back({ now - w * week - day, 50 * MB });
+        const Forecast rate = retention::forecast(steady, now, 1500 * MB, 2 * GB, 100 * GB);
+        CHECK_EQ(rate.measuredMs, 8 * week);
+        CHECK_EQ(rate.bytesPerWeek, 50 * MB);
+        CHECK(rate.weeks && *rate.weeks > 10.9 && *rate.weeks < 11.0); // 548 MB / 50 MB
+        CHECK(contains(retention::describeForecast(rate), "About 11 weeks until the limit"));
+
+        // less than a week left, and the limit already reached
+        const Forecast soon = retention::forecast({ { now - 2 * week, 800 * MB } }, now, 4990 * MB,
+                                                  5 * GB, 100 * GB);
+        CHECK(contains(retention::describeForecast(soon), "Less than a week until the limit"));
+        const Forecast full = retention::forecast({ { now - 2 * week, 800 * MB } }, now, 6 * GB, 5 * GB,
+                                                  100 * GB);
+        CHECK_EQ(full.room, 0);
+        CHECK(full.weeks && *full.weeks < 0.5);
+        CHECK_EQ(retention::describeForecast(full),
+                 std::string("The history is at its limit; it grows by 400 MB a week."));
+        CHECK(!contains(retention::describeForecast(full), "0 weeks"));
+
+        // the disk runs out before the limit does
+        const Forecast disk = retention::forecast({ { now - 2 * week, 800 * MB } }, now, 1 * GB, 5 * GB,
+                                                  1200 * MB);
+        CHECK(disk.bound == Forecast::Bound::disk);
+        CHECK_EQ(disk.room, 1200 * MB);
+        CHECK_EQ(retention::describeForecast(disk),
+                 std::string("About 3 weeks until the disk is full at the current rate (400 MB a week)."));
+        const Forecast diskFull = retention::forecast({ { now - 2 * week, 800 * MB } }, now, 1 * GB, 5 * GB, 0);
+        CHECK(contains(retention::describeForecast(diskFull), "The disk is full; it grows by 400 MB a week."));
+
+        // a slow history: more than two years
+        const Forecast slow = retention::forecast({ { now - 8 * week, 8 * MB } }, now, 8 * MB, 5 * GB, 100 * GB);
+        CHECK(contains(retention::describeForecast(slow), "More than two years until the limit"));
+
+        // a write stamped in the future (a clock that ran ahead) counts and breaks nothing
+        const Forecast ahead = retention::forecast({ { now + day, 100 * MB }, { now - 2 * week, 100 * MB } },
+                                                   now, 200 * MB, 5 * GB, 100 * GB);
+        CHECK_EQ(ahead.measuredMs, 2 * week);
+        CHECK_EQ(ahead.bytesPerWeek, 100 * MB);
+
+        CHECK_THROWS(retention::forecast({}, now, -1, 5 * GB, 100 * GB), "non-negative");
+    }
+
     return testkit::summary("retention_policy_tests");
 }
