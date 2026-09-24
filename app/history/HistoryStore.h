@@ -74,7 +74,42 @@ public:
 
     sqlite::Db& db() { return db_; }
 
+    // --- legacy folders (LegacyImport.h): the store's side of the import ---
+
+    // Which op an id names, if any: its row and who made it. The import tells
+    // a folder the app already recorded from one it must adopt by this.
+    struct OpIdentity {
+        std::int64_t seq;
+        std::string actor;
+    };
+    std::optional<OpIdentity> findOp(const std::string& opId);
+
+    // An operation that ran before the history existed. Recorded by 'legacy',
+    // kind 'legacy', done: the folder is there, which is all such an op can
+    // say about itself. `note` names the folders it was read from.
+    std::int64_t recordLegacyOp(std::int64_t session, const std::string& opId, std::int64_t atMs,
+                                const std::string& note);
+
+    // One file out of a legacy folder, in one transaction: its bytes kept once
+    // (the content-addressed rule keepAudio follows), for a take the
+    // slot_audio row naming it as the slot's 'before', and the legacy_files
+    // row that says this path is done. `path` is the file's path under the
+    // data home, '/'-separated; a path already recorded is refused by the
+    // ledger's key. Returns whether the bytes were new to the store.
+    bool keepLegacyTake(std::int64_t op, const std::string& path, int slot, int track,
+                        const std::string& name, std::string_view bytes, std::int64_t nowMs);
+    bool keepLegacyDocument(std::int64_t op, const std::string& path, std::string_view bytes,
+                            std::int64_t nowMs);
+    bool legacyFileImported(const std::string& path);
+
 private:
+    // The content-addressed rule, inside the caller's transaction: bytes are
+    // kept once; a hash already known costs nothing; one released earlier
+    // (#74) gets its bytes back. Returns whether the bytes were written.
+    bool keepBlob(const std::string& hash, std::string_view bytes, std::int64_t nowMs);
+    bool recordLegacyFile(std::int64_t op, const std::string& path, const char* kind,
+                          std::string_view bytes, std::int64_t nowMs, const std::string& hash);
+
     sqlite::Db db_;
 };
 
