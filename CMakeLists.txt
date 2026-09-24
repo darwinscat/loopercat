@@ -589,6 +589,37 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
+# The retention policy (issue #74): a pure decision, no SQLite and no JUCE,
+# so it is built like a core suite — under the strict flags — even though
+# the header lives with the history.
+add_executable(retention_policy_tests tests/retention_policy_tests.cpp)
+target_link_libraries(retention_policy_tests PRIVATE loopercat::core nlohmann_json::nlohmann_json)
+target_compile_features(retention_policy_tests PRIVATE cxx_std_20)
+target_compile_options(retention_policy_tests PRIVATE ${LOOPERCAT_STRICT_FLAGS})
+target_compile_definitions(retention_policy_tests PRIVATE
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+add_test(NAME retention_policy_tests COMMAND retention_policy_tests)
+
+# The store's side of freeing space: what the file costs, what holds a take,
+# a release that leaves every row honest, and a vacuum that really shrinks
+# the file — against real SQLite files.
+juce_add_console_app(retention_store_tests PRODUCT_NAME "retention_store_tests")
+target_sources(retention_store_tests PRIVATE tests/retention_store_tests.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(retention_store_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(retention_store_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME retention_store_tests COMMAND retention_store_tests)
+
 # The store's versions: a version-1 file built from version 1's own definition
 # opens, gains the new table, keeps every row.
 juce_add_console_app(history_schema_tests PRODUCT_NAME "history_schema_tests")

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Retention.h"
 #include "Sqlite.h"
 
 #include <loopercat/Commands.hpp>
@@ -117,6 +118,46 @@ public:
                             std::int64_t nowMs);
     bool legacyFileImported(const std::string& path);
 
+    // --- what the history costs, and giving space back (Retention.h) ---
+
+    // What the file holds, read from the file. The store reports; the policy
+    // decides; a person releases. `otherBytes` is the rows, bodies and indexes
+    // — what remains of the file after the takes and the pages already free.
+    struct Usage {
+        std::int64_t fileBytes;     // the file as it is on disk
+        std::int64_t audioBytes;    // takes and documents whose bytes are kept, each once
+        std::int64_t otherBytes;    // rows, bodies, indexes
+        std::int64_t freeBytes;     // pages the file holds but no longer uses: vacuum() returns them
+        std::int64_t diskAvailable; // on the volume the file is on
+    };
+    Usage usage();
+
+    // The operation Cmd-Z would target (#73): the newest finished one the app
+    // or the pedal made. A legacy row has no after-state to come back from.
+    std::optional<std::int64_t> offeredUndo();
+
+    // Every blob whose bytes are kept, with what holds it: a pinned operation
+    // naming it (or a pin on the blob), an operation still pending naming it,
+    // or `undoOp` naming it as a 'before' — the audio that undo would put
+    // back. References count the rows naming the hash, both sides.
+    std::vector<retention::Blob> keptBlobs(std::optional<std::int64_t> undoOp);
+
+    void pinOp(std::int64_t op, bool pinned);
+
+    // Frees the bytes of these blobs in one transaction: the bytes go, each
+    // blobs_meta row is marked released at `nowMs`, and every row that named
+    // the take keeps naming it — by name, size and hash — with no bytes behind
+    // it. Refused whole, nothing freed, if any of them is not kept or is held
+    // (see keptBlobs). Returns the bytes freed.
+    std::int64_t releaseBlobs(const std::vector<std::string>& hashes,
+                              std::optional<std::int64_t> undoOp, std::int64_t nowMs);
+
+    // Hands up to `pages` free pages back to the system and returns how many
+    // remain. Its own short transaction, a slice at a time, so a worker can
+    // stay responsive between slices. The file was created with
+    // auto_vacuum=INCREMENTAL for exactly this.
+    std::int64_t vacuum(int pages);
+
 private:
     // The content-addressed rule, inside the caller's transaction: bytes are
     // kept once; a hash already known costs nothing; one released earlier
@@ -124,7 +165,15 @@ private:
     bool keepBlob(const std::string& hash, std::string_view bytes, std::int64_t nowMs);
     bool recordLegacyFile(std::int64_t op, const std::string& path, const char* kind,
                           std::string_view bytes, std::int64_t nowMs, const std::string& hash);
+    // What holds one kept blob, for keptBlobs and for releaseBlobs' refusal.
+    struct Holds {
+        bool pinned;
+        bool undo;
+        bool inFlight;
+    };
+    Holds holdsOn(const std::string& hash, std::optional<std::int64_t> undoOp);
 
+    std::filesystem::path file_;
     sqlite::Db db_;
 };
 
