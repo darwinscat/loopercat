@@ -380,6 +380,7 @@ target_sources(LooperCat PRIVATE
     app/history/HistoryRecorder.cpp
     app/history/HistoryStore.cpp
     app/history/LegacyImport.cpp
+    app/history/TakeAudition.cpp
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
     app/PlayerPane.cpp
@@ -627,6 +628,26 @@ target_link_libraries(legacy_import_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME legacy_import_tests COMMAND legacy_import_tests)
+
+# An archived take as a file (issue #50): byte-exact, one file per hash, no
+# file without bytes, swept when the object goes or the next run starts.
+juce_add_console_app(take_audition_tests PRODUCT_NAME "take_audition_tests")
+target_sources(take_audition_tests PRIVATE tests/take_audition_tests.cpp
+    app/history/HistoryStore.cpp
+    app/history/TakeAudition.cpp)
+target_compile_definitions(take_audition_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(take_audition_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME take_audition_tests COMMAND take_audition_tests)
 
 # ----------------------------------------------------------------------------
 # MP3 import (issue #52): theory tests for Mp3AudioFormat + the import chain —
