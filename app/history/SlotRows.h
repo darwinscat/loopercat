@@ -38,11 +38,12 @@ struct Row {
 // the card: the player already has it on the Audio tab, and the store holds
 // no copy — it keeps a take when something replaces it, not before.
 //
-// A row can be restored when it recorded a state (a body) and that state's
-// take can be produced: none to produce, or bytes in the store, or the take
-// already on the card. A legacy row has no body — the folders it was read
-// from never recorded one — so it offers its take to listen to and nothing
-// to go back to.
+// A row can be restored when it recorded a state (a body), that state's take
+// can be produced (none to produce, or bytes in the store), and it is not
+// the newest row — the state the slot is already in is not somewhere to go
+// back to. A legacy row has no body at all — the folders it was read from
+// never recorded one — so it offers its take to listen to and nothing to
+// return to.
 inline std::vector<Row> forSlot(const std::vector<HistoryStore::TimelineEntry>& entries)
 {
     std::vector<Row> out;
@@ -69,8 +70,7 @@ inline std::vector<Row> forSlot(const std::vector<HistoryStore::TimelineEntry>& 
                                  .take = take,
                                  .note = entry.note });
         row.playable = entry.takeKept;
-        row.restorable = entry.afterBody.has_value()
-            && (!hasTake || entry.takeKept || (newest && entry.takeHash.has_value()));
+        row.restorable = !newest && entry.afterBody.has_value() && (!hasTake || entry.takeKept);
         if (entry.takeKept && entry.takeHash)
             row.takeHash = *entry.takeHash;
         out.push_back(std::move(row));

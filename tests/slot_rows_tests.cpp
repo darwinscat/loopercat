@@ -62,8 +62,8 @@ int main()
         const auto made = rows::forSlot({ pushed });
         CHECK_EQ(made.size(), 1u);
         CHECK_EQ(made.front().line.audio, std::string("in the slot now"));
-        CHECK(!made.front().playable);  // the Audio tab already plays that take
-        CHECK(made.front().restorable); // and its state can be asked for again
+        CHECK(!made.front().playable);   // the Audio tab already plays that take
+        CHECK(!made.front().restorable); // and the slot is in that state already
         CHECK(made.front().takeHash.empty());
     }
 
@@ -111,7 +111,7 @@ int main()
         CHECK(made.front().takeHash.empty());
         // the clear itself put the slot back to empty, and that state stands
         CHECK_EQ(made.back().line.audio, std::string("nothing left in the slot"));
-        CHECK(made.back().restorable);
+        CHECK(!made.back().restorable); // the newest row IS where the slot is
         CHECK(!made.back().playable);
     }
 
@@ -142,7 +142,10 @@ int main()
         Entry renamed = op(1, "rename");
         renamed.beforeBody = empty;
         renamed.afterBody = bodyWith(0, "Named");
-        const auto made = rows::forSlot({ renamed });
+        Entry later = op(2, "tempo");
+        later.beforeBody = bodyWith(0, "Named");
+        later.afterBody = bodyWith(0, "Named");
+        const auto made = rows::forSlot({ renamed, later });
         CHECK_EQ(made.front().line.audio, std::string());
         CHECK(!made.front().playable);
         CHECK(made.front().restorable); // an empty slot is a state like any other
