@@ -5,6 +5,7 @@
 
 #include "OperationId.h"
 #include "history/HistoryRecorder.h"
+#include "history/SlotRows.h"
 #include "OperationsLog.h"
 #include "PedalPortName.h"
 #include "Strings.h"
@@ -613,6 +614,9 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(table);  // shown once a pedal is mounted
     addChildComponent(bottomTabs);
     addChildComponent(inspector);
+    addChildComponent(history);
+    history.onPlay = [this](std::int64_t op) { playFromHistory(op); };
+    history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
     addChildComponent(player); // likewise
     addChildComponent(toast);  // fades in over everything on job success
     addChildComponent(batchOverlay); // over even that: the batch takeover (issue #61)
@@ -871,6 +875,129 @@ void MainComponent::updateTableRows()
 void MainComponent::updateInspector()
 {
     inspector.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
+    if (history.isVisible())
+        updateHistory();
+}
+
+// The selected slot's timeline, read on the worker like everything else that
+// touches the store — but without the card: the history is on this computer,
+// and a tab that went blank whenever the pedal was busy would be useless at
+// exactly the moment a player wants to look something up.
+void MainComponent::updateHistory()
+{
+    if (selectedSlot <= 0) {
+        history.clear();
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe(this);
+    const int slot = selectedSlot;
+    worker.enqueue({ "Read the history of slot " + juce::String(slot),
+                     0,
+                     [rec = recorder, slot, safe, alive = uiAlive](const volume::fs::path&) {
+                         std::vector<HistoryPane::Row> rows;
+                         auto entries = history::rows::forSlot(rec->store().slotTimeline(slot));
+                         for (const auto& row : entries) {
+                             const juce::Time when(row.at);
+                             const bool today = when.getDayOfYear()
+                                 == juce::Time::getCurrentTime().getDayOfYear();
+                             rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
+                                              row.line.action, row.line.detail, row.line.audio,
+                                              row.playable, row.restorable, row.op });
+                         }
+                         juce::MessageManager::callAsync(
+                             [safe, rows, entries = std::move(entries), slot, alive]() mutable {
+                                 if (*alive && safe != nullptr) {
+                                     safe->historyEntries = std::move(entries);
+                                     safe->applyHistoryRows(std::move(rows), slot);
+                                 }
+                             });
+                     },
+                     nullptr,
+                     0,
+                     true,      // background: a player did not sit down to wait for it
+                     true,      // quiet: only a failure is worth saying out loud
+                     false }); // and it needs no card
+}
+
+// Listening to a take the store kept: the bytes become a file on this
+// computer and the player opens it. Nothing is read from the pedal, so this
+// works while the pedal is busy — "which take was the good one" is the whole
+// reason the takes are kept.
+void MainComponent::playFromHistory(std::int64_t op)
+{
+    const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
+                                    [op](const history::rows::Row& row) { return row.op == op; });
+    if (found == historyEntries.end() || found->takeHash.empty())
+        return;
+    const int slot = selectedSlot;
+    const juce::String title = juce::String(slot) + juce::String::fromUTF8(" \xc2\xb7 ")
+        + juce::String(found->line.action) + juce::String::fromUTF8(" \xc2\xb7 from the history");
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue({ "Play an archived take from slot " + juce::String(slot),
+                     0,
+                     [rec = recorder, aud = audition, hash = found->takeHash, slot, title, safe,
+                      alive = uiAlive](const volume::fs::path&) {
+                         const auto file = aud->materialize(rec->store(), hash);
+                         if (!file)
+                             throw Error("that take is no longer kept in the history");
+                         const std::string bytes = commands::readFileBytes(*file);
+                         const long long frames =
+                             wav::readWavInfo(
+                                 wav::BytesView(reinterpret_cast<const unsigned char*>(bytes.data()),
+                                                bytes.size()))
+                                 .frames;
+                         const juce::File opened(juce::String(file->string()));
+                         juce::MessageManager::callAsync([safe, opened, title, slot, frames, alive] {
+                             if (*alive && safe != nullptr)
+                                 safe->player.setSlot(slot, opened, title, false, frames);
+                         });
+                     },
+                     nullptr, 0, true, true, false });
+}
+
+// Putting a recorded state back: the slot's body and its take, as one unit,
+// through the core primitive — never through push, which would recompute the
+// tempo the state carries. It is an operation like any other, so it is
+// recorded, and can be undone in turn.
+void MainComponent::restoreFromHistory(std::int64_t op)
+{
+    const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
+                                    [op](const history::rows::Row& row) { return row.op == op; });
+    if (found == historyEntries.end() || !found->restorable)
+        return;
+    const int slot = selectedSlot;
+    const auto options = makeWriteOptions();
+    releasePlayerIfHolding(slot, slot); // the restore rewrites the slot's audio (issue #26)
+    worker.enqueue(recorded(
+        "restore", options,
+        { "Restore slot " + juce::String(slot) + " to " + found->line.action, slot,
+          [rec = recorder, op, slot, options](const volume::fs::path& volumePath) {
+              commands::SlotState state;
+              for (const auto& entry : rec->store().slotTimeline(slot)) {
+                  if (entry.op != op)
+                      continue;
+                  if (!entry.afterBody)
+                      throw Error("that row recorded no state to go back to");
+                  state.body = *entry.afterBody;
+                  if (entry.takeHash) {
+                      const auto bytes = rec->store().takeBytes(*entry.takeHash);
+                      if (!bytes)
+                          throw Error("the take of that state is no longer kept");
+                      state.take = commands::Take { entry.takeName, *bytes };
+                  }
+              }
+              if (state.body.empty())
+                  throw Error("that row is not in this slot's history any more");
+              commands::restore(volumePath, slot, state, options);
+          } }));
+}
+
+void MainComponent::applyHistoryRows(std::vector<HistoryPane::Row> rows, int slot)
+{
+    if (slot != selectedSlot)
+        return; // the player moved on while the worker was reading
+    historyRows = static_cast<int>(rows.size());
+    history.setRows(std::move(rows), slot);
 }
 
 // The bottom pane has two faces for the selected slot: listen to it (the
@@ -880,6 +1007,9 @@ void MainComponent::showBottomTab(int index)
     const bool mounted = table.isVisible();
     player.setVisible(mounted && index == kAudioTab);
     inspector.setVisible(mounted && index == kPropertiesTab);
+    history.setVisible(mounted && index == kHistoryTab);
+    if (mounted && index == kHistoryTab)
+        updateHistory();
     resized();
 }
 
@@ -1925,6 +2055,7 @@ void MainComponent::resized()
     bottomTabs.setBounds(bottom.removeFromTop(26));
     player.setBounds(bottom);
     inspector.setBounds(bottom);
+    history.setBounds(bottom);
     area.removeFromBottom(8);
     table.setBounds(area.reduced(12, 0));
     hint.setBounds(area);

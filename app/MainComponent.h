@@ -17,6 +17,9 @@
 #include "PedalLight.h"
 #include "PedalLink.h"
 #include "PedalWorker.h"
+#include "HistoryPane.h"
+#include "history/SlotRows.h"
+#include "history/TakeAudition.h"
 #include "history/HistoryRecorder.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
@@ -70,6 +73,8 @@ public:
     void refreshNow();
     void selectSlot(int slot);
     void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
+    void showHistory() { bottomTabs.select(kHistoryTab); }       // --history, for snapshots
+    bool historyReady() const { return historyRows > 0; }        // its rows have landed
     void showAbout(); // the menu About and --about: opens the version badge's popover
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied); // UI + the --push seam
     bool listeningTo(int slot) const; // --push seam: the slot is in the player, waveform drawn
@@ -100,7 +105,7 @@ public:
     bool keyPressed(const juce::KeyPress& key) override;
 
 private:
-    static constexpr int kAudioTab = 0, kPropertiesTab = 1; // the bottom pane's two faces
+    static constexpr int kAudioTab = 0, kPropertiesTab = 1, kHistoryTab = 2; // the bottom pane's faces
 
     void applySnapshot(const PedalSnapshot& snapshot);
     void slotChosen(int slot, bool startPlaying);
@@ -131,6 +136,11 @@ private:
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
     void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
     void updateInspector();                 // push the selected row into the panel
+    void updateHistory();                   // ask the worker for the selected slot's timeline
+    void applyHistoryRows(std::vector<HistoryPane::Row> rows, int slot);
+    void playFromHistory(std::int64_t op);    // an archived take, out of the store
+    void restoreFromHistory(std::int64_t op); // a recorded state, back onto the card
+    int historyRows = 0; // what the tab last received, for the --history seam
     void applyColumnPreferences();          // Settings -> Columns, onto the table
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
@@ -190,7 +200,8 @@ private:
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
-    TabStrip bottomTabs { { "Audio", "Properties" } };
+    TabStrip bottomTabs { { "Audio", "Properties", "History" } };
+    HistoryPane history;
     SlotInspector inspector;
     Toast toast;
     BatchOverlay batchOverlay;
@@ -231,6 +242,11 @@ private:
     // The history (#72). Only the worker thread touches it; declared before the
     // worker so it outlives the thread, and shared with every queued job's
     // hooks so a job can never outlive it either.
+    // Archived takes become files only to be listened to; the object sweeps
+    // them when it goes, and what a previous run left behind when it starts.
+    std::shared_ptr<history::TakeAudition> audition = std::make_shared<history::TakeAudition>(
+        std::filesystem::path(settings.dataDir().getChildFile("audition").getFullPathName().toStdString()));
+    std::vector<history::rows::Row> historyEntries; // what the tab is showing, for its buttons
     std::shared_ptr<history::HistoryRecorder> recorder = std::make_shared<history::HistoryRecorder>(
         std::filesystem::path(settings.dataDir().getChildFile("history").getFullPathName().toStdString()),
         "RC-5",

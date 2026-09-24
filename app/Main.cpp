@@ -52,8 +52,9 @@ public:
         // The headless proof that the window actually draws — no display
         // permissions involved; used by the DoD check and CI screenshots.
         // --select <slot> additionally selects that slot (1..99) and waits
-        // for its waveform before rendering; --properties switches the bottom
-        // pane to its Properties tab, so that side renders headless too.
+        // for its waveform before rendering; --properties and --history
+        // switch the bottom pane to those tabs, so those faces render
+        // headless too.
         // --midi-probe: list the MIDI outputs the app can see, send the
         // storage-mode frame through the very same path Connect uses, and
         // report what happened. A diagnostic seam in the spirit of
@@ -211,6 +212,10 @@ private:
         content.refreshNow();
         if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--properties"))
             content.showProperties();
+        const bool wantsHistory =
+            juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--history");
+        if (wantsHistory)
+            content.showHistory();
         if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--about")) {
             // The About popover parents into the top-level component — here that
             // is `content` itself, so the callout lands inside the snapshot. No
@@ -253,6 +258,14 @@ private:
                 std::cerr << "waveform did not finish loading in time\n";
                 return 2;
             }
+        }
+        if (wantsHistory) {
+            // The tab reads its rows on the worker, so the render has to wait
+            // for them the way it waits for a waveform — an empty slot has no
+            // waveform to wait behind, and the shot would catch the tab blank.
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 10000;
+            while (!content.historyReady() && juce::Time::getMillisecondCounterHiRes() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
         }
         const juce::Image image =
             content.createComponentSnapshot(content.getLocalBounds(), false, 1.0f);
