@@ -66,7 +66,7 @@ void HistoryRecorder::begin(const std::string& opId, const std::string& kind,
     if (ops_.contains(opId))
         throw Error("operation " + opId + " has already begun");
     const std::int64_t session = sessionFor(volume);
-    ops_[opId] = store().beginOp(session, opId, kind, clock_());
+    ops_[opId] = Operation { store().beginOp(session, opId, kind, clock_()), kind, volume };
 }
 
 std::int64_t HistoryRecorder::opRow(const std::string& opId) const
@@ -74,7 +74,7 @@ std::int64_t HistoryRecorder::opRow(const std::string& opId) const
     const auto found = ops_.find(opId);
     if (found == ops_.end())
         throw Error("operation " + opId + " reported to the history without having begun");
-    return found->second;
+    return found->second.row;
 }
 
 void HistoryRecorder::keepAudio(const std::string& opId, int slot, const std::string& fileName,
@@ -95,15 +95,42 @@ void HistoryRecorder::landed(const std::string& opId, int slot, const std::strin
     store().recordLanded(opRow(opId), slot, kTrack, fileName, bytes);
 }
 
+void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
+{
+    const std::vector<int> slots = store().touchedSlots(op.row);
+    // A swap is the one operation that moves audio without writing it: the
+    // two slots exchange folders, so each one's take is the other's last one.
+    const bool swapped = op.kind == "swap" && slots.size() == 2;
+    for (const int slot : slots) {
+        if (store().hasAfterAudio(op.row, slot))
+            continue; // the operation wrote a take here and already said so
+        const int from = swapped ? (slot == slots.front() ? slots.back() : slots.front()) : slot;
+        const std::filesystem::path dir = volume::wavDir(op.volume, slot);
+        for (const std::string& name : volume::listSlotWavs(op.volume, slot)) {
+            std::error_code ec;
+            const auto size = static_cast<std::int64_t>(std::filesystem::file_size(dir / name, ec));
+            if (ec)
+                throw Error("cannot measure " + (dir / name).string());
+            store().recordPresentAudio(op.row, slot, kTrack, name, size,
+                                       store().hashHeldBefore(op.row, from, name, size));
+        }
+    }
+}
+
 void HistoryRecorder::finish(const std::string& opId, const std::string& error,
                              const std::string& note)
 {
     const auto found = ops_.find(opId);
     if (found == ops_.end())
         return; // never began: the worker refused the job before it reached the card
-    const std::int64_t row = found->second;
+    const Operation op = found->second;
     ops_.erase(found);
-    store().finishOp(row, error.empty() ? OpStatus::done : OpStatus::failed,
+    // Only a finished operation leaves a card whose slots are worth writing
+    // down: after a failed one the card is where the failure left it, and the
+    // connect-time check is what tells the history about that.
+    if (error.empty())
+        recordWhatSlotsHold(op);
+    store().finishOp(op.row, error.empty() ? OpStatus::done : OpStatus::failed,
                      error.empty() ? note : error);
 }
 

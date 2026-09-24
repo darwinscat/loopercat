@@ -65,7 +65,23 @@ public:
     HistoryStore& store();
 
 private:
+    // An operation in flight: its row, what kind it is (a swap moves audio
+    // between two slots without writing a byte) and the volume it runs on.
+    struct Operation {
+        std::int64_t row = 0;
+        std::string kind;
+        std::filesystem::path volume;
+    };
+
     std::int64_t opRow(const std::string& opId) const;
+    // After a successful operation, write down what each slot it touched now
+    // holds, read from the card. Without it a slot's timeline cannot be read
+    // on its own: a swap would send the reader into the other slot's rows,
+    // and a rename would leave no sign that the slot held a take at all.
+    // Hashes are carried only where they are certain — from the slot's own
+    // last state, or, for a swap, from the slot it exchanged with. A file the
+    // store has never seen is recorded by name and size, with no hash.
+    void recordWhatSlotsHold(const Operation& op);
     std::int64_t sessionFor(const std::filesystem::path& volume);
 
     // The RC-5 has one track per memory; slot_audio.track is there for the
@@ -79,7 +95,7 @@ private:
     std::string openError_;
     std::optional<std::int64_t> session_;
     std::filesystem::path sessionVolume_;
-    std::map<std::string, std::int64_t> ops_;
+    std::map<std::string, Operation> ops_;
 };
 
 // The one wiring from an operation's WriteOptions into the history, shared by
