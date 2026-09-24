@@ -318,4 +318,33 @@ Report importFolders(HistoryStore& store, const fs::path& dataHome, std::int64_t
     return report;
 }
 
+std::string describe(const Report& report)
+{
+    const auto plural = [](int n, const char* one, const char* many) {
+        return std::to_string(n) + " " + (n == 1 ? one : many);
+    };
+    const int recorded = report.takes + report.documents;
+    const auto skipped = static_cast<int>(report.skipped.size());
+    if (recorded == 0 && report.alreadyImported == 0 && skipped == 0)
+        return "No folders from before the history were found.";
+    std::string text;
+    if (recorded > 0) {
+        text = "Imported " + plural(report.operations, "operation", "operations") + ": "
+               + plural(report.takes, "take", "takes") + " and "
+               + plural(report.documents, "document", "documents");
+        if (report.deduplicated > 0)
+            text += " (" + std::to_string(report.deduplicated) + " already kept, counted once)";
+        text += ".";
+    } else {
+        text = "Nothing new to import.";
+    }
+    if (report.alreadyImported > 0)
+        text += " " + plural(report.alreadyImported, "file was", "files were")
+                + " already in the history.";
+    if (skipped > 0)
+        text += " " + plural(skipped, "folder", "folders")
+                + " skipped, the reasons are in operations.log.";
+    return text;
+}
+
 } // namespace loopercat::history::legacy

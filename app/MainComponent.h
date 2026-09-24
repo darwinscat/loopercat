@@ -128,6 +128,7 @@ private:
 
     void runBackup();
     void runCleanJunk();
+    void runLegacyImport();
     void restoreListening(); // the selected occupied slot is the one in the player
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 

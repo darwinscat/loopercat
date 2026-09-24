@@ -7,6 +7,7 @@
 #include "history/HistoryRecorder.h"
 #include "history/SlotRows.h"
 #include "OperationsLog.h"
+#include "history/LegacyImport.h"
 #include "PedalPortName.h"
 #include "Strings.h"
 #include "WavImport.h"
@@ -374,6 +375,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         .about = [this] { showAbout(); },
         .backup = [this] { runBackup(); },
         .cleanJunk = [this] { runCleanJunk(); },
+        .importLegacy = [this] { runLegacyImport(); },
         .feedTheCat = [] {
             // Signed like the badge's own link: which app, which machine, which wrapper.
             felitronics::appkit::brand::feedTheCatLink("LooperCat",
@@ -1062,6 +1064,42 @@ void MainComponent::runCleanJunk()
                              throw Error("cannot remove junk file "
                                          + sweep.failed.front().string());
                      } });
+}
+
+// The folders from before the history — backups/ and trash/ — become rows
+// on request, and never on the first open: on a real machine that is 1.7 GB
+// and twenty seconds, which nobody does in silence. The store is on this
+// computer, so the job needs no card; the worker still runs it alone, like
+// everything that touches the history. The run's sentence goes to the toast;
+// every skipped folder, with its reason, to operations.log. Nothing under
+// the folders is touched (#74 decides their fate), and a second run records
+// nothing twice, so the item is safe to press again.
+void MainComponent::runLegacyImport()
+{
+    auto note = std::make_shared<juce::String>();
+    worker.enqueue({ "Import the folders from before the history",
+                     0,
+                     [rec = recorder, note,
+                      home = std::filesystem::path(settings.dataDir().getFullPathName().toStdString()),
+                      logDir = settings.dataDir()](const volume::fs::path&) {
+                         const auto report = history::legacy::importFolders(
+                             rec->store(), home,
+                             static_cast<std::int64_t>(juce::Time::currentTimeMillis()));
+                         for (const auto& skipped : report.skipped)
+                             oplog::append(logDir, "legacy import skipped "
+                                                       + juce::String::fromUTF8(skipped.path.c_str())
+                                                       + ": "
+                                                       + juce::String::fromUTF8(skipped.reason.c_str()));
+                         const juce::String sentence =
+                             juce::String::fromUTF8(history::legacy::describe(report).c_str());
+                         oplog::append(logDir, "legacy import: " + sentence);
+                         *note = sentence;
+                     },
+                     note,
+                     0,
+                     false,  // not background: the player asked for it and waits
+                     false,  // not quiet: the outcome is the whole point
+                     false }); // and it needs no card
 }
 
 void MainComponent::showAbout()

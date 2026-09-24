@@ -84,4 +84,10 @@ struct Report {
 Report importFolders(HistoryStore& store, const std::filesystem::path& dataHome,
                      std::int64_t nowMs);
 
+// The run in one sentence, for the person who pressed the button: what was
+// recorded, what was there already, how many folders were skipped — their
+// reasons go to the log, not the toast. A run that found no folders at all
+// says so, rather than reporting zeros.
+std::string describe(const Report& report);
+
 } // namespace loopercat::history::legacy
