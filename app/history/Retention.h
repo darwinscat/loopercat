@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,7 @@ inline constexpr std::int64_t kDefaultLimit = std::int64_t { 5 } << 30;
 // One blob whose bytes the store keeps, as the store reports it.
 struct Blob {
     std::string hash;
+    std::string label;        // for a person: "slot 14 take.wav", or a legacy file's path
     std::int64_t size = 0;
     std::int64_t created = 0; // when the bytes were first kept, ms since the epoch
     int references = 0;       // rows naming the hash, both sides
@@ -176,6 +178,100 @@ inline std::string describe(const Plan& plan)
     if (largest != nullptr && largest->size > plan.target)
         text += "; one take alone, " + bytesText(largest->size) + ", is larger than the limit";
     return text + ".";
+}
+
+// --- how many weeks the room lasts, at the rate the history has grown ---
+
+// One take or document the store kept, when and how big — released since or
+// not: the bytes were written then, and the rate is about writing.
+struct Write {
+    std::int64_t at = 0;
+    std::int64_t size = 0;
+};
+
+inline constexpr std::int64_t kDayMs = std::int64_t { 24 } * 60 * 60 * 1000;
+inline constexpr std::int64_t kWeekMs = 7 * kDayMs;
+// The rate is the bytes kept over the last eight weeks, or over the history's
+// own age when it is younger — and below one week no rate is claimed at all:
+// a burst on the first day says nothing about the weeks to come.
+inline constexpr int kRateWeeks = 8;
+
+struct Forecast {
+    enum class Bound { limit, disk }; // what runs out first
+    std::int64_t bytesPerWeek = 0;    // 0 while nothing can be claimed
+    std::int64_t measuredMs = 0;      // the span the rate covers; 0 with nothing kept yet
+    std::int64_t room = 0;            // bytes until the bound
+    Bound bound = Bound::limit;
+    std::optional<double> weeks;      // until the room is gone; absent when no rate can be claimed
+
+    bool nothingKept() const { return measuredMs == 0; }
+    bool tooYoung() const { return measuredMs > 0 && measuredMs < kWeekMs; }
+    bool idle() const { return measuredMs >= kWeekMs && bytesPerWeek == 0; }
+};
+
+inline Forecast forecast(const std::vector<Write>& writes, std::int64_t nowMs, std::int64_t kept,
+                         std::int64_t limit, std::int64_t diskAvailable)
+{
+    if (kept < 0 || limit < 0 || diskAvailable < 0)
+        throw Error("a forecast needs non-negative bytes");
+    Forecast out;
+    const std::int64_t underLimit = std::max<std::int64_t>(0, limit - kept);
+    if (diskAvailable < underLimit) {
+        out.room = diskAvailable;
+        out.bound = Forecast::Bound::disk;
+    } else {
+        out.room = underLimit;
+        out.bound = Forecast::Bound::limit;
+    }
+    if (writes.empty())
+        return out;
+
+    std::int64_t oldest = nowMs;
+    for (const Write& w : writes)
+        oldest = std::min(oldest, w.at);
+    const std::int64_t windowStart = std::max(oldest, nowMs - kRateWeeks * kWeekMs);
+    out.measuredMs = nowMs - windowStart;
+    if (out.measuredMs < kWeekMs)
+        return out; // too young to claim a rate
+    std::int64_t inWindow = 0;
+    for (const Write& w : writes)
+        if (w.at >= windowStart)
+            inWindow += w.size;
+    out.bytesPerWeek = static_cast<std::int64_t>(
+        static_cast<double>(inWindow) * static_cast<double>(kWeekMs)
+        / static_cast<double>(out.measuredMs));
+    if (out.bytesPerWeek > 0)
+        out.weeks = static_cast<double>(out.room) / static_cast<double>(out.bytesPerWeek);
+    return out;
+}
+
+// The forecast in one honest sentence. It never says "0 weeks": a limit that
+// is reached, a rate that cannot be claimed and a history with nothing added
+// each get their own words.
+inline std::string describeForecast(const Forecast& f)
+{
+    const char* bound = f.bound == Forecast::Bound::disk ? "the disk is full" : "the limit";
+    if (f.nothingKept())
+        return "Nothing has been kept yet, so there is no rate to go by.";
+    if (f.tooYoung()) {
+        const std::int64_t days = f.measuredMs / kDayMs;
+        return (days < 1 ? std::string("The history is less than a day old")
+                         : "The history is " + std::to_string(days) + (days == 1 ? " day" : " days") + " old")
+               + ": too early to tell its rate.";
+    }
+    if (f.idle())
+        return "Nothing was added in the last " + std::to_string(kRateWeeks)
+               + " weeks; at this rate " + bound + " is not in sight.";
+    const std::string rate = " at the current rate (" + bytesText(f.bytesPerWeek) + " a week).";
+    if (f.room == 0)
+        return std::string(f.bound == Forecast::Bound::disk ? "The disk is full" : "The history is at its limit")
+               + "; it grows by " + bytesText(f.bytesPerWeek) + " a week.";
+    const double weeks = *f.weeks;
+    if (weeks < 1.0)
+        return std::string("Less than a week until ") + bound + rate;
+    if (weeks > 104.0)
+        return std::string("More than two years until ") + bound + rate;
+    return "About " + std::to_string(static_cast<long long>(weeks + 0.5)) + " weeks until " + bound + rate;
 }
 
 } // namespace loopercat::history::retention

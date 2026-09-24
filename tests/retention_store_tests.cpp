@@ -434,5 +434,49 @@ int main()
         CHECK_THROWS(r.store.vacuum(0), "at least one page");
     }
 
+    // --- writes(): everything ever kept, released or not, for the rate ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        CHECK(r.store.writes().empty());
+        const std::string a = take(1000, 1);
+        const std::string b = take(2000, 2);
+        r.replaced(1, a);
+        const std::int64_t aAt = r.clock; // keepAudio's nowMs is the last tick
+        r.replaced(2, b);
+        r.replaced(3, a); // the same bytes again are not a second write
+        r.renamed(9);
+        auto writes = r.store.writes();
+        CHECK_EQ(writes.size(), 2u);
+        CHECK_EQ(writes.front().size, 1000);
+        CHECK_EQ(writes.front().at, aAt);
+        CHECK_EQ(writes.back().size, 2000);
+        CHECK(writes.front().at < writes.back().at);
+        r.store.releaseBlobs({ HistoryStore::contentHash(a) }, r.store.offeredUndo(), 5);
+        CHECK_EQ(r.store.writes().size(), 2u); // released bytes were still written then
+    }
+
+    // --- a kept blob's label: the newest slot row naming it, else the legacy path ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string bytes = take(1000, 1);
+        r.replaced(14, bytes);
+        auto blobs = r.store.keptBlobs(std::nullopt);
+        CHECK_EQ(blobs.front().label, std::string("slot 14 take.wav"));
+        r.replaced(27, bytes); // a newer row names the same take from slot 27
+        CHECK_EQ(r.store.keptBlobs(std::nullopt).front().label, std::string("slot 27 take.wav"));
+
+        const auto session = r.store.openSession(r.store.card("unknown", "legacy folders", 1), 1);
+        const auto op = r.store.recordLegacyOp(session, "2026-09-01T21-35-46", 500, "backups/x");
+        r.store.keepLegacyDocument(op, "backups/2026-09-01T21-35-46/MEMORY1.RC0", "document", 600);
+        blobs = r.store.keptBlobs(std::nullopt);
+        CHECK_EQ(blobs.size(), 2u);
+        const auto* document = find(blobs, HistoryStore::contentHash("document"));
+        CHECK(document != nullptr);
+        CHECK(document && document->label == "backups/2026-09-01T21-35-46/MEMORY1.RC0");
+        CHECK_EQ(find(blobs, HistoryStore::contentHash(bytes))->label, std::string("slot 27 take.wav"));
+    }
+
     return testkit::summary("retention_store_tests");
 }

@@ -385,6 +385,7 @@ juce_add_gui_app(LooperCat
 target_sources(LooperCat PRIVATE
     app/HistoryPane.cpp
     app/Main.cpp
+    app/HistoryStoragePanel.cpp
     app/history/HistoryRecorder.cpp
     app/history/HistoryStore.cpp
     app/history/LegacyImport.cpp
@@ -628,6 +629,27 @@ target_link_libraries(retention_store_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME retention_store_tests COMMAND retention_store_tests)
+
+# The storage panel (issue #74's visible part): driven without a mouse, a
+# database or a worker — it shows what it is handed and offers only what the
+# plan gives.
+juce_add_console_app(history_storage_panel_tests PRODUCT_NAME "history_storage_panel_tests")
+target_sources(history_storage_panel_tests PRIVATE tests/history_storage_panel_tests.cpp
+    app/HistoryStoragePanel.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_storage_panel_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_storage_panel_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_storage_panel_tests COMMAND history_storage_panel_tests)
 
 # The store's versions: a version-1 file built from version 1's own definition
 # opens, gains the new table, keeps every row.

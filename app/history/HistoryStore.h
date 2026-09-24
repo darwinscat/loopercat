@@ -182,6 +182,10 @@ public:
     // auto_vacuum=INCREMENTAL for exactly this.
     std::int64_t vacuum(int pages);
 
+    // Every take and document ever kept — when and how big, released since or
+    // not — for the rate the history grows at (retention::forecast).
+    std::vector<retention::Write> writes();
+
 private:
     // The content-addressed rule, inside the caller's transaction: bytes are
     // kept once; a hash already known costs nothing; one released earlier
