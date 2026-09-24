@@ -68,9 +68,24 @@ public:
                       std::string_view bytes);
     void finishOp(std::int64_t op, OpStatus status, const std::string& note);
 
+    // The audio a slot holds AFTER an operation — the rows that make each
+    // slot's timeline readable on its own. `hash` is absent when the store
+    // has never seen those bytes: the file is then known by name and size,
+    // and no take can be fetched for it.
+    void recordPresentAudio(std::int64_t op, int slot, int track, const std::string& name,
+                            std::int64_t size, const std::optional<std::string>& hash);
+
     // --- reads: what the tests look at today, and what #50 builds on ---
     std::optional<std::string> takeBytes(const std::string& hash);
     std::string opStatus(std::int64_t op);
+    // Every slot an operation touched, by its body or its audio.
+    std::vector<int> touchedSlots(std::int64_t op);
+    bool hasAfterAudio(std::int64_t op, int slot);
+    // The hash a slot's last recorded state gives a file of this name and
+    // size, looking only before `op`. Absent when nothing matches — and then
+    // it stays absent rather than being guessed from another file.
+    std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, const std::string& name,
+                                              std::int64_t size);
 
     sqlite::Db& db() { return db_; }
 

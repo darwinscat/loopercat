@@ -22,7 +22,13 @@
 //   slot_changes what an op did to a slot's body — before AND after in one
 //                row, so every recorded op can be undone on its own
 //   slot_audio   which takes a slot held on either side of an op: name, size,
-//                and the content hash when the bytes passed through the app
+//                and the content hash when the store knows those bytes.
+//                For an operation the app finished, the `after` rows are the
+//                whole truth about that slot: none means the slot holds no
+//                audio, never "we did not look". A hash is absent only when
+//                the bytes are strange to the store — a take the pedal
+//                recorded while the app was away — and is never guessed.
+//                Legacy rows (actor = 'legacy') promise none of this
 //   blobs_meta   what the store keeps, and what is pinned or released
 //   blobs        the bytes, by content hash — never without their blobs_meta
 //                row, which the foreign key enforces

@@ -186,6 +186,51 @@ void HistoryStore::finishOp(std::int64_t op, OpStatus status, const std::string&
         throw Error("operation " + std::to_string(op) + " is not pending");
 }
 
+void HistoryStore::recordPresentAudio(std::int64_t op, int slot, int track,
+                                      const std::string& name, std::int64_t size,
+                                      const std::optional<std::string>& hash)
+{
+    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
+                               "VALUES (?1, ?2, 'after', ?3, ?4, ?5, ?6)");
+    row.bind(1, op).bind(2, slot).bind(3, track).bindText(4, name).bind(5, size);
+    if (hash)
+        row.bindBlob(6, *hash);
+    else
+        row.bindNull(6);
+    row.run();
+}
+
+std::vector<int> HistoryStore::touchedSlots(std::int64_t op)
+{
+    sqlite::Statement read(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
+                                "UNION SELECT slot FROM slot_audio WHERE op = ?1 ORDER BY slot");
+    read.bind(1, op);
+    std::vector<int> slots;
+    while (read.step())
+        slots.push_back(static_cast<int>(read.integer(0)));
+    return slots;
+}
+
+bool HistoryStore::hasAfterAudio(std::int64_t op, int slot)
+{
+    sqlite::Statement read(db_, "SELECT 1 FROM slot_audio WHERE op = ?1 AND slot = ?2 "
+                                "AND side = 'after' LIMIT 1");
+    read.bind(1, op).bind(2, slot);
+    return read.step();
+}
+
+std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot,
+                                                        const std::string& name, std::int64_t size)
+{
+    sqlite::Statement read(db_, "SELECT hash FROM slot_audio WHERE slot = ?2 AND side = 'after' "
+                                "AND name = ?3 AND size = ?4 AND op < ?1 AND hash IS NOT NULL "
+                                "ORDER BY op DESC LIMIT 1");
+    read.bind(1, op).bind(2, slot).bindText(3, name).bind(4, size);
+    if (!read.step())
+        return std::nullopt;
+    return read.blob(0);
+}
+
 std::optional<std::string> HistoryStore::takeBytes(const std::string& hash)
 {
     sqlite::Statement read(db_, "SELECT bytes FROM blobs WHERE hash = ?1");

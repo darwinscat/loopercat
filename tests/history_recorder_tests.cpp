@@ -325,6 +325,119 @@ int main()
         CHECK(reopened.takeBytes(HistoryStore::contentHash(take)) == take);
     }
 
+    // --- every slot's timeline reads on its own ---
+    //
+    // Theory: after an operation, each slot it touched carries a record of
+    // what it now holds. Without it a rename leaves no sign that the slot had
+    // a take at all, and a swap sends the reader — and Restore — into the
+    // other slot's rows for bytes. Hashes are carried only where they are
+    // certain; a file the store has never seen gets none rather than a guess.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        const fs::path source = tmp.path / "incoming.wav";
+        const auto sourceBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 132300 });
+        commands::writeFileBytes(source,
+                                 std::string_view(reinterpret_cast<const char*>(sourceBytes.data()),
+                                                  sourceBytes.size()));
+        CHECK_EQ(run(*rec, "op-push", "push", volume, [&] {
+                     commands::push(volume, source, 3, { .write = options(rec, "op-push", tmp.path / "trash") });
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        const std::string takeHash = text(db, "SELECT hex(hash) FROM slot_audio "
+                                              "WHERE slot = 3 AND side = 'after'");
+        CHECK(takeHash != "<null>");
+
+        // rename: the take did not move, and the row says so with its hash
+        CHECK_EQ(run(*rec, "op-rename", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Kept", options(rec, "op-rename", tmp.path / "trash"));
+                 }),
+                 std::string());
+        CHECK_EQ(text(db, "SELECT hex(hash) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                          "WHERE o.id = 'op-rename' AND a.slot = 3 AND a.side = 'after'"),
+                 takeHash);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-rename'"),
+                 1);
+
+        // swap: slot 7 took the take, slot 3 holds nothing — each said in its own rows
+        CHECK_EQ(run(*rec, "op-swap", "swap", volume, [&] {
+                     commands::swap(volume, 3, 7, options(rec, "op-swap", tmp.path / "trash"));
+                 }),
+                 std::string());
+        CHECK_EQ(text(db, "SELECT hex(hash) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                          "WHERE o.id = 'op-swap' AND a.slot = 7 AND a.side = 'after'"),
+                 takeHash);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-swap' AND a.slot = 3"),
+                 0);
+
+        // clear: the slot holds nothing afterwards, and no after-row claims it does
+        CHECK_EQ(run(*rec, "op-clear", "clear", volume, [&] {
+                     commands::clear(volume, { 7 }, { .write = options(rec, "op-clear", tmp.path / "trash") });
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-clear' AND a.side = 'after'"),
+                 0);
+    }
+
+    {
+        // A take the store has never seen — the pedal recorded it while the
+        // app was away — is written down by name and size, with no hash: a
+        // row that cannot fetch bytes is honest, a guessed hash is not.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 12, "012_1.WAV", 132300);
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(run(*rec, "op-blind", "rename", volume, [&] {
+                     commands::rename(volume, 12, "Stranger", options(rec, "op-blind", tmp.path / "trash"));
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        sqlite::Statement row(db, "SELECT name, size, hash IS NULL FROM slot_audio a "
+                                  "JOIN ops o ON o.seq = a.op WHERE o.id = 'op-blind'");
+        CHECK(row.step());
+        CHECK_EQ(row.text(0), std::string("012_1.WAV"));
+        CHECK(row.integer(1) > 0);
+        CHECK_EQ(row.integer(2), 1); // no hash, and none invented
+    }
+
+    {
+        // A failed operation is not written down as a state. The failure that
+        // discriminates is one whose audio hooks never fire — a rename cannot
+        // touch a take — and that still gets far enough to be announced: the
+        // body change is reported before the pair is written, and the write is
+        // what fails. The slot holds its take throughout; no row may claim
+        // that as the state the operation left, because it left none.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "004_1.WAV", 132300);
+        auto rec = recorderAt(tmp.path / "history");
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
+                        fs::perm_options::replace);
+        const std::string error = run(*rec, "op-failed", "rename", volume, [&] {
+            commands::rename(volume, 4, "Never", options(rec, "op-failed", tmp.path / "trash"));
+        });
+        fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
+                        fs::perm_options::replace);
+        CHECK(!error.empty());
+        sqlite::Db& db = rec->store().db();
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-failed'"), std::string("failed"));
+        // it got as far as announcing the body change...
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes c JOIN ops o ON o.seq = c.op "
+                           "WHERE o.id = 'op-failed'"),
+                 1);
+        // ...the take never moved and is still there...
+        CHECK_EQ(volume::listSlotWavs(volume, 4).size(), 1u);
+        // ...and nothing claims a state this operation never reached
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-failed'"),
+                 0);
+    }
+
     // --- the job's own line reaches the history ---
     //
     // An operation can finish having changed nothing on the card — normalize
