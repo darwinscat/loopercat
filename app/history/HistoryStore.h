@@ -192,9 +192,12 @@ public:
     // folders that predate the store is written last and belongs first —
     // with every slot the operation touched carrying the same facts
     // slotTimeline gives that slot: one story, two views. `newest` says the
-    // operation is the last one on that slot, so its state is the one the
-    // slot is in. An operation that touched no slot (it failed before the
-    // card, or kept only documents) is an entry with no slots.
+    // operation is the last FINISHED one on that slot, so its state is the
+    // one the slot is in — a failed or interrupted write may never have
+    // reached the card, so it is not where the slot is, and its state can be
+    // offered back like any other. An operation that touched no slot (it
+    // failed before the card, or kept only documents) is an entry with no
+    // slots.
     struct CardEntry {
         std::int64_t op = 0;
         std::int64_t at = 0;

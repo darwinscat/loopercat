@@ -113,8 +113,8 @@ void HistoryWindow::rebuildVisible(std::int64_t keepSelectedOp)
     if (row < 0 && !visible_.empty())
         row = static_cast<int>(visible_.size()) - 1;
     list_.selectRow(row, juce::dontSendNotification);
-    if (!visible_.empty())
-        list_.scrollToEnsureRowIsOnscreen(static_cast<int>(visible_.size()) - 1);
+    if (row >= 0)
+        list_.scrollToEnsureRowIsOnscreen(row); // the selected row: the newest, unless one was kept
     updateOffers();
     repaint();
 }

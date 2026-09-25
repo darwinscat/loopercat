@@ -177,9 +177,11 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             row.takes.push_back({ touched.slot, slotRow.line.audio, slotRow.playable,
                                   slotRow.restorable, slotRow.takeHash });
         }
-        if (entry.kind == "swap" && entry.slots.size() == 2)
+        if (entry.kind == "swap" && entry.slots.size() == 2) {
             row.action = "Swapped slots " + std::to_string(entry.slots[0].slot) + " and "
                 + std::to_string(entry.slots[1].slot);
+            row.detail.clear(); // one slot's numbers would speak for both
+        }
         if (row.action.empty()) {
             // Nothing recorded about any slot: the operation's own name and
             // its line are all there is, as story::tell says for a kind it

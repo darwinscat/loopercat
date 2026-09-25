@@ -25,6 +25,11 @@
 // with two badges. The buttons sit under the list, for the selected row —
 // a row is a sentence, not a form — and offer only what the row can do:
 // nothing plays a take the store no longer keeps.
+//
+// A pin toggled here shows at once and goes out through onPin; the window's
+// own flag is a promise, not the truth. The owner records the pin and calls
+// show() again with the store's rows — that is where the truth comes from,
+// and a pin the store refused disappears with it.
 //==============================================================================
 namespace loopercat
 {

@@ -208,6 +208,26 @@ int main()
         CHECK(entries.back().slots.size() == 1 && entries.back().slots[0].newest);
     }
 
+    // --- newest is the last FINISHED operation on a slot ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const auto done = r.begin("rename");
+        r.store.recordBodies(done, { { 5, "before", "after" } });
+        r.store.finishOp(done, OpStatus::done, "");
+        const auto failed = r.begin("trim"); // reached the slot's rows, then failed
+        r.store.recordBodies(failed, { { 5, "after", "never" } });
+        r.store.finishOp(failed, OpStatus::failed, "cannot write MEMORY1.RC0");
+        const auto cut = r.begin("clear");
+        r.store.recordBodies(cut, { { 5, "after", "gone" } });
+        // no finishOp: the app stopped here
+        const auto entries = r.store.cardTimeline();
+        CHECK_EQ(entries.size(), 3u);
+        CHECK(entryFor(entries, done)->slots.front().newest);
+        CHECK(!entryFor(entries, failed)->slots.front().newest);
+        CHECK(!entryFor(entries, cut)->slots.front().newest); // pending is not finished either
+    }
+
     // --- pins ride along ---
     {
         TempDir tmp;

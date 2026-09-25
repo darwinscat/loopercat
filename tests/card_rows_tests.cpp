@@ -83,6 +83,7 @@ int main()
         const auto made = rows::forCard({ swap });
         CHECK_EQ(made.size(), 1u);
         CHECK_EQ(made.front().action, std::string("Swapped slots 12 and 43"));
+        CHECK_EQ(made.front().detail, std::string()); // one slot's numbers would speak for both
         CHECK(made.front().slots() == (std::vector<int> { 12, 43 }));
         CHECK_EQ(made.front().takes.size(), 2u);
         CHECK_EQ(made.front().takes[0].audio, std::string("in the slot now"));

@@ -570,11 +570,13 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
         }
     }
 
-    // The last operation on a slot, in this order, is the state it is in.
+    // The last finished operation on a slot, in this order, is the state it
+    // is in; a write that failed or was cut off may never have reached the card.
     std::map<int, CardEntry::Slot*> last;
     for (CardEntry& entry : entries)
-        for (CardEntry::Slot& touched : entry.slots)
-            last[touched.slot] = &touched;
+        if (entry.status == "done")
+            for (CardEntry::Slot& touched : entry.slots)
+                last[touched.slot] = &touched;
     for (auto& [slot, touched] : last)
         touched->newest = true;
     return entries;
