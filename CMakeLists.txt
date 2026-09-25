@@ -244,6 +244,9 @@ loopercat_core_test(volume_tests)
 loopercat_core_test(card_marker_tests)
 loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
+# The storage register read back: which frames are the pedal's answer and
+# what it says (issue #85) — from captured frames, no hardware.
+loopercat_core_test(storage_register_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
 loopercat_core_test(slot_story_tests)

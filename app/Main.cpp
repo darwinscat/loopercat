@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <optional>
 
 namespace loopercat
 {
@@ -69,9 +70,35 @@ public:
                           << "]\n";
             const auto found = pedallink::findPedal();
             std::cout << "found: " << (found ? found->name : juce::String("NOTHING")) << "\n";
+            const int probeFlag = args.indexOf("--midi-probe");
+            // "--midi-probe read <identifier>" asks that endpoint for its
+            // storage register and sends nothing else (issue #85): the seam
+            // behind "ask the pedal why" — the pedal's own word, or the
+            // honest silence, without the window.
+            if (probeFlag >= 0 && args[probeFlag + 1] == "read") {
+                const juce::String wanted = args[probeFlag + 2];
+                std::optional<juce::MidiDeviceInfo> pedal;
+                for (const auto& candidate : pedallink::findPedals())
+                    if (candidate.identifier == wanted)
+                        pedal = candidate;
+                if (!pedal) {
+                    std::cout << "register: no RC-5 output with identifier [" << wanted << "]" << std::endl;
+                    setApplicationReturnValue(1);
+                } else {
+                    try {
+                        const auto state = pedallink::readStorageState(*pedal);
+                        std::cout << "register: " << pedallink::describe(state) << std::endl;
+                        setApplicationReturnValue(0);
+                    } catch (const loopercat::Error& e) {
+                        std::cout << "register: error: " << e.what() << std::endl;
+                        setApplicationReturnValue(1);
+                    }
+                }
+                quit();
+                return;
+            }
             // "--midi-probe exit" sends the leaving frame instead, so the
             // Disconnect half of the same path can be measured too.
-            const int probeFlag = args.indexOf("--midi-probe");
             const bool enter = !(probeFlag >= 0 && args[probeFlag + 1] == "exit");
             const juce::String error = pedallink::requestStorageMode(enter);
             std::cout << "send: " << (error.isEmpty() ? juce::String("reported ok") : error)
