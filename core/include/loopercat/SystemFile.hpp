@@ -27,8 +27,10 @@
 #include "Error.hpp"
 #include "Rc0.hpp"
 
+#include <array>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace loopercat::sysfile {
 
@@ -37,6 +39,11 @@ inline constexpr std::string_view kRoot = "sys";
 inline constexpr std::string_view kSectionSetup = "SETUP";
 inline constexpr std::string_view kSectionMidi = "MIDI";
 inline constexpr std::string_view kSectionCtl = "CTL";
+
+// Every section a settings file has. A file missing one of them is refused by
+// assertSystemFile, so this list is also the whole of what can change.
+inline constexpr std::array<std::string_view, 3> kSections { kSectionSetup, kSectionMidi,
+                                                             kSectionCtl };
 
 // The memory the pedal currently has selected, kept in SETUP. It belongs to
 // the pedal: we read it, we never decide it, and an edit of anything else
@@ -77,6 +84,46 @@ inline std::string setField(std::string_view text, std::string_view section,
                             std::string_view tag, long long value)
 {
     return rc0::setSectionField(text, section, tag, value);
+}
+
+// One section's bytes, opener to closer. Both documents handed to
+// sectionChanges must be settings files: a missing section throws by name.
+inline std::string sectionText(std::string_view text, std::string_view section)
+{
+    const auto region = rc0::detail::sectionRegion(text, section);
+    const std::string open = "<" + std::string(section) + ">";
+    const std::string close = "</" + std::string(section) + ">";
+    return open + std::string(text.substr(region.bodyStart, region.bodyEnd - region.bodyStart))
+         + close;
+}
+
+// What one edit did, section by section — the shape the history records and
+// an undo restores from: the section's name, its bytes before, its bytes
+// after. Unchanged sections are absent.
+//
+// Why a LIST and not one section: the writer here is field-level and takes a
+// finished document, so the day a second section is edited (MIDI settings, the
+// SETUP display) a single-section record would be incomplete, and incomplete
+// in silence. Computed here rather than in the app so that nothing outside the
+// core has to parse this file to know what happened.
+struct SectionChange {
+    std::string section;
+    std::string before;
+    std::string after;
+
+    bool operator==(const SectionChange&) const = default;
+};
+
+inline std::vector<SectionChange> sectionChanges(std::string_view before, std::string_view after)
+{
+    std::vector<SectionChange> changes;
+    for (const std::string_view section : kSections) {
+        std::string was = sectionText(before, section);
+        std::string now = sectionText(after, section);
+        if (was != now)
+            changes.push_back({ std::string(section), std::move(was), std::move(now) });
+    }
+    return changes;
 }
 
 // The memory the pedal has selected right now.

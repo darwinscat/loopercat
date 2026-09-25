@@ -200,14 +200,16 @@ int main()
                                               options(tmp.path / "backups", "op-2")),
                      "memory file");
 
-        // Neither bank readable: there is no generation to continue from, and
-        // unlike the memory pair there is no factory pair to restart at.
+        // Neither bank readable: refused, and said precisely. The write reads
+        // the card's own settings first (that document is the history's
+        // "before"), so a card with no readable settings is refused by name
+        // before the generation question is even asked.
         const std::string keep = commands::readFileBytes(volume::systemPath(volume, 1));
         for (const int fileNo : { 1, 2 })
             fs::remove(volume::systemPath(volume, fileNo));
         CHECK_THROWS(commands::writeSystemPair(volume, withCtl2(system, 25),
                                               options(tmp.path / "backups", "op-3")),
-                     "no write generation to continue from");
+                     "cannot read");
         for (const int fileNo : { 1, 2 })
             CHECK(!fs::exists(volume::systemPath(volume, fileNo))); // nothing was created
         commands::writeFileBytes(volume::systemPath(volume, 1), keep);
@@ -267,6 +269,106 @@ int main()
         CHECK(volume::systemPath(volume, 2) == volume::bankPath(volume, volume::Bank::system, 2));
         CHECK_THROWS(volume::bankPath(volume, volume::Bank::system, 0), "fileNo must be 1 or 2");
         CHECK_THROWS(volume::bankPath(volume, volume::Bank::memory, 3), "fileNo must be 1 or 2");
+    }
+
+    // --- the settings write tells the history what it changes, first ---
+    //
+    // The pedal's own settings are undoable like a memory is, so the write has
+    // to describe itself before it happens: section by section, with the bytes
+    // either side, and only the sections that differ. The same rule as the
+    // memory pair — a change the history cannot describe does not happen.
+
+    {
+        TempDir tmp;
+        const fs::path volume = makeCard(tmp.path);
+        const std::string before = commands::readSystem(volume);
+
+        // One control edited: one section, named, with its bytes either side.
+        std::vector<commands::SectionChange> seen;
+        commands::WriteOptions opts = options(tmp.path / "backups", "op-journal-1");
+        opts.journal.systemChanging = [&seen](const std::vector<commands::SectionChange>& c) {
+            seen = c;
+        };
+        const std::string edited = withCtl2(before, 25);
+        commands::writeSystemPair(volume, edited, opts);
+        CHECK_EQ(seen.size(), static_cast<std::size_t>(1));
+        if (seen.size() == 1) {
+            CHECK_EQ(seen[0].section, std::string(sysfile::kSectionCtl));
+            CHECK_EQ(seen[0].before, sysfile::sectionText(before, sysfile::kSectionCtl));
+            CHECK_EQ(seen[0].after, sysfile::sectionText(edited, sysfile::kSectionCtl));
+            // What an undo restores is the section as the card held it.
+            CHECK(seen[0].before != seen[0].after);
+        }
+
+        // Two sections edited: two entries, in the file's order, SETUP first.
+        const std::string twice = sysfile::setField(
+            withCtl2(commands::readSystem(volume), 26), sysfile::kSectionSetup, "Contrast", 7);
+        commands::WriteOptions opts2 = options(tmp.path / "backups", "op-journal-2");
+        opts2.journal.systemChanging = [&seen](const std::vector<commands::SectionChange>& c) {
+            seen = c;
+        };
+        commands::writeSystemPair(volume, twice, opts2);
+        CHECK_EQ(seen.size(), static_cast<std::size_t>(2));
+        if (seen.size() == 2) {
+            CHECK_EQ(seen[0].section, std::string(sysfile::kSectionSetup));
+            CHECK_EQ(seen[1].section, std::string(sysfile::kSectionCtl));
+        }
+
+        // Writing the same document back changes no section, and says so.
+        commands::WriteOptions opts3 = options(tmp.path / "backups", "op-journal-3");
+        opts3.journal.systemChanging = [&seen](const std::vector<commands::SectionChange>& c) {
+            seen = c;
+        };
+        commands::writeSystemPair(volume, commands::readSystem(volume), opts3);
+        CHECK(seen.empty());
+    }
+
+    // A journal that cannot describe the change stops the write, and the card
+    // keeps every byte — both banks, the trailer included.
+    {
+        TempDir tmp;
+        const fs::path volume = makeCard(tmp.path);
+        std::string bankBytes[2];
+        for (const int fileNo : { 1, 2 })
+            bankBytes[fileNo - 1] = commands::readFileBytes(volume::systemPath(volume, fileNo));
+
+        commands::WriteOptions opts = options(tmp.path / "backups", "op-journal-4");
+        opts.journal.systemChanging = [](const std::vector<commands::SectionChange>&) {
+            throw Error("history is full");
+        };
+        CHECK_THROWS(commands::writeSystemPair(volume, withCtl2(commands::readSystem(volume), 30),
+                                               opts),
+                     "history is full");
+        for (const int fileNo : { 1, 2 })
+            CHECK(commands::readFileBytes(volume::systemPath(volume, fileNo))
+                  == bankBytes[fileNo - 1]);
+    }
+
+    // The hook runs BEFORE the write: a hook that reads the card sees the old
+    // settings, which is what makes its "before" trustworthy.
+    {
+        TempDir tmp;
+        const fs::path volume = makeCard(tmp.path);
+        const std::string before = commands::readSystem(volume);
+        long long onCardWhenCalled = -1;
+        commands::WriteOptions opts = options(tmp.path / "backups", "op-journal-5");
+        opts.journal.systemChanging = [&](const std::vector<commands::SectionChange>&) {
+            onCardWhenCalled =
+                sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2");
+        };
+        commands::writeSystemPair(volume, withCtl2(before, 31), opts);
+        CHECK_EQ(onCardWhenCalled, sysfile::field(before, sysfile::kSectionCtl, "Ctl2"));
+        CHECK_EQ(sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2"), 31);
+    }
+
+    // sectionChanges and sectionText on their own, since the history builds
+    // fixtures with them: a section is its opener, its body and its closer.
+    {
+        const std::string ctl = sysfile::sectionText(system, sysfile::kSectionCtl);
+        CHECK(ctl.starts_with("<CTL>"));
+        CHECK(ctl.ends_with("</CTL>"));
+        CHECK(sysfile::sectionChanges(system, system).empty());
+        CHECK_THROWS(sysfile::sectionText(system, "PREF"), "missing <PREF> section");
     }
 
     return testkit::summary("bank_pair");

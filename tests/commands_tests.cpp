@@ -943,12 +943,19 @@ int main()
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
 
-        // Give slot 5 indexed audio: exactly 60 s at 44.1 kHz.
+        // Give slot 5 indexed audio: exactly 60 s at 44.1 kHz, with the bar
+        // count a pedal would have written for it — 60 s at the synthetic
+        // body's 120.0 BPM is 30 bars, so Measure carries 30 + 7. A loop whose
+        // Measure sits BELOW the offset is a note length, not a bar count
+        // (issue #92), and it has its own test near the end of this file: this
+        // one is about the ordinary case.
         {
             std::string text = commands::readMemory(volume);
             std::string body = rc0::slotBody(text, 5);
             body = rc0::setField(body, "WavStat", 1);
             body = rc0::setField(body, "WavLen", 44100LL * 60);
+            body = rc0::setField(body, "MeasLen", 30);
+            body = rc0::setField(body, "Measure", 30 + params::kMeasureFieldOffset);
             commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 5, body),
                                       { .skipBackup = true });
         }
@@ -2585,6 +2592,96 @@ int main()
         CHECK(!fs::exists(tmp.path / "backups"));
         CHECK(!fs::exists(tmp.path / "pulled"));
         (void) before;
+    }
+
+    // --- a length set as a note value is not a bar count (issue #92) ---
+    //
+    // <Measure> holds a bar count only from 7 up ("1MEAS"); below that the
+    // pedal keeps a note length. The real card's memory 40 is such a memory:
+    // Measure 6, its MEASURE reading as a half note on the pedal's screen, and
+    // its audio exactly two beats at the tempo it was recorded at. Our writes
+    // used to put "bars + 7" there unconditionally, which moved a memory out
+    // of a mode the player chose — in an operation that was about something
+    // else, and without a word.
+
+    CHECK(params::isNoteLength(0));
+    CHECK(params::isNoteLength(6));  // the half note, as memory 40 carries it
+    CHECK(!params::isNoteLength(7)); // "1MEAS": a bar count from here up
+    CHECK(!params::isNoteLength(8));
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedalFromCard(tmp.path);
+
+        // The fixture's own shape, so a change in it fails here and not below.
+        const std::string start = commands::readMemory(volume);
+        CHECK_EQ(rc0::sectionField(rc0::slotBody(start, 40), rc0::kSectionTrack1, "Measure"), 6);
+        CHECK_EQ(rc0::sectionField(rc0::slotBody(start, 40), rc0::kSectionTrack1, "WavStat"), 1);
+        CHECK_EQ(rc0::sectionField(rc0::slotBody(start, 8), rc0::kSectionTrack1, "Measure"), 100);
+
+        // A tempo edit on the note-length memory touches the tempi and nothing
+        // else: a half note is two beats at any BPM, so there is nothing to
+        // recompute and no mode to lose.
+        commands::setTempo(volume, 40, 1000, writeOpts(tmp.path));
+        const std::string afterNote = commands::readMemory(volume);
+        CHECK_EQ(slotChangesOnCard(start, afterNote, 40),
+                 std::string("TRACK1.RecTmp 973->1000, MASTER.Tempo 973->1000"));
+
+        // On a memory whose length IS a bar count, the same edit still
+        // recomputes the bars, exactly as it always has.
+        const long long frames8 =
+            rc0::sectionField(rc0::slotBody(afterNote, 8), rc0::kSectionTrack1, "WavLen");
+        const long long bars8 = commands::barsFromTempo(1000, frames8);
+        commands::setTempo(volume, 8, 1000, writeOpts(tmp.path));
+        CHECK_EQ(slotChangesOnCard(afterNote, commands::readMemory(volume), 8),
+                 "TRACK1.Measure 100->" + std::to_string(bars8 + params::kMeasureFieldOffset)
+                     + ", TRACK1.MeasLen 93->" + std::to_string(bars8)
+                     + ", TRACK1.RecTmp 1250->1000, MASTER.Tempo 1250->1000");
+    }
+
+    // A trim and a push DO define a new length, so the field becomes a bar
+    // count — and the result says that a note length was replaced, so the app
+    // can tell the player instead of the change happening in silence.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedalFromCard(tmp.path);
+        putStereoFloatWav(volume, 40, "040_1.WAV", 54352); // the two-beat take
+        putStereoFloatWav(volume, 8, "008_1.WAV", 132300);
+
+        const auto trimmedNote =
+            commands::trim(volume, 40, 0, 27176, { .write = writeOpts(tmp.path) });
+        CHECK(trimmedNote.noteLengthReplaced);
+        CHECK(!params::isNoteLength(
+            rc0::sectionField(rc0::slotBody(commands::readMemory(volume), 40),
+                              rc0::kSectionTrack1, "Measure")));
+
+        const auto trimmedBars =
+            commands::trim(volume, 8, 0, 66150, { .write = writeOpts(tmp.path) });
+        CHECK(!trimmedBars.noteLengthReplaced);
+    }
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedalFromCard(tmp.path);
+        const auto sourceBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 132300 });
+        const fs::path source = tmp.path / "incoming.wav";
+        commands::writeFileBytes(source,
+                                 std::string_view(reinterpret_cast<const char*>(sourceBytes.data()),
+                                                  sourceBytes.size()));
+        putStereoFloatWav(volume, 40, "040_1.WAV", 54352);
+
+        const auto overNote = commands::push(volume, source, 40,
+                                             { .force = true, .write = writeOpts(tmp.path) });
+        CHECK(overNote.noteLengthReplaced);
+
+        // THE TRAP: a factory-empty memory reads Measure 1, which is below the
+        // offset and is NOT a mode anyone chose — there is no loop there to
+        // have a length. A push into it replaces nothing.
+        CHECK_EQ(rc0::sectionField(rc0::slotBody(commands::readMemory(volume), 42),
+                                   rc0::kSectionTrack1, "Measure"),
+                 1);
+        const auto intoEmpty = commands::push(volume, source, 42, { .write = writeOpts(tmp.path) });
+        CHECK(!intoEmpty.noteLengthReplaced);
     }
 
     return testkit::summary("commands");
