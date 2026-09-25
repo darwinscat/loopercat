@@ -535,6 +535,25 @@ target_link_libraries(pedal_monitor_harness PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME pedal_monitor_harness COMMAND pedal_monitor_harness)
 
+# The table's gestures against what the card permits (CardPermissions.h):
+# the real SlotTable, clicked through its model — app tier, same ctest.
+juce_add_console_app(slot_table_harness PRODUCT_NAME "slot_table_harness")
+target_sources(slot_table_harness PRIVATE tests/slot_table_harness.cpp app/SlotTable.cpp)
+target_compile_definitions(slot_table_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(slot_table_harness PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME slot_table_harness COMMAND slot_table_harness)
+
 # ----------------------------------------------------------------------------
 # The pedal link's enumeration: with two RC-5s on the bus the OS names them
 # alike, and the link must hand out both with their identifiers (issue #98).

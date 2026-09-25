@@ -122,9 +122,20 @@ void SlotInspector::setBusy(bool busy)
 void SlotInspector::refresh()
 {
     const bool live = hasSlot_ && !busy_;
-    for (auto* child : std::initializer_list<juce::Component*> { &nameEditor_, &tempoEditor_,
-                                                                &countIn_, &oneShot_ })
-        child->setEnabled(live);
+    // What the card may be asked decides what the studio offers: a name or a
+    // tempo the card cannot take is shown, not edited; a switch the card
+    // cannot flip is a lamp; and the footer says so instead of promising
+    // that a change will be heard.
+    const CardPermissions can = allowed();
+    nameEditor_.setEnabled(live && can.rename);
+    nameEditor_.setReadOnly(!can.rename);
+    tempoEditor_.setEnabled(live && can.tempo);
+    tempoEditor_.setReadOnly(!can.tempo);
+    countIn_.setEnabled(live && can.countIn);
+    oneShot_.setEnabled(live && can.oneShot);
+    footer_.setText(can.anyWrite() ? juce::String("Disconnect to hear the changes.")
+                                   : juce::String(CardPermissions::writesOnlyTo()),
+                    juce::dontSendNotification);
 
     for (auto* child : std::initializer_list<juce::Component*> { &nameCaption_, &tempoCaption_,
                                                                 &barsHint_, &footer_,
@@ -194,7 +205,7 @@ void SlotInspector::updateBarsHint()
 
 void SlotInspector::commitName()
 {
-    if (!hasSlot_ || busy_ || !onRenameCommitted)
+    if (!hasSlot_ || busy_ || !onRenameCommitted || !allowed().rename)
         return;
     const juce::String value = nameEditor_.getText().trim();
     if (value.isEmpty() || value == utf8(info_.name).trimEnd())
@@ -204,7 +215,7 @@ void SlotInspector::commitName()
 
 void SlotInspector::commitTempo()
 {
-    if (!hasSlot_ || busy_ || !onTempoCommitted)
+    if (!hasSlot_ || busy_ || !onTempoCommitted || !allowed().tempo)
         return;
     const juce::String value = tempoEditor_.getText().trim();
     if (value.isEmpty() || value == SlotTable::formatTempo(info_.tempoTenths))
