@@ -372,8 +372,14 @@ int main()
         put(tmp.path / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav", "sidecar");
         put(tmp.path / ".Spotlight-V100" / "._store", "not ours");
         put(tmp.path / "System Volume Information" / "._sys", "not ours");
+        put(tmp.path / "README.txt", "a player's own note");   // the root is a lived-in place
+        put(tmp.path / "notes.md", "and another");
+        put(tmp.path / "._README.txt", "macOS's dropping beside it");
         const auto written = marker::mint(tmp.path, "RC-5 Kitty");
-        CHECK_EQ(written.sweep.removed.size(), 3u);
+        CHECK_EQ(written.sweep.removed.size(), 4u);
+        CHECK(fs::exists(tmp.path / "README.txt"));
+        CHECK(fs::exists(tmp.path / "notes.md"));
+        CHECK(!fs::exists(tmp.path / "._README.txt"));
         CHECK(written.sweep.failed.empty());
         CHECK(!fs::exists(tmp.path / "._loopercat-card.json"));
         CHECK(!fs::exists(tmp.path / ".DS_Store"));
@@ -455,6 +461,61 @@ int main()
         // Nor is a foreign or newer file.
         put(marker::markerPath(tmp.path), "{\"loopercat_card\": 2, \"id\": \"x\", \"name\": \"n\", \"model\": \"RC-5\", \"created\": \"c\"}");
         CHECK_THROWS(marker::rename(tmp.path, "RC-5 Drummer"), "newer LooperCat");
+    }
+
+    // --- the marker is never half-written: staged, verified, renamed over ---
+
+    {
+        // A leftover .part from an interrupted attempt neither blocks nor
+        // pollutes: the next write overwrites it, and the rename consumes it.
+        TempDir tmp;
+        makeCard(tmp.path);
+        put(tmp.path / "loopercat-card.json.part", "{\"torn");
+        const auto written = marker::mint(tmp.path, "RC-5 Kitty");
+        CHECK(!fs::exists(tmp.path / "loopercat-card.json.part"));
+        CHECK_EQ(marker::read(tmp.path)->id, written.card.id);
+    }
+    {
+        // Something in the way of the staging name: the write fails BEFORE the
+        // marker is touched — a card keeps its id, a rename keeps everything.
+        TempDir tmp;
+        makeCard(tmp.path);
+        fs::create_directories(tmp.path / "loopercat-card.json.part");
+        CHECK_THROWS(marker::mint(tmp.path, "RC-5 Kitty"), "cannot write");
+        CHECK(!fs::exists(marker::markerPath(tmp.path)));
+        fs::remove_all(tmp.path / "loopercat-card.json.part");
+        marker::mint(tmp.path, "RC-5 Kitty");
+        const std::string before = slurp(marker::markerPath(tmp.path));
+        fs::create_directories(tmp.path / "loopercat-card.json.part");
+        CHECK_THROWS(marker::rename(tmp.path, "RC-5 Drummer"), "cannot write");
+        CHECK_EQ(slurp(marker::markerPath(tmp.path)), before);
+        CHECK_EQ(marker::read(tmp.path)->name, "RC-5 Kitty");
+    }
+    {
+        // The staging file's own sidecar is swept with the marker's.
+        TempDir tmp;
+        makeCard(tmp.path);
+        marker::mint(tmp.path, "RC-5 Kitty");
+        put(tmp.path / "._loopercat-card.json.part", "sidecar");
+        put(tmp.path / "._loopercat-card.json", "sidecar");
+        const auto renamed = marker::rename(tmp.path, "RC-5 Drummer");
+        CHECK_EQ(renamed.sweep.removed.size(), 2u);
+        CHECK(!fs::exists(tmp.path / "._loopercat-card.json.part"));
+        CHECK(!fs::exists(tmp.path / "._loopercat-card.json"));
+    }
+
+    // --- no volume is not "no marker" ---
+
+    {
+        TempDir tmp;
+        const fs::path gone = tmp.path / "BOSS RC-5";
+        CHECK_THROWS(marker::read(gone), "no volume at");
+        CHECK_THROWS(marker::mint(gone, "RC-5 Kitty"), "no volume at");
+        CHECK_THROWS(marker::rename(gone, "RC-5 Kitty"), "no volume at");
+        CHECK(!fs::exists(gone));
+        // A file where the volume should be is not a volume either.
+        put(gone, "not a directory");
+        CHECK_THROWS(marker::read(gone), "no volume at");
     }
 
     // --- the writer's escaping ---

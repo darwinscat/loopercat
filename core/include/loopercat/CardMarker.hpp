@@ -25,7 +25,10 @@
 // with volume::sweepJunk, which walks the root for exactly this reason.
 //
 // The file is JSON — six flat fields — written once (mint) and rewritten
-// only to change the name (rename); the id never changes after mint. The
+// only to change the name (rename); the id never changes after mint. A
+// write goes to loopercat-card.json.part first and is renamed over the
+// marker only after it has been read back whole, so the marker is never
+// half-written, whatever happens to the cable. The
 // parser is this header's own: the app never links a JSON library (nlohmann
 // is test-tier only, by the CMake rule), and six flat fields do not earn a
 // dependency. It is strict — anything that is not a flat object of strings,
@@ -78,6 +81,11 @@ inline constexpr std::string_view kModelKey = "model";
 inline constexpr std::string_view kCreatedKey = "created";
 inline constexpr std::string_view kByKey = "by";
 inline constexpr std::string_view kWriter = "LooperCat";
+
+// Every write lands here first and is renamed over the marker only once it
+// has been read back whole: a cable pulled mid-write leaves a torn .part,
+// never a torn marker (and never an id-less card).
+inline constexpr std::string_view kPartSuffix = ".part";
 
 // A name fits the window's corner and stays a name: at most 64 bytes of
 // UTF-8, no control characters. (The pedal's own memory names are 12
@@ -493,6 +501,18 @@ namespace detail {
              + ':' + padded(parts.tm_sec, 2) + 'Z';
     }
 
+    // A card that is not mounted is not a card without a marker: the dialog
+    // that asks "which pedal?" calls mint right after the pedal enters
+    // STORAGE, where the race with the mount is real, and the answer must
+    // say "not mounted", not "no marker" or "cannot write".
+    inline void requireVolume(const fs::path& volume)
+    {
+        std::error_code ec;
+        if (!fs::is_directory(volume, ec))
+            throw Error("no volume at " + volume.string()
+                        + " \xe2\x80\x94 is the pedal in storage mode and mounted?");
+    }
+
     // The file's bytes, or no value when there is no such file. Anything else
     // in the way — a directory under the name, an unreadable file, one too
     // large to be a marker — is an error, not an absence.
@@ -603,6 +623,7 @@ namespace detail {
 // foreign, damaged, or of a later format.
 inline std::optional<Card> read(const fs::path& volume)
 {
+    detail::requireVolume(volume);
     const auto bytes = detail::readIfPresent(markerPath(volume));
     if (!bytes)
         return std::nullopt;
@@ -616,22 +637,35 @@ struct Written {
 
 namespace detail {
 
-    // Write, read back, compare — then sweep the sidecar the write may have
-    // planted. A write that reads back differently is an error, never a
-    // shrug: the id in this file is what the history knows the card by.
+    // Write to the staging name, read back, compare, rename over the marker,
+    // read the marker back once more — then sweep the sidecars the writes may
+    // have planted. The marker itself is never opened for writing: the old
+    // one stays whole until the new one is proven whole, so a cable pulled
+    // mid-write costs a .part and nothing else. A write that reads back
+    // differently is an error, never a shrug: the id in this file is what
+    // the history knows the card by.
     inline Written writeAndVerify(const fs::path& volume, const json::Document& doc)
     {
         const fs::path file = markerPath(volume);
+        fs::path part = file;
+        part += kPartSuffix;
         const std::string bytes = json::serialize(doc);
         {
-            std::ofstream out(file, std::ios::binary | std::ios::trunc);
+            std::ofstream out(part, std::ios::binary | std::ios::trunc);
             if (!out)
-                throw Error("cannot write " + file.string());
+                throw Error("cannot write " + part.string());
             out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
             out.flush();
             if (!out.good())
-                throw Error("cannot write " + file.string());
+                throw Error("cannot write " + part.string());
         }
+        const auto staged = readIfPresent(part);
+        if (!staged || *staged != bytes)
+            throw Error(part.string() + " read back differently from what was written");
+        std::error_code ec;
+        fs::rename(part, file, ec);
+        if (ec)
+            throw Error("cannot replace " + file.string() + " with the new marker: " + ec.message());
         const auto back = readIfPresent(file);
         if (!back || *back != bytes)
             throw Error(file.string() + " read back differently from what was written");
@@ -648,6 +682,7 @@ namespace detail {
 inline Written mint(const fs::path& volume, std::string_view name)
 {
     detail::assertName(name);
+    detail::requireVolume(volume);
     if (const auto existing = read(volume))
         throw Error("this card already carries a marker (id " + existing->id + ", name \""
                     + existing->name + "\"); the id is written once and never rewritten");
@@ -668,6 +703,7 @@ inline Written mint(const fs::path& volume, std::string_view name)
 inline Written rename(const fs::path& volume, std::string_view newName)
 {
     detail::assertName(newName);
+    detail::requireVolume(volume);
     const auto bytes = detail::readIfPresent(markerPath(volume));
     if (!bytes)
         throw Error("this card has no marker yet \xe2\x80\x94 nothing to rename");

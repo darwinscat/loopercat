@@ -170,6 +170,8 @@ int main()
         touch(pedal / ".fseventsd" / "._log");                     // macOS's, not ours
         touch(pedal / "System Volume Information" / "._sys");     // Windows's, not ours
         touch(pedal / "OTHER" / "._deep");                         // a stray directory: not entered either
+        touch(pedal / "README.txt");                               // a player's own file: the root is lived in
+        touch(pedal / ".hidden");                                  // a dot alone is not AppleDouble
 
         const auto junk = volume::findJunk(pedal);
         CHECK_EQ(junk.size(), 3u);
@@ -189,6 +191,8 @@ int main()
         CHECK(fs::exists(pedal / ".fseventsd" / "._log"));
         CHECK(fs::exists(pedal / "System Volume Information" / "._sys"));
         CHECK(fs::exists(pedal / "OTHER" / "._deep"));
+        CHECK(fs::exists(pedal / "README.txt"));
+        CHECK(fs::exists(pedal / ".hidden"));
         CHECK(fs::exists(pedal / "ROLAND" / "DATA" / "MEMORY1.RC0"));
         CHECK(volume::findJunk(pedal).empty());
     }
