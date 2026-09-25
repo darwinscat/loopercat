@@ -18,7 +18,9 @@
 //   7. a ghost mount (device watcher says GONE while the path still serves
 //      content) -> reported as ghost, mutations refused, bytes untouched
 //
-// A quiet volume between the steps must deliver NOTHING (change-gated).
+// A quiet volume between the steps must deliver nothing NEW ABOUT THE CARD
+// (change-gated): the one thing that may still arrive is a free-space
+// change, because the scratch volume lives on a real disk.
 
 #include "support.hpp"
 
@@ -56,6 +58,14 @@ std::string readTextFile(const fs::path& path)
     std::stringstream buffer;
     buffer << in.rdbuf();
     return buffer.str();
+}
+
+// The card's content of a snapshot — everything the browser shows about the
+// pedal except the free space, which is the disk's, not the card's.
+bool sameCard(const PedalSnapshot& a, const PedalSnapshot& b)
+{
+    return a.volume == b.volume && a.error == b.error && a.state == b.state && a.slots == b.slots
+        && a.findings == b.findings;
 }
 
 bool pumpUntil(const std::function<bool()>& condition, const int timeoutMs)
@@ -108,11 +118,25 @@ int main()
         CHECK_EQ(s.slots.at(0).info.name, "Memory 01   ");
     }
 
-    // A quiet volume delivers nothing: give the monitor two poll periods.
-    {
+    // A quiet volume delivers nothing new about the card: give the monitor
+    // two poll periods. This deliberately does NOT count deliveries. The
+    // scratch volume sits on a real disk that other processes keep writing
+    // to, and PedalSnapshot compares free space at the 0.1 GB the status
+    // line shows: when the figure crosses that bucket, the worker is right
+    // to deliver — the number a user reads really did change. Counting
+    // deliveries called that a failure on a busy machine, about every other
+    // run, and never in CI where the disk is quiet. So every delivery that
+    // arrives here must be a change (the gate still holds: no snapshot is
+    // delivered twice) and must differ from the previous one in nothing but
+    // free space. Tightening this back to a count reintroduces the flake,
+    // not a stricter test.
+    if (!deliveries.empty()) {
         const auto count = deliveries.size();
         juce::MessageManager::getInstance()->runDispatchLoopUntil(3500);
-        CHECK_EQ(deliveries.size(), count);
+        for (std::size_t i = count; i < deliveries.size(); ++i) {
+            CHECK(sameCard(deliveries[i], deliveries[i - 1]));
+            CHECK(!(deliveries[i] == deliveries[i - 1]));
+        }
     }
 
     // 3. A slot rename on disk is picked up.
