@@ -76,6 +76,11 @@ public:
     void showHistory() { bottomTabs.select(kHistoryTab); }       // --history, for snapshots
     bool historyReady() const { return historyRows > 0; }        // its rows have landed
     void showAbout(); // the menu About and --about: opens the version badge's popover
+    // The Settings dialog, built and wired exactly as the gear opens it: the
+    // storage panel fed from the store on the worker, its limit and its
+    // release button wired back. Public for the --history-storage seam, so
+    // a headless run drives the very dialog a player gets.
+    std::unique_ptr<SettingsDialog> makeSettingsDialog();
     void pushWav(int slot, const juce::String& sourcePath, bool slotOccupied); // UI + the --push seam
     bool listeningTo(int slot) const; // --push seam: the slot is in the player, waveform drawn
     void setMarkers(double inSeconds, double outSeconds) { player.setMarkers(inSeconds, outSeconds); }
@@ -143,6 +148,12 @@ private:
     void restoreFromHistory(std::int64_t op); // a recorded state, back onto the card
     int historyRows = 0; // what the tab last received, for the --history seam
     void applyColumnPreferences();          // Settings -> Columns, onto the table
+    // Settings -> History (issue #74): the limit in force, the read that
+    // feeds the panel, and the press that frees what it offered.
+    std::int64_t historyLimit();
+    void refreshHistoryStorage(juce::Component::SafePointer<HistoryStoragePanel> panel);
+    void releaseHistoryTakes(juce::Component::SafePointer<HistoryStoragePanel> panel,
+                             std::vector<std::string> hashes);
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
     void releasePlayerIfHolding(int slotA, int slotB);

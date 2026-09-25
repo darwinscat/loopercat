@@ -28,7 +28,8 @@ public:
     {
         const auto args = getCommandLineParameters();
         return args.contains("--snapshot") || args.contains("--midi-probe")
-            || args.contains("--cycle") || args.contains("--import-legacy");
+            || args.contains("--cycle") || args.contains("--import-legacy")
+            || args.contains("--history-storage");
     }
 
     void initialise(const juce::String&) override
@@ -99,6 +100,24 @@ public:
 
         if (args.contains("--cycle")) {
             setApplicationReturnValue(runCycle(explicitVolume, dataOverride));
+            quit();
+            return;
+        }
+
+        // --history-storage [release | limit <gb>]: Settings -> History
+        // without the window. Builds the very dialog the gear opens, waits
+        // for the store's numbers to reach its panel through the worker, and
+        // prints what the panel says. With `release` it then lowers "keep at
+        // most" to nothing, presses the button, waits for the panel to be
+        // read again and prints it again — the end-to-end proof that the
+        // button frees space and the panel tells the truth afterwards. With
+        // `limit <gb>` it types that limit into the field and waits for the
+        // owner to come back with it; a plain run afterwards shows whether
+        // the limit survived the process. With --snapshot <file.png> the
+        // dialog is rendered too. For a verification run against a copied
+        // home (--data).
+        if (args.contains("--history-storage")) {
+            setApplicationReturnValue(runHistoryStorage(args, explicitVolume, dataOverride));
             quit();
             return;
         }
@@ -233,13 +252,94 @@ private:
         return content.volumePath().empty() ? 0 : 2;
     }
 
-    static int writeSnapshot(const juce::String& path, const std::string& explicitVolume,
-                             const int selectSlot, const juce::File& dataOverride)
+    static int runHistoryStorage(const juce::StringArray& args, const juce::String& explicitVolume,
+                                 const juce::File& dataOverride)
+    {
+        MainComponent content(explicitVolume.toStdString(), dataOverride);
+        content.refreshNow();
+        const auto dialog = content.makeSettingsDialog();
+        dialog->showHistoryStorage();
+        HistoryStoragePanel& panel = dialog->storage();
+        std::cout << "panel visible: " << (panel.isVisible() ? "yes" : "no") << std::endl;
+
+        const auto say = [&panel](const char* when) {
+            std::cout << when << ":\n"
+                      << "  cost: " << panel.costLine() << "\n"
+                      << "  disk: " << panel.diskLine() << "\n"
+                      << "  forecast: " << panel.forecastLine() << "\n"
+                      << "  limit: " << panel.limitText() << " GB\n"
+                      << "  offer: " << panel.offerLine() << "\n"
+                      << "  button: " << panel.releaseButtonText()
+                      << (panel.releaseEnabled() ? "" : " (disabled)") << "\n"
+                      << "  rows: " << panel.offeredRows() << std::endl;
+        };
+        const auto waitUntil = [](auto done, int ms) {
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + ms;
+            while (!done() && juce::Time::getMillisecondCounterHiRes() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+            return done();
+        };
+
+        if (!waitUntil([&panel] { return !panel.costLine().contains("not been read"); }, 15000)) {
+            std::cerr << "the panel never received the store's numbers\n";
+            return 2;
+        }
+        say("read");
+
+        const int flag = args.indexOf("--history-storage");
+        if (flag >= 0 && args[flag + 1] == "release") {
+            panel.setKeepTarget(0);
+            std::cout << "pressing: " << panel.releaseButtonText() << " (" << panel.offeredRows()
+                      << " rows)" << std::endl;
+            panel.confirmRelease();
+            // The panel says "Releasing" until the worker has read the store
+            // again — a release of gigabytes vacuums for a while.
+            if (!waitUntil([&panel] { return !panel.releaseButtonText().contains("Releasing"); },
+                           120000)) {
+                std::cerr << "the panel was not read again after the release\n";
+                return 2;
+            }
+            say("after release");
+        }
+        if (flag >= 0 && args[flag + 1] == "limit") {
+            const int shown = panel.factsShown();
+            panel.commitLimitText(args[flag + 2]);
+            std::cout << "typed limit: " << args[flag + 2] << " -> field " << panel.limitText()
+                      << " GB" << std::endl;
+            if (!waitUntil([&panel, shown] { return panel.factsShown() > shown; }, 15000)) {
+                std::cerr << "the panel was not read again after the limit changed\n";
+                return 2;
+            }
+            say("after limit");
+        }
+
+        const int snapshotFlag = args.indexOf("--snapshot");
+        return snapshotFlag >= 0 ? writePng(*dialog, args[snapshotFlag + 1]) : 0;
+    }
+
+    // Renders a face offscreen into a PNG — the headless proof that it
+    // actually draws. 0 when written, 2 when the file cannot be.
+    static int writePng(juce::Component& face, const juce::String& path)
     {
         if (path.isEmpty()) {
             std::cerr << "--snapshot requires a target file path\n";
             return 2;
         }
+        const juce::Image image = face.createComponentSnapshot(face.getLocalBounds(), false, 1.0f);
+        const juce::File file = juce::File::getCurrentWorkingDirectory().getChildFile(path);
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        if (out.failedToOpen() || !juce::PNGImageFormat().writeImageToStream(image, out)) {
+            std::cerr << "cannot write snapshot to " << file.getFullPathName() << "\n";
+            return 2;
+        }
+        std::cout << "snapshot: " << file.getFullPathName() << "\n";
+        return 0;
+    }
+
+    static int writeSnapshot(const juce::String& path, const std::string& explicitVolume,
+                             const int selectSlot, const juce::File& dataOverride)
+    {
         MainComponent content(explicitVolume, dataOverride);
         content.refreshNow();
         if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--properties"))
@@ -299,17 +399,7 @@ private:
             while (!content.historyReady() && juce::Time::getMillisecondCounterHiRes() < deadline)
                 juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
         }
-        const juce::Image image =
-            content.createComponentSnapshot(content.getLocalBounds(), false, 1.0f);
-        const juce::File file = juce::File::getCurrentWorkingDirectory().getChildFile(path);
-        file.deleteFile();
-        juce::FileOutputStream out(file);
-        if (out.failedToOpen() || !juce::PNGImageFormat().writeImageToStream(image, out)) {
-            std::cerr << "cannot write snapshot to " << file.getFullPathName() << "\n";
-            return 2;
-        }
-        std::cout << "snapshot: " << file.getFullPathName() << "\n";
-        return 0;
+        return writePng(content, path);
     }
 
 private:

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "AppSettings.h"
+#include "HistoryStoragePanel.h"
 #include "TabStrip.h"
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
@@ -13,7 +14,12 @@
 //==============================================================================
 // loopercat::SettingsDialog — the app's own settings, behind the gear in the
 // header: the audio output on one tab, what the slot table shows on another,
-// what happens to uploads on a third.
+// what happens to uploads on a third, what the history costs on a fourth.
+//
+// The History tab is the storage panel (issue #74) and nothing else: the
+// panel shows what it is handed and asks through its callbacks, and the owner
+// of this dialog — who has the worker and the store — hands and answers. The
+// dialog only hosts it, so a store is never touched from the message thread.
 //
 // Table columns are a preference, not a mode: the pedal's own facts (name,
 // duration, bars, tempo, file) always show, and the per-slot behaviour flags
@@ -117,10 +123,12 @@ public:
         importHint_.setColour(juce::Label::textColourId, juce::Colour(0xff6f6f78));
         addChildComponent(importHint_);
 
+        addChildComponent(storage_);
+
         addAndMakeVisible(tabs_);
         addAndMakeVisible(audio_);
         showTab(0);
-        setSize(520, 300);
+        setSize(520, 380);
     }
 
     ~SettingsDialog() override
@@ -132,6 +140,10 @@ public:
     }
 
     static constexpr const char* kDeviceStateKey = "audioDeviceState";
+
+    // The storage panel, for the owner to feed and to listen to.
+    HistoryStoragePanel& storage() { return storage_; }
+    void showHistoryStorage() { tabs_.select(kHistoryTab); } // --history-storage, for a headless run
 
     // "-18" for whole targets, "-17.5" otherwise — the number a player typed,
     // not a printf artefact. Shared with the slot menu's Normalize label.
@@ -147,6 +159,7 @@ public:
     {
         auto area = getLocalBounds();
         tabs_.setBounds(area.removeFromTop(30));
+        storage_.setBounds(area); // the panel keeps its own margins
         area = area.reduced(12, 10);
         audio_.setBounds(area);
 
@@ -180,6 +193,7 @@ private:
         for (auto* c : std::initializer_list<juce::Component*> {
                  &normalize_, &targetCaption_, &target_, &targetEquiv_, &importHint_ })
             c->setVisible(index == 2);
+        storage_.setVisible(index == kHistoryTab);
     }
 
     void commitColumns()
@@ -220,7 +234,8 @@ private:
         commitImport();
     }
 
-    TabStrip tabs_ { { "Audio", "Columns", "Import" } };
+    static constexpr int kHistoryTab = 3;
+    TabStrip tabs_ { { "Audio", "Columns", "Import", "History" } };
     felitronics::appkit::AudioSettingsPanel audio_;
     AppSettings& settings_;
     std::function<void(Columns)> onColumnsChanged_;
@@ -236,6 +251,8 @@ private:
     juce::TextEditor target_;
     juce::Label targetEquiv_;
     juce::Label importHint_;
+
+    HistoryStoragePanel storage_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SettingsDialog)
 };
