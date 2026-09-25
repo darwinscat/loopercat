@@ -262,6 +262,8 @@ loopercat_core_test(downmix_tests)
 loopercat_core_test(loudness_tests)
 loopercat_core_test(normalize_tests)
 loopercat_core_test(usecase_count_in_tests)
+# The pedal's controls (SETUP > CONTROL) as a use case over the SYSTEM file.
+loopercat_core_test(usecase_controls_tests)
 # Parsing and decisions only — no syscalls, no Linux headers — so the
 # contracts behind the Linux DeviceWatcher are gated on every platform's
 # lane, not just on a machine that happens to have /proc and /sys.

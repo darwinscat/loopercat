@@ -50,9 +50,10 @@ enum class Operation : unsigned {
     clear,
     restore,
     swap,
+    setControls, // the pedal's own settings: what its footswitches and CC#80..87 do
 };
 
-inline constexpr unsigned kOperationCount = 13;
+inline constexpr unsigned kOperationCount = 14;
 
 inline constexpr std::string_view operationName(Operation op)
 {
@@ -70,8 +71,9 @@ inline constexpr std::string_view operationName(Operation op)
     case Operation::clear: return "clear";
     case Operation::restore: return "restore";
     case Operation::swap: return "swap";
+    case Operation::setControls: return "set controls";
     }
-    return "?"; // an enumerator added without a name here
+    throw Error("unknown operation"); // a value no enumerator has
 }
 
 // A set of operations: one bit per enumerator.
