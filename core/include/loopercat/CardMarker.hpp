@@ -52,7 +52,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -365,9 +364,11 @@ namespace json {
             case '\f': out += "\\f"; break;
             default:
                 if (u < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof buf, "\\u%04x", static_cast<unsigned>(u));
-                    out += buf;
+                    // The remaining control characters, as \u00XX.
+                    static constexpr char digits[] = "0123456789abcdef";
+                    out += "\\u00";
+                    out.push_back(digits[static_cast<std::size_t>(u >> 4)]);
+                    out.push_back(digits[static_cast<std::size_t>(u & 0x0F)]);
                 } else {
                     out.push_back(ch);
                 }
@@ -483,10 +484,13 @@ namespace detail {
 #else
         gmtime_r(&now, &parts);
 #endif
-        char buf[32];
-        std::snprintf(buf, sizeof buf, "%04d-%02d-%02dT%02d:%02d:%02dZ", parts.tm_year + 1900,
-                      parts.tm_mon + 1, parts.tm_mday, parts.tm_hour, parts.tm_min, parts.tm_sec);
-        return buf;
+        const auto padded = [](int value, std::size_t width) {
+            std::string text = std::to_string(value);
+            return text.size() < width ? std::string(width - text.size(), '0') + text : text;
+        };
+        return padded(parts.tm_year + 1900, 4) + '-' + padded(parts.tm_mon + 1, 2) + '-'
+             + padded(parts.tm_mday, 2) + 'T' + padded(parts.tm_hour, 2) + ':' + padded(parts.tm_min, 2)
+             + ':' + padded(parts.tm_sec, 2) + 'Z';
     }
 
     // The file's bytes, or no value when there is no such file. Anything else
