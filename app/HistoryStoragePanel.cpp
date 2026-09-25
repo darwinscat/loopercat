@@ -33,7 +33,7 @@ HistoryStoragePanel::Facts HistoryStoragePanel::Facts::read(history::HistoryStor
     Facts facts;
     facts.usage = store.usage();
     facts.limit = limit;
-    facts.blobs = store.keptBlobs(store.offeredUndo());
+    facts.blobs = store.keptBlobs(store.offeredTargets());
     facts.forecast = retention::forecast(store.writes(), nowMs, facts.usage.audioBytes, limit,
                                          facts.usage.diskAvailable);
     return facts;
