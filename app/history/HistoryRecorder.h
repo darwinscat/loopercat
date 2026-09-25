@@ -61,6 +61,10 @@ public:
     // there instead: the reason outranks the story. An operation that never
     // began (the worker's gate refused the job first) has nothing to close.
     void finish(const std::string& opId, const std::string& error, const std::string& note = {});
+    // For an 'undo' or 'redo' operation that has begun: the operation it
+    // reverts (#73). Called before the job touches the card, so the row
+    // names its target even if the write is then cut off.
+    void reverts(const std::string& opId, std::int64_t target);
 
     HistoryStore& store();
 

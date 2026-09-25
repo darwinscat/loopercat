@@ -165,5 +165,30 @@ int main()
         CHECK_EQ(story::bpm(1111), std::string("111.1 BPM"));
     }
 
+    // --- an undo and a redo say what they undid, and where the slot went back to ---
+    {
+        const std::string before = rc0::setSectionField(rc0::factorySlotBody(14), rc0::kSectionTrack1,
+                                                        "WavLen", 441000);
+        const std::string after = rc0::setSectionField(rc0::factorySlotBody(14), rc0::kSectionTrack1,
+                                                       "WavLen", 1719900);
+        const auto undone = story::tell({ .kind = "undo", .beforeBody = before, .afterBody = after,
+                                          .take = story::Take::kept, .note = "trim" });
+        CHECK_EQ(undone.action, std::string("Undid trim"));
+        CHECK_EQ(undone.detail, std::string("back to 0:39"));
+        CHECK_EQ(undone.audio, std::string("take kept"));
+        const auto redone = story::tell({ .kind = "redo", .beforeBody = after, .afterBody = before,
+                                          .take = story::Take::onCard, .note = "trim" });
+        CHECK_EQ(redone.action, std::string("Redid trim"));
+        CHECK_EQ(redone.detail, std::string("back to 0:10"));
+        const auto emptied = story::tell({ .kind = "undo", .beforeBody = after,
+                                           .afterBody = rc0::setSectionField(rc0::factorySlotBody(14), rc0::kSectionTrack1, "WavLen", 0),
+                                           .take = story::Take::none, .note = "push" });
+        CHECK_EQ(emptied.action, std::string("Undid push"));
+        CHECK_EQ(emptied.detail, std::string("back to empty"));
+        const auto bare = story::tell({ .kind = "undo", .take = story::Take::none });
+        CHECK_EQ(bare.action, std::string("Undid"));
+        CHECK_EQ(bare.detail, std::string());
+    }
+
     return testkit::summary("slot_story_tests");
 }
