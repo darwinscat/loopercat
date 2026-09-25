@@ -228,6 +228,77 @@ int main()
         CHECK(!entryFor(entries, cut)->slots.front().newest); // pending is not finished either
     }
 
+    // --- the rows an undo needs: the session, the archived take, the reverts link ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string bytes = take(4000, 5);
+        const auto push = r.begin("push");
+        r.store.recordBodies(push, { { 9, "b9-0", "b9-1" } });
+        r.store.recordLanded(push, 9, 1, "take.wav", bytes);
+        r.store.finishOp(push, OpStatus::done, "");
+        const auto clear = r.begin("clear");
+        r.store.keepAudio(clear, 9, 1, "take.wav", bytes, ++r.clock); // archived on its way out
+        r.store.recordBodies(clear, { { 9, "b9-1", "b9-0" } });
+        r.store.finishOp(clear, OpStatus::done, "");
+        const auto undone = r.begin("undo");
+        r.store.setReverts(undone, clear);
+        r.store.recordBodies(undone, { { 9, "b9-0", "b9-1" } });
+        r.store.recordLanded(undone, 9, 1, "take.wav", bytes);
+        r.store.finishOp(undone, OpStatus::done, "clear");
+
+        const auto entries = r.store.cardTimeline();
+        CHECK_EQ(entries.size(), 3u);
+        for (const auto& e : entries)
+            CHECK_EQ(e.session, r.session);
+        CHECK(!entryFor(entries, push)->reverts);
+        CHECK(entryFor(entries, undone)->reverts == clear);
+        // the clear archived the take: its slot carries it, the push's does not
+        const auto* c = entryFor(entries, clear);
+        CHECK(c && c->slots.size() == 1 && c->slots[0].archived.has_value());
+        CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->name == "take.wav");
+        CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->hash == HistoryStore::contentHash(bytes));
+        CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->kept);
+        CHECK(entryFor(entries, push)->slots.size() == 1 && !entryFor(entries, push)->slots[0].archived);
+        // released since: still named, no longer kept
+        r.store.releaseBlobs({ HistoryStore::contentHash(bytes) }, {}, 9);
+        const auto after = r.store.cardTimeline();
+        CHECK(entryFor(after, clear)->slots[0].archived && !entryFor(after, clear)->slots[0].archived->kept);
+
+        // the cursor's targets out of the real rows
+        const auto t = r.store.offeredTargets();
+        CHECK(t.undo == push);          // the undo row is transparent: the clear is undone, the push stands
+        CHECK(t.redo == undone);        // reverting the undo row is the redo
+        CHECK(t.redoRestores == clear);
+        const auto ops = r.store.operations();
+        CHECK_EQ(ops.size(), 3u);
+        CHECK(ops[2].reverts == clear);
+        CHECK_EQ(ops[2].kind, std::string("undo"));
+
+        CHECK_THROWS(r.store.setReverts(undone, undone), "itself");
+        CHECK_THROWS(r.store.setReverts(424242, clear), "no operation");
+    }
+
+    // --- the cursor reads operations by the clock, as every view does ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        // recorded second, stamped earlier: a clock that went back between two
+        // operations (or a row written after the fact) reads in clock order
+        const auto later = r.store.beginOp(r.session, "op-later", "rename", 5000);
+        r.store.recordBodies(later, { { 1, "a", "b" } });
+        r.store.finishOp(later, OpStatus::done, "");
+        const auto earlier = r.store.beginOp(r.session, "op-earlier", "rename", 4000);
+        r.store.recordBodies(earlier, { { 2, "a", "b" } });
+        r.store.finishOp(earlier, OpStatus::done, "");
+        const auto ops = r.store.operations();
+        CHECK_EQ(ops.size(), 2u);
+        CHECK(ops.size() == 2 && ops[0].op == earlier && ops[1].op == later);
+        CHECK(r.store.offeredTargets().undo == later); // the newest by the clock
+        const auto entries = r.store.cardTimeline();
+        CHECK(entries.size() == 2 && entries[0].op == earlier && entries[1].op == later);
+    }
+
     // --- pins ride along ---
     {
         TempDir tmp;
@@ -268,7 +339,7 @@ int main()
         CHECK_THROWS(history::exportTake(r.store, hash, tmp.path / "nowhere" / "x.wav"), "");
         CHECK(!fs::exists(tmp.path / "nowhere" / "x.wav.part"));
 
-        r.store.releaseBlobs({ hash }, std::nullopt, 9);
+        r.store.releaseBlobs({ hash }, {}, 9);
         const fs::path gone = tmp.path / "exported" / "gone.wav";
         CHECK_THROWS(history::exportTake(r.store, hash, gone), "no longer kept");
         CHECK(!fs::exists(gone));

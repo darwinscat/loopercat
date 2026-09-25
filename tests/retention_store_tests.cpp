@@ -154,21 +154,21 @@ int main()
     {
         TempDir tmp;
         Ready r(tmp.path);
-        CHECK(!r.store.offeredUndo().has_value());
+        CHECK(!r.store.offeredTargets().undo.has_value());
         const auto first = r.replaced(1, take(1000, 1));
-        CHECK(r.store.offeredUndo() == first);
+        CHECK(r.store.offeredTargets().undo == first);
         r.replaced(2, take(1000, 2), OpStatus::failed);
-        CHECK(r.store.offeredUndo() == first);
+        CHECK(r.store.offeredTargets().undo == first);
         const auto third = r.renamed(3);
-        CHECK(r.store.offeredUndo() == third);
+        CHECK(r.store.offeredTargets().undo == third);
         const auto inFlight = r.pending(4, take(1000, 4));
-        CHECK(r.store.offeredUndo() == third);
+        CHECK(r.store.offeredTargets().undo == third);
         r.store.finishOp(inFlight, OpStatus::done, "");
-        CHECK(r.store.offeredUndo() == inFlight);
+        CHECK(r.store.offeredTargets().undo == inFlight);
         // a legacy op is newer in the timeline's numbering, and offers no undo
         const auto legacySession = r.store.openSession(r.store.card("unknown", "legacy folders", 1), 1);
         r.store.recordLegacyOp(legacySession, "2026-09-01T21-35-46", 500, "trash/2026-09-01T21-35-46");
-        CHECK(r.store.offeredUndo() == inFlight);
+        CHECK(r.store.offeredTargets().undo == inFlight);
     }
 
     // --- what holds a take, and what does not ---
@@ -183,7 +183,7 @@ int main()
         const std::string other = take(20000, 2);
         const auto opC = r.replaced(3, other);
 
-        auto blobs = r.store.keptBlobs(std::nullopt);
+        auto blobs = r.store.keptBlobs({});
         CHECK_EQ(blobs.size(), 2u);
         const auto* s = find(blobs, hash);
         CHECK(s != nullptr);
@@ -193,28 +193,28 @@ int main()
         CHECK_EQ(blobs.front().hash, hash); // the older first
 
         // the undo on offer is opC: only `other` is needed by it
-        blobs = r.store.keptBlobs(r.store.offeredUndo());
+        blobs = r.store.keptBlobs(r.store.offeredTargets());
         CHECK(find(blobs, hash) && !find(blobs, hash)->undo);
         CHECK(find(blobs, HistoryStore::contentHash(other))->undo);
         // asked about opA or opB instead, the shared take is the one held
-        CHECK(find(r.store.keptBlobs(opA), hash)->undo);
-        CHECK(find(r.store.keptBlobs(opB), hash)->undo);
+        CHECK(find(r.store.keptBlobs({ opA, std::nullopt, std::nullopt }), hash)->undo);
+        CHECK(find(r.store.keptBlobs({ opB, std::nullopt, std::nullopt }), hash)->undo);
 
         // a pin on either operation holds the shared take; both must let go
         r.store.pinOp(opA, true);
         r.store.pinOp(opB, true);
-        CHECK(find(r.store.keptBlobs(std::nullopt), hash)->pinned);
+        CHECK(find(r.store.keptBlobs({}), hash)->pinned);
         r.store.pinOp(opA, false);
-        CHECK(find(r.store.keptBlobs(std::nullopt), hash)->pinned);
+        CHECK(find(r.store.keptBlobs({}), hash)->pinned);
         r.store.pinOp(opB, false);
-        CHECK(!find(r.store.keptBlobs(std::nullopt), hash)->pinned);
-        CHECK(!find(r.store.keptBlobs(std::nullopt), HistoryStore::contentHash(other))->pinned);
+        CHECK(!find(r.store.keptBlobs({}), hash)->pinned);
+        CHECK(!find(r.store.keptBlobs({}), HistoryStore::contentHash(other))->pinned);
         // a pin on the blob itself counts too
         {
             sqlite::Statement pin(r.store.db(), "UPDATE blobs_meta SET pinned = 1 WHERE hash = ?1");
             pin.bindBlob(1, hash).run();
         }
-        CHECK(find(r.store.keptBlobs(std::nullopt), hash)->pinned);
+        CHECK(find(r.store.keptBlobs({}), hash)->pinned);
         {
             sqlite::Statement pin(r.store.db(), "UPDATE blobs_meta SET pinned = 0 WHERE hash = ?1");
             pin.bindBlob(1, hash).run();
@@ -224,10 +224,10 @@ int main()
         // an operation still running holds what it archived
         const std::string live = take(20000, 3);
         const auto opD = r.pending(4, live);
-        CHECK(find(r.store.keptBlobs(std::nullopt), HistoryStore::contentHash(live))->inFlight);
-        CHECK(!find(r.store.keptBlobs(std::nullopt), hash)->inFlight);
+        CHECK(find(r.store.keptBlobs({}), HistoryStore::contentHash(live))->inFlight);
+        CHECK(!find(r.store.keptBlobs({}), hash)->inFlight);
         r.store.finishOp(opD, OpStatus::done, "");
-        CHECK(!find(r.store.keptBlobs(std::nullopt), HistoryStore::contentHash(live))->inFlight);
+        CHECK(!find(r.store.keptBlobs({}), HistoryStore::contentHash(live))->inFlight);
         (void) opC;
     }
 
@@ -238,15 +238,15 @@ int main()
         const auto session = store.openSession(store.card("unknown", "legacy folders", 1), 1);
         const auto op = store.recordLegacyOp(session, "2026-09-01T21-35-46", 500, "backups/x");
         store.keepLegacyDocument(op, "backups/2026-09-01T21-35-46/MEMORY1.RC0", "document", 600);
-        auto blobs = store.keptBlobs(std::nullopt);
+        auto blobs = store.keptBlobs({});
         CHECK_EQ(blobs.size(), 1u);
         CHECK_EQ(blobs.front().references, 1);
         CHECK(!blobs.front().held());
         store.pinOp(op, true);
-        CHECK(store.keptBlobs(std::nullopt).front().pinned);
-        CHECK_THROWS(store.releaseBlobs({ blobs.front().hash }, std::nullopt, 700), "pinned");
+        CHECK(store.keptBlobs({}).front().pinned);
+        CHECK_THROWS(store.releaseBlobs({ blobs.front().hash }, {}, 700), "pinned");
         store.pinOp(op, false);
-        CHECK_EQ(store.releaseBlobs({ blobs.front().hash }, std::nullopt, 700), 8);
+        CHECK_EQ(store.releaseBlobs({ blobs.front().hash }, {}, 700), 8);
         CHECK_EQ(count(store.db(), "SELECT count(*) FROM legacy_files"), 1); // the ledger row stays
     }
 
@@ -265,7 +265,7 @@ int main()
         const auto rowsBefore = count(r.store.db(), "SELECT count(*) FROM slot_audio");
         const auto opsBefore = count(r.store.db(), "SELECT count(*) FROM ops");
 
-        CHECK_EQ(r.store.releaseBlobs({ hGone }, r.store.offeredUndo(), 777), 30000);
+        CHECK_EQ(r.store.releaseBlobs({ hGone }, r.store.offeredTargets(), 777), 30000);
         CHECK(!r.store.takeBytes(hGone).has_value());
         CHECK(r.store.takeBytes(hStays) == stays);
         // every row still names the take — by name, size and hash
@@ -286,11 +286,11 @@ int main()
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs_meta"), 2);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 1);
         // a released take is no longer a kept one
-        CHECK_EQ(r.store.keptBlobs(std::nullopt).size(), 1u);
+        CHECK_EQ(r.store.keptBlobs({}).size(), 1u);
         CHECK_EQ(r.store.usage().audioBytes, 30000);
         // released twice is refused, as is a take never kept
-        CHECK_THROWS(r.store.releaseBlobs({ hGone }, std::nullopt, 778), "no bytes are kept");
-        CHECK_THROWS(r.store.releaseBlobs({ HistoryStore::contentHash("never") }, std::nullopt, 778),
+        CHECK_THROWS(r.store.releaseBlobs({ hGone }, {}, 778), "no bytes are kept");
+        CHECK_THROWS(r.store.releaseBlobs({ HistoryStore::contentHash("never") }, {}, 778),
                      "no bytes are kept");
         // and kept again, the take is back: the row was waiting for it
         r.replaced(4, gone);
@@ -311,20 +311,20 @@ int main()
         r.replaced(1, free);
         const auto last = r.replaced(2, held); // the undo on offer needs `held`
 
-        CHECK_THROWS(r.store.releaseBlobs({ hFree, hHeld }, r.store.offeredUndo(), 900),
+        CHECK_THROWS(r.store.releaseBlobs({ hFree, hHeld }, r.store.offeredTargets(), 900),
                      "needed by the undo");
         CHECK(r.store.takeBytes(hFree) == free); // nothing went, not even the free one
         CHECK(r.store.takeBytes(hHeld) == held);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs_meta WHERE released IS NOT NULL"), 0);
 
         r.store.pinOp(last, true);
-        CHECK_THROWS(r.store.releaseBlobs({ hHeld }, std::nullopt, 900), "is pinned");
+        CHECK_THROWS(r.store.releaseBlobs({ hHeld }, {}, 900), "is pinned");
         r.store.pinOp(last, false);
         const auto running = r.pending(3, free);
-        CHECK_THROWS(r.store.releaseBlobs({ hFree }, std::nullopt, 900), "still running");
+        CHECK_THROWS(r.store.releaseBlobs({ hFree }, {}, 900), "still running");
         r.store.finishOp(running, OpStatus::failed, "unplugged");
         // asked without an undo in mind, the store still refuses nothing it should not
-        CHECK_EQ(r.store.releaseBlobs({ hFree }, std::nullopt, 901), 10000);
+        CHECK_EQ(r.store.releaseBlobs({ hFree }, {}, 901), 10000);
         CHECK(r.store.takeBytes(hHeld) == held);
     }
 
@@ -336,14 +336,47 @@ int main()
         const std::string hash = HistoryStore::contentHash(shared);
         r.replaced(1, shared);
         const auto opB = r.replaced(2, shared); // the undo on offer holds it through opB
-        CHECK(find(r.store.keptBlobs(r.store.offeredUndo()), hash)->held());
-        CHECK_THROWS(r.store.releaseBlobs({ hash }, r.store.offeredUndo(), 1), "undo");
+        CHECK(find(r.store.keptBlobs(r.store.offeredTargets()), hash)->held());
+        CHECK_THROWS(r.store.releaseBlobs({ hash }, r.store.offeredTargets(), 1), "undo");
         r.renamed(5); // the undo moves on; opB's row still names the take, but holds nothing
-        CHECK(r.store.offeredUndo() != opB);
-        CHECK(!find(r.store.keptBlobs(r.store.offeredUndo()), hash)->held());
-        CHECK_EQ(find(r.store.keptBlobs(r.store.offeredUndo()), hash)->references, 2);
-        CHECK_EQ(r.store.releaseBlobs({ hash }, r.store.offeredUndo(), 2), 10000);
+        CHECK(r.store.offeredTargets().undo != opB);
+        CHECK(!find(r.store.keptBlobs(r.store.offeredTargets()), hash)->held());
+        CHECK_EQ(find(r.store.keptBlobs(r.store.offeredTargets()), hash)->references, 2);
+        CHECK_EQ(r.store.releaseBlobs({ hash }, r.store.offeredTargets(), 2), 10000);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM slot_audio"), 2);
+    }
+
+    // --- after an undo, both targets hold their bytes: the undo's and the redo's ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string first = take(10000, 1);   // what slot 5 held before the trim
+        const std::string trimmed = take(10000, 2); // what the trim left, then the undo archived
+        const std::string hFirst = HistoryStore::contentHash(first);
+        const std::string hTrimmed = HistoryStore::contentHash(trimmed);
+        const auto trim = r.replaced(5, first); // archives `first`
+        const auto undone = r.store.beginOp(r.session, "op-undo", "undo", r.now());
+        r.store.setReverts(undone, trim);
+        r.store.keepAudio(undone, 5, 1, "take.wav", trimmed, r.now()); // the undo archives what it removes
+        r.store.finishOp(undone, OpStatus::done, "trim");
+
+        const auto t = r.store.offeredTargets();
+        CHECK(!t.undo.has_value()); // the trim was the only live operation
+        CHECK(t.redo == undone);
+        // redo needs `trimmed` (the undo row's 'before'); `first` belongs to the trim, which is undone
+        const auto blobs = r.store.keptBlobs(t);
+        CHECK(find(blobs, hTrimmed) && find(blobs, hTrimmed)->undo);
+        CHECK(find(blobs, hFirst) && !find(blobs, hFirst)->undo);
+        CHECK_THROWS(r.store.releaseBlobs({ hTrimmed }, t, 5), "undo or redo");
+        CHECK_EQ(r.store.releaseBlobs({ hFirst }, t, 5), 10000);
+        // a step forward: the redo is gone, its bytes are free to go
+        r.renamed(6);
+        const auto later = r.store.offeredTargets();
+        CHECK(!later.redo.has_value());
+        CHECK(find(r.store.keptBlobs(later), hTrimmed) && !find(r.store.keptBlobs(later), hTrimmed)->undo);
+        CHECK(r.store.takeBytes(hTrimmed).has_value()); // still kept: the refusal above held
+        if (r.store.takeBytes(hTrimmed).has_value())
+            CHECK_EQ(r.store.releaseBlobs({ hTrimmed }, later, 6), 10000);
     }
 
     // --- passing the limit deletes nothing by itself ---
@@ -355,7 +388,7 @@ int main()
             for (unsigned i = 1; i <= 3; ++i)
                 r.replaced(static_cast<int>(i), take(static_cast<std::size_t>(3 * MB), i));
             CHECK(r.store.usage().audioBytes > limit);
-            const auto plan = retention::plan(r.store.keptBlobs(r.store.offeredUndo()), limit);
+            const auto plan = retention::plan(r.store.keptBlobs(r.store.offeredTargets()), limit);
             CHECK(!plan.withinTarget());
             CHECK_EQ(plan.release.size(), 2u); // the plan knows what WOULD go
             CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 3); // and nothing did
@@ -376,7 +409,7 @@ int main()
             hashes.push_back(HistoryStore::contentHash(bytes));
             r.replaced(static_cast<int>(i), bytes);
         }
-        const auto undo = r.store.offeredUndo();
+        const auto undo = r.store.offeredTargets();
         const auto plan = retention::plan(r.store.keptBlobs(undo), 3 * MB);
         CHECK_EQ(plan.kept, 8 * MB);
         CHECK_EQ(plan.held, 2 * MB); // the last one, needed by undo
@@ -407,7 +440,7 @@ int main()
         CHECK(before.fileBytes >= 8 * MB);
         CHECK_EQ(before.freeBytes, 0);
 
-        CHECK_EQ(r.store.releaseBlobs({ hashes[0], hashes[1], hashes[2] }, r.store.offeredUndo(), 5),
+        CHECK_EQ(r.store.releaseBlobs({ hashes[0], hashes[1], hashes[2] }, r.store.offeredTargets(), 5),
                  6 * MB);
         const auto released = r.store.usage();
         CHECK_EQ(released.fileBytes, before.fileBytes); // the file has not shrunk yet
@@ -452,7 +485,7 @@ int main()
         CHECK_EQ(writes.front().at, aAt);
         CHECK_EQ(writes.back().size, 2000);
         CHECK(writes.front().at < writes.back().at);
-        r.store.releaseBlobs({ HistoryStore::contentHash(a) }, r.store.offeredUndo(), 5);
+        r.store.releaseBlobs({ HistoryStore::contentHash(a) }, r.store.offeredTargets(), 5);
         CHECK_EQ(r.store.writes().size(), 2u); // released bytes were still written then
     }
 
@@ -462,15 +495,15 @@ int main()
         Ready r(tmp.path);
         const std::string bytes = take(1000, 1);
         r.replaced(14, bytes);
-        auto blobs = r.store.keptBlobs(std::nullopt);
+        auto blobs = r.store.keptBlobs({});
         CHECK_EQ(blobs.front().label, std::string("slot 14 take.wav"));
         r.replaced(27, bytes); // a newer row names the same take from slot 27
-        CHECK_EQ(r.store.keptBlobs(std::nullopt).front().label, std::string("slot 27 take.wav"));
+        CHECK_EQ(r.store.keptBlobs({}).front().label, std::string("slot 27 take.wav"));
 
         const auto session = r.store.openSession(r.store.card("unknown", "legacy folders", 1), 1);
         const auto op = r.store.recordLegacyOp(session, "2026-09-01T21-35-46", 500, "backups/x");
         r.store.keepLegacyDocument(op, "backups/2026-09-01T21-35-46/MEMORY1.RC0", "document", 600);
-        blobs = r.store.keptBlobs(std::nullopt);
+        blobs = r.store.keptBlobs({});
         CHECK_EQ(blobs.size(), 2u);
         const auto* document = find(blobs, HistoryStore::contentHash("document"));
         CHECK(document != nullptr);

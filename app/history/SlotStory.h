@@ -136,6 +136,16 @@ inline Line tell(const Facts& facts)
     } else if (facts.kind == "restore") {
         line.action = "Restored";
         line.detail = facts.note;
+    } else if (facts.kind == "undo" || facts.kind == "redo") {
+        // The row's note names what was undone ("trim"); its own bodies say
+        // where the slot went back to — the length, when it has one.
+        line.action = std::string(facts.kind == "undo" ? "Undid" : "Redid")
+            + (facts.note.empty() ? "" : " " + facts.note);
+        if (bodies) {
+            const auto [was, now] = both("WavLen");
+            (void) was;
+            line.detail = "back to " + (now > 0 ? minutes(now) : std::string("empty"));
+        }
     } else if (facts.kind == "downmix") {
         line.action = "Folded to mono";
         line.detail = facts.note;

@@ -142,6 +142,32 @@ public:
                             std::int64_t nowMs);
     bool legacyFileImported(const std::string& path);
 
+    // --- Undo and Redo over the timeline (Undo.h): the store's side ---
+
+    // The ops row alone, in timeline order: what the undo cursor reads.
+    struct OpSummary {
+        std::int64_t op = 0;
+        std::string kind;
+        std::string status;
+        std::string actor;
+        std::optional<std::int64_t> reverts;
+    };
+    std::vector<OpSummary> operations();
+
+    // What Cmd-Z and Cmd-Shift-Z would put back, read from the rows by the
+    // cursor in Undo.h: `undo` is the newest live operation, `redo` the
+    // newest undo row still standing — reverting it is the redo — and
+    // `redoRestores` the operation that redo brings back, for its words.
+    struct UndoTargets {
+        std::optional<std::int64_t> undo;
+        std::optional<std::int64_t> redo;
+        std::optional<std::int64_t> redoRestores;
+    };
+    UndoTargets offeredTargets();
+
+    // An 'undo' or 'redo' row names the operation it reverts.
+    void setReverts(std::int64_t op, std::int64_t target);
+
     // --- what the history costs, and giving space back (Retention.h) ---
 
     // What the file holds, read from the file. The store reports; the policy
@@ -156,15 +182,12 @@ public:
     };
     Usage usage();
 
-    // The operation Cmd-Z would target (#73): the newest finished one the app
-    // or the pedal made. A legacy row has no after-state to come back from.
-    std::optional<std::int64_t> offeredUndo();
-
     // Every blob whose bytes are kept, with what holds it: a pinned operation
     // naming it (or a pin on the blob), an operation still pending naming it,
-    // or `undoOp` naming it as a 'before' — the audio that undo would put
-    // back. References count the rows naming the hash, both sides.
-    std::vector<retention::Blob> keptBlobs(std::optional<std::int64_t> undoOp);
+    // or one of the cursor's targets naming it as a 'before' — the audio that
+    // undo, or redo, would put back (the redo's bytes are what its undo row
+    // archived). References count the rows naming the hash, both sides.
+    std::vector<retention::Blob> keptBlobs(const UndoTargets& targets);
 
     void pinOp(std::int64_t op, bool pinned);
 
@@ -173,8 +196,8 @@ public:
     // the take keeps naming it — by name, size and hash — with no bytes behind
     // it. Refused whole, nothing freed, if any of them is not kept or is held
     // (see keptBlobs). Returns the bytes freed.
-    std::int64_t releaseBlobs(const std::vector<std::string>& hashes,
-                              std::optional<std::int64_t> undoOp, std::int64_t nowMs);
+    std::int64_t releaseBlobs(const std::vector<std::string>& hashes, const UndoTargets& targets,
+                              std::int64_t nowMs);
 
     // Hands up to `pages` free pages back to the system and returns how many
     // remain. Its own short transaction, a slice at a time, so a worker can
@@ -198,6 +221,12 @@ public:
     // offered back like any other. An operation that touched no slot (it
     // failed before the card, or kept only documents) is an entry with no
     // slots.
+    // A take named by a row: what an operation archived before it wrote.
+    struct TakeRef {
+        std::string name;
+        std::string hash;
+        bool kept = false; // the bytes are in the store
+    };
     struct CardEntry {
         std::int64_t op = 0;
         std::int64_t at = 0;
@@ -206,14 +235,20 @@ public:
         std::string status;
         std::string note;
         bool pinned = false;
+        std::int64_t session = 0;            // the connection it happened in
+        std::optional<std::int64_t> reverts; // for an 'undo' or 'redo' row: the operation it reverts
         struct Slot {
             int slot = 0;
             bool newest = false;
             TimelineEntry facts;
+            // The take this operation replaced or removed in the slot — its
+            // 'before' row — which is what putting the operation back needs.
+            std::optional<TakeRef> archived;
         };
         std::vector<Slot> slots; // ascending by slot
     };
     std::vector<CardEntry> cardTimeline();
+
 
 private:
     // What one operation recorded about one slot — the take it offers and,
@@ -232,7 +267,7 @@ private:
         bool undo;
         bool inFlight;
     };
-    Holds holdsOn(const std::string& hash, std::optional<std::int64_t> undoOp);
+    Holds holdsOn(const std::string& hash, const UndoTargets& targets);
 
     std::filesystem::path file_;
     sqlite::Db db_;

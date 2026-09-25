@@ -4,6 +4,7 @@
 #include "HistoryStore.h"
 
 #include "Schema.h"
+#include "Undo.h"
 
 #include <juce_cryptography/juce_cryptography.h>
 
@@ -408,16 +409,39 @@ HistoryStore::Usage HistoryStore::usage()
     return out;
 }
 
-std::optional<std::int64_t> HistoryStore::offeredUndo()
+std::vector<HistoryStore::OpSummary> HistoryStore::operations()
 {
-    sqlite::Statement read(db_, "SELECT seq FROM ops WHERE status = 'done' AND actor != 'legacy' "
-                                "ORDER BY seq DESC LIMIT 1");
-    if (!read.step())
-        return std::nullopt;
-    return read.integer(0);
+    std::vector<OpSummary> out;
+    sqlite::Statement read(db_, "SELECT seq, kind, status, actor, reverts FROM ops ORDER BY at, seq");
+    while (read.step()) {
+        OpSummary op;
+        op.op = read.integer(0);
+        op.kind = read.text(1);
+        op.status = read.text(2);
+        op.actor = read.text(3);
+        if (!read.isNull(4))
+            op.reverts = read.integer(4);
+        out.push_back(std::move(op));
+    }
+    return out;
 }
 
-HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, std::optional<std::int64_t> undoOp)
+HistoryStore::UndoTargets HistoryStore::offeredTargets()
+{
+    return undo::cursor(operations());
+}
+
+void HistoryStore::setReverts(std::int64_t op, std::int64_t target)
+{
+    if (op == target)
+        throw Error("an operation cannot revert itself");
+    sqlite::Statement set(db_, "UPDATE ops SET reverts = ?2 WHERE seq = ?1");
+    set.bind(1, op).bind(2, target).run();
+    if (db_.changes() != 1)
+        throw Error("no operation " + std::to_string(op));
+}
+
+HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, const UndoTargets& targets)
 {
     sqlite::Statement read(db_,
         "SELECT "
@@ -426,19 +450,24 @@ HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, std::optional
         "             WHERE a.hash = ?1 AND o.pinned = 1) "
         "  OR EXISTS (SELECT 1 FROM legacy_files l JOIN ops o ON o.seq = l.op "
         "             WHERE l.hash = ?1 AND o.pinned = 1), "
-        "  EXISTS (SELECT 1 FROM slot_audio a WHERE a.hash = ?1 AND a.side = 'before' AND a.op = ?2), "
+        "  EXISTS (SELECT 1 FROM slot_audio a WHERE a.hash = ?1 AND a.side = 'before' "
+        "          AND (a.op = ?2 OR a.op = ?3)), "
         "  EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
         "          WHERE a.hash = ?1 AND o.status = 'pending')");
     read.bindBlob(1, hash);
-    if (undoOp)
-        read.bind(2, *undoOp);
+    if (targets.undo)
+        read.bind(2, *targets.undo);
     else
         read.bindNull(2);
+    if (targets.redo)
+        read.bind(3, *targets.redo);
+    else
+        read.bindNull(3);
     read.step();
     return Holds { read.integer(0) != 0, read.integer(1) != 0, read.integer(2) != 0 };
 }
 
-std::vector<retention::Blob> HistoryStore::keptBlobs(std::optional<std::int64_t> undoOp)
+std::vector<retention::Blob> HistoryStore::keptBlobs(const UndoTargets& targets)
 {
     std::vector<retention::Blob> out;
     // References: every row that names the hash — a slot's audio on either
@@ -461,7 +490,7 @@ std::vector<retention::Blob> HistoryStore::keptBlobs(std::optional<std::int64_t>
         blob.created = read.integer(2);
         blob.references = static_cast<int>(read.integer(3));
         blob.label = read.text(4);
-        const Holds holds = holdsOn(blob.hash, undoOp);
+        const Holds holds = holdsOn(blob.hash, targets);
         blob.pinned = holds.pinned;
         blob.undo = holds.undo;
         blob.inFlight = holds.inFlight;
@@ -479,7 +508,7 @@ void HistoryStore::pinOp(std::int64_t op, bool pinned)
 }
 
 std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
-                                        std::optional<std::int64_t> undoOp, std::int64_t nowMs)
+                                        const UndoTargets& targets, std::int64_t nowMs)
 {
     sqlite::Transaction tx(db_);
     std::int64_t freed = 0;
@@ -493,11 +522,11 @@ std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
             throw Error("no bytes are kept for take " + hex(hash));
         const std::int64_t size = kept.integer(0);
         kept.reset();
-        const Holds holds = holdsOn(hash, undoOp);
+        const Holds holds = holdsOn(hash, targets);
         if (holds.pinned)
             throw Error("take " + hex(hash) + " is pinned");
         if (holds.undo)
-            throw Error("take " + hex(hash) + " is needed by the undo on offer");
+            throw Error("take " + hex(hash) + " is needed by the undo or redo on offer");
         if (holds.inFlight)
             throw Error("take " + hex(hash) + " belongs to an operation still running");
         drop.bindBlob(1, hash).run();
@@ -530,8 +559,8 @@ std::int64_t HistoryStore::vacuum(int pages)
 std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
 {
     std::vector<CardEntry> entries;
-    sqlite::Statement read(db_, "SELECT seq, at, kind, actor, status, note, pinned FROM ops "
-                                "ORDER BY at, seq");
+    sqlite::Statement read(db_, "SELECT seq, at, kind, actor, status, note, pinned, session, reverts "
+                                "FROM ops ORDER BY at, seq");
     while (read.step()) {
         CardEntry entry;
         entry.op = read.integer(0);
@@ -541,11 +570,18 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
         entry.status = read.text(4);
         entry.note = read.isNull(5) ? std::string() : read.text(5);
         entry.pinned = read.integer(6) != 0;
+        entry.session = read.integer(7);
+        if (!read.isNull(8))
+            entry.reverts = read.integer(8);
         entries.push_back(std::move(entry));
     }
 
     sqlite::Statement bodies(db_, "SELECT before_body, after_body FROM slot_changes "
                                   "WHERE op = ?1 AND slot = ?2");
+    sqlite::Statement archived(db_, "SELECT name, hash, "
+                                    "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
+                                    "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
+                                    "AND a.side = 'before' AND a.hash IS NOT NULL LIMIT 1");
     for (CardEntry& entry : entries) {
         for (const int slot : touchedSlots(entry.op)) {
             CardEntry::Slot touched;
@@ -566,6 +602,10 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
             }
             bodies.reset();
             fillSlotFacts(facts, slot);
+            archived.bind(1, entry.op).bind(2, slot);
+            if (archived.step())
+                touched.archived = TakeRef { archived.text(0), archived.blob(1), archived.integer(2) > 0 };
+            archived.reset();
             entry.slots.push_back(std::move(touched));
         }
     }

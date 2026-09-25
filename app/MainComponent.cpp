@@ -2126,7 +2126,7 @@ void MainComponent::releaseHistoryTakes(juce::Component::SafePointer<HistoryStor
          logDir = settings.dataDir()](const volume::fs::path&) {
             auto& store = rec->store();
             const std::int64_t freed = store.releaseBlobs(
-                hashes, store.offeredUndo(), static_cast<std::int64_t>(juce::Time::currentTimeMillis()));
+                hashes, store.offeredTargets(), static_cast<std::int64_t>(juce::Time::currentTimeMillis()));
             while (store.vacuum(kVacuumSlicePages) > 0) {
             }
             *note = juce::String::fromUTF8(history::retention::bytesText(freed).c_str())

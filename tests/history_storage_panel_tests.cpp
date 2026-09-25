@@ -340,7 +340,7 @@ int main()
 
         // a release the store carried out is gone from the next read; the
         // rate is not — those bytes were written, released or not
-        CHECK_EQ(store.releaseBlobs(panel.offeredHashes(), store.offeredUndo(), now), 6 * MB);
+        CHECK_EQ(store.releaseBlobs(panel.offeredHashes(), store.offeredTargets(), now), 6 * MB);
         const auto again = HistoryStoragePanel::Facts::read(store, 20 * MB, now);
         CHECK_EQ(again.usage.audioBytes, 3 * MB);
         CHECK_EQ(again.blobs.size(), 1u);

@@ -31,6 +31,7 @@ inline void fail(const std::string& what, const char* file, int line)
 {
     ++checksFailed;
     std::printf("FAIL %s:%d  %s\n", file, line, what.c_str());
+    std::fflush(stdout); // a crash further down must not take this line with it
 }
 
 inline void check(bool ok, const char* expr, const char* file, int line)
