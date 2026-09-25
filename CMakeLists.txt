@@ -246,6 +246,9 @@ loopercat_core_test(slot_rows_tests)
 # What the tab may offer for a row is decided over the store's own types, so
 # this one sees sqlite's header (SYSTEM: its C internals stay out of the gate).
 target_link_libraries(slot_rows_tests PRIVATE loopercat_sqlite3)
+# The same decision for the whole card's rows (the History window).
+loopercat_core_test(card_rows_tests)
+target_link_libraries(card_rows_tests PRIVATE loopercat_sqlite3)
 loopercat_core_test(operation_id_tests)
 loopercat_core_test(downmix_tests)
 loopercat_core_test(loudness_tests)
@@ -386,6 +389,7 @@ juce_add_gui_app(LooperCat
 
 target_sources(LooperCat PRIVATE
     app/HistoryPane.cpp
+    app/HistoryWindow.cpp
     app/Main.cpp
     app/HistoryStoragePanel.cpp
     app/history/HistoryRecorder.cpp
@@ -631,6 +635,43 @@ target_link_libraries(retention_store_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME retention_store_tests COMMAND retention_store_tests)
+
+# The whole card's timeline out of a real store, and a take exported to a
+# file (issue #73).
+juce_add_console_app(card_timeline_tests PRODUCT_NAME "card_timeline_tests")
+target_sources(card_timeline_tests PRIVATE tests/card_timeline_tests.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(card_timeline_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(card_timeline_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME card_timeline_tests COMMAND card_timeline_tests)
+
+# The History window: driven without a mouse, a store or a worker — it shows
+# what it is handed and offers only what a row can do.
+juce_add_console_app(history_window_tests PRODUCT_NAME "history_window_tests")
+target_sources(history_window_tests PRIVATE tests/history_window_tests.cpp
+    app/HistoryWindow.cpp)
+target_compile_definitions(history_window_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_window_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_window_tests COMMAND history_window_tests)
 
 # The storage panel (issue #74's visible part): driven without a mouse, a
 # database or a worker — it shows what it is handed and offers only what the

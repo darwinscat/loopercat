@@ -8,6 +8,7 @@
 #include <juce_cryptography/juce_cryptography.h>
 
 #include <algorithm>
+#include <map>
 
 namespace loopercat::history
 {
@@ -275,29 +276,33 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
         rows.push_back(std::move(row));
     }
 
-    for (TimelineEntry& row : rows) {
-        // The take the row offers: the state's own, or — for a row that has
-        // no state, which is what a legacy import leaves — the one it kept.
-        sqlite::Statement take(db_, "SELECT name, hash, "
-                                    "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
-                                    "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
-                                    "ORDER BY CASE side WHEN 'after' THEN 0 ELSE 1 END LIMIT 1");
-        take.bind(1, row.op).bind(2, slot);
-        if (take.step()) {
-            row.takeName = take.text(0);
-            if (!take.isNull(1))
-                row.takeHash = take.blob(1);
-            row.takeKept = row.takeHash && take.integer(2) > 0;
-        }
-        if (row.kind == "swap") {
-            sqlite::Statement other(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
-                                         "AND slot <> ?2 LIMIT 1");
-            other.bind(1, row.op).bind(2, slot);
-            if (other.step())
-                row.swappedWith = static_cast<int>(other.integer(0));
-        }
-    }
+    for (TimelineEntry& row : rows)
+        fillSlotFacts(row, slot);
     return rows;
+}
+
+void HistoryStore::fillSlotFacts(TimelineEntry& row, int slot)
+{
+    // The take the row offers: the state's own, or — for a row that has
+    // no state, which is what a legacy import leaves — the one it kept.
+    sqlite::Statement take(db_, "SELECT name, hash, "
+                                "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
+                                "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
+                                "ORDER BY CASE side WHEN 'after' THEN 0 ELSE 1 END LIMIT 1");
+    take.bind(1, row.op).bind(2, slot);
+    if (take.step()) {
+        row.takeName = take.text(0);
+        if (!take.isNull(1))
+            row.takeHash = take.blob(1);
+        row.takeKept = row.takeHash && take.integer(2) > 0;
+    }
+    if (row.kind == "swap") {
+        sqlite::Statement other(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
+                                     "AND slot <> ?2 LIMIT 1");
+        other.bind(1, row.op).bind(2, slot);
+        if (other.step())
+            row.swappedWith = static_cast<int>(other.integer(0));
+    }
 }
 
 std::optional<std::string> HistoryStore::takeBytes(const std::string& hash)
@@ -520,6 +525,59 @@ std::int64_t HistoryStore::vacuum(int pages)
         throw Error("a vacuum slice is at least one page");
     db_.exec("PRAGMA incremental_vacuum(" + std::to_string(pages) + ")");
     return schema::pragmaInteger(db_, "freelist_count");
+}
+
+std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
+{
+    std::vector<CardEntry> entries;
+    sqlite::Statement read(db_, "SELECT seq, at, kind, actor, status, note, pinned FROM ops "
+                                "ORDER BY at, seq");
+    while (read.step()) {
+        CardEntry entry;
+        entry.op = read.integer(0);
+        entry.at = read.integer(1);
+        entry.kind = read.text(2);
+        entry.actor = read.text(3);
+        entry.status = read.text(4);
+        entry.note = read.isNull(5) ? std::string() : read.text(5);
+        entry.pinned = read.integer(6) != 0;
+        entries.push_back(std::move(entry));
+    }
+
+    sqlite::Statement bodies(db_, "SELECT before_body, after_body FROM slot_changes "
+                                  "WHERE op = ?1 AND slot = ?2");
+    for (CardEntry& entry : entries) {
+        for (const int slot : touchedSlots(entry.op)) {
+            CardEntry::Slot touched;
+            touched.slot = slot;
+            TimelineEntry& facts = touched.facts;
+            facts.op = entry.op;
+            facts.at = entry.at;
+            facts.kind = entry.kind;
+            facts.actor = entry.actor;
+            facts.status = entry.status;
+            facts.note = entry.note;
+            bodies.bind(1, entry.op).bind(2, slot);
+            if (bodies.step()) {
+                if (!bodies.isNull(0))
+                    facts.beforeBody = bodies.blob(0);
+                if (!bodies.isNull(1))
+                    facts.afterBody = bodies.blob(1);
+            }
+            bodies.reset();
+            fillSlotFacts(facts, slot);
+            entry.slots.push_back(std::move(touched));
+        }
+    }
+
+    // The last operation on a slot, in this order, is the state it is in.
+    std::map<int, CardEntry::Slot*> last;
+    for (CardEntry& entry : entries)
+        for (CardEntry::Slot& touched : entry.slots)
+            last[touched.slot] = &touched;
+    for (auto& [slot, touched] : last)
+        touched->newest = true;
+    return entries;
 }
 
 } // namespace loopercat::history
