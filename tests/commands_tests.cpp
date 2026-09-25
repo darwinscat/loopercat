@@ -31,6 +31,7 @@
 #include "../app/OperationId.h"
 
 #include <loopercat/Commands.hpp>
+#include <loopercat/DeviceProfile.hpp>
 
 #include <algorithm>
 #include <bit>
@@ -2483,6 +2484,107 @@ int main()
         // And through it all, the foreign section is the bytes it was.
         const std::string body = rc0::slotBody(memory(), 5);
         CHECK_EQ(body.substr(body.find("<OTHER>"), other.size()), other);
+    }
+
+    // --- a two-track card: known, and nothing on it is open ---
+    //
+    // The two-track RC model's card (testkit::syntheticTwoTrackMemoryText, its
+    // root "RC-500", two <TRACKn> per memory, NNN_1 and NNN_2 audio folders)
+    // is a model the table knows (DeviceProfile.hpp) with no operation open.
+    // Two of ours would corrupt it silently — a swap carries only NNN_1
+    // across, a clear writes a one-track factory body — so they are not
+    // merely untested here: every read is refused in the guard's old words,
+    // and every mutation is refused in its own name before a byte of the card
+    // has moved. The doctor reports the refusal and does not throw.
+    {
+        TempDir tmp;
+        const fs::path volume = tmp.path / "PEDAL";
+        fs::create_directories(volume / "ROLAND" / "WAVE");
+        fs::create_directories(volume::dataDir(volume));
+        const std::string text = testkit::syntheticTwoTrackMemoryText();
+        for (const int fileNo : { 1, 2 })
+            commands::writeFileBytes(volume::memoryPath(volume, fileNo),
+                                     rc0::setTailMarker(text, fileNo));
+        // Memory 1's two takes, at the addresses the pedal uses: a stereo
+        // take on track 1 that every audio command can open (its channels
+        // differ, so downmix has a fold to make, and it is not silent, so
+        // normalize has a gain to apply), and a second on track 2.
+        putStereoFloatWav(volume, 1, "001_1.WAV", 44100);
+        {
+            const auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410 });
+            const fs::path dir = volume::trackDir(volume, profile::kRc500, 1, 2);
+            fs::create_directories(dir);
+            commands::writeFileBytes(dir / "001_2.WAV", bytesOf(bytes));
+        }
+        const auto before = volumeBytes(volume);
+        const std::string notOurs =
+            "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5";
+
+        // Every read: the newest bank, a pinned bank, and the settings pair
+        // (whose root names the same model).
+        CHECK_THROWS(commands::readMemory(volume), notOurs);
+        CHECK_THROWS(commands::readMemory(volume, 1), notOurs);
+        CHECK_THROWS(commands::readMemory(volume, 2), notOurs);
+        CHECK_THROWS(commands::readMemoryFor(volume, profile::Operation::read), notOurs);
+        {
+            std::string settings = commands::readFileBytes(LOOPERCAT_RC5_SYSTEM);
+            const std::string rc5Root = "<database name=\"RC-5\" revision=\"0\">";
+            const auto at = settings.find(rc5Root);
+            CHECK(at != std::string::npos);
+            settings.replace(at, rc5Root.size(), "<database name=\"RC-500\" revision=\"0\">");
+            for (const int fileNo : { 1, 2 })
+                commands::writeFileBytes(volume::systemPath(volume, fileNo), settings);
+            CHECK_THROWS(commands::readSystem(volume), notOurs);
+            CHECK_THROWS(commands::writeSystemPair(volume, settings, { .skipBackup = true }),
+                         "no write on an \"RC-500\" card");
+        }
+        const auto beforeWithSettings = volumeBytes(volume);
+
+        // Every mutation, in its own words. The options are complete and the
+        // takes are real, so the profile gate is the only thing that refuses.
+        const commands::WriteOptions write = writeOpts(tmp.path);
+        const fs::path source = tmp.path / "take.wav";
+        commands::writeFileBytes(
+            source, bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 })));
+        const std::string refused =
+            " refused on an \"RC-500\" card \xe2\x80\x94 LooperCat only speaks RC-5";
+        CHECK_THROWS(commands::rename(volume, 1, "Two Tracks", write), "rename" + refused);
+        CHECK_THROWS(commands::setOneShot(volume, { 1 }, true, write), "set one-shot" + refused);
+        CHECK_THROWS(commands::setTempo(volume, 1, 1200, write), "set tempo" + refused);
+        CHECK_THROWS(commands::setCountIn(volume, { 1 }, true, write), "set count-in" + refused);
+        CHECK_THROWS(commands::push(volume, source, 42, { .write = write }), "push" + refused);
+        CHECK_THROWS(commands::pull(volume, { 1 }, { .dest = tmp.path / "pulled" }),
+                     "pull" + refused);
+        CHECK_THROWS(commands::trim(volume, 1, 0, 22050, { .write = write }), "trim" + refused);
+        CHECK_THROWS(commands::downmixToMono(volume, 1, { .write = write }), "downmix" + refused);
+        CHECK_THROWS(commands::normalize(volume, 1, { .targetLufs = -18.0, .write = write }),
+                     "normalize" + refused);
+        CHECK_THROWS(commands::clear(volume, { 1 }, { .write = write }), "clear" + refused);
+        CHECK_THROWS(
+            commands::restore(volume, 42, { rc0::slotBody(text, 42), std::nullopt }, write),
+            "restore" + refused);
+        CHECK_THROWS(commands::swap(volume, 1, 2, write), "swap" + refused);
+        // The backstop under them all, asked directly.
+        CHECK_THROWS(commands::writeMemoryPair(volume, text, { .skipBackup = true }),
+                     "no write on an \"RC-500\" card");
+
+        // The doctor says so and carries on.
+        {
+            const auto findings = commands::doctor(volume);
+            int refusals = 0;
+            for (const auto& f : findings)
+                if (f.level == commands::Level::error
+                    && f.message.find(notOurs) != std::string::npos)
+                    ++refusals;
+            CHECK_EQ(refusals, 2); // one per bank
+        }
+
+        // Not a byte moved, nothing archived, nothing backed up, nothing pulled.
+        CHECK(volumeBytes(volume) == beforeWithSettings);
+        CHECK(!fs::exists(tmp.path / "trash"));
+        CHECK(!fs::exists(tmp.path / "backups"));
+        CHECK(!fs::exists(tmp.path / "pulled"));
+        (void) before;
     }
 
     return testkit::summary("commands");

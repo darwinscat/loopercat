@@ -67,14 +67,21 @@ int main()
     CHECK_THROWS(sysfile::assertSystemFile(card), "memory file");
     CHECK_THROWS(rc0::assertMemoryFile(system), "<mem");
 
-    // The family guard is the same one: a foreign card's settings are refused
-    // before anything reads a field out of them.
+    // The family guard is the same one: an unknown model's settings are
+    // refused by name before anything reads a field out of them. A model the
+    // table knows but has not opened (DeviceProfile.hpp) is a sound settings
+    // file of its own — it is commands::readSystem that refuses to read it,
+    // in the same words (commands_tests, the two-track card).
     {
-        std::string foreign = system;
-        const auto at = foreign.find("name=\"RC-5\"");
-        CHECK(at != std::string::npos);
-        foreign.replace(at, std::string("name=\"RC-5\"").size(), "name=\"RC-500\"");
-        CHECK_THROWS(sysfile::assertSystemFile(foreign), "LooperCat only speaks RC-5");
+        const auto withRoot = [&system](const std::string& name) {
+            std::string text = system;
+            const auto at = text.find("name=\"RC-5\"");
+            CHECK(at != std::string::npos);
+            return text.replace(at, std::string("name=\"RC-5\"").size(), "name=\"" + name + "\"");
+        };
+        CHECK_THROWS(sysfile::assertSystemFile(withRoot("RC-505")), "LooperCat only speaks RC-5");
+        CHECK_THROWS(sysfile::assertSystemFile(withRoot("RC-505")), "\"RC-505\" card");
+        sysfile::assertSystemFile(withRoot("RC-500")); // known: sound, and not ours to read
     }
 
     // --- structure: each section, exactly once, closed ---

@@ -19,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace testkit {
@@ -118,6 +119,107 @@ inline std::string syntheticMemoryText(std::uint32_t tailMarker = 0x38, int slot
     xml += "</database>";
     xml += "\n";
     for (int i = 0; i < 4; ++i) // little-endian uint32 write counter (theory: rc0.js)
+        xml.push_back(static_cast<char>((tailMarker >> (8 * i)) & 0xff));
+    return xml;
+}
+
+// --- the two-track model, from the numbers measured on its card ---
+
+// One track of a two-track memory, as the pedal writes it: `bars` and
+// `frames` of a recorded take, or nothing (bars = 0) for an empty track.
+struct TrackSpec {
+    int bars = 0;
+    long long frames = 0;
+};
+
+// A two-track memory body: NAME, TRACK1, TRACK2 (the same thirteen fields,
+// each track its own take), MASTER, RHYTHM. RecTmp equals the memory's Tempo
+// on every recorded track, and an empty track is factory-shaped (Measure=1,
+// MeasLen=0, WavStat=0, WavLen=0) — both as measured on the card, 2026-09.
+inline std::string syntheticTwoTrackSlotBody(const std::string& name, TrackSpec t1, TrackSpec t2,
+                                             int tempoTenths, int lpLen)
+{
+    std::string padded = (name + std::string(12, ' ')).substr(0, 12);
+    std::string s = "\n<NAME>\n";
+    for (int i = 0; i < 12; ++i) {
+        const std::string tag = "C" + std::string(i + 1 < 10 ? "0" : "") + std::to_string(i + 1);
+        const auto code = static_cast<unsigned char>(padded[static_cast<std::size_t>(i)]);
+        s += "\t<" + tag + ">" + std::to_string(code) + "</" + tag + ">\n";
+    }
+    s += "</NAME>\n";
+    const auto track = [&s, tempoTenths](int number, const TrackSpec& spec) {
+        const bool recorded = spec.bars > 0;
+        s += "<TRACK" + std::to_string(number) + ">\n";
+        const std::pair<const char*, long long> fields[] = { { "Rev", 0 }, { "PlyLvl", 100 },
+            { "Pan", 50 }, { "One", 0 }, { "StrtMod", 0 }, { "StpMod", 0 },
+            { "Measure", recorded ? spec.bars + 7 : 1 }, { "MeasMod", 1 },
+            { "MeasLen", recorded ? spec.bars : 0 }, { "MeasBtLp", 0 }, { "RecTmp", tempoTenths },
+            { "WavStat", recorded ? 1 : 0 }, { "WavLen", recorded ? spec.frames : 0 } };
+        for (const auto& [t, v] : fields)
+            s += "\t<" + std::string(t) + ">" + std::to_string(v) + "</" + t + ">\n";
+        s += "</TRACK" + std::to_string(number) + ">\n";
+    };
+    track(1, t1);
+    track(2, t2);
+    s += "<MASTER>\n";
+    const std::pair<const char*, int> master[] = { { "Tempo", tempoTenths }, { "DubMode", 0 },
+        { "RecAction", 1 }, { "AutoRec", 0 }, { "FadeTime", 5 }, { "Level", 100 }, { "LpMod", 1 },
+        { "LpLen", lpLen }, { "TrkMod", 1 }, { "Sync", 0 } };
+    for (const auto& [t, v] : master)
+        s += "\t<" + std::string(t) + ">" + std::to_string(v) + "</" + t + ">\n";
+    s += "</MASTER>\n<RHYTHM>\n";
+    const std::pair<const char*, int> rhythm[] = { { "Level", 100 }, { "Reverb", 30 },
+        { "Pattern", 0 }, { "Variation", 0 }, { "VariationChange", 0 }, { "Kit", 0 }, { "Beat", 2 },
+        { "Fill", 1 }, { "Part1", 1 }, { "Part2", 1 }, { "Part3", 1 }, { "Part4", 0 },
+        { "RecCount", 0 }, { "PlayCount", 0 }, { "Start", 0 }, { "Stop", 1 }, { "ToneLow", 10 },
+        { "ToneHigh", 10 }, { "State", 0 } };
+    for (const auto& [t, v] : rhythm)
+        s += "\t<" + std::string(t) + ">" + std::to_string(v) + "</" + t + ">\n";
+    s += "</RHYTHM>\n";
+    return s;
+}
+
+// A whole two-track memory file, root name "RC-500", 99 memories. Seven of
+// them carry the takes measured on a real card of that model (kitchen notes,
+// 2026-09-22/23); the numbers are the pedal's own, the file is not:
+//
+//   mem  1: T1 8 bars 641408, T2 8 bars 641408, 132.0 BPM, LpLen 8
+//   mem  2: T1 128 bars 14119056 (a vendor upload), T2 empty, 95.9, LpLen 128
+//   mem  3: T1 4 bars 282240, T2 8 bars 564480, 150.0, LpLen 4
+//   mem  4: T1 4 bars 351232, T2 empty, 120.5, LpLen 4
+//   mem  6: T1 4 bars 395776, T2 8 bars 791552, 106.9, LpLen 4
+//   mem 10: T1 8 bars 685056 recorded first, T2 4 bars 342528, 123.5, LpLen 8
+//   mem 11: T1 empty, T2 4 bars 362496 — the only track, 116.7, LpLen 4
+//
+// LpLen is the length of the first RECORDED track (mem 10 against mem 11),
+// not of track 1 and not of the shorter one. The rest are factory-empty.
+inline std::string syntheticTwoTrackMemoryText(std::uint32_t tailMarker = 0x38)
+{
+    std::string xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                      "<database name=\"RC-500\" revision=\"0\">\n";
+    for (int i = 0; i < 99; ++i) {
+        const int slot = i + 1;
+        const std::string n = std::to_string(slot);
+        const std::string name = "Memory" + std::string(n.size() < 2 ? "0" : "") + n;
+        std::string body;
+        const auto memory = [&name](TrackSpec t1, TrackSpec t2, int tempoTenths, int lpLen) {
+            return syntheticTwoTrackSlotBody(name, t1, t2, tempoTenths, lpLen);
+        };
+        switch (slot) {
+        case 1: body = memory({ 8, 641408 }, { 8, 641408 }, 1320, 8); break;
+        case 2: body = memory({ 128, 14119056 }, {}, 959, 128); break;
+        case 3: body = memory({ 4, 282240 }, { 8, 564480 }, 1500, 4); break;
+        case 4: body = memory({ 4, 351232 }, {}, 1205, 4); break;
+        case 6: body = memory({ 4, 395776 }, { 8, 791552 }, 1069, 4); break;
+        case 10: body = memory({ 8, 685056 }, { 4, 342528 }, 1235, 8); break;
+        case 11: body = memory({}, { 4, 362496 }, 1167, 4); break;
+        default: body = memory({}, {}, 1200, 0); break;
+        }
+        xml += "<mem id=\"" + std::to_string(i) + "\">" + body + "</mem>\n";
+    }
+    xml += "</database>";
+    xml += "\n";
+    for (int i = 0; i < 4; ++i)
         xml.push_back(static_cast<char>((tailMarker >> (8 * i)) & 0xff));
     return xml;
 }

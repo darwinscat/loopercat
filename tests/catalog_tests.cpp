@@ -8,6 +8,7 @@
 #include "support.hpp"
 
 #include <loopercat/Catalog.hpp>
+#include <loopercat/DeviceProfile.hpp>
 
 using namespace loopercat;
 
@@ -126,7 +127,69 @@ int main()
 
     // Malformed input propagates as a typed error, never a default.
     CHECK_THROWS(catalog::readSlot(text, 0), "out of range");
-    CHECK_THROWS(catalog::listSlots("<database></database>"), "missing <mem");
+    CHECK_THROWS(catalog::listSlots("<database></database>"), "not an RC0");
+
+    // --- tracks: a memory holds as many as its model has ---
+
+    // On the RC-5 every memory holds exactly one track, and the flat fields
+    // are that track's — on every slot, edited or not.
+    for (const auto& s : slots) {
+        CHECK_EQ(s.tracks.size(), 1u);
+        const catalog::TrackInfo& t = s.tracks.front();
+        CHECK_EQ(t.track, 1);
+        CHECK(t.hasAudio == s.hasAudio);
+        CHECK_EQ(t.frames, s.frames);
+        CHECK(t.oneShot == s.oneShot);
+        CHECK_EQ(t.measures, s.measures);
+        CHECK_EQ(t.recTempoTenths, s.recTempoTenths);
+    }
+
+    // The two-track model (testkit::syntheticTwoTrackMemoryText — the numbers
+    // measured on its card): two tracks per memory, each with its own take,
+    // length and recording tempo; the playback tempo is the memory's.
+    {
+        const std::string twoTrack = testkit::syntheticTwoTrackMemoryText();
+        const auto memories = catalog::listSlots(twoTrack);
+        CHECK_EQ(memories.size(), static_cast<std::size_t>(rc0::kSlotCount));
+        for (const auto& m : memories)
+            CHECK_EQ(m.tracks.size(), 2u);
+
+        // Memory 1: both tracks 8 bars at 132.0 BPM.
+        using catalog::TrackInfo;
+        CHECK(memories.at(0).tracks.at(0) == (TrackInfo { 1, true, 641408, false, 8, 1320 }));
+        CHECK(memories.at(0).tracks.at(1) == (TrackInfo { 2, true, 641408, false, 8, 1320 }));
+        CHECK_EQ(memories.at(0).tempoTenths, 1320);
+        // Memory 3: a 4-bar track 1 beside an 8-bar track 2 — different
+        // lengths under one tempo.
+        CHECK(memories.at(2).tracks.at(0) == (TrackInfo { 1, true, 282240, false, 4, 1500 }));
+        CHECK(memories.at(2).tracks.at(1) == (TrackInfo { 2, true, 564480, false, 8, 1500 }));
+        // Memory 2: track 2 empty, factory-shaped.
+        CHECK(memories.at(1).tracks.at(1) == (TrackInfo { 2, false, 0, false, 0, 959 }));
+        // Memory 11: the take is on track 2 alone. The flat fields are
+        // TRACK1's and say "empty" — the one-track view's honest limit, which
+        // is why a caller showing this card reads `tracks`.
+        CHECK(!memories.at(10).hasAudio);
+        CHECK_EQ(memories.at(10).frames, 0);
+        CHECK(memories.at(10).tracks.at(1) == (TrackInfo { 2, true, 362496, false, 4, 1167 }));
+        // Memory 42: factory-empty on both tracks.
+        CHECK(memories.at(41).tracks.at(0) == (TrackInfo { 1, false, 0, false, 0, 1200 }));
+        CHECK(memories.at(41).tracks.at(1) == (TrackInfo { 2, false, 0, false, 0, 1200 }));
+        // readSlot, told the model or reading it off the root, agrees.
+        CHECK(catalog::readSlot(twoTrack, 3) == memories.at(2));
+        CHECK(catalog::readSlot(twoTrack, profile::kRc500, 3) == memories.at(2));
+
+        // A memory that lacks a track its model promises is refused by name,
+        // not read as an empty track.
+        std::string body = rc0::slotBody(twoTrack, 5);
+        const auto open = body.find("<TRACK2>");
+        const auto close = body.find("</TRACK2>\n", open);
+        CHECK(open != std::string::npos && close != std::string::npos);
+        body.erase(open, close + std::string("</TRACK2>\n").size() - open);
+        const std::string oneShort = rc0::replaceSlotBody(twoTrack, 5, body);
+        CHECK_THROWS(catalog::readSlot(oneShort, 5), "missing <TRACK2> section");
+        CHECK_THROWS(catalog::listSlots(oneShort), "missing <TRACK2> section");
+        CHECK(catalog::readSlot(oneShort, 4) == memories.at(3)); // its neighbours still read
+    }
 
     return testkit::summary("catalog");
 }

@@ -43,9 +43,10 @@ inline constexpr std::string_view kSectionCtl = "CTL";
 // must leave it exactly as found.
 inline constexpr std::string_view kCurrentMemoryField = "MemoryNumber";
 
-// A structurally sound SYSTEM file of our family: the RC-5 header (the same
-// guard the memory files pass), one <sys> element, and the three sections —
-// each exactly once, which rc0::sectionField enforces on every lookup.
+// A structurally sound SYSTEM file of a known family (the same guard the
+// memory files pass — the root names the model), one <sys> element, and the
+// three sections — each exactly once, which rc0::sectionField enforces on
+// every lookup.
 //
 // A memory file is refused here, and a system file is refused by
 // rc0::assertMemoryFile: the two are told apart by what they contain, not by
@@ -54,7 +55,7 @@ inline constexpr std::string_view kCurrentMemoryField = "MemoryNumber";
 inline void assertSystemFile(std::string_view text)
 {
     const std::string document = rc0::splitFile(text).document;
-    rc0::assertRc5Family(document);
+    rc0::familyOf(document); // a known model, or a refusal by name
     if (document.find("<mem id=\"") != std::string::npos)
         throw Error("this is a memory file, not a SYSTEM file: it carries <mem> entries");
     const std::string open = "<" + std::string(kRoot) + ">";

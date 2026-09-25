@@ -16,6 +16,7 @@
 #pragma once
 
 #include "Catalog.hpp"
+#include "DeviceProfile.hpp"
 #include "Downmix.hpp"
 #include "Error.hpp"
 #include "Loudness.hpp"
@@ -145,9 +146,14 @@ inline std::string readBank(const fs::path& volume, volume::Bank bank, int fileN
     return text;
 }
 
+// The memories, and the profile's say on reading them: a card whose model
+// this app has not opened for reading is refused here, by name, before any
+// of it is shown (DeviceProfile.hpp).
 inline std::string readMemory(const fs::path& volume, int fileNo)
 {
-    return readBank(volume, volume::Bank::memory, fileNo);
+    std::string text = readBank(volume, volume::Bank::memory, fileNo);
+    profile::require(rc0::profileOf(text), profile::Operation::read);
+    return text;
 }
 
 // THE database: the bank the write counters name as newest. The pedal writes
@@ -185,16 +191,30 @@ inline std::string readBank(const fs::path& volume, volume::Bank bank)
     return texts.contains(1) ? texts[1] : texts[2];
 }
 
+// The document a command starts from, and the gate it passes first: the
+// card's profile must have that operation open. Every mutation below reads
+// through this with its own name, so a closed card refuses it in the
+// mutation's own words, before anything on the card has moved.
+inline std::string readMemoryFor(const fs::path& volume, profile::Operation operation)
+{
+    std::string text = readBank(volume, volume::Bank::memory);
+    profile::require(rc0::profileOf(text), operation);
+    return text;
+}
+
 inline std::string readMemory(const fs::path& volume)
 {
-    return readBank(volume, volume::Bank::memory);
+    return readMemoryFor(volume, profile::Operation::read);
 }
 
 // The pedal's own settings, from the bank its counter names as newest — the
-// same rule, because it is the same pair mechanism (SystemFile.hpp).
+// same rule, because it is the same pair mechanism (SystemFile.hpp), and the
+// same gate.
 inline std::string readSystem(const fs::path& volume)
 {
-    return readBank(volume, volume::Bank::system);
+    std::string text = readBank(volume, volume::Bank::system);
+    profile::require(rc0::profileOf(text), profile::Operation::read);
+    return text;
 }
 
 // --- the write discipline ---
@@ -392,6 +412,9 @@ namespace detail {
 inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text,
                                    const WriteOptions& options)
 {
+    // The backstop under every mutation: a model with no write open gets
+    // none, whichever command forgot to ask its own gate.
+    profile::requireWrites(rc0::profileOf(text));
     // Described before anything is written: a write the history could not
     // describe is refused with the volume as it was.
     const std::vector<SlotChange> changes = slotChanges(readMemory(volume), text);
@@ -430,6 +453,7 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
                                    const WriteOptions& options)
 {
     sysfile::assertSystemFile(text);
+    profile::requireWrites(rc0::profileOf(text));
     const auto base = detail::highestGeneration(volume, volume::Bank::system);
     if (!base)
         throw Error("refusing to write settings: neither SYSTEM bank on " + volume.string()
@@ -457,7 +481,7 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
 inline WriteResult rename(const fs::path& volume, int slot, std::string_view name,
                           const WriteOptions& options)
 {
-    const std::string text = readMemory(volume);
+    const std::string text = readMemoryFor(volume, profile::Operation::rename);
     const std::string body = rc0::slotBody(text, slot);
     return writeMemoryPair(volume, rc0::replaceSlotBody(text, slot, rc0::setName(body, name)),
                            options);
@@ -466,7 +490,7 @@ inline WriteResult rename(const fs::path& volume, int slot, std::string_view nam
 inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& slots, bool on,
                               const WriteOptions& options)
 {
-    std::string text = readMemory(volume);
+    std::string text = readMemoryFor(volume, profile::Operation::setOneShot);
     for (const int slot : slots) {
         const std::string body = rc0::slotBody(text, slot);
         text = rc0::replaceSlotBody(
@@ -484,7 +508,7 @@ inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& sl
 inline WriteResult setCountIn(const fs::path& volume, const std::vector<int>& slots, bool on,
                               const WriteOptions& options)
 {
-    std::string text = readMemory(volume);
+    std::string text = readMemoryFor(volume, profile::Operation::setCountIn);
     for (const int slot : slots)
         text = rc0::replaceSlotBody(text, slot,
                                     usecases::countin::apply(rc0::slotBody(text, slot), on));
@@ -524,7 +548,7 @@ inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTen
     if (tempoTenths < kTempoTenthsMin || tempoTenths > kTempoTenthsMax)
         throw Error("tempo out of the pedal's 40.0-300.0 BPM range: "
                     + std::to_string(tempoTenths / 10) + "." + std::to_string(tempoTenths % 10));
-    std::string text = readMemory(volume);
+    std::string text = readMemoryFor(volume, profile::Operation::setTempo);
     std::string body = rc0::slotBody(text, slot);
     body = rc0::setSectionField(body, rc0::kSectionMaster, "Tempo", tempoTenths);
     body = rc0::setSectionField(body, rc0::kSectionTrack1, "RecTmp", tempoTenths);
@@ -580,7 +604,7 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     std::string newDocument;
     if (options.writeConfig) {
         slotParams = params::computeSlotParams(info.frames);
-        const std::string memoryText = readMemory(volume);
+        const std::string memoryText = readMemoryFor(volume, profile::Operation::push);
         std::string body = rc0::slotBody(memoryText, slot);
         body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat", 1);
         body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavLen", info.frames);
@@ -667,7 +691,7 @@ inline std::vector<PullJob> pull(const fs::path& volume, const std::vector<int>&
 {
     if (options.dest.empty())
         throw Error("pull requires a destination directory");
-    const std::string text = readMemory(volume);
+    const std::string text = readMemoryFor(volume, profile::Operation::pull);
     std::vector<PullJob> jobs;
     for (const int slot : slots) {
         const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
@@ -741,7 +765,7 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
     const wav::Bytes slice = wav::trimmed(rawView, startFrame, endFrame); // validates the range
     const wav::Info info = wav::readWavInfo(slice);
 
-    const std::string memoryText = readMemory(volume);
+    const std::string memoryText = readMemoryFor(volume, profile::Operation::trim);
     std::string body = rc0::slotBody(memoryText, slot);
     const long long tempoTenths = rc0::sectionField(body, rc0::kSectionMaster, "Tempo");
     if (tempoTenths < kTempoTenthsMin || tempoTenths > kTempoTenthsMax)
@@ -825,7 +849,7 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
     // The config has to be readable before the audio is touched: a fold that
     // could not write its memory pair afterwards would leave the volume in a
     // state no undo describes.
-    const std::string memoryText = readMemory(volume);
+    const std::string memoryText = readMemoryFor(volume, profile::Operation::downmix);
 
     // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
@@ -940,7 +964,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     // The config has to be readable before the audio is touched: a rewrite
     // that could not write its memory pair afterwards would leave the volume
     // in a state no undo describes.
-    const std::string memoryText = readMemory(volume);
+    const std::string memoryText = readMemoryFor(volume, profile::Operation::normalize);
 
     // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
@@ -983,7 +1007,7 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
 {
     if (options.trash && !options.write.archive)
         throw Error("clear needs an archive (or trash=false)");
-    std::string text = readMemory(volume);
+    std::string text = readMemoryFor(volume, profile::Operation::clear);
 
     struct Plan {
         int slot;
@@ -991,8 +1015,9 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
         std::vector<std::string> files;
     };
     std::vector<Plan> plans;
+    const profile::DeviceProfile& family = rc0::profileOf(text);
     for (const int slot : slots) {
-        std::string body = rc0::factorySlotBody(slot);
+        std::string body = rc0::factorySlotBody(family, slot);
         if (options.keepName) {
             std::string existing = rc0::decodeName(rc0::slotBody(text, slot));
             while (!existing.empty() && existing.back() == ' ')
@@ -1132,7 +1157,7 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
                       " they are only restored together");
     }
 
-    const std::string memoryText = readMemory(volume);
+    const std::string memoryText = readMemoryFor(volume, profile::Operation::restore);
     const std::string newDocument = rc0::replaceSlotBody(memoryText, slot, state.body);
 
     const std::vector<std::string> existing = volume::listSlotWavs(volume, slot);
@@ -1228,7 +1253,7 @@ inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
     if (slotA == slotB)
         throw Error("swap needs two different slots, got slot " + std::to_string(slotA)
                     + " twice");
-    const std::string text = readMemory(volume);
+    const std::string text = readMemoryFor(volume, profile::Operation::swap);
     const std::string bodyA = rc0::slotBody(text, slotA); // validates the range too
     const std::string bodyB = rc0::slotBody(text, slotB);
     const std::string swapped =

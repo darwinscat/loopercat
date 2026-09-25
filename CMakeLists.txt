@@ -229,6 +229,8 @@ loopercat_core_test(connect_tests)
 loopercat_core_test(params_tests)
 loopercat_core_test(quit_tests)
 loopercat_core_test(rc0_tests)
+# The RC family as a table, and the guard that asks it (DeviceProfile.hpp).
+loopercat_core_test(device_profile_tests)
 # The same model against a whole real card, byte for byte (fixtures/rc5-card.RC0).
 loopercat_core_test(rc5_card_tests)
 # The pedal's settings file, against a real one (fixtures/rc5-system.RC0).
