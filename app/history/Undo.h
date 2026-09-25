@@ -37,7 +37,8 @@
 // the redo.
 //
 // The plan for reverting an operation is what its rows say the slots held
-// before it — the body it recorded and the take it archived — and it is
+// before it — the body it recorded and the take it archived — and, for the
+// pedal's own settings, the text each section had (system_changes); it is
 // refused, by name, when any of that is missing: a take no longer kept, a
 // state never recorded, an operation that did not finish. Whether a slot
 // held a take before is read from the body it recorded, never guessed from
@@ -119,12 +120,19 @@ struct Step {
     std::optional<std::string> takeHash;
 };
 
+// One section of the pedal's own settings goes back to the text it had.
+struct SystemStep {
+    std::string section;
+    std::string before;
+};
+
 struct Plan {
     std::int64_t target = 0;
     Refusal refusal = Refusal::none;
     std::string reason; // for the dialog, when refused
     int refusedSlot = 0;
     std::vector<Step> steps;                  // ascending by slot
+    std::vector<SystemStep> system;           // the settings' sections, in section order
     std::optional<std::pair<int, int>> swapBack; // a swap goes back by swapping again: no bytes needed
     std::vector<std::int64_t> writesOver;     // finished operations after the target on the same slots
     bool crossesConnection = false;           // the target is from another session than the newest operation
@@ -151,6 +159,7 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
         out.reason = std::move(reason);
         out.refusedSlot = slot;
         out.steps.clear(); // a swap's plan is set only once every refusal has passed
+        out.system.clear();
         return out;
     };
 
@@ -165,8 +174,24 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
         return refuse(Refusal::notFinished, "that operation did not finish");
     if (entry.actor == "legacy")
         return refuse(Refusal::nothingToPutBack, "a row from before the history has no state to go back to");
-    if (entry.slots.empty())
-        return refuse(Refusal::nothingToPutBack, "that operation changed no slot");
+    if (entry.slots.empty() && entry.system.empty())
+        return refuse(Refusal::nothingToPutBack, "that operation changed no slot and no setting");
+
+    // The pedal's own settings: each section goes back to the text it had.
+    // A row that is not a section's text — nothing before it, or another
+    // tag's — was not recorded, whatever it says.
+    for (const HistoryStore::SystemChange& change : entry.system) {
+        const std::string open = "<" + change.section + ">";
+        const std::string close = "</" + change.section + ">";
+        const bool sound = change.before.size() >= open.size() + close.size()
+            && change.before.compare(0, open.size(), open) == 0
+            && change.before.compare(change.before.size() - close.size(), close.size(), close) == 0;
+        if (change.section.empty() || !sound)
+            return refuse(Refusal::stateNotRecorded,
+                          "what the pedal's <" + change.section
+                              + "> settings were before that operation was not recorded");
+        out.system.push_back({ change.section, change.before });
+    }
 
     if (entry.kind == "swap" && entry.slots.size() == 2) {
         out.swapBack = std::make_pair(entry.slots[0].slot, entry.slots[1].slot);

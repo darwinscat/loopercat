@@ -251,6 +251,49 @@ int main()
         CHECK(!p.swapBack && p.steps.empty());
     }
 
+    // --- the pedal's own settings go back section by section, and only they ---
+    {
+        const std::string was = "<CTL>\n\t<Ctl2>18</Ctl2>\n</CTL>";
+        const std::string now = "<CTL>\n\t<Ctl2>22</Ctl2>\n</CTL>";
+        Card controls = card(20, "controls");
+        controls.system = { { "CTL", was, now } };
+        const auto p = undo::plan({ controls }, 20);
+        CHECK(p.possible());
+        CHECK(p.steps.empty() && !p.swapBack);
+        CHECK_EQ(p.system.size(), 1u);
+        CHECK(p.system.size() == 1 && p.system.front().section == "CTL");
+        CHECK(p.system.size() == 1 && p.system.front().before == was);
+        // two sections: both go back, in section order
+        Card both = card(21, "controls");
+        both.system = { { "SETUP", "<SETUP>\n\t<X>1</X>\n</SETUP>", "<SETUP>\n\t<X>2</X>\n</SETUP>" }, { "CTL", was, now } };
+        const auto b = undo::plan({ both }, 21);
+        CHECK(b.possible() && b.system.size() == 2);
+        CHECK(b.system.size() == 2 && b.system[0].section == "SETUP" && b.system[1].section == "CTL");
+        // a slot operation sees no settings step
+        Card trim = card(22, "trim");
+        trim.slots = { slot(12, loaded, shorter, TakeRef { "take.wav", std::string(32, '\x22'), true }, "take.wav") };
+        const auto t = undo::plan({ trim }, 22);
+        CHECK(t.possible() && t.system.empty() && t.steps.size() == 1);
+        // a row that is not a section's text was not recorded
+        Card bad = card(23, "controls");
+        bad.system = { { "CTL", "", now } };
+        const auto e = undo::plan({ bad }, 23);
+        CHECK(e.refusal == undo::Refusal::stateNotRecorded);
+        CHECK(e.reason.find("<CTL>") != std::string::npos);
+        CHECK(e.system.empty());
+        Card foreign = card(24, "controls");
+        foreign.system = { { "CTL", "<MIDI>\n\t<RxCh>1</RxCh>\n</MIDI>", now } };
+        CHECK(undo::plan({ foreign }, 24).refusal == undo::Refusal::stateNotRecorded);
+        Card nameless = card(25, "controls");
+        nameless.system = { { "", was, now } };
+        CHECK(undo::plan({ nameless }, 25).refusal == undo::Refusal::stateNotRecorded);
+        // the cursor: an operation like any other
+        const auto c = undo::cursor({ op(1, "push"), op(20, "controls") });
+        CHECK(c.undo == 20);
+        const auto after = undo::cursor({ op(1, "push"), op(20, "controls"), op(26, "undo", "done", "app", 20) });
+        CHECK(after.undo == 1 && after.redo == 26 && after.redoRestores == 20);
+    }
+
     // --- a swap goes back by swapping again ---
     {
         Card swap = card(8, "swap");

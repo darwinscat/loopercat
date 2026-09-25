@@ -190,5 +190,34 @@ int main()
         CHECK_EQ(bare.detail, std::string());
     }
 
+    // --- a settings section: which fields moved, in the file's order, numbers only ---
+    {
+        const std::string before = "<CTL>\n\t<Pedal1>4</Pedal1>\n\t<Ctl1>17</Ctl1>\n\t<Ctl2>18</Ctl2>\n\t<Cc80>0</Cc80>\n</CTL>";
+        const std::string after = "<CTL>\n\t<Pedal1>4</Pedal1>\n\t<Ctl1>-1</Ctl1>\n\t<Ctl2>22</Ctl2>\n\t<Cc80>0</Cc80>\n</CTL>";
+        const auto fields = story::sectionFields(before);
+        CHECK_EQ(fields.size(), 4u);
+        CHECK(fields.size() == 4 && fields[0].first == "Pedal1" && fields[0].second == 4);
+        CHECK(fields.size() == 4 && fields[3].first == "Cc80" && fields[3].second == 0);
+        const auto moved = story::fieldChanges(before, after);
+        CHECK_EQ(moved.size(), 2u);
+        CHECK(moved.size() == 2 && moved[0].tag == "Ctl1" && moved[0].before == 17 && moved[0].after == -1);
+        CHECK(moved.size() == 2 && moved[1].tag == "Ctl2" && moved[1].before == 18 && moved[1].after == 22);
+        CHECK(story::fieldChanges(before, before).empty());
+        // a tag on one side only, and a value that is not a number, are no words
+        CHECK(story::fieldChanges(before, "<CTL>\n\t<Ctl2>18</Ctl2>\n\t<New>5</New>\n</CTL>").empty());
+        CHECK(story::sectionFields("<CTL>\n\t<Name>abc</Name>\n\t<Ctl2>3</Ctl2>\n</CTL>").size() == 1);
+        CHECK(story::sectionFields("").empty());
+        CHECK(story::sectionFields("<CTL>").empty());
+        CHECK(story::sectionFields("<CTL><Ctl2>1").empty()); // unterminated: nothing claimed
+        const auto line = story::tellSystem({ { "CTL", before, after } });
+        CHECK_EQ(line.action, std::string("Pedal controls changed"));
+        CHECK_EQ(line.detail, std::string("Ctl1 17 -> -1, Ctl2 18 -> 22"));
+        const auto mixed = story::tellSystem({ { "MIDI", "<MIDI>\n\t<RxCh>1</RxCh>\n</MIDI>", "<MIDI>\n\t<RxCh>2</RxCh>\n</MIDI>" }, { "CTL", before, after } });
+        CHECK_EQ(mixed.action, std::string("Pedal settings changed"));
+        CHECK_EQ(mixed.detail, std::string("RxCh 1 -> 2, Ctl1 17 -> -1, Ctl2 18 -> 22"));
+        CHECK_EQ(story::tellSystem({}).action, std::string("Pedal settings changed"));
+        CHECK_EQ(story::tellSystem({}).detail, std::string());
+    }
+
     return testkit::summary("slot_story_tests");
 }

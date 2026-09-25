@@ -182,6 +182,20 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
                 + std::to_string(entry.slots[1].slot);
             row.detail.clear(); // one slot's numbers would speak for both
         }
+        if (!entry.system.empty()) {
+            // The pedal's own settings: their words join the slots' — or
+            // stand alone, for an operation that touched no slot.
+            std::vector<story::SystemFacts> facts;
+            for (const auto& change : entry.system)
+                facts.push_back({ change.section, change.before, change.after });
+            const story::Line settings = story::tellSystem(facts);
+            if (row.action.empty()) {
+                row.action = settings.action;
+                row.detail = settings.detail;
+            } else if (!settings.detail.empty()) {
+                row.detail += (row.detail.empty() ? "" : "; ") + settings.detail;
+            }
+        }
         if (row.action.empty()) {
             // Nothing recorded about any slot: the operation's own name and
             // its line are all there is, as story::tell says for a kind it

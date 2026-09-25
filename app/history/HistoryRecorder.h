@@ -65,6 +65,10 @@ public:
     // reverts (#73). Called before the job touches the card, so the row
     // names its target even if the write is then cut off.
     void reverts(const std::string& opId, std::int64_t target);
+    // What an operation is about to do to the pedal's own settings, per
+    // section, reported before the settings pair is written — the core's
+    // journal hook for SYSTEM*.RC0 lands here.
+    void systemChanges(const std::string& opId, const std::vector<HistoryStore::SystemChange>& changes);
 
     HistoryStore& store();
 

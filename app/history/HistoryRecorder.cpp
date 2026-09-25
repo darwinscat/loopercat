@@ -122,6 +122,14 @@ void HistoryRecorder::reverts(const std::string& opId, std::int64_t target)
     store().setReverts(opRow(opId), target);
 }
 
+void HistoryRecorder::systemChanges(const std::string& opId,
+                                    const std::vector<HistoryStore::SystemChange>& changes)
+{
+    const std::int64_t row = opRow(opId);
+    for (const auto& change : changes)
+        store().recordSystemChange(row, change);
+}
+
 void HistoryRecorder::finish(const std::string& opId, const std::string& error,
                              const std::string& note)
 {

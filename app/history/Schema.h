@@ -37,6 +37,9 @@
 //                so a folder is recorded once however often it is offered
 //   ops.pinned   (version 3) a pinned operation holds every take its rows
 //                name against release (#74)
+//   system_changes (version 4) what an operation did to the pedal's own
+//                settings, per section — before and after, so it can be
+//                undone like a slot change
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -60,7 +63,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 3;
+inline constexpr std::int64_t kVersion = 4;
 
 // The schema as the sequence of its versions: step N takes a store at version
 // N to version N+1. A fresh store runs every step in order, so a store created
@@ -156,6 +159,22 @@ CREATE INDEX legacy_files_by_op ON legacy_files(op);
 // column with a default, so every row that exists is unpinned, as it was.
 R"sql(
 ALTER TABLE ops ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));
+)sql",
+
+// 3 -> 4: the pedal's own settings (SYSTEM*.RC0) in the history — one row
+// per operation and section, the section's text as the card held it before
+// the write and as the write left it. The section, not the whole file: the
+// pedal restamps the file's trailer on its own, and a diff of whole files
+// would be noise. Small text in the row, not a blob: nothing here holds
+// bytes, and freeing space never looks at it.
+R"sql(
+CREATE TABLE system_changes(
+    op      INTEGER NOT NULL REFERENCES ops(seq),
+    section TEXT    NOT NULL CHECK (section IN ('SETUP', 'MIDI', 'CTL')),
+    before  TEXT    NOT NULL,
+    after   TEXT    NOT NULL,
+    PRIMARY KEY (op, section)
+) STRICT;
 )sql",
 };
 
