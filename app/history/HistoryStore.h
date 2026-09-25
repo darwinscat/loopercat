@@ -186,7 +186,40 @@ public:
     // not — for the rate the history grows at (retention::forecast).
     std::vector<retention::Write> writes();
 
+    // --- the whole card's timeline (the History window, #73) ---
+
+    // One entry per operation, ordered by time — a row imported from the
+    // folders that predate the store is written last and belongs first —
+    // with every slot the operation touched carrying the same facts
+    // slotTimeline gives that slot: one story, two views. `newest` says the
+    // operation is the last FINISHED one on that slot, so its state is the
+    // one the slot is in — a failed or interrupted write may never have
+    // reached the card, so it is not where the slot is, and its state can be
+    // offered back like any other. An operation that touched no slot (it
+    // failed before the card, or kept only documents) is an entry with no
+    // slots.
+    struct CardEntry {
+        std::int64_t op = 0;
+        std::int64_t at = 0;
+        std::string kind;
+        std::string actor;
+        std::string status;
+        std::string note;
+        bool pinned = false;
+        struct Slot {
+            int slot = 0;
+            bool newest = false;
+            TimelineEntry facts;
+        };
+        std::vector<Slot> slots; // ascending by slot
+    };
+    std::vector<CardEntry> cardTimeline();
+
 private:
+    // What one operation recorded about one slot — the take it offers and,
+    // for a swap, the other slot — shared by slotTimeline and cardTimeline.
+    void fillSlotFacts(TimelineEntry& row, int slot);
+
     // The content-addressed rule, inside the caller's transaction: bytes are
     // kept once; a hash already known costs nothing; one released earlier
     // (#74) gets its bytes back. Returns whether the bytes were written.
