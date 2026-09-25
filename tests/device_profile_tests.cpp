@@ -90,8 +90,11 @@ int main()
         CHECK_EQ(rc500.slotCount, rc0::kSlotCount);
         CHECK(!rc500.hasFactoryBody());
         CHECK(!rc500.allowsWrites());
+        // Reading, and reading alone: the browser may list such a card;
+        // nothing may change it, pull included.
+        CHECK_EQ(rc500.operations, profile::bit(profile::Operation::read));
         for (const auto op : kEveryOp)
-            CHECK(!rc500.allows(op));
+            CHECK(rc500.allows(op) == (op == profile::Operation::read));
     }
     // Two entries, distinct names, distinct ids: a lookup can never answer twice.
     {
@@ -142,9 +145,15 @@ int main()
     for (const auto op : kEveryOp)
         profile::require(profile::kRc5, op); // no throw
     // A closed read is a card that is not ours, in the words it has always
-    // been said in; a closed mutation names itself and the model.
-    CHECK_THROWS(profile::require(profile::kRc500, profile::Operation::read),
+    // been said in; a closed mutation names itself and the model. The
+    // two-track model's read is open, so the read refusal is asked of a
+    // profile that has nothing open.
+    constexpr profile::DeviceProfile closed {
+        "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {}, profile::kNoOperation
+    };
+    CHECK_THROWS(profile::require(closed, profile::Operation::read),
                  "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5");
+    profile::require(profile::kRc500, profile::Operation::read); // open: no throw
     for (const auto op : kEveryOp) {
         if (op == profile::Operation::read)
             continue;

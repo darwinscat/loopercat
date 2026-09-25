@@ -292,9 +292,13 @@ int main()
                                      rc0::setTailMarker(foreign, fileNo));
         CHECK(volume::looksLikePedal(twoTrack));
         cardfolder::assertCardFolder(twoTrack); // the shape is a card's
-        CHECK_THROWS(commands::readMemory(twoTrack),
-                     "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks"
-                     " RC-5");
+        // It reads as the two-track card it is, and nothing may be written
+        // into it — import is a look, never a restore.
+        {
+            const auto memories = catalog::listSlots(commands::readMemory(twoTrack));
+            CHECK_EQ(memories.size(), static_cast<std::size_t>(rc0::kSlotCount));
+            CHECK_EQ(memories.at(0).tracks.size(), 2u);
+        }
         CHECK_THROWS(commands::restore(twoTrack, 1, recordedState(1, "X", 4410, "001_1.WAV"),
                                        writeOpts(tmp.path)),
                      "restore refused on an \"RC-500\" card");

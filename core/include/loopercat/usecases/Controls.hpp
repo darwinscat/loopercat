@@ -351,6 +351,11 @@ namespace detail {
         sysfile::assertSystemFile(systemText);
         const profile::DeviceProfile& family = rc0::profileOf(systemText);
         profile::require(family, profile::Operation::read);
+        // kControls is the RC-5's table: a model whose settings file this app
+        // may read is still not one whose controls it knows.
+        if (&family != &profile::kRc5)
+            throw Error("the controls of the \"" + std::string(family.familyName)
+                        + "\" model are not on record \xe2\x80\x94 " + profile::onlySpeaks());
         return family;
     }
 

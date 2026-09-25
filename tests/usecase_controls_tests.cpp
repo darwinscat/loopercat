@@ -293,14 +293,17 @@ int main()
     // --- whose file it is ---
 
     // Another model's settings file: the same words the guard has always used,
-    // for reading and for writing. The two-track model is known and closed;
-    // an unknown model is unknown; both stop before a field is read.
+    // for reading and for writing. The two-track model is known, and its
+    // settings file may be read — but the control table here is the RC-5's,
+    // so its controls are not on record and are refused as such; an unknown
+    // model is unknown; both stop before a field is read.
     {
         const std::string twoTrack = withRoot(system, "RC-500");
-        const std::string notOurs =
-            "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5";
-        CHECK_THROWS(controls::read(twoTrack, controls::Control::pedal), notOurs);
-        CHECK_THROWS(controls::readAll(twoTrack), notOurs);
+        const std::string notOnRecord =
+            "the controls of the \"RC-500\" model are not on record \xe2\x80\x94 LooperCat only"
+            " speaks RC-5";
+        CHECK_THROWS(controls::read(twoTrack, controls::Control::pedal), notOnRecord);
+        CHECK_THROWS(controls::readAll(twoTrack), notOnRecord);
         CHECK_THROWS(controls::set(twoTrack, controls::Control::pedal, 28),
                      "set controls refused on an \"RC-500\" card \xe2\x80\x94 LooperCat only speaks"
                      " RC-5");

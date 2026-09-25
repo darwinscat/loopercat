@@ -2527,12 +2527,20 @@ int main()
         const std::string notOurs =
             "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5";
 
-        // Every read: the newest bank, a pinned bank, and the settings pair
-        // (whose root names the same model).
-        CHECK_THROWS(commands::readMemory(volume), notOurs);
-        CHECK_THROWS(commands::readMemory(volume, 1), notOurs);
-        CHECK_THROWS(commands::readMemory(volume, 2), notOurs);
-        CHECK_THROWS(commands::readMemoryFor(volume, profile::Operation::read), notOurs);
+        // Every read is open — the newest bank, a pinned bank, the settings
+        // pair — and reads as the two-track card it is: the memories with
+        // their two tracks, nothing changed on the card by looking.
+        (void) notOurs;
+        {
+            const auto memories = catalog::listSlots(commands::readMemory(volume));
+            CHECK_EQ(memories.size(), static_cast<std::size_t>(rc0::kSlotCount));
+            CHECK_EQ(memories.at(0).tracks.size(), 2u);
+            CHECK(memories.at(0).tracks.at(1).hasAudio);
+            CHECK(&rc0::profileOf(commands::readMemory(volume, 1)) == &profile::kRc500);
+            CHECK(&rc0::profileOf(commands::readMemory(volume, 2)) == &profile::kRc500);
+            CHECK(commands::readMemoryFor(volume, profile::Operation::read)
+                  == commands::readMemory(volume));
+        }
         {
             std::string settings = commands::readFileBytes(LOOPERCAT_RC5_SYSTEM);
             const std::string rc5Root = "<database name=\"RC-5\" revision=\"0\">";
@@ -2541,7 +2549,7 @@ int main()
             settings.replace(at, rc5Root.size(), "<database name=\"RC-500\" revision=\"0\">");
             for (const int fileNo : { 1, 2 })
                 commands::writeFileBytes(volume::systemPath(volume, fileNo), settings);
-            CHECK_THROWS(commands::readSystem(volume), notOurs);
+            CHECK(commands::readSystem(volume) == settings); // read, as the memories are
             CHECK_THROWS(commands::writeSystemPair(volume, settings, { .skipBackup = true }),
                          "no write on an \"RC-500\" card");
         }
@@ -2575,15 +2583,14 @@ int main()
         CHECK_THROWS(commands::writeMemoryPair(volume, text, { .skipBackup = true }),
                      "no write on an \"RC-500\" card");
 
-        // The doctor says so and carries on.
+        // The doctor reads the card like the browser does and refuses nothing
+        // of it: what it has to say is about takes, not about the model.
         {
             const auto findings = commands::doctor(volume);
-            int refusals = 0;
-            for (const auto& f : findings)
-                if (f.level == commands::Level::error
-                    && f.message.find(notOurs) != std::string::npos)
-                    ++refusals;
-            CHECK_EQ(refusals, 2); // one per bank
+            for (const auto& f : findings) {
+                CHECK(f.message.find("RC-500") == std::string::npos);
+                CHECK(f.message.find("refused") == std::string::npos);
+            }
         }
 
         // Not a byte moved, nothing archived, nothing backed up, nothing pulled.
