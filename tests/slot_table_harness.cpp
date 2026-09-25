@@ -114,7 +114,11 @@ int main()
         model->cellDoubleClicked(0, column, clickAt(table));
     };
 
-    // Never told what it may do: nothing.
+    // Never told what it may do: nothing — and these rows are an RC-5's, the
+    // model everything is open for. A table an owner forgot to wire offers
+    // no gesture at all, so the forgotten wiring is caught here rather than
+    // by a player whose pill stopped working.
+    CHECK(CardPermissions::of("RC-5").oneShot); // the rows' own model would allow it
     click(oneShotColumn);
     click(countInColumn);
     click(wavColumn);
