@@ -249,6 +249,8 @@ loopercat_core_test(sysex_tests)
 loopercat_core_test(storage_register_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
+# A card as a folder on disk (#77): the factory pair, export by restore, import by the scan.
+loopercat_core_test(card_folder_tests)
 loopercat_core_test(slot_story_tests)
 loopercat_core_test(slot_rows_tests)
 # What the tab may offer for a row is decided over the store's own types, so
