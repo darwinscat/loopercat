@@ -526,6 +526,26 @@ target_link_libraries(pedal_monitor_harness PRIVATE
 add_test(NAME pedal_monitor_harness COMMAND pedal_monitor_harness)
 
 # ----------------------------------------------------------------------------
+# The pedal link's enumeration: with two RC-5s on the bus the OS names them
+# alike, and the link must hand out both with their identifiers (issue #98).
+# Pure over a list of JUCE MidiDeviceInfo, so it needs JUCE's type and
+# nothing from the OS — app tier, same ctest.
+# ----------------------------------------------------------------------------
+juce_add_console_app(pedal_link_tests PRODUCT_NAME "pedal_link_tests")
+target_sources(pedal_link_tests PRIVATE tests/pedal_link_tests.cpp)
+target_compile_definitions(pedal_link_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(pedal_link_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_audio_devices
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME pedal_link_tests COMMAND pedal_link_tests)
+
+# ----------------------------------------------------------------------------
 # The playback harness: the REAL AudioEngine pumped through its device
 # callback with a fake device — samples must match the frame-index ramp, so
 # it proves where the engine plays from (load, seek, loop wrap, run-dry).
