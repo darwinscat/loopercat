@@ -33,10 +33,12 @@ struct CardPermissions {
     bool swap = false;
     bool normalize = false;
     bool clear = false;
+    bool trim = false;
 
     bool anyWrite() const
     {
-        return rename || tempo || oneShot || countIn || push || swap || normalize || clear;
+        return rename || tempo || oneShot || countIn || push || swap || normalize || clear
+            || trim;
     }
 
     static CardPermissions of(std::string_view family)
@@ -48,7 +50,8 @@ struct CardPermissions {
         return { model->allows(Operation::rename),   model->allows(Operation::setTempo),
                  model->allows(Operation::setOneShot), model->allows(Operation::setCountIn),
                  model->allows(Operation::push),     model->allows(Operation::swap),
-                 model->allows(Operation::normalize), model->allows(Operation::clear) };
+                 model->allows(Operation::normalize), model->allows(Operation::clear),
+                 model->allows(Operation::trim) };
     }
 
     // The sentence a read-only screen shows, from the table: the models this

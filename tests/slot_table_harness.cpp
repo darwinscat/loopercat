@@ -67,13 +67,13 @@ int main()
     {
         const CardPermissions rc5 = CardPermissions::of("RC-5");
         CHECK(rc5.rename && rc5.tempo && rc5.oneShot && rc5.countIn && rc5.push && rc5.swap
-              && rc5.normalize && rc5.clear);
+              && rc5.normalize && rc5.clear && rc5.trim);
         CHECK(rc5.anyWrite());
         for (const char* name : { "RC-500", "RC-505", "", "rc-5" }) {
             const CardPermissions none = CardPermissions::of(name);
             CHECK(!none.anyWrite());
             CHECK(!none.rename && !none.tempo && !none.oneShot && !none.countIn && !none.push
-                  && !none.swap && !none.normalize && !none.clear);
+                  && !none.swap && !none.normalize && !none.clear && !none.trim);
         }
         CHECK_EQ(CardPermissions::writesOnlyTo(), "LooperCat writes only to the RC-5");
         CHECK(profile::findFamily("RC-500") == &profile::kRc500);

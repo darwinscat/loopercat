@@ -554,6 +554,26 @@ target_link_libraries(slot_table_harness PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME slot_table_harness COMMAND slot_table_harness)
 
+# The player's buttons against what the card permits (CardPermissions.h):
+# the real PlayerPane over the real AudioEngine, its buttons pressed the way
+# JUCE presses them — app tier, same ctest.
+juce_add_console_app(player_pane_harness PRODUCT_NAME "player_pane_harness")
+target_sources(player_pane_harness PRIVATE tests/player_pane_harness.cpp app/PlayerPane.cpp)
+target_compile_definitions(player_pane_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(player_pane_harness PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME player_pane_harness COMMAND player_pane_harness)
+
 # ----------------------------------------------------------------------------
 # The pedal link's enumeration: with two RC-5s on the bus the OS names them
 # alike, and the link must hand out both with their identifiers (issue #98).

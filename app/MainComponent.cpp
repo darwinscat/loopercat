@@ -253,6 +253,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     // table and the studio offer only that, and the core refuses the rest.
     table.permissions = [this] { return CardPermissions::of(snapshot.family); };
     inspector.permissions = [this] { return CardPermissions::of(snapshot.family); };
+    player.permissions = [this] { return CardPermissions::of(snapshot.family); };
     table.onSlotContextMenu = [this](int slot, juce::Point<int> at) { showSlotMenu(slot, at); };
     table.onSlotsContextMenu = [this](std::vector<int> slots, juce::Point<int> at) {
         showSlotsMenu(std::move(slots), at);

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "AudioEngine.h"
+#include "CardPermissions.h"
 
 #include <loopercat/Normalize.hpp>
 
@@ -110,6 +111,13 @@ public:
     void clearLoudness(int slot = 0); // 0 = whatever is loaded
     std::function<void(int)> onNormalize; // Normalize… pressed for this slot
 
+    // What the card in front of the app permits (CardPermissions.h), asked
+    // whenever the pane lays out its buttons. Trim and Normalize… rewrite
+    // the slot on the card, so a card this app only reads shows neither —
+    // the selection itself stays, as a way of listening to a part. A pane
+    // never told what it may do offers nothing, like the table.
+    std::function<CardPermissions()> permissions;
+
     void paint(juce::Graphics& g) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent& e) override;
@@ -131,6 +139,7 @@ private:
     void seekTo(juce::Point<float> position);
     void markersChanged();
     bool markersActive() const;
+    CardPermissions allowed() const { return permissions ? permissions() : CardPermissions {}; }
     juce::int64 frameAt(double seconds) const;
     float xOf(double seconds) const;
     double secondsAt(float x) const;
