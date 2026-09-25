@@ -155,17 +155,35 @@ inline bool isJunkName(std::string_view name)
         || name == "desktop.ini";
 }
 
-// Every junk file under the volume's ROLAND tree, recursively. macOS writes
-// AppleDouble sidecars onto FAT volumes even for xattr-free files (fresh
-// files get com.apple.provenance) — and the RC-5 chokes on them at boot.
+// Every junk file the app may have caused: at the volume ROOT, one level,
+// and under the ROLAND tree, recursively. macOS writes AppleDouble sidecars
+// onto FAT volumes even for xattr-free files (fresh files get
+// com.apple.provenance) — and the RC-5 chokes on them at boot. The root
+// level exists for the card marker (CardMarker.hpp): a write to
+// /loopercat-card.json leaves a /._loopercat-card.json beside it, measured
+// on both RC-5s and the RC-500 on 2026-09-24.
+//
+// The root is not descended into. The directories a host OS keeps there
+// (.Spotlight-V100, .fseventsd, System Volume Information) are not ours to
+// enter — the pedal has booted beside them for a year and a half, macOS
+// refuses to open .Spotlight-V100 at all, and nothing in them is a sidecar
+// of ours. ROLAND is the pedal's tree, where every sidecar is a boot hazard.
 inline std::vector<fs::path> findJunk(const fs::path& volume)
 {
     std::vector<fs::path> junk;
-    std::error_code ec;
-    for (fs::recursive_directory_iterator it(volume / "ROLAND", ec), end; !ec && it != end;
-         it.increment(ec))
-        if (!it->is_directory(ec) && isJunkName(it->path().filename().string()))
-            junk.push_back(it->path());
+    {
+        std::error_code ec;
+        for (fs::directory_iterator it(volume, ec), end; !ec && it != end; it.increment(ec))
+            if (!it->is_directory(ec) && isJunkName(it->path().filename().string()))
+                junk.push_back(it->path());
+    }
+    {
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(volume / "ROLAND", ec), end; !ec && it != end;
+             it.increment(ec))
+            if (!it->is_directory(ec) && isJunkName(it->path().filename().string()))
+                junk.push_back(it->path());
+    }
     return junk;
 }
 
