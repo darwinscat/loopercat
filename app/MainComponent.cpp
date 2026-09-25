@@ -12,6 +12,8 @@
 #include "Strings.h"
 #include "WavImport.h"
 
+#include <loopercat/DeviceProfile.hpp>
+#include <loopercat/Rc0.hpp>
 #include <loopercat/Wav.hpp>
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
@@ -394,7 +396,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         .maintenanceEnabled = [this] {
             return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
                 && !pedalBusy;
-        } });
+        },
+        .cleanJunkEnabled = [this] { return snapshot.family == rc0::kFamilyName; } });
 
     showEmptyToggle.setColour(juce::ToggleButton::textColourId, kStatusText);
     showEmptyToggle.setColour(juce::ToggleButton::tickColourId,
@@ -874,9 +877,13 @@ void MainComponent::updateTableRows()
         return;
     }
     std::vector<SlotRow> visible;
-    for (const auto& row : snapshot.slots)
-        if (row.info.hasAudio || !row.wavFile.empty())
+    for (const auto& row : snapshot.slots) {
+        bool holdsLoop = !row.wavFile.empty();
+        for (const auto& track : row.info.tracks)
+            holdsLoop = holdsLoop || track.hasAudio; // any track's take keeps the row
+        if (holdsLoop)
             visible.push_back(row);
+    }
     table.setRows(std::move(visible));
 }
 
@@ -1063,7 +1070,14 @@ void MainComponent::runBackup()
 
 void MainComponent::runCleanJunk()
 {
-    worker.enqueue({ "Clean junk", 0, [](const volume::fs::path& volumePath) {
+    worker.enqueue({ "Clean junk", 0,
+                     [family = snapshot.family](const volume::fs::path& volumePath) {
+                         // The sweep writes to the card. A card of a model this
+                         // app only reads is refused the way the core refuses
+                         // every write to it (DeviceProfile.hpp), in its words.
+                         if (family != rc0::kFamilyName)
+                             throw Error("clean junk refused on an \"" + family
+                                         + "\" card \xe2\x80\x94 " + profile::onlySpeaks());
                          // Mutations treat a sweep survivor as a warning; this
                          // action's one job IS the sweep, so a survivor is the
                          // job failing and says so.
@@ -1197,11 +1211,22 @@ void MainComponent::updateStatusText()
         status.setColour(juce::Label::textColourId, kErrorText);
         return;
     }
+    // A memory holds a loop when any of its tracks does — on the RC-5 that
+    // is its one track, as ever.
     int loaded = 0;
     for (const auto& row : snapshot.slots)
-        loaded += row.info.hasAudio ? 1 : 0;
-    juce::String text = volumeDisplayName() + juce::String::fromUTF8("  \xe2\x80\x94  ") + juce::String(loaded) + " of "
-                      + juce::String(snapshot.slots.size()) + " slots hold a loop";
+        for (const auto& track : row.info.tracks)
+            if (track.hasAudio) {
+                ++loaded;
+                break;
+            }
+    juce::String text = volumeDisplayName() + juce::String::fromUTF8("  \xe2\x80\x94  ");
+    // Another model's card is read and never written; the status says which
+    // model, by the card's own name, and that it is read-only.
+    if (snapshot.family != rc0::kFamilyName)
+        text << utf8(snapshot.family) << juce::String::fromUTF8(" card, read-only  \xc2\xb7  ");
+    text << juce::String(loaded) << " of " << juce::String(snapshot.slots.size())
+         << " slots hold a loop";
     if (snapshot.freeBytes > 0)
         text << juce::String::fromUTF8("  \xc2\xb7  ")
              << juce::String(static_cast<double>(snapshot.freeBytes) / 1.0e9, 1) << " GB free";
@@ -1379,6 +1404,21 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     const SlotRow& row = *found;
     const bool occupied = row.info.hasAudio;
     const juce::String name = trimmedName(row);
+
+    // A card of another model is read, never written (DeviceProfile.hpp):
+    // the menu offers nothing that would change it, and says so. Pull stays
+    // closed too until it learns tracks — a two-track memory pulled as one
+    // folder would be half a memory.
+    if (snapshot.family != rc0::kFamilyName) {
+        juce::PopupMenu readOnly;
+        readOnly.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), false);
+        readOnly.addSeparator();
+        readOnly.addItem(12, "LooperCat writes only to the RC-5", false);
+        readOnly.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(
+                                   { screenPosition.x, screenPosition.y, 1, 1 }),
+                               [](int) {});
+        return;
+    }
 
     // Operations only: the things done TO a slot. Its settings live in the
     // panel now (and the two lamp columns still flip on click), so this menu

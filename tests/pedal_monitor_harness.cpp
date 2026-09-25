@@ -105,6 +105,7 @@ int main()
     if (!deliveries.empty()) {
         CHECK(!deliveries.back().error.empty());
         CHECK(deliveries.back().slots.empty());
+        CHECK(deliveries.back().family.empty()); // nothing read, no model
     }
 
     // 2. The pedal content lands (a mount): a delivery with all 99 slots.
@@ -114,6 +115,7 @@ int main()
         const auto& s = deliveries.back();
         CHECK_EQ(s.volume, volume.string());
         CHECK_EQ(s.error, "");
+        CHECK_EQ(s.family, "RC-5"); // the card's own word for its model
         CHECK_EQ(s.slots.size(), static_cast<std::size_t>(rc0::kSlotCount));
         CHECK_EQ(s.slots.at(0).info.name, "Memory 01   ");
     }

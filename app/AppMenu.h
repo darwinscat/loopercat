@@ -30,6 +30,7 @@ public:
         std::function<void()> importLegacy;
         std::function<void()> feedTheCat;         // Help → the family tip jar, in the browser
         std::function<bool()> maintenanceEnabled; // pedal connected and idle
+        std::function<bool()> cleanJunkEnabled;   // and the card is one this app writes to
     };
 
     explicit AppMenu(Actions actions) : actions_(std::move(actions))
@@ -60,7 +61,10 @@ public:
         if (name == "Maintenance") {
             const bool enabled = actions_.maintenanceEnabled && actions_.maintenanceEnabled();
             menu.addItem(kBackup, "Backup configs", enabled);
-            menu.addItem(kCleanJunk, "Clean junk from the pedal", enabled);
+            // The sweep writes to the card: a card of a model this app only
+            // reads keeps its junk, and the item says so by staying grey.
+            menu.addItem(kCleanJunk, "Clean junk from the pedal",
+                         enabled && actions_.cleanJunkEnabled && actions_.cleanJunkEnabled());
             menu.addSeparator();
             menu.addItem(kImportLegacy, "Import the folders from before the history", true);
         } else if (name == "Help") {
