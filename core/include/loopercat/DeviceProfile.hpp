@@ -73,7 +73,7 @@ inline constexpr std::string_view operationName(Operation op)
     case Operation::swap: return "swap";
     case Operation::setControls: return "set controls";
     }
-    return "?"; // an enumerator added without a name here
+    throw Error("unknown operation"); // a value no enumerator has
 }
 
 // A set of operations: one bit per enumerator.

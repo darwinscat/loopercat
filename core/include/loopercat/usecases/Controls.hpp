@@ -300,7 +300,7 @@ inline std::string_view listName(List list)
     case List::expression: return "expression pedal list";
     case List::cc: return "CC#80-87 list";
     }
-    return "?"; // an enumerator added without a name here
+    throw Error("unknown control list"); // a value no enumerator has
 }
 
 // The list a control draws from, for a model — refused by name when the
