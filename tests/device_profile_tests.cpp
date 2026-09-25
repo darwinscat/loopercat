@@ -47,7 +47,7 @@ constexpr profile::Operation kEveryOp[] = {
     profile::Operation::setTempo,  profile::Operation::setCountIn, profile::Operation::push,
     profile::Operation::pull,      profile::Operation::trim,      profile::Operation::downmix,
     profile::Operation::normalize, profile::Operation::clear,     profile::Operation::restore,
-    profile::Operation::swap,
+    profile::Operation::swap,      profile::Operation::setControls,
 };
 
 // The synthetic RC-5 file with its root line swapped.
