@@ -425,5 +425,31 @@ int main()
 
     CHECK_THROWS(rc0::setTailMarker(FILE_TEXT, 3), "must be 1 or 2");
 
+    // --- the root element's name, as read for the card marker: structure
+    // judged, the family left to the caller — an RC-500 card says "RC-500" ---
+
+    {
+        const std::string rc5 = testkit::syntheticMemoryText();
+        CHECK_EQ(std::string(rc0::rootDatabaseName(rc5)), "RC-5");
+        CHECK_EQ(std::string(rc0::rootDatabaseName(
+                     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<database name=\"RC-500\" revision=\"0\">\n")),
+                 "RC-500");
+        CHECK_EQ(std::string(rc0::rootDatabaseName("<database name=\"RC-600\">")), "RC-600");
+        CHECK_EQ(std::string(rc0::rootDatabaseName("  \r\n\t<database name=\"RC-5\" revision=\"0\">")), "RC-5");
+        CHECK_THROWS(rc0::rootDatabaseName(""), "no <database ...> root element");
+        CHECK_THROWS(rc0::rootDatabaseName("<databases name=\"RC-5\">"), "no <database ...> root element");
+        CHECK_THROWS(rc0::rootDatabaseName("<!-- <database name=\"RC-5\"> --><database name=\"RC-500\">"),
+                     "no <database ...> root element");
+        CHECK_THROWS(rc0::rootDatabaseName("<database revision=\"0\">"), "no name attribute");
+        CHECK_THROWS(rc0::rootDatabaseName("<database name=\"RC-5"), "unterminated <database ...> opener");
+        CHECK_THROWS(rc0::rootDatabaseName("<?xml version=\"1.0\"?"), "unterminated XML declaration");
+        // The profile lookup sits on the same reader: known families resolve,
+        // anything else is refused by name.
+        CHECK_EQ(std::string(rc0::familyOf("<database name=\"RC-5\">").familyName), "RC-5");
+        CHECK_EQ(std::string(rc0::familyOf("<database name=\"RC-500\">").familyName), "RC-500");
+        CHECK_THROWS(rc0::familyOf("<database name=\"RC-600\">"), "\"RC-600\" card");
+        CHECK_THROWS(rc0::familyOf("<databases name=\"RC-5\">"), "no <database ...> root element");
+    }
+
     return testkit::summary("rc0");
 }
