@@ -239,6 +239,9 @@ loopercat_core_test(rc5_system_tests)
 loopercat_core_test(bank_pair_tests)
 loopercat_core_test(wav_tests)
 loopercat_core_test(volume_tests)
+# The card marker: LooperCat's own identity for a card (issues #98, #99),
+# its strict flat-JSON reader, and the root-level junk sweep it relies on.
+loopercat_core_test(card_marker_tests)
 loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
 loopercat_core_test(catalog_tests)
