@@ -48,6 +48,14 @@ namespace
     constexpr auto kNormalizeTargetLufsKey = "normalizeTargetLufs";
     constexpr double kDefaultTargetLufs = -18.0;
 
+    // The history's storage limit (issue #74): the bytes of takes the app
+    // keeps before it starts offering the oldest for release. 5 GB out of
+    // the box (retention::kDefaultLimit); nothing goes without a press.
+    constexpr auto kHistoryLimitKey = "historyLimitBytes";
+    // A release hands the file's free pages back a slice at a time — 16 KB
+    // pages, so 256 of them is 4 MB per transaction.
+    constexpr int kVacuumSlicePages = 256;
+
     // The story a normalization tells the toast and the operations log.
     juce::String describeNormalize(const wavimport::NormalizeOutcome& outcome, double targetLufs)
     {
@@ -1996,11 +2004,22 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
 void MainComponent::openSettings()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned(new SettingsDialog(
+    options.content.setOwned(makeSettingsDialog().release());
+    options.dialogTitle = "Settings";
+    options.dialogBackgroundColour = kBackground;
+    options.escapeKeyTriggersCloseButton = true;
+    options.resizable = false;
+    options.launchAsync();
+}
+
+std::unique_ptr<SettingsDialog> MainComponent::makeSettingsDialog()
+{
+    auto dialog = std::make_unique<SettingsDialog>(
         engine.deviceManager(), settings,
-        { settings.file() == nullptr || settings.file()->getBoolValue(kOneShotColumnKey, true),
-          settings.file() != nullptr && settings.file()->getBoolValue(kCountInColumnKey, false),
-          settings.file() != nullptr && settings.file()->getBoolValue(kLoudnessColumnKey, false) },
+        SettingsDialog::Columns {
+            settings.file() == nullptr || settings.file()->getBoolValue(kOneShotColumnKey, true),
+            settings.file() != nullptr && settings.file()->getBoolValue(kCountInColumnKey, false),
+            settings.file() != nullptr && settings.file()->getBoolValue(kLoudnessColumnKey, false) },
         [this](SettingsDialog::Columns columns) {
             if (auto* file = settings.file()) {
                 file->setValue(kOneShotColumnKey, columns.oneShot);
@@ -2010,22 +2029,121 @@ void MainComponent::openSettings()
             }
             applyColumnPreferences();
         },
-        { settings.file() != nullptr && settings.file()->getBoolValue(kNormalizeOnUploadKey, false),
-          settings.file() != nullptr
-              ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
-              : kDefaultTargetLufs },
+        SettingsDialog::ImportPrefs {
+            settings.file() != nullptr && settings.file()->getBoolValue(kNormalizeOnUploadKey, false),
+            settings.file() != nullptr
+                ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
+                : kDefaultTargetLufs },
         [this](SettingsDialog::ImportPrefs prefs) {
             if (auto* file = settings.file()) {
                 file->setValue(kNormalizeOnUploadKey, prefs.normalizeOnUpload);
                 file->setValue(kNormalizeTargetLufsKey, prefs.targetLufs);
                 file->saveIfNeeded();
             }
-        }));
-    options.dialogTitle = "Settings";
-    options.dialogBackgroundColour = kBackground;
-    options.escapeKeyTriggersCloseButton = true;
-    options.resizable = false;
-    options.launchAsync();
+        });
+
+    // The storage panel (issue #74) is fed by the worker, where the store
+    // lives, and reads nothing itself. A SafePointer, because the dialog may
+    // be closed while a read or a release is still on the worker's queue.
+    juce::Component::SafePointer<HistoryStoragePanel> panel(&dialog->storage());
+    dialog->storage().onLimitChanged = [this, panel](std::int64_t bytes) {
+        if (auto* file = settings.file()) {
+            file->setValue(kHistoryLimitKey, juce::var(static_cast<juce::int64>(bytes)));
+            file->saveIfNeeded();
+        }
+        refreshHistoryStorage(panel); // the forecast and the offer follow the limit
+    };
+    dialog->storage().onRelease = [this, panel](std::vector<std::string> hashes) {
+        releaseHistoryTakes(panel, std::move(hashes));
+    };
+    refreshHistoryStorage(panel);
+    return dialog;
+}
+
+std::int64_t MainComponent::historyLimit()
+{
+    auto* file = settings.file();
+    if (file == nullptr)
+        return history::retention::kDefaultLimit;
+    return file->getValue(kHistoryLimitKey,
+                          juce::String(static_cast<juce::int64>(history::retention::kDefaultLimit)))
+        .getLargeIntValue();
+}
+
+namespace
+{
+    // WORKER THREAD: the store's numbers, handed to the panel on the message
+    // thread — if the dialog is still open by then.
+    void deliverHistoryStorage(history::HistoryStore& store, std::int64_t limit,
+                               juce::Component::SafePointer<HistoryStoragePanel> panel,
+                               const std::shared_ptr<bool>& alive)
+    {
+        auto read = HistoryStoragePanel::Facts::read(
+            store, limit, static_cast<std::int64_t>(juce::Time::currentTimeMillis()));
+        juce::MessageManager::callAsync([panel, alive, facts = std::move(read)]() mutable {
+            if (*alive && panel != nullptr)
+                panel->show(std::move(facts));
+        });
+    }
+} // namespace
+
+// The numbers behind Settings -> History, read on the worker like everything
+// that touches the store — and without the card: the store is on this
+// computer. Quiet and in the background: the dialog is what shows the
+// result, and a toast for a read nobody asked to be told about would only
+// cover it.
+void MainComponent::refreshHistoryStorage(juce::Component::SafePointer<HistoryStoragePanel> panel)
+{
+    worker.enqueue({ "Read the history storage",
+                     0,
+                     [rec = recorder, limit = historyLimit(), panel,
+                      alive = uiAlive](const volume::fs::path&) {
+                         deliverHistoryStorage(rec->store(), limit, panel, alive);
+                     },
+                     nullptr,
+                     0,
+                     true,     // background: nothing to lock for a read
+                     true,     // quiet: the panel is the report
+                     false }); // and it needs no card
+}
+
+// The press behind "Release N takes": the bytes go, the file hands its pages
+// back, and the panel reads the store again. In the foreground and out loud:
+// the player pressed it and waits, and what came back is worth a line. The
+// panel is read again whatever the release did — a release the store refused
+// (a take held since the panel last looked) must not leave it saying
+// "Releasing", and the refusal's reason reaches the toast on its own.
+void MainComponent::releaseHistoryTakes(juce::Component::SafePointer<HistoryStoragePanel> panel,
+                                        std::vector<std::string> offered)
+{
+    auto note = std::make_shared<juce::String>();
+    const juce::String takes =
+        juce::String(offered.size()) + (offered.size() == 1 ? " take" : " takes");
+    PedalWorker::Job job {
+        "Release " + takes + " from the history",
+        0,
+        [rec = recorder, hashes = std::move(offered), note, takes,
+         logDir = settings.dataDir()](const volume::fs::path&) {
+            auto& store = rec->store();
+            const std::int64_t freed = store.releaseBlobs(
+                hashes, store.offeredUndo(), static_cast<std::int64_t>(juce::Time::currentTimeMillis()));
+            while (store.vacuum(kVacuumSlicePages) > 0) {
+            }
+            *note = juce::String::fromUTF8(history::retention::bytesText(freed).c_str())
+                  + " given back";
+            oplog::append(logDir, "history: released " + takes + ", " + *note);
+        },
+        note,
+        0,
+        false,  // not background: the player asked for it and waits
+        false,  // not quiet: the outcome is the whole point
+        false   // and it needs no card
+    };
+    job.after = [rec = recorder, limit = historyLimit(), panel,
+                 alive = uiAlive](const std::string&) {
+        deliverHistoryStorage(rec->store(), limit, panel, alive);
+    };
+    worker.enqueue(std::move(job));
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)

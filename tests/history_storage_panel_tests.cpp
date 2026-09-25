@@ -11,22 +11,55 @@
 //   - lowering "keep at most" names the oldest unheld takes, in order
 //   - a confirmed release hands out exactly the takes on offer, once
 //   - a typed limit reaches the owner as bytes; a typo snaps back
+//
+// and, against a real store, the owner's side of the contract: Facts::read
+// carries every kept blob once with what holds it, the limit as given, and a
+// rate that counts what was released too.
 
 #include "support.hpp"
 
 #include "../app/HistoryStoragePanel.h"
 
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 using namespace loopercat;
 namespace retention = history::retention;
+namespace fs = std::filesystem;
 
 namespace {
 
 constexpr std::int64_t MB = std::int64_t { 1 } << 20;
 constexpr std::int64_t GB = std::int64_t { 1 } << 30;
+
+struct TempDir {
+    fs::path path;
+    TempDir()
+    {
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        path = fs::temp_directory_path() / ("loopercat-storage-panel-" + std::to_string(stamp));
+        fs::remove_all(path);
+        fs::create_directories(path);
+    }
+    ~TempDir() { fs::remove_all(path); }
+};
+
+// Deterministic bytes that are not text — every value 0..255 appears.
+std::string take(std::size_t size, unsigned seed)
+{
+    std::string out(size, '\0');
+    std::uint32_t x = 2463534242u ^ seed;
+    for (auto& c : out) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        c = static_cast<char>(x & 0xFF);
+    }
+    return out;
+}
 
 retention::Blob blob(const std::string& hash, const std::string& label, std::int64_t size,
                      std::int64_t created)
@@ -256,6 +289,71 @@ int main()
         panel.show(f);
         CHECK_EQ(panel.forecastLine(),
                  juce::String("About 4 weeks until the limit at the current rate (25 MB a week)."));
+    }
+
+    // --- Facts::read: the owner's numbers, straight from a real store ---
+    // The panel never reads the store; its owner does, on the thread that
+    // owns it, with this. Three takes of 3 MB kept by three finished
+    // operations; the newest operation is the undo on offer, so its take is
+    // held and the other two are not.
+    {
+        TempDir dir;
+        history::HistoryStore store(dir.path);
+        const std::int64_t t0 = 1'000'000;
+        const auto session = store.openSession(store.card("RC-5", "BOSS RC-5", t0), t0);
+        std::vector<std::string> hashes;
+        for (int i = 0; i < 3; ++i) {
+            const std::string bytes = take(static_cast<std::size_t>(3 * MB), static_cast<unsigned>(i + 1));
+            hashes.push_back(history::HistoryStore::contentHash(bytes));
+            const auto op = store.beginOp(session, "op-" + std::to_string(i), "trim", t0 + i);
+            store.keepAudio(op, 10 + i, 1, "take.wav", bytes, t0 + i);
+            store.finishOp(op, history::OpStatus::done, "");
+        }
+        const std::int64_t now = t0 + 2 * retention::kWeekMs;
+        const auto facts = HistoryStoragePanel::Facts::read(store, 20 * MB, now);
+        CHECK_EQ(facts.limit, 20 * MB);
+        CHECK_EQ(facts.usage.audioBytes, 9 * MB);
+        CHECK_EQ(facts.blobs.size(), 3u);
+        int held = 0;
+        for (const auto& b : facts.blobs) {
+            if (b.hash == hashes[2]) {
+                CHECK(b.undo); // the undo on offer would put it back
+            } else {
+                CHECK(!b.held());
+            }
+            held += b.held() ? 1 : 0;
+        }
+        CHECK_EQ(held, 1);
+        // the rate: 9 MB written over two weeks, 11 MB of room to the limit
+        CHECK_EQ(facts.forecast.room, 11 * MB);
+        CHECK(facts.forecast.bound == retention::Forecast::Bound::limit);
+        CHECK_EQ(facts.forecast.bytesPerWeek, 9 * MB / 2);
+        CHECK(facts.forecast.weeks.has_value());
+
+        // shown, the panel offers what the store would let go: lowering the
+        // target names the two unheld takes, oldest first, never the held one
+        HistoryStoragePanel panel;
+        panel.show(facts);
+        CHECK(!panel.releaseEnabled()); // 9 MB is within 20 MB
+        panel.setKeepTarget(4 * MB);
+        CHECK(panel.offeredHashes() == (std::vector<std::string> { hashes[0], hashes[1] }));
+
+        // a release the store carried out is gone from the next read; the
+        // rate is not — those bytes were written, released or not
+        CHECK_EQ(store.releaseBlobs(panel.offeredHashes(), store.offeredUndo(), now), 6 * MB);
+        const auto again = HistoryStoragePanel::Facts::read(store, 20 * MB, now);
+        CHECK_EQ(again.usage.audioBytes, 3 * MB);
+        CHECK_EQ(again.blobs.size(), 1u);
+        CHECK(!again.blobs.empty() && again.blobs.front().hash == hashes[2]);
+        CHECK_EQ(again.forecast.bytesPerWeek, facts.forecast.bytesPerWeek);
+        CHECK_EQ(again.forecast.room, 17 * MB);
+        panel.show(again);
+        panel.setKeepTarget(0);
+        CHECK(!panel.releaseEnabled()); // what is left is held by undo
+        CHECK(has(panel.offerLine(), "needed by undo"));
+        // the limit is passed through, not judged here: the panel's field does that
+        CHECK_EQ(HistoryStoragePanel::Facts::read(store, 0, now).limit, 0);
+        CHECK_EQ(HistoryStoragePanel::Facts::read(store, 0, now).forecast.room, 0);
     }
 
     return testkit::summary("history_storage_panel_tests");

@@ -42,6 +42,13 @@ public:
         std::int64_t limit = 0;                       // bytes
         std::vector<history::retention::Blob> blobs;  // keptBlobs(offeredUndo())
         history::retention::Forecast forecast;
+
+        // The owner's side of the contract, gathered where the store lives —
+        // the worker thread — and never by the panel: what the file holds,
+        // the limit in force, every kept blob with what holds it (the undo on
+        // offer included), and the rate the history grows at, against that
+        // limit and the disk the file is on.
+        static Facts read(history::HistoryStore& store, std::int64_t limit, std::int64_t nowMs);
     };
 
     HistoryStoragePanel();
@@ -72,6 +79,7 @@ public:
     std::int64_t keepTarget() const { return static_cast<std::int64_t>(keep_.getValue()); }
     std::vector<std::string> offeredHashes() const;
     int offeredRows() const { return static_cast<int>(plan_.release.size()); }
+    int factsShown() const { return shown_; } // how many times the owner has come back
 
     // "5", "2.5": gigabytes with one decimal at most — the number a person
     // typed, not a printf artefact. Limits below 0.1 GB or above 10 TB are
@@ -92,6 +100,7 @@ private:
     std::optional<Facts> facts_;
     history::retention::Plan plan_;
     bool releasing_ = false;
+    int shown_ = 0;
 
     juce::Label title_;
     juce::Label cost_;

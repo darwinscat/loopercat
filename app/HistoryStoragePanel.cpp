@@ -27,6 +27,18 @@ std::string takes(std::size_t n) { return std::to_string(n) + (n == 1 ? " take" 
 
 } // namespace
 
+HistoryStoragePanel::Facts HistoryStoragePanel::Facts::read(history::HistoryStore& store,
+                                                            std::int64_t limit, std::int64_t nowMs)
+{
+    Facts facts;
+    facts.usage = store.usage();
+    facts.limit = limit;
+    facts.blobs = store.keptBlobs(store.offeredUndo());
+    facts.forecast = retention::forecast(store.writes(), nowMs, facts.usage.audioBytes, limit,
+                                         facts.usage.diskAvailable);
+    return facts;
+}
+
 HistoryStoragePanel::HistoryStoragePanel()
 {
     title_.setText("History storage", juce::dontSendNotification);
@@ -105,6 +117,7 @@ void HistoryStoragePanel::show(Facts facts)
 {
     facts_ = std::move(facts);
     releasing_ = false;
+    ++shown_;
     const auto& u = facts_->usage;
     cost_.setText(text("History: " + retention::bytesText(u.fileBytes) + " on disk, of which "
                        + retention::bytesText(u.audioBytes) + " of takes and "
