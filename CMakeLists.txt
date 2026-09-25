@@ -226,6 +226,9 @@ endfunction()
 
 loopercat_core_test(banner_tests)
 loopercat_core_test(connect_tests)
+# The gate in front of Connect's first frame (issue #85): pure over the
+# register's answer, so it is built like a core suite though it lives in app/.
+loopercat_core_test(connect_gate_tests)
 loopercat_core_test(params_tests)
 loopercat_core_test(quit_tests)
 loopercat_core_test(rc0_tests)

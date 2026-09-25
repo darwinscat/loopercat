@@ -4,6 +4,7 @@
 #pragma once
 
 #include <loopercat/Connect.hpp>
+#include <loopercat/StorageRegister.hpp>
 
 #include <felitronics/appkit/VersionBadge.h>
 
@@ -125,6 +126,8 @@ private:
 
     // The supervised Connect (issue #2): the attempt machine owns the
     // retry/give-up policy, these own the clock, the MIDI send and the UI.
+    void askPedalBeforeConnect(juce::MidiDeviceInfo pedal); // the register read (#85), on the worker
+    void gateConnect(std::optional<storage::State> answer); // the answer arrives: refuse, wait, or attempt
     void startConnectAttempt();
     void sendEnterStorage();
     void tickConnectAttempt();
@@ -240,6 +243,11 @@ private:
     bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
     juce::String otherLooperOnBus;    // another RC model on USB ("RC-500"), named, not connected
     connect::Attempt connectAttempt;  // the supervised Connect (issue #2)
+    // The endpoint Connect chose (issue #98): the frames of this attempt go
+    // to it, and Disconnect walks the same pedal out — never "the first RC-5
+    // on the bus", which with two pedals is whichever the OS listed first.
+    std::optional<juce::MidiDeviceInfo> connectTarget;
+    bool connectQueryPending = false; // the register is being read: Connect is under way, no frame yet
     juce::String lastConnectSendError; // last enter-storage send result — the honest give-up
     std::int64_t connectHoldUntilMs = 0; // Connect held while the pedal re-boots its MIDI face
     std::unique_ptr<juce::FileChooser> fileChooser; // the one live async chooser
