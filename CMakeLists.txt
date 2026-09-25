@@ -669,7 +669,8 @@ target_sources(system_history_tests PRIVATE tests/system_history_tests.cpp
 target_compile_definitions(system_history_tests PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json"
+    LOOPERCAT_RC5_SYSTEM="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/rc5-system.RC0")
 target_link_libraries(system_history_tests PRIVATE
     loopercat::core
     loopercat_sqlite3

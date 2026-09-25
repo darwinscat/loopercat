@@ -19,9 +19,12 @@
 #include "../app/history/HistoryRecorder.h"
 #include "../app/history/HistoryStore.h"
 
+#include <loopercat/Commands.hpp>
 #include <loopercat/SystemFile.hpp>
+#include <loopercat/Volume.hpp>
 
 #include <chrono>
+#include <fstream>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -64,6 +67,27 @@ std::string ctl(long long ctl1, long long ctl2, long long cc80 = 0)
 std::string midi(long long channel)
 {
     return "<MIDI>\n\t<RxCh>" + std::to_string(channel) + "</RxCh>\n\t<TxCh>0</TxCh>\n</MIDI>";
+}
+
+// The settings file read off real hardware (fixtures/rc5-system.RC0), and a
+// card carrying it as its two banks, so writeSystemPair has a counter to go on.
+std::string systemFixture()
+{
+    std::ifstream in(LOOPERCAT_RC5_SYSTEM, std::ios::binary);
+    if (!in)
+        throw Error("cannot open fixture: " LOOPERCAT_RC5_SYSTEM);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+fs::path makeCard(const fs::path& root, const std::string& system)
+{
+    const fs::path volume = root / "BOSS RC-5";
+    fs::create_directories(volume::dataDir(volume));
+    fs::create_directories(volume / "ROLAND" / "WAVE");
+    for (const int fileNo : { 1, 2 })
+        commands::writeFileBytes(volume::systemPath(volume, fileNo),
+                                 rc0::setTailGeneration(system, 100u + static_cast<unsigned>(fileNo)));
+    return volume;
 }
 
 struct Ready {
@@ -176,6 +200,50 @@ int main()
         rec.systemChanges("op-quiet", {});
         rec.finish("op-quiet", "");
         CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 1);
+    }
+
+    // --- end to end: a settings write through the history, as the app wires it ---
+    {
+        TempDir tmp;
+        const std::string original = systemFixture();
+        const fs::path volume = makeCard(tmp.path, original);
+        auto rec = std::make_shared<HistoryRecorder>(tmp.path / "history", "RC-5",
+                                                     [] { return std::int64_t { 7000 }; });
+        const std::string edited = sysfile::setField(original, sysfile::kSectionCtl, "Ctl2", 22);
+        CHECK(sysfile::field(original, sysfile::kSectionCtl, "Ctl2") != 22);
+
+        // the app's wiring: the hook lands in the history under the operation
+        auto options = history::withHistory(rec, { .opId = "op-controls", .skipBackup = true }, nullptr);
+        rec->begin("op-controls", "controls", volume);
+        commands::writeSystemPair(volume, edited, options);
+        rec->finish("op-controls", "");
+        sqlite::Db& db = rec->store().db();
+        CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 1);
+        const auto rows = rec->store().systemChanges(1);
+        CHECK_EQ(rows.size(), 1u);
+        CHECK(rows.size() == 1 && rows.front().section == sysfile::kSectionCtl);
+        CHECK(rows.size() == 1 && rows.front().before == sysfile::sectionText(original, sysfile::kSectionCtl));
+        CHECK(rows.size() == 1 && rows.front().after == sysfile::sectionText(edited, sysfile::kSectionCtl));
+        CHECK_EQ(sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2"), 22);
+        // and the timeline reads it back as an operation on no slot
+        const auto entries = rec->store().cardTimeline();
+        CHECK(entries.size() == 1 && entries.front().slots.empty() && entries.front().system.size() == 1);
+
+        // a write for an operation that never began: the history refuses
+        // before the write, and the card stays as it was
+        auto ghost = history::withHistory(rec, { .opId = "op-ghost", .skipBackup = true }, nullptr);
+        const std::string another = sysfile::setField(edited, sysfile::kSectionCtl, "Ctl2", 33);
+        CHECK_THROWS(commands::writeSystemPair(volume, another, ghost), "without having begun");
+        CHECK_EQ(sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2"), 22);
+        CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 1);
+
+        // a write that changes nothing records nothing, and still writes
+        auto quiet = history::withHistory(rec, { .opId = "op-quiet", .skipBackup = true }, nullptr);
+        rec->begin("op-quiet", "controls", volume);
+        commands::writeSystemPair(volume, edited, quiet);
+        rec->finish("op-quiet", "");
+        CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE status = 'done'"), 2);
     }
 
     return testkit::summary("system_history_tests");

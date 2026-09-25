@@ -109,8 +109,8 @@ private:
 // The one wiring from an operation's WriteOptions into the history, shared by
 // the app and its tests so the tests exercise what ships: each replaced take
 // is kept by the history FIRST and then handed to `alsoKeep` (the transitional
-// trash folder; null for none), and the journal's bodies and landed takes are
-// recorded under the operation's id.
+// trash folder; null for none), and the journal's bodies, landed takes and
+// settings sections are recorded under the operation's id.
 commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recorder,
                                    commands::WriteOptions options, commands::Archive alsoKeep);
 

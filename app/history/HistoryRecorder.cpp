@@ -168,6 +168,16 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
                                                     std::string_view bytes) {
         recorder->landed(opId, slot, fileName, bytes);
     };
+    // The settings pair, before it is written: each changed section, its
+    // text before and after (sysfile::sectionChanges, in the core). A throw
+    // here stops the write with the card as it was.
+    options.journal.systemChanging = [recorder, opId](const std::vector<commands::SectionChange>& changes) {
+        std::vector<HistoryStore::SystemChange> rows;
+        rows.reserve(changes.size());
+        for (const auto& change : changes)
+            rows.push_back({ change.section, change.before, change.after });
+        recorder->systemChanges(opId, rows);
+    };
     return options;
 }
 
