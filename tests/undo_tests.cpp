@@ -212,6 +212,45 @@ int main()
         CHECK(n.steps.front().takeHash == std::string(32, '\x33'));
     }
 
+    // --- whether the slot held a take is read from the body, never guessed from the kind ---
+    {
+        // a kind this build has no words for, changing the body of a slot
+        // that holds a take: the take stays, whatever the kind is called
+        for (const char* kind : { "level", "pan", "loop-length", "memory-settings" }) {
+            Card unknown = card(9, kind);
+            unknown.slots = { slot(12, loaded, shorter, std::nullopt, "take.wav") };
+            const auto p = undo::plan({ unknown }, 9);
+            CHECK(p.possible());
+            CHECK(p.steps.size() == 1 && p.steps.front().keepTake);
+            CHECK(p.steps.size() == 1 && !p.steps.front().takeHash);
+        }
+        // the same unknown kind on a slot whose body said empty: back to empty
+        Card intoEmpty = card(10, "level");
+        intoEmpty.slots = { slot(12, empty, loaded, std::nullopt, "take.wav") };
+        const auto e = undo::plan({ intoEmpty }, 10);
+        CHECK(e.possible());
+        CHECK(e.steps.size() == 1 && !e.steps.front().keepTake && !e.steps.front().takeHash);
+        // a body that only half says empty (the pedal's flag set, no length) is read as held
+        std::string flagged = rc0::setSectionField(empty, rc0::kSectionTrack1, "WavStat", rc0::kWavStatIndexed);
+        Card odd = card(11, "push");
+        odd.slots = { slot(12, flagged, loaded, std::nullopt, "take.wav") };
+        CHECK(undo::plan({ odd }, 11).steps.front().keepTake);
+        std::string lengthOnly = rc0::setSectionField(empty, rc0::kSectionTrack1, "WavLen", 100);
+        Card odd2 = card(12, "push");
+        odd2.slots = { slot(12, lengthOnly, loaded, std::nullopt, "take.wav") };
+        CHECK(undo::plan({ odd2 }, 12).steps.front().keepTake);
+        CHECK(undo::bodyHoldsTake(loaded) && !undo::bodyHoldsTake(empty));
+    }
+
+    // --- a refused plan is refused whole: no steps, no swap ---
+    {
+        Card swap = card(13, "swap", 1, "failed");
+        swap.slots = { slot(12, loaded, shorter), slot(43, shorter, loaded) };
+        const auto p = undo::plan({ swap }, 13);
+        CHECK(!p.possible());
+        CHECK(!p.swapBack && p.steps.empty());
+    }
+
     // --- a swap goes back by swapping again ---
     {
         Card swap = card(8, "swap");

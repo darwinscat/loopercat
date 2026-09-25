@@ -5,6 +5,8 @@
 
 #include "HistoryStore.h"
 
+#include <loopercat/Rc0.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <optional>
@@ -35,10 +37,15 @@
 // the redo.
 //
 // The plan for reverting an operation is what its rows say the slots held
-// before it — the body it recorded, the take it archived, or the take the
-// slot's previous row shows — and it is refused, by name, when any of that
-// is missing: a take no longer kept, a state never recorded, an operation
-// that did not finish. Crossing a connection, or a change made on the pedal
+// before it — the body it recorded and the take it archived — and it is
+// refused, by name, when any of that is missing: a take no longer kept, a
+// state never recorded, an operation that did not finish. Whether a slot
+// held a take before is read from the body it recorded, never guessed from
+// the operation's kind: an operation that archived nothing replaced
+// nothing, so the take the body names is still on the card and stays
+// there; only a body that says empty lets the slot go back to empty. A
+// kind this build does not know can therefore never make undo remove a
+// take. Crossing a connection, or a change made on the pedal
 // itself, is allowed but flagged, so the first such press can show what it
 // is about to write over — a speed bump, not a wall. Until slice 1b brings
 // the card marker, "another connection" is read as "another session".
@@ -126,10 +133,13 @@ struct Plan {
     bool possible() const { return refusal == Refusal::none; }
 };
 
-// The kinds that never touch a slot's audio: their undo leaves the file alone.
-inline bool bodyOnly(const std::string& kind)
+// Whether a slot's body says it held a take: empty only when both the
+// pedal's own flag and the length say so (Rc0.hpp, the rule #83 restores
+// by). Anything else is read as held — the direction that never removes.
+inline bool bodyHoldsTake(const std::string& body)
 {
-    return kind == "rename" || kind == "tempo" || kind == "oneshot" || kind == "countin";
+    return rc0::sectionField(body, rc0::kSectionTrack1, "WavStat") != rc0::kWavStatNone
+        || rc0::sectionField(body, rc0::kSectionTrack1, "WavLen") != 0;
 }
 
 inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int64_t target)
@@ -140,7 +150,7 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
         out.refusal = why;
         out.reason = std::move(reason);
         out.refusedSlot = slot;
-        out.steps.clear();
+        out.steps.clear(); // a swap's plan is set only once every refusal has passed
         return out;
     };
 
@@ -174,13 +184,12 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
                                   touched.slot);
                 step.takeName = touched.archived->name;
                 step.takeHash = touched.archived->hash;
-            } else if (bodyOnly(entry.kind)) {
-                step.keepTake = true;
-            } else if (!touched.facts.takeName.empty() || touched.facts.takeHash) {
-                // It wrote a take and archived none: the slot was empty before.
-                step.keepTake = false;
             } else if (touched.facts.beforeBody) {
-                step.keepTake = true; // a body changed, no audio was written or removed
+                // Nothing archived means nothing replaced: a take the body
+                // names is still on the card and stays. A body that says
+                // empty lets the slot go back to empty — a take arrived into
+                // nothing, and leaves with the undo.
+                step.keepTake = bodyHoldsTake(*touched.facts.beforeBody);
             } else {
                 return refuse(Refusal::stateNotRecorded,
                               "what slot " + std::to_string(touched.slot)
@@ -192,6 +201,12 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
     }
 
     // What the press writes over, and what it crosses.
+    const auto touchesMine = [&entry](const HistoryStore::CardEntry& later) {
+        return std::any_of(later.slots.begin(), later.slots.end(), [&entry](const auto& touched) {
+            return std::any_of(entry.slots.begin(), entry.slots.end(),
+                               [&touched](const auto& mine) { return mine.slot == touched.slot; });
+        });
+    };
     std::int64_t newestSession = entry.session;
     for (std::size_t i = index + 1; i < timeline.size(); ++i) {
         const HistoryStore::CardEntry& later = timeline[i];
@@ -200,13 +215,8 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
         newestSession = later.session;
         if (later.actor == "pedal")
             out.crossesPedal = true;
-        for (const auto& touched : later.slots)
-            for (const auto& mine : entry.slots)
-                if (touched.slot == mine.slot) {
-                    out.writesOver.push_back(later.op);
-                    goto nextLater;
-                }
-    nextLater:;
+        if (touchesMine(later))
+            out.writesOver.push_back(later.op);
     }
     out.crossesConnection = newestSession != entry.session;
     return out;
