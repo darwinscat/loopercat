@@ -22,6 +22,28 @@ inline constexpr std::int64_t kSamplesPerMinute = 2646000;
 inline constexpr int kMaxTempoTenths = 1600;
 inline constexpr int kMinTempoTenths = 200;
 inline constexpr int kMeasureFieldOffset = 7;
+
+// <Measure> carries a bar count only from the offset up: 7 is "1MEAS", 8 is
+// "2MEAS", and so on. The seven values below it are the pedal's own note
+// lengths — its MEASURE parameter offers those as well as FREE and a bar
+// count, which the reference manual's table does not print.
+//
+// Source, hardware 2026-09-24: a memory on a real card reads Measure 6 with
+// MEASURE showing a HALF NOTE on the pedal's screen, and its audio is exactly
+// two beats at the tempo it was recorded at (54352 frames, RecTmp 97.3 BPM ->
+// 1.2325 s = 2.000 beats). That memory is in fixtures/rc5-card.RC0.
+//
+// Which note each value below the offset means is not harvested yet, so this
+// is all we claim: the two shapes are told apart, and no name is guessed.
+//
+// TRAP: a factory-empty memory reads Measure 1, which is below the offset and
+// is NOT a chosen note length — there is no loop there to have a length. Ask
+// this only about a memory whose TRACK carries audio (WavStat 1), or every
+// empty slot looks like one.
+inline constexpr bool isNoteLength(long long measureField)
+{
+    return measureField < kMeasureFieldOffset;
+}
 inline constexpr int kBeatsPerMeasure = 4;
 inline constexpr int kMaxMeasures = 4096;
 

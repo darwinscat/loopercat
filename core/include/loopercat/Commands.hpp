@@ -550,9 +550,16 @@ inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTen
                     + std::to_string(tempoTenths / 10) + "." + std::to_string(tempoTenths % 10));
     std::string text = readMemoryFor(volume, profile::Operation::setTempo);
     std::string body = rc0::slotBody(text, slot);
+    // A memory whose length is set as a note value keeps it: the note stays
+    // true at any tempo (a half note is two beats whatever the BPM), so there
+    // is nothing to recompute — and rewriting the field would move the memory
+    // out of a mode the player chose, in an operation about tempo (issue #92).
+    const bool hasAudio = rc0::sectionField(body, rc0::kSectionTrack1, "WavStat") == 1;
+    const bool noteLength =
+        hasAudio && params::isNoteLength(rc0::sectionField(body, rc0::kSectionTrack1, "Measure"));
     body = rc0::setSectionField(body, rc0::kSectionMaster, "Tempo", tempoTenths);
     body = rc0::setSectionField(body, rc0::kSectionTrack1, "RecTmp", tempoTenths);
-    if (rc0::sectionField(body, rc0::kSectionTrack1, "WavStat") == 1) {
+    if (hasAudio && !noteLength) {
         const long long bars =
             barsFromTempo(tempoTenths, rc0::sectionField(body, rc0::kSectionTrack1, "WavLen"));
         body = rc0::setSectionField(body, rc0::kSectionTrack1, "MeasLen", bars);
@@ -576,6 +583,11 @@ struct PushResult {
     wav::Info info;
     fs::path dest;
     bool configured;
+    // The slot's length was set as a note value and this take replaced it
+    // with a bar count (issue #92). A push defines a new length, so it has to
+    // write one; what it must not do is change that mode silently. The core
+    // reports the fact, the app decides how to say it.
+    bool noteLengthReplaced = false;
     std::optional<params::SlotParams> slotParams;
     std::vector<std::string> archived; // the replaced takes, by file name (force only)
     std::optional<WriteResult> written;
@@ -602,10 +614,18 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
 
     std::optional<params::SlotParams> slotParams;
     std::string newDocument;
+    bool noteLengthReplaced = false;
     if (options.writeConfig) {
         slotParams = params::computeSlotParams(info.frames);
         const std::string memoryText = readMemoryFor(volume, profile::Operation::push);
         std::string body = rc0::slotBody(memoryText, slot);
+        // The new take defines a new length, so the field becomes a bar count.
+        // If it was a note value, that mode is gone — reported, never silent.
+        // Only a memory that HOLDS a loop can have a length to replace: a
+        // factory-empty one reads Measure 1, which is the factory value and
+        // not a mode anybody chose (params::isNoteLength says so too).
+        noteLengthReplaced = rc0::sectionField(body, rc0::kSectionTrack1, "WavStat") == 1
+            && params::isNoteLength(rc0::sectionField(body, rc0::kSectionTrack1, "Measure"));
         body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat", 1);
         body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavLen", info.frames);
         body = rc0::setSectionField(body, rc0::kSectionTrack1, "MeasLen", slotParams->measures);
@@ -642,7 +662,8 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     fs::create_directories(dir, ec);
     if (ec)
         throw Error("cannot create " + dir.string());
-    PushResult result { info, dir / wavPath.filename(), false, slotParams, {}, std::nullopt };
+    PushResult result { info, dir / wavPath.filename(), false, noteLengthReplaced, slotParams,
+                        {}, std::nullopt };
     for (const auto& old : existing) {
         archiveTake(options.write, "push", slot, old, readFileBytes(dir / old));
         result.archived.push_back(old);
@@ -737,6 +758,9 @@ struct TrimResult {
     std::int64_t frames;
     params::SlotParams slotParams; // what the config now carries: kept tempo + derived bars
     WriteResult written;
+    // As in PushResult: the trim shortened a loop whose length was a note
+    // value, so the field becomes a bar count — said out loud, not quietly.
+    bool noteLengthReplaced = false;
 };
 
 // Cut a slot's loop down to [startFrame, endFrame): the slice is rewritten in
@@ -773,6 +797,12 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
                     + std::to_string(tempoTenths) + " tenths, outside the pedal's 40.0-300.0 BPM"
                       " range — not trimming a slot with a broken config");
     const long long bars = barsFromTempo(tempoTenths, info.frames);
+    // A trim changes the loop's length, so the field becomes a bar count. When
+    // the length was a note value, that mode is replaced — the result says so.
+    // The slot holds a loop here by construction (a trim without audio was
+    // refused above), so the field's shape alone decides.
+    const bool noteLengthReplaced =
+        params::isNoteLength(rc0::sectionField(body, rc0::kSectionTrack1, "Measure"));
     body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavLen", info.frames);
     body = rc0::setSectionField(body, rc0::kSectionTrack1, "MeasLen", bars);
     body = rc0::setSectionField(body, rc0::kSectionTrack1, "Measure",
@@ -783,7 +813,8 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
     // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
     TrimResult result { files.front(), info.frames,
-                        { static_cast<int>(bars), static_cast<int>(tempoTenths) }, {} };
+                        { static_cast<int>(bars), static_cast<int>(tempoTenths) }, {},
+                        noteLengthReplaced };
     archiveTake(options.write, "trim", slot, files.front(), raw);
 
     const std::string_view landed(reinterpret_cast<const char*>(slice.data()), slice.size());
