@@ -1269,8 +1269,12 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     } else if (player.currentPath().isNotEmpty()) {
         // Drop the player when its file is no longer on the mounted pedal.
         bool stillThere = false;
-        for (const auto& row : snapshot.slots)
+        for (const auto& row : snapshot.slots) {
             stillThere = stillThere || utf8(row.wavPath) == player.currentPath();
+            for (const auto& trackPath : row.trackPaths) // a mix's identity is its first take
+                stillThere = stillThere
+                          || (!trackPath.empty() && utf8(trackPath) == player.currentPath());
+        }
         if (!stillThere)
             player.clear();
         else if (const SlotRow* held = slotRowFor(player.currentSlot()))
@@ -1334,16 +1338,39 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
     // Deliberately not gated on WavStat: the database lags behind the folder
     // until the pedal's boot-time indexing, and listening to the file is a
     // read-only act — a WAV that is there is a WAV you can hear.
-    if (row.wavPath.empty()) {
+    if (row.wavPath.empty() && row.info.tracks.size() <= 1) {
         player.clear(); // an empty slot: nothing to listen to
         return;
     }
 
-    const juce::String path = utf8(row.wavPath);
-    if (path != player.currentPath()) {
-        const juce::String title = juce::String(row.info.slot).paddedLeft('0', 2) + "  "
-                                 + trimmedName(row);
-        player.setSlot(row.info.slot, juce::File(path), title, row.info.oneShot, row.info.frames);
+    const juce::String title = juce::String(row.info.slot).paddedLeft('0', 2) + "  "
+                             + trimmedName(row);
+    if (row.info.tracks.size() > 1) {
+        // A multi-track memory plays as its mix, every take at its own level
+        // (TRACK<n>/PlyLvl, 100 = unity); the pane's identity is the first
+        // take it holds, so a memory whose take sits on track 2 alone is a
+        // memory that plays track 2.
+        std::vector<PlayerPane::TrackFile> tracks;
+        juce::String firstPath;
+        for (std::size_t i = 0; i < row.info.tracks.size(); ++i) {
+            const std::string& trackPath =
+                i < row.trackPaths.size() ? row.trackPaths[i] : std::string();
+            tracks.push_back({ trackPath.empty() ? juce::File() : juce::File(utf8(trackPath)),
+                               static_cast<float>(row.info.tracks[i].level) / 100.0f });
+            if (firstPath.isEmpty() && !trackPath.empty())
+                firstPath = utf8(trackPath);
+        }
+        if (firstPath.isEmpty()) {
+            player.clear(); // no take on any track: nothing to listen to
+            return;
+        }
+        if (firstPath != player.currentPath())
+            player.setTracks(row.info.slot, tracks, title, row.info.oneShot);
+    } else {
+        const juce::String path = utf8(row.wavPath);
+        if (path != player.currentPath())
+            player.setSlot(row.info.slot, juce::File(path), title, row.info.oneShot,
+                           row.info.frames);
     }
     player.setTempoNote(tempoNoteFor(row.info));
     // The loudness readout follows the loaded loop: whatever the column knows

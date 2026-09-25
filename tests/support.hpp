@@ -138,7 +138,8 @@ struct TrackSpec {
 // on every recorded track, and an empty track is factory-shaped (Measure=1,
 // MeasLen=0, WavStat=0, WavLen=0) — both as measured on the card, 2026-09.
 inline std::string syntheticTwoTrackSlotBody(const std::string& name, TrackSpec t1, TrackSpec t2,
-                                             int tempoTenths, int lpLen)
+                                             int tempoTenths, int lpLen, int level1 = 100,
+                                             int level2 = 100)
 {
     std::string padded = (name + std::string(12, ' ')).substr(0, 12);
     std::string s = "\n<NAME>\n";
@@ -148,10 +149,11 @@ inline std::string syntheticTwoTrackSlotBody(const std::string& name, TrackSpec 
         s += "\t<" + tag + ">" + std::to_string(code) + "</" + tag + ">\n";
     }
     s += "</NAME>\n";
-    const auto track = [&s, tempoTenths](int number, const TrackSpec& spec) {
+    const auto track = [&s, tempoTenths, level1, level2](int number, const TrackSpec& spec) {
         const bool recorded = spec.bars > 0;
         s += "<TRACK" + std::to_string(number) + ">\n";
-        const std::pair<const char*, long long> fields[] = { { "Rev", 0 }, { "PlyLvl", 100 },
+        const std::pair<const char*, long long> fields[] = { { "Rev", 0 },
+            { "PlyLvl", number == 1 ? level1 : level2 },
             { "Pan", 50 }, { "One", 0 }, { "StrtMod", 0 }, { "StpMod", 0 },
             { "Measure", recorded ? spec.bars + 7 : 1 }, { "MeasMod", 1 },
             { "MeasLen", recorded ? spec.bars : 0 }, { "MeasBtLp", 0 }, { "RecTmp", tempoTenths },
@@ -184,7 +186,8 @@ inline std::string syntheticTwoTrackSlotBody(const std::string& name, TrackSpec 
 // them carry the takes measured on a real card of that model (kitchen notes,
 // 2026-09-22/23); the numbers are the pedal's own, the file is not:
 //
-//   mem  1: T1 8 bars 641408, T2 8 bars 641408, 132.0 BPM, LpLen 8
+//   mem  1: T1 8 bars 641408, T2 8 bars 641408, 132.0 BPM, LpLen 8, levels 69 / 39
+//           (the one memory on that card whose tracks are not at 100)
 //   mem  2: T1 128 bars 14119056 (a vendor upload), T2 empty, 95.9, LpLen 128
 //   mem  3: T1 4 bars 282240, T2 8 bars 564480, 150.0, LpLen 4
 //   mem  4: T1 4 bars 351232, T2 empty, 120.5, LpLen 4
@@ -203,11 +206,12 @@ inline std::string syntheticTwoTrackMemoryText(std::uint32_t tailMarker = 0x38)
         const std::string n = std::to_string(slot);
         const std::string name = "Memory" + std::string(n.size() < 2 ? "0" : "") + n;
         std::string body;
-        const auto memory = [&name](TrackSpec t1, TrackSpec t2, int tempoTenths, int lpLen) {
-            return syntheticTwoTrackSlotBody(name, t1, t2, tempoTenths, lpLen);
+        const auto memory = [&name](TrackSpec t1, TrackSpec t2, int tempoTenths, int lpLen,
+                                    int level1 = 100, int level2 = 100) {
+            return syntheticTwoTrackSlotBody(name, t1, t2, tempoTenths, lpLen, level1, level2);
         };
         switch (slot) {
-        case 1: body = memory({ 8, 641408 }, { 8, 641408 }, 1320, 8); break;
+        case 1: body = memory({ 8, 641408 }, { 8, 641408 }, 1320, 8, 69, 39); break;
         case 2: body = memory({ 128, 14119056 }, {}, 959, 128); break;
         case 3: body = memory({ 4, 282240 }, { 8, 564480 }, 1500, 4); break;
         case 4: body = memory({ 4, 351232 }, {}, 1205, 4); break;
