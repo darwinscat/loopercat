@@ -12,6 +12,8 @@
 #include "Strings.h"
 #include "WavImport.h"
 
+#include "CardPermissions.h"
+
 #include <loopercat/DeviceProfile.hpp>
 #include <loopercat/Rc0.hpp>
 #include <loopercat/Wav.hpp>
@@ -247,6 +249,11 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         updateInspector();
     };
     table.onSlotActivated = [this](int slot) { slotChosen(slot, true); };
+    // What the card may be asked, from its model (CardPermissions.h): the
+    // table and the studio offer only that, and the core refuses the rest.
+    table.permissions = [this] { return CardPermissions::of(snapshot.family); };
+    inspector.permissions = [this] { return CardPermissions::of(snapshot.family); };
+    player.permissions = [this] { return CardPermissions::of(snapshot.family); };
     table.onSlotContextMenu = [this](int slot, juce::Point<int> at) { showSlotMenu(slot, at); };
     table.onSlotsContextMenu = [this](std::vector<int> slots, juce::Point<int> at) {
         showSlotsMenu(std::move(slots), at);
@@ -260,7 +267,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             toggleCountIn(slot, row->info.countIn);
     };
     table.onRenameCommitted = [this](int slot, juce::String newName) {
-        if (pedalBusy || slotRowFor(slot) == nullptr)
+        if (pedalBusy || slotRowFor(slot) == nullptr
+            || !CardPermissions::of(snapshot.family).rename)
             return;
         const auto options = makeWriteOptions();
         worker.enqueue(recorded("rename", options,
@@ -271,7 +279,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                                   } }));
     };
     table.onTempoCommitted = [this](int slot, long long tenths) {
-        if (pedalBusy || slotRowFor(slot) == nullptr)
+        if (pedalBusy || slotRowFor(slot) == nullptr || !CardPermissions::of(snapshot.family).tempo)
             return;
         const auto options = makeWriteOptions();
         worker.enqueue(recorded("tempo", options,
@@ -397,7 +405,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
                 && !pedalBusy;
         },
-        .cleanJunkEnabled = [this] { return snapshot.family == rc0::kFamilyName; } });
+        .cleanJunkEnabled = [this] { return CardPermissions::of(snapshot.family).anyWrite(); } });
 
     showEmptyToggle.setColour(juce::ToggleButton::textColourId, kStatusText);
     showEmptyToggle.setColour(juce::ToggleButton::tickColourId,
@@ -1075,7 +1083,7 @@ void MainComponent::runCleanJunk()
                          // The sweep writes to the card. A card of a model this
                          // app only reads is refused the way the core refuses
                          // every write to it (DeviceProfile.hpp), in its words.
-                         if (family != rc0::kFamilyName)
+                         if (!CardPermissions::of(family).anyWrite())
                              throw Error("clean junk refused on an \"" + family
                                          + "\" card \xe2\x80\x94 " + profile::onlySpeaks());
                          // Mutations treat a sweep survivor as a warning; this
@@ -1223,7 +1231,7 @@ void MainComponent::updateStatusText()
     juce::String text = volumeDisplayName() + juce::String::fromUTF8("  \xe2\x80\x94  ");
     // Another model's card is read and never written; the status says which
     // model, by the card's own name, and that it is read-only.
-    if (snapshot.family != rc0::kFamilyName)
+    if (!CardPermissions::of(snapshot.family).anyWrite())
         text << utf8(snapshot.family) << juce::String::fromUTF8(" card, read-only  \xc2\xb7  ");
     text << juce::String(loaded) << " of " << juce::String(snapshot.slots.size())
          << " slots hold a loop";
@@ -1436,11 +1444,11 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     // the menu offers nothing that would change it, and says so. Pull stays
     // closed too until it learns tracks — a two-track memory pulled as one
     // folder would be half a memory.
-    if (snapshot.family != rc0::kFamilyName) {
+    if (!CardPermissions::of(snapshot.family).anyWrite()) {
         juce::PopupMenu readOnly;
         readOnly.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), false);
         readOnly.addSeparator();
-        readOnly.addItem(12, "LooperCat writes only to the RC-5", false);
+        readOnly.addItem(12, juce::String(CardPermissions::writesOnlyTo()), false);
         readOnly.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(
                                    { screenPosition.x, screenPosition.y, 1, 1 }),
                                [](int) {});
@@ -1506,6 +1514,8 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
 
 void MainComponent::toggleOneShot(int slot, bool currentlyOn)
 {
+    if (!CardPermissions::of(snapshot.family).oneShot)
+        return; // a card this app only reads: the pill is a lamp
     const auto options = makeWriteOptions();
     worker.enqueue(recorded("oneshot", options,
                             { juce::String(currentlyOn ? "Disable" : "Enable")
@@ -1518,6 +1528,8 @@ void MainComponent::toggleOneShot(int slot, bool currentlyOn)
 
 void MainComponent::toggleCountIn(int slot, bool currentlyOn)
 {
+    if (!CardPermissions::of(snapshot.family).countIn)
+        return;
     const auto options = makeWriteOptions();
     worker.enqueue(recorded("countin", options,
                             { juce::String(currentlyOn ? "Disable" : "Enable")
@@ -1964,6 +1976,17 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
 {
     if (pedalBusy)
         return;
+    // A card this app only reads: the selection menu has nothing to offer
+    // but the reason (the loudness check reads, but its answer is a
+    // normalize this card cannot take).
+    if (!CardPermissions::of(snapshot.family).normalize) {
+        juce::PopupMenu readOnly;
+        readOnly.addItem(12, juce::String(CardPermissions::writesOnlyTo()), false);
+        readOnly.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(
+                                   { screenPosition.x, screenPosition.y, 1, 1 }),
+                               [](int) {});
+        return;
+    }
     std::vector<int> occupied;
     for (const int slot : slots)
         if (const SlotRow* row = slotRowFor(slot); row != nullptr && row->info.hasAudio)

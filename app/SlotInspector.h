@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "CardPermissions.h"
 #include "PedalWorker.h"
 #include "UseCaseCard.h"
 
@@ -39,6 +40,11 @@ public:
     std::function<void(int)> onOneShotToggled;
     std::function<void(int)> onCountInToggled;
 
+    // What the card may be asked (CardPermissions.h), from the owner: a field
+    // the card cannot take is read-only, a card that cannot flip is a lamp,
+    // and the footer says what this app writes to. Unset, nothing is writable.
+    std::function<CardPermissions()> permissions;
+
     void paint(juce::Graphics&) override;
     void resized() override;
 
@@ -49,6 +55,7 @@ private:
     void commitName();
     void commitTempo();
     void makeCaption(juce::Label& label, const juce::String& text);
+    CardPermissions allowed() const { return permissions ? permissions() : CardPermissions {}; }
 
     bool hasSlot_ = false;
     catalog::SlotInfo info_ {};

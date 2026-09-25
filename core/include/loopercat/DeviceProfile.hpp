@@ -211,12 +211,22 @@ inline std::string notOurs(std::string_view familyName)
          + std::string(kRc5.familyName) + " \xe2\x80\x94 " + onlySpeaks();
 }
 
-// The profile whose card writes this root name — or a refusal by name.
-inline const DeviceProfile& byFamilyName(std::string_view familyName)
+// The profile whose card writes this root name, or nothing: for a caller
+// that holds a name from anywhere — a snapshot, a screen — and has no card
+// to refuse.
+inline const DeviceProfile* findFamily(std::string_view familyName)
 {
     for (const DeviceProfile* candidate : kAll)
         if (candidate->familyName == familyName)
-            return *candidate;
+            return candidate;
+    return nullptr;
+}
+
+// The profile whose card writes this root name — or a refusal by name.
+inline const DeviceProfile& byFamilyName(std::string_view familyName)
+{
+    if (const DeviceProfile* found = findFamily(familyName))
+        return *found;
     throw Error(notOurs(familyName));
 }
 

@@ -66,7 +66,7 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     trimButton_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2a2440));
     trimButton_.setColour(juce::TextButton::textColourOffId, felitronics::appkit::brand::lilac);
     trimButton_.onClick = [this] {
-        if (onTrim && markersActive())
+        if (onTrim && markersActive() && allowed().trim)
             onTrim(slot_, frameAt(inSeconds_), frameAt(outSeconds_));
     };
 
@@ -82,7 +82,7 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     normalizeButton_.setColour(juce::TextButton::textColourOffId,
                                felitronics::appkit::brand::lilac);
     normalizeButton_.onClick = [this] {
-        if (onNormalize && slot_ > 0)
+        if (onNormalize && slot_ > 0 && allowed().normalize)
             onNormalize(slot_);
     };
 
@@ -445,13 +445,15 @@ void PlayerPane::layoutReadout()
 // One zone, two modes: [Reset][Trim] while a selection is active,
 // [Measure][Normalize…] otherwise. Normalize stays offered for an unmeasured
 // loop (the command measures for itself) and is withheld for a damaged one
-// (the command would refuse — better not to offer).
+// (the command would refuse — better not to offer). On a card this app only
+// reads the reading still shows — it is a measurement — and the button
+// does not: it would be a write the core refuses.
 void PlayerPane::updateLoudnessButtons()
 {
     // A multi-track memory is neither measured nor normalized here: the
     // meter reads one loop, and its model is not open for normalize.
     const bool show = engine_.hasSource() && slot_ > 0 && !markersActive() && trackCount_ <= 1;
-    normalizeButton_.setVisible(show);
+    normalizeButton_.setVisible(show && allowed().normalize);
     readout_.setVisible(show);
     normalizeButton_.setEnabled(!loudnessPending_ && !loudnessDamaged_);
 }
@@ -525,7 +527,7 @@ void PlayerPane::markersChanged()
         engine_.setSection(inSeconds_, outSeconds_);
     else
         engine_.clearSection();
-    trimButton_.setVisible(active);
+    trimButton_.setVisible(active && allowed().trim); // a selection to hear, not to keep
     resetButton_.setVisible(active);
     updateLoudnessButtons(); // the other mode of the same zone
     repaint();

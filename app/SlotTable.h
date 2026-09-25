@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "CardPermissions.h"
 #include "PedalWorker.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -44,6 +45,13 @@ public:
     std::function<void(int)> onOneShotToggled;                      // click on the One Shot cell
     std::function<void(int)> onCountInToggled;                      // click on the Count-In cell
     std::function<void(int)> onEmptyWavCellClicked;                 // click the "drop audio here" hint
+
+    // What the card in front of the table may be asked (CardPermissions.h),
+    // answered by the owner from the card's model. Every gesture that would
+    // write asks it first: a pill of a card this app only reads is not a
+    // toggle, its name and tempo are not editors, its rows take no file and
+    // no drag. Unset, nothing is writable.
+    std::function<CardPermissions()> permissions;
 
     void selectSlot(int slot);
 
@@ -110,6 +118,7 @@ private:
     void itemDropped(const SourceDetails&) override;
     void updateSwapTarget();
 
+    CardPermissions allowed() const { return permissions ? permissions() : CardPermissions {}; }
     int rowAt(int x, int y);
     int rowOfSlot(int slot) const;
     int slotOfRow(int rowIndex) const; // 0 when out of range
