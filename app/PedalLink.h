@@ -5,10 +5,12 @@
 
 #include "PedalPortName.h"
 
+#include <loopercat/StorageRegister.hpp>
 #include <loopercat/Sysex.hpp>
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -46,10 +48,41 @@ inline std::vector<juce::MidiDeviceInfo> pedalsAmong(const juce::Array<juce::Mid
     return pedals;
 }
 
-// The RC-5 endpoints on the bus right now. MESSAGE THREAD.
+namespace detail {
+
+    // CoreMIDI can hand back an EMPTY endpoint list right after the client is
+    // created — seen many times on the probe (2026-09-22): one re-enumeration
+    // fixes it. So an empty first answer is asked once more, a moment later;
+    // a bus that is honestly empty costs that moment and nothing else.
+    inline constexpr int kEnumerationRetryMs = 100;
+
+    inline std::vector<juce::MidiDeviceInfo>
+    enumerateTwice(const std::function<juce::Array<juce::MidiDeviceInfo>()>& list)
+    {
+        auto pedals = pedalsAmong(list());
+        if (pedals.empty()) {
+            juce::Thread::sleep(kEnumerationRetryMs);
+            pedals = pedalsAmong(list());
+        }
+        return pedals;
+    }
+
+} // namespace detail
+
+// The RC-5 OUTPUT endpoints on the bus right now — where frames are sent.
+// MESSAGE THREAD or a worker; blocks for the retry moment when the bus looks empty.
 inline std::vector<juce::MidiDeviceInfo> findPedals()
 {
-    return pedalsAmong(juce::MidiOutput::getAvailableDevices());
+    return detail::enumerateTwice([] { return juce::MidiOutput::getAvailableDevices(); });
+}
+
+// The RC-5 INPUT endpoints — where the pedal's answers arrive. An input's
+// identifier is not its output's (they are different endpoints of one
+// device), and nothing in the OS pairs them; the storage query below opens
+// every RC-5 input and lets the answer tell.
+inline std::vector<juce::MidiDeviceInfo> findPedalInputs()
+{
+    return detail::enumerateTwice([] { return juce::MidiInput::getAvailableDevices(); });
 }
 
 // The first of them, for callers that have not learned to choose. With two
@@ -70,5 +103,54 @@ juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& pedal);
 
 // The same, to the first RC-5 on the bus (findPedal()).
 juce::String requestStorageMode(bool enter);
+
+//==============================================================================
+// Asking the pedal why (issue #85). Before the first enter-storage frame the
+// register 7F 70 00 00 says whether the pedal can hand over its card at all:
+// 02 means it is playing or holds an unsaved take, and no resend will change
+// that — the player has to stop and WRITE. StorageRegister.hpp owns the
+// bytes; this is the exchange.
+//==============================================================================
+
+// What a query comes back with. noAnswer is its own thing, never busy: a
+// pedal whose MIDI side is re-enumerating after leaving storage mode says
+// nothing at all, and the right move there is Connect's resend budget, not
+// a refusal on the screen.
+enum class StorageQuery { idle, inStorage, busy, noAnswer };
+
+// The pedal answers within 100 ms; 25 times that is a silence, not a slow pedal.
+inline constexpr int kStorageQueryTimeoutMs = 2500;
+
+inline StorageQuery toQuery(storage::State state)
+{
+    switch (state) {
+    case storage::State::idle: return StorageQuery::idle;
+    case storage::State::inStorage: return StorageQuery::inStorage;
+    case storage::State::busy: return StorageQuery::busy;
+    }
+    return StorageQuery::noAnswer; // an enumerator added without a mapping here
+}
+
+// For logs and the probe — the player's words are the window's.
+inline const char* describe(StorageQuery query)
+{
+    switch (query) {
+    case StorageQuery::idle: return storage::describe(storage::State::idle);
+    case StorageQuery::inStorage: return storage::describe(storage::State::inStorage);
+    case StorageQuery::busy: return storage::describe(storage::State::busy);
+    case StorageQuery::noAnswer: return "no answer";
+    }
+    return "?";
+}
+
+// Send the read request to ONE endpoint (one of findPedals()) and wait for
+// its answer, at most timeoutMs. Short-lived: the pedal's input is opened
+// for the query and closed after it — no standing listener. BLOCKS for up
+// to timeoutMs, so it belongs on a worker thread, never the message thread.
+// Throws loopercat::Error when the endpoint cannot be opened, when no RC-5
+// input is on the bus, or when the register reads a value this app does
+// not know (StorageRegister.hpp names the byte). Implemented once per
+// platform.
+StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs = kStorageQueryTimeoutMs);
 
 } // namespace loopercat::pedallink

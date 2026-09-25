@@ -30,9 +30,15 @@
 #include "PedalLink.h"
 
 #include <alsa/asoundlib.h>
+#include <poll.h>
 
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace loopercat::pedallink {
 
@@ -148,6 +154,100 @@ juce::String requestStorageMode(bool enter)
     if (!port)
         return "no RC-5 MIDI device on the bus";
     return sendFrame(*port, enter);
+}
+
+StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs)
+{
+    if (timeoutMs <= 0)
+        throw Error("storage query: the timeout must be positive");
+    const auto card = cardOfSequencerClient(pedal.identifier);
+    if (!card)
+        throw Error("cannot tell which sound card MIDI endpoint " + pedal.identifier.toStdString() + " ("
+                    + pedal.name.toStdString() + ") belongs to");
+    const auto port = findPedalRawMidi(card);
+    if (!port)
+        throw Error("no RC-5 rawmidi port on sound card " + std::to_string(*card) + " ("
+                    + pedal.name.toStdString() + ")");
+
+    // The rawmidi port is bidirectional: the same hw:card,device carries the
+    // pedal's answer back, so there is nothing to pair. Non-blocking, so the
+    // wait below is ours to time.
+    snd_rawmidi_t* in = nullptr;
+    snd_rawmidi_t* out = nullptr;
+    if (const int opened = snd_rawmidi_open(&in, &out, port->c_str(), SND_RAWMIDI_NONBLOCK); opened < 0)
+        throw Error("cannot open " + *port + ": " + snd_strerror(opened));
+    struct Closer {
+        snd_rawmidi_t* input;
+        snd_rawmidi_t* output;
+        ~Closer()
+        {
+            snd_rawmidi_close(input);
+            snd_rawmidi_close(output);
+        }
+    } const closer { in, out };
+
+    const auto request = storage::readRequest();
+    const ssize_t written = snd_rawmidi_write(out, request.data(), request.size());
+    if (written < 0)
+        throw Error(std::string("MIDI write failed: ") + snd_strerror(static_cast<int>(written)));
+    if (static_cast<size_t>(written) != request.size())
+        throw Error("MIDI write was cut short (" + std::to_string(written) + " of "
+                    + std::to_string(request.size()) + " bytes)");
+    if (const int drained = snd_rawmidi_drain(out); drained < 0)
+        throw Error(std::string("MIDI flush failed: ") + snd_strerror(drained));
+
+    const int count = snd_rawmidi_poll_descriptors_count(in);
+    if (count <= 0)
+        throw Error("cannot poll " + *port);
+    std::vector<pollfd> fds(static_cast<size_t>(count));
+    snd_rawmidi_poll_descriptors(in, fds.data(), static_cast<unsigned int>(count));
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    std::vector<std::uint8_t> frame;
+    bool inFrame = false;
+    while (true) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              deadline - std::chrono::steady_clock::now())
+                              .count();
+        if (left <= 0)
+            return StorageQuery::noAnswer;
+        const int ready = poll(fds.data(), static_cast<nfds_t>(fds.size()), static_cast<int>(left));
+        if (ready < 0) {
+            if (errno == EINTR)
+                continue;
+            throw Error(std::string("poll failed: ") + std::strerror(errno));
+        }
+        if (ready == 0)
+            return StorageQuery::noAnswer;
+        unsigned short revents = 0;
+        snd_rawmidi_poll_descriptors_revents(in, fds.data(), static_cast<unsigned int>(count), &revents);
+        if ((revents & POLLIN) == 0)
+            continue;
+        std::uint8_t buffer[256];
+        const ssize_t n = snd_rawmidi_read(in, buffer, sizeof buffer);
+        if (n < 0) {
+            if (n == -EAGAIN)
+                continue;
+            throw Error(std::string("MIDI read failed: ") + snd_strerror(static_cast<int>(n)));
+        }
+        // A byte stream: frames are cut at F0..F7 and judged one by one; a
+        // frame that is not the answer is dropped and the wait goes on.
+        for (ssize_t i = 0; i < n; ++i) {
+            const std::uint8_t byte = buffer[i];
+            if (byte == sysex::kSysexStart) {
+                frame.clear();
+                inFrame = true;
+            }
+            if (!inFrame)
+                continue;
+            frame.push_back(byte);
+            if (byte == sysex::kSysexEnd) {
+                inFrame = false;
+                if (const auto state = storage::parseReply(frame))
+                    return toQuery(*state);
+            }
+        }
+    }
 }
 
 } // namespace loopercat::pedallink
