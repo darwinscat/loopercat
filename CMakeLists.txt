@@ -233,6 +233,8 @@ loopercat_core_test(rc0_tests)
 loopercat_core_test(rc5_card_tests)
 # The pedal's settings file, against a real one (fixtures/rc5-system.RC0).
 loopercat_core_test(rc5_system_tests)
+# The bank pair mechanism, for both kinds of .RC0 the card carries.
+loopercat_core_test(bank_pair_tests)
 loopercat_core_test(wav_tests)
 loopercat_core_test(volume_tests)
 loopercat_core_test(lifecycle_tests)

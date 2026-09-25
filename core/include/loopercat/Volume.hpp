@@ -97,10 +97,34 @@ inline fs::path wavDir(const fs::path& volume, int slot)
     return volume / "ROLAND" / "WAVE" / slotDirName(slot);
 }
 
-inline fs::path memoryPath(const fs::path& volume, int fileNo)
+// The card carries two kinds of .RC0, each as a pair of banks: the memories
+// and the pedal's own settings. Same layout, same trailer with its write
+// counter, different contents — see Rc0.hpp and SystemFile.hpp.
+enum class Bank { memory, system };
+
+inline std::string_view bankStem(Bank bank)
+{
+    switch (bank) {
+    case Bank::memory: return "MEMORY";
+    case Bank::system: return "SYSTEM";
+    }
+    throw Error("unknown bank"); // an enumerator added without a name here
+}
+
+inline fs::path bankPath(const fs::path& volume, Bank bank, int fileNo)
 {
     rc0::tailMarkerFor(fileNo); // validates fileNo is 1 or 2
-    return dataDir(volume) / ("MEMORY" + std::to_string(fileNo) + ".RC0");
+    return dataDir(volume) / (std::string(bankStem(bank)) + std::to_string(fileNo) + ".RC0");
+}
+
+inline fs::path memoryPath(const fs::path& volume, int fileNo)
+{
+    return bankPath(volume, Bank::memory, fileNo);
+}
+
+inline fs::path systemPath(const fs::path& volume, int fileNo)
+{
+    return bankPath(volume, Bank::system, fileNo);
 }
 
 inline bool isJunkName(std::string_view name)
