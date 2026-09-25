@@ -185,8 +185,11 @@ inline constexpr std::string_view kXmlDeclClose = "?>";
 inline std::string trackSectionName(int track) { return "TRACK" + std::to_string(track); }
 inline std::string trackSectionOpen(int track) { return "<" + trackSectionName(track) + ">"; }
 
-// The profile a document was written by, read from its root element — and a
-// refusal, by name, of anything else.
+// The model name the root element carries ("RC-5", "RC-500", or whatever a
+// card says). Structure is judged here; what that name MEANS is the caller's
+// question — familyOf below turns it into a profile for the app's own
+// document reads, the card marker (CardMarker.hpp) records it exactly as
+// the card says.
 //
 // The name attribute is read from the ROOT opener only, and the root opener
 // must be the first element of the document (only the XML declaration and
@@ -194,7 +197,7 @@ inline std::string trackSectionOpen(int track) { return "<" + trackSectionName(t
 // memory body vouch for a foreign root. No case folding, no whitespace
 // forgiveness: the pedal's XML is machine-written, so any variant is foreign
 // or damaged.
-inline const profile::DeviceProfile& familyOf(std::string_view document)
+inline std::string_view rootDatabaseName(std::string_view document)
 {
     std::size_t at = 0;
     if (document.starts_with(kXmlDeclOpen)) {
@@ -225,7 +228,14 @@ inline const profile::DeviceProfile& familyOf(std::string_view document)
     const auto valueClose = opener.find('"', valueBegin);
     if (valueClose == std::string_view::npos)
         throw Error("not an RC0 memory file: unterminated name attribute in the root element");
-    return profile::byFamilyName(opener.substr(valueBegin, valueClose - valueBegin));
+    return opener.substr(valueBegin, valueClose - valueBegin);
+}
+
+// The profile a document was written by, read from its root element — and a
+// refusal, by name, of anything else.
+inline const profile::DeviceProfile& familyOf(std::string_view document)
+{
+    return profile::byFamilyName(rootDatabaseName(document));
 }
 
 // The same, for a whole file (document plus trailer).

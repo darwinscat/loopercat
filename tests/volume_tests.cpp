@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <algorithm>
 #include <fstream>
 
 using namespace loopercat;
@@ -150,6 +151,50 @@ int main()
         CHECK_THROWS(volume::listTrackWavs(pedal, profile::kRc5, 3, 2), "track out of range");
 
         CHECK_THROWS(volume::listSlotWavs(pedal, 0), "out of range");
+    }
+
+    // --- junk at the volume ROOT: the marker's sidecar (measured 2026-09-24:
+    // macOS plants ._loopercat-card.json beside every write of
+    // /loopercat-card.json), swept one level deep, without entering the
+    // directories a host OS keeps there ---
+
+    {
+        TempDir tmp;
+        const fs::path pedal = tmp.path / "PEDAL";
+        touch(pedal / "ROLAND" / "DATA" / "MEMORY1.RC0");
+        touch(pedal / "loopercat-card.json");
+        touch(pedal / "._loopercat-card.json");
+        touch(pedal / ".DS_Store");
+        touch(pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav");
+        touch(pedal / ".Spotlight-V100" / "._store");             // macOS's, not ours
+        touch(pedal / ".fseventsd" / "._log");                     // macOS's, not ours
+        touch(pedal / "System Volume Information" / "._sys");     // Windows's, not ours
+        touch(pedal / "OTHER" / "._deep");                         // a stray directory: not entered either
+        touch(pedal / "README.txt");                               // a player's own file: the root is lived in
+        touch(pedal / ".hidden");                                  // a dot alone is not AppleDouble
+
+        const auto junk = volume::findJunk(pedal);
+        CHECK_EQ(junk.size(), 3u);
+        CHECK(std::find(junk.begin(), junk.end(), pedal / "._loopercat-card.json") != junk.end());
+        CHECK(std::find(junk.begin(), junk.end(), pedal / ".DS_Store") != junk.end());
+        CHECK(std::find(junk.begin(), junk.end(), pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav")
+              != junk.end());
+
+        const auto swept = volume::sweepJunk(pedal);
+        CHECK_EQ(swept.removed.size(), 3u);
+        CHECK(swept.failed.empty());
+        CHECK(!fs::exists(pedal / "._loopercat-card.json"));
+        CHECK(!fs::exists(pedal / ".DS_Store"));
+        CHECK(!fs::exists(pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav"));
+        CHECK(fs::exists(pedal / "loopercat-card.json"));
+        CHECK(fs::exists(pedal / ".Spotlight-V100" / "._store"));
+        CHECK(fs::exists(pedal / ".fseventsd" / "._log"));
+        CHECK(fs::exists(pedal / "System Volume Information" / "._sys"));
+        CHECK(fs::exists(pedal / "OTHER" / "._deep"));
+        CHECK(fs::exists(pedal / "README.txt"));
+        CHECK(fs::exists(pedal / ".hidden"));
+        CHECK(fs::exists(pedal / "ROLAND" / "DATA" / "MEMORY1.RC0"));
+        CHECK(volume::findJunk(pedal).empty());
     }
 
     return testkit::summary("volume");

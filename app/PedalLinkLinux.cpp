@@ -39,13 +39,16 @@ namespace loopercat::pedallink {
 namespace {
 
     // "hw:<card>,<device>,0" for the first rawmidi OUTPUT whose port name
-    // names the pedal — the same portname::isRc5 rule findPedal() uses, so
+    // names the pedal — the same portname::isRc5 rule findPedals() uses, so
     // both halves agree on what the pedal is. The walk mirrors what
-    // `amidi -l` does: every card, every rawmidi device on it.
-    std::optional<std::string> findPedalRawMidi()
+    // `amidi -l` does: every card, every rawmidi device on it — or, with a
+    // card given, that card alone.
+    std::optional<std::string> findPedalRawMidi(std::optional<int> onCard = std::nullopt)
     {
         int card = -1;
         while (snd_card_next(&card) == 0 && card >= 0) {
+            if (onCard && *onCard != card)
+                continue;
             snd_ctl_t* control = nullptr;
             const std::string cardName = "hw:" + std::to_string(card);
             if (snd_ctl_open(&control, cardName.c_str(), 0) < 0)
@@ -75,34 +78,76 @@ namespace {
         return std::nullopt;
     }
 
+    // JUCE names an ALSA endpoint "<client>-<port>" (sequencer ids). The
+    // sequencer knows which sound card a kernel client belongs to — and the
+    // card is what rawmidi addresses. That is the bridge from "the pedal the
+    // caller chose" to "the port this backend writes": with two RC-5s, both
+    // named alike, the card number is what keeps the choice.
+    std::optional<int> cardOfSequencerClient(const juce::String& identifier)
+    {
+        const int dash = identifier.indexOfChar('-');
+        if (dash <= 0)
+            return std::nullopt;
+        const int clientId = identifier.substring(0, dash).getIntValue();
+        snd_seq_t* seq = nullptr;
+        if (snd_seq_open(&seq, "default", SND_SEQ_OPEN_DUPLEX, 0) < 0)
+            return std::nullopt;
+        snd_seq_client_info_t* info = nullptr;
+        snd_seq_client_info_alloca(&info);
+        std::optional<int> card;
+        if (snd_seq_get_any_client_info(seq, clientId, info) == 0) {
+            const int number = snd_seq_client_info_get_card(info);
+            if (number >= 0)
+                card = number;
+        }
+        snd_seq_close(seq);
+        return card;
+    }
+
+    juce::String sendFrame(const std::string& port, bool enter)
+    {
+        snd_rawmidi_t* out = nullptr;
+        if (const int opened = snd_rawmidi_open(nullptr, &out, port.c_str(), 0); opened < 0)
+            return "cannot open " + juce::String(port) + ": " + snd_strerror(opened);
+
+        // The frame from core/Sysex.hpp is complete, F0 through F7: rawmidi is a
+        // byte stream, so it goes out exactly as written — no framing done for
+        // us, and none to be undone.
+        const auto frame = enter ? sysex::enterStorageMode() : sysex::exitStorageMode();
+        const ssize_t written = snd_rawmidi_write(out, frame.data(), frame.size());
+        const int drained = snd_rawmidi_drain(out);
+        snd_rawmidi_close(out);
+
+        if (written < 0)
+            return "MIDI write failed: " + juce::String(snd_strerror(static_cast<int>(written)));
+        if (static_cast<size_t>(written) != frame.size())
+            return "MIDI write was cut short (" + juce::String(static_cast<int>(written)) + " of "
+                 + juce::String(static_cast<int>(frame.size())) + " bytes)";
+        if (drained < 0)
+            return "MIDI flush failed: " + juce::String(snd_strerror(drained));
+        return {};
+    }
+
 } // namespace
+
+juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& pedal)
+{
+    const auto card = cardOfSequencerClient(pedal.identifier);
+    if (!card)
+        return "cannot tell which sound card MIDI endpoint " + pedal.identifier + " (" + pedal.name
+             + ") belongs to";
+    const auto port = findPedalRawMidi(card);
+    if (!port)
+        return "no RC-5 rawmidi port on sound card " + juce::String(*card) + " (" + pedal.name + ")";
+    return sendFrame(*port, enter);
+}
 
 juce::String requestStorageMode(bool enter)
 {
     const auto port = findPedalRawMidi();
     if (!port)
         return "no RC-5 MIDI device on the bus";
-
-    snd_rawmidi_t* out = nullptr;
-    if (const int opened = snd_rawmidi_open(nullptr, &out, port->c_str(), 0); opened < 0)
-        return "cannot open " + juce::String(*port) + ": " + snd_strerror(opened);
-
-    // The frame from core/Sysex.hpp is complete, F0 through F7: rawmidi is a
-    // byte stream, so it goes out exactly as written — no framing done for
-    // us, and none to be undone.
-    const auto frame = enter ? sysex::enterStorageMode() : sysex::exitStorageMode();
-    const ssize_t written = snd_rawmidi_write(out, frame.data(), frame.size());
-    const int drained = snd_rawmidi_drain(out);
-    snd_rawmidi_close(out);
-
-    if (written < 0)
-        return "MIDI write failed: " + juce::String(snd_strerror(static_cast<int>(written)));
-    if (static_cast<size_t>(written) != frame.size())
-        return "MIDI write was cut short (" + juce::String(static_cast<int>(written)) + " of "
-             + juce::String(static_cast<int>(frame.size())) + " bytes)";
-    if (drained < 0)
-        return "MIDI flush failed: " + juce::String(snd_strerror(drained));
-    return {};
+    return sendFrame(*port, enter);
 }
 
 } // namespace loopercat::pedallink
