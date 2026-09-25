@@ -22,6 +22,8 @@
 #include "Error.hpp"
 
 #include <array>
+#include "DeviceProfile.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -32,7 +34,9 @@ inline constexpr std::uint8_t kSysexStart = 0xF0;
 inline constexpr std::uint8_t kSysexEnd = 0xF7;
 inline constexpr std::uint8_t kRolandId = 0x41;
 inline constexpr std::uint8_t kDeviceId = 0x10; // factory default unit number
-inline constexpr std::array<std::uint8_t, 4> kModelRc5 { 0x00, 0x00, 0x00, 0x76 };
+// The model id is the profile's (DeviceProfile.hpp); the frames below are
+// addressed to the RC-5, the one model Connect speaks to.
+inline constexpr std::array<std::uint8_t, 4> kModelRc5 = profile::kRc5.modelId;
 
 inline constexpr std::uint8_t kCmdRq1 = 0x11; // read request
 inline constexpr std::uint8_t kCmdDt1 = 0x12; // data set

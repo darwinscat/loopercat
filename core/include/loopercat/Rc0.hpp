@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include "DeviceProfile.hpp"
 #include "Error.hpp"
 
 #include <cstddef>
@@ -149,28 +150,28 @@ namespace detail {
 
 } // namespace detail
 
-// --- family guard (issue #35) ---
+// --- the family guard (issue #35), by profile ---
 //
-// Every RC-series pedal exports the same ROLAND/DATA card layout, and the
-// RC-500's MEMORY*.RC0 is near-identical to ours: the same 99 <mem id="0..98">
-// entries, the same <NAME>/C01..C12 block, the same TRACK1 field names, even
-// the same `Measure = MeasLen + 7` — hardware dumps of the two-track family
-// obey it on every recorded track (an earlier note here, taken from a
-// template, said they did not). What differs is the shape: a second track per
-// memory, with its own <TRACK2> section and its own audio directory, plus
-// sections the RC-5 does not have. Mutating such a card with one-track
-// semantics is data corruption — a swap would carry one track's audio across
-// and leave the other behind — so a foreign card is refused at the door, by
-// name. The one honest discriminator is the root element's name attribute:
-// the RC-5 writes `<database name="RC-5" revision="0">` (hardware dumps,
-// mirrored by the test fixtures), the RC-500 writes `name="RC-500"` plus a
-// <TRACK2> section per memory (hardware dumps and the boss-rc500-editor
-// template quoted in issue #35 agree).
+// Every RC-series pedal exports the same ROLAND/DATA card layout, and a
+// two-track model's MEMORY*.RC0 is near-identical to the RC-5's: the same 99
+// <mem id="0..98"> entries, the same <NAME>/C01..C12 block, the same TRACK
+// field names, even the same `Measure = MeasLen + 7` — hardware dumps of the
+// two-track family obey it on every recorded track. What differs is the
+// shape: a second track per memory, with its own <TRACK2> section and its own
+// audio directory, plus sections the RC-5 does not have. Mutating such a card
+// with one-track semantics is data corruption — a swap would carry one
+// track's audio across and leave the other behind — so a card is identified
+// at the door, by its profile (DeviceProfile.hpp), and everything after asks
+// that profile what it is allowed to do. The one honest discriminator is the
+// root element's name attribute: the RC-5 writes
+// `<database name="RC-5" revision="0">` (hardware dumps, mirrored by the test
+// fixtures), the two-track model writes `name="RC-500"` plus a <TRACK2>
+// section per memory (its card, and the boss-rc500-editor template quoted in
+// issue #35, agree).
 
-// The family this whole app speaks. The root opener must carry exactly these
-// bytes as its name attribute — no case folding, no whitespace forgiveness:
-// the pedal's XML is machine-written, so any variant is foreign or damaged.
-inline constexpr std::string_view kFamilyName = "RC-5";
+// The family this app was written for — the pedal it speaks to on the bus
+// (PedalPortName.h) and the profile every one-track path means.
+inline constexpr std::string_view kFamilyName = profile::kRc5.familyName;
 
 // The root element opener and the exact attribute shape the pedal writes.
 inline constexpr std::string_view kDatabaseOpen = "<database";
@@ -180,17 +181,20 @@ inline constexpr std::string_view kNameAttribute = " name=\"";
 inline constexpr std::string_view kXmlDeclOpen = "<?xml";
 inline constexpr std::string_view kXmlDeclClose = "?>";
 
-// A second track section: written per memory by the two-track RC family
-// (RC-500 template, issue #35), never by the RC-5.
-inline constexpr std::string_view kTrack2Open = "<TRACK2>";
+// One track's section: <TRACK1> on every model, <TRACK2> on the two-track one.
+inline std::string trackSectionName(int track) { return "TRACK" + std::to_string(track); }
+inline std::string trackSectionOpen(int track) { return "<" + trackSectionName(track) + ">"; }
 
-// Refuse any document whose root element does not identify as RC-5.
+// The profile a document was written by, read from its root element — and a
+// refusal, by name, of anything else.
 //
 // The name attribute is read from the ROOT opener only, and the root opener
 // must be the first element of the document (only the XML declaration and
 // whitespace may precede it) — scanning any further would let a comment or a
-// memory body vouch for a foreign root.
-inline void assertRc5Family(std::string_view document)
+// memory body vouch for a foreign root. No case folding, no whitespace
+// forgiveness: the pedal's XML is machine-written, so any variant is foreign
+// or damaged.
+inline const profile::DeviceProfile& familyOf(std::string_view document)
 {
     std::size_t at = 0;
     if (document.starts_with(kXmlDeclOpen)) {
@@ -221,24 +225,26 @@ inline void assertRc5Family(std::string_view document)
     const auto valueClose = opener.find('"', valueBegin);
     if (valueClose == std::string_view::npos)
         throw Error("not an RC0 memory file: unterminated name attribute in the root element");
-    const std::string_view family = opener.substr(valueBegin, valueClose - valueBegin);
-    if (family != kFamilyName)
-        throw Error("this is an \"" + std::string(family) + "\" card, not an RC-5 \xe2\x80\x94 "
-                    "LooperCat only speaks RC-5");
-    // Belt and braces: a two-track section outs a foreign card even when the
-    // header lies about the family.
-    if (document.find(kTrack2Open) != std::string_view::npos)
-        throw Error("this card carries <TRACK2> sections \xe2\x80\x94 a two-track RC-series "
-                    "memory, not an RC-5; LooperCat only speaks RC-5");
+    return profile::byFamilyName(opener.substr(valueBegin, valueClose - valueBegin));
 }
 
-// A structurally sound memory file: the RC-5 family header (the guard above),
-// then exactly the 99 distinct <mem id="0..98"> entries (the reference counts
-// distinct ids the same way).
-inline void assertMemoryFile(std::string_view text)
+// The same, for a whole file (document plus trailer).
+inline const profile::DeviceProfile& profileOf(std::string_view text)
+{
+    return familyOf(splitFile(text).document);
+}
+
+// A structurally sound memory file, and whose it is: a known family (the
+// guard above); exactly the 99 distinct <mem id="0..98"> entries (the
+// reference counts distinct ids the same way — and a settings file, which
+// has none, is refused as such); then memories shaped for the family's track
+// count — <TRACK{n}> present and <TRACK{n+1}> absent, so an "RC-5" carrying
+// a second track is refused, and a two-track root carrying a third track, or
+// none, is refused the same way.
+inline const profile::DeviceProfile& assertMemoryFile(std::string_view text)
 {
     const auto document = splitFile(text).document;
-    assertRc5Family(document);
+    const profile::DeviceProfile& family = familyOf(document);
     std::set<long long> seen;
     static constexpr std::string_view kOpen = "<mem id=\"";
     std::size_t from = 0;
@@ -262,6 +268,17 @@ inline void assertMemoryFile(std::string_view text)
     for (int id = 0; id < kSlotCount; ++id)
         if (!seen.contains(id))
             throw Error("missing <mem id=\"" + std::to_string(id) + "\">");
+    const std::string name(family.familyName);
+    const int tracks = family.trackCount;
+    if (document.find(trackSectionOpen(tracks)) == std::string::npos)
+        throw Error("this card carries no " + trackSectionOpen(tracks) + " section \xe2\x80\x94 an"
+                    " \"" + name + "\" memory holds " + std::to_string(tracks)
+                    + (tracks == 1 ? " track" : " tracks") + ", each in a section of its own");
+    if (document.find(trackSectionOpen(tracks + 1)) != std::string::npos)
+        throw Error("this card carries " + trackSectionOpen(tracks + 1)
+                    + " sections \xe2\x80\x94 a memory with more tracks than an \"" + name
+                    + "\" has; " + profile::onlySpeaks());
+    return family;
 }
 
 namespace detail {
@@ -484,65 +501,26 @@ inline std::string defaultSlotName(int slot)
     return "Memory" + std::string(n.size() < 2 ? "0" : "") + n;
 }
 
-// The body of a never-touched slot, exactly as the pedal formats it —
-// captured from real hardware, where every virgin slot is byte-identical
-// (note the non-obvious factory values: Measure=1, Reverb=30, Fill=1,
-// Part4=0, rhythm Stop=1). This is what MEMORY CLEAR on the device leaves.
-inline std::string factorySlotBody(int slot)
+// The body of a never-touched memory of a model, exactly as its pedal formats
+// it: the default name, then the profile's factory sections. For the RC-5 that
+// is what MEMORY CLEAR on the device leaves, and every factory-empty memory of
+// a real card reproduces it byte for byte (DeviceProfile.hpp). A model whose
+// factory body is not on record does not get one made up.
+inline std::string factorySlotBody(const profile::DeviceProfile& family, int slot)
 {
     if (slot < 1 || slot > kSlotCount)
         throw Error("slot out of range 1.." + std::to_string(kSlotCount) + ": "
                     + std::to_string(slot));
-    return "\n" + detail::nameBlock(defaultSlotName(slot)) + R"(
-<TRACK1>
-	<Rev>0</Rev>
-	<PlyLvl>100</PlyLvl>
-	<Pan>50</Pan>
-	<One>0</One>
-	<StrtMod>0</StrtMod>
-	<StpMod>0</StpMod>
-	<Measure>1</Measure>
-	<MeasMod>1</MeasMod>
-	<MeasLen>0</MeasLen>
-	<MeasBtLp>0</MeasBtLp>
-	<RecTmp>1200</RecTmp>
-	<WavStat>0</WavStat>
-	<WavLen>0</WavLen>
-</TRACK1>
-<MASTER>
-	<Tempo>1200</Tempo>
-	<DubMode>0</DubMode>
-	<RecAction>1</RecAction>
-	<AutoRec>0</AutoRec>
-	<FadeTime>5</FadeTime>
-	<Level>100</Level>
-	<LpMod>0</LpMod>
-	<LpLen>0</LpLen>
-	<TrkMod>1</TrkMod>
-	<Sync>0</Sync>
-</MASTER>
-<RHYTHM>
-	<Level>100</Level>
-	<Reverb>30</Reverb>
-	<Pattern>0</Pattern>
-	<Variation>0</Variation>
-	<VariationChange>0</VariationChange>
-	<Kit>0</Kit>
-	<Beat>2</Beat>
-	<Fill>1</Fill>
-	<Part1>1</Part1>
-	<Part2>1</Part2>
-	<Part3>1</Part3>
-	<Part4>0</Part4>
-	<RecCount>0</RecCount>
-	<PlayCount>0</PlayCount>
-	<Start>0</Start>
-	<Stop>1</Stop>
-	<ToneLow>10</ToneLow>
-	<ToneHigh>10</ToneHigh>
-	<State>0</State>
-</RHYTHM>
-)";
+    if (!family.hasFactoryBody())
+        throw Error("the factory memory of the \"" + std::string(family.familyName)
+                    + "\" model is not on record \xe2\x80\x94 nothing can be cleared to it");
+    return "\n" + detail::nameBlock(defaultSlotName(slot)) + std::string(family.factorySections);
+}
+
+// The RC-5's.
+inline std::string factorySlotBody(int slot)
+{
+    return factorySlotBody(profile::kRc5, slot);
 }
 
 // --- trailer ---

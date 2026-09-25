@@ -49,6 +49,20 @@ int main()
     CHECK_THROWS(volume::slotDirName(0), "out of range");
     CHECK_THROWS(volume::slotDirName(100), "out of range");
 
+    // A track's folder is NNN_T, and the model says how many T there are: the
+    // two-track model's card has NNN_1 and NNN_2 per memory, the RC-5's NNN_1.
+    CHECK_EQ(volume::trackDirName(profile::kRc500, 3, 1), "003_1");
+    CHECK_EQ(volume::trackDirName(profile::kRc500, 3, 2), "003_2");
+    CHECK_EQ(volume::trackDirName(profile::kRc500, 99, 2), "099_2");
+    CHECK_THROWS(volume::trackDirName(profile::kRc500, 3, 3), "track out of range 1..2");
+    CHECK_THROWS(volume::trackDirName(profile::kRc500, 3, 0), "track out of range");
+    CHECK_THROWS(volume::trackDirName(profile::kRc5, 3, 2), "track out of range 1..1");
+    CHECK_THROWS(volume::trackDirName(profile::kRc5, 3, 2), "\"RC-5\" model");
+    CHECK_THROWS(volume::trackDirName(profile::kRc500, 0, 1), "out of range");
+    CHECK_THROWS(volume::trackDirName(profile::kRc500, 100, 2), "out of range");
+    for (int slot = 1; slot <= rc0::kSlotCount; ++slot)
+        CHECK_EQ(volume::slotDirName(slot), volume::trackDirName(profile::kRc5, slot, 1));
+
     // --- layout paths ---
 
     {
@@ -57,6 +71,9 @@ int main()
         const fs::path v = "/Volumes/BOSS RC-5";
         CHECK_EQ(volume::dataDir(v), fs::path("/Volumes/BOSS RC-5/ROLAND/DATA"));
         CHECK_EQ(volume::wavDir(v, 7), fs::path("/Volumes/BOSS RC-5/ROLAND/WAVE/007_1"));
+        CHECK_EQ(volume::trackDir(v, profile::kRc500, 7, 2),
+                 fs::path("/Volumes/BOSS RC-5/ROLAND/WAVE/007_2"));
+        CHECK_EQ(volume::trackDir(v, profile::kRc5, 7, 1), volume::wavDir(v, 7));
         CHECK_EQ(volume::memoryPath(v, 1), fs::path("/Volumes/BOSS RC-5/ROLAND/DATA/MEMORY1.RC0"));
         CHECK_EQ(volume::memoryPath(v, 2), fs::path("/Volumes/BOSS RC-5/ROLAND/DATA/MEMORY2.RC0"));
         CHECK_THROWS(volume::memoryPath(v, 3), "must be 1 or 2");
@@ -120,6 +137,17 @@ int main()
 
         // A missing slot directory is an empty slot, not an error.
         CHECK(volume::listSlotWavs(pedal, 9).empty());
+
+        // A second track's folder is listed by its own address, junk filtered
+        // the same way, and the RC-5's one-track listing is track 1's.
+        touch(volume::trackDir(pedal, profile::kRc500, 3, 2) / "second.wav");
+        touch(volume::trackDir(pedal, profile::kRc500, 3, 2) / "._second.wav");
+        const auto track2 = volume::listTrackWavs(pedal, profile::kRc500, 3, 2);
+        CHECK_EQ(track2.size(), 1u);
+        CHECK_EQ(track2.front(), "second.wav");
+        CHECK(volume::listTrackWavs(pedal, profile::kRc500, 3, 1) == slot3);
+        CHECK(volume::listTrackWavs(pedal, profile::kRc5, 3, 1) == volume::listSlotWavs(pedal, 3));
+        CHECK_THROWS(volume::listTrackWavs(pedal, profile::kRc5, 3, 2), "track out of range");
 
         CHECK_THROWS(volume::listSlotWavs(pedal, 0), "out of range");
     }

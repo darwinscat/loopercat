@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include "DeviceProfile.hpp"
 #include "Error.hpp"
 #include "Rc0.hpp" // kSlotCount
 
@@ -81,20 +82,41 @@ inline std::optional<fs::path> detectVolume(const std::vector<fs::path>& candida
     return std::nullopt;
 }
 
-inline std::string slotDirName(int slot)
+// One track's audio folder: the memory number, three digits, then the track
+// number — 001_1 on the RC-5, 001_1 and 001_2 on the two-track model (its
+// card: 99 × 2 folders, plus the pedal's TEMP). The profile says how many
+// tracks a memory has, so a track the model does not have is refused, not
+// spelled.
+inline std::string trackDirName(const profile::DeviceProfile& family, int slot, int track)
 {
     if (slot < 1 || slot > rc0::kSlotCount)
         throw Error("slot out of range 1.." + std::to_string(rc0::kSlotCount) + ": "
                     + std::to_string(slot));
+    if (track < 1 || track > family.trackCount)
+        throw Error("track out of range 1.." + std::to_string(family.trackCount) + " for the \""
+                    + std::string(family.familyName) + "\" model: " + std::to_string(track));
     const std::string n = std::to_string(slot);
-    return std::string(3 - n.size(), '0') + n + "_1";
+    return std::string(3 - n.size(), '0') + n + "_" + std::to_string(track);
+}
+
+// The one-track spelling, the RC-5's: NNN_1.
+inline std::string slotDirName(int slot)
+{
+    return trackDirName(profile::kRc5, slot, 1);
 }
 
 inline fs::path dataDir(const fs::path& volume) { return volume / "ROLAND" / "DATA"; }
 
+inline fs::path trackDir(const fs::path& volume, const profile::DeviceProfile& family, int slot,
+                         int track)
+{
+    return volume / "ROLAND" / "WAVE" / trackDirName(family, slot, track);
+}
+
+// The RC-5's one track.
 inline fs::path wavDir(const fs::path& volume, int slot)
 {
-    return volume / "ROLAND" / "WAVE" / slotDirName(slot);
+    return trackDir(volume, profile::kRc5, slot, 1);
 }
 
 // The card carries two kinds of .RC0, each as a pair of banks: the memories
@@ -170,11 +192,13 @@ inline SweepResult sweepJunk(const fs::path& volume)
     return result;
 }
 
-// Slot audio files (usually 0 or 1), junk filtered, sorted for determinism.
-// A missing slot directory is a normal empty slot, not an error.
-inline std::vector<std::string> listSlotWavs(const fs::path& volume, int slot)
+// One track's audio files (usually 0 or 1), junk filtered, sorted for
+// determinism. A missing folder is a normal empty track, not an error.
+inline std::vector<std::string> listTrackWavs(const fs::path& volume,
+                                              const profile::DeviceProfile& family, int slot,
+                                              int track)
 {
-    const fs::path dir = wavDir(volume, slot);
+    const fs::path dir = trackDir(volume, family, slot, track);
     std::vector<std::string> out;
     std::error_code ec;
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
@@ -184,6 +208,12 @@ inline std::vector<std::string> listSlotWavs(const fs::path& volume, int slot)
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+// The RC-5's one track.
+inline std::vector<std::string> listSlotWavs(const fs::path& volume, int slot)
+{
+    return listTrackWavs(volume, profile::kRc5, slot, 1);
 }
 
 } // namespace loopercat::volume

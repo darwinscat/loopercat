@@ -19,6 +19,7 @@
 #include "support.hpp"
 
 #include <loopercat/Catalog.hpp>
+#include <loopercat/DeviceProfile.hpp>
 #include <loopercat/Params.hpp>
 #include <loopercat/Rc0.hpp>
 #include <loopercat/usecases/CountIn.hpp>
@@ -49,7 +50,8 @@ int main()
 
     // --- it is a card, and it is ours ---
 
-    rc0::assertMemoryFile(card); // throws if the structure or the family is off
+    // Its root names the RC-5, the model whose memories hold one track each.
+    CHECK(&rc0::assertMemoryFile(card) == &profile::kRc5); // throws if the structure is off
     CHECK(rc0::tailMarker(card).has_value());
     CHECK_EQ(rc0::splitFile(card).tail.size(), static_cast<std::size_t>(5));
 
@@ -71,6 +73,9 @@ int main()
 
     for (const auto& slot : slots) {
         const std::string body = rc0::slotBody(card, slot.slot);
+        // One track per memory, and the flat fields are its.
+        CHECK_EQ(slot.tracks.size(), 1u);
+        CHECK_EQ(slot.tracks.front().frames, slot.frames);
         // The view agrees with the sections the values live in.
         CHECK_EQ(slot.frames, rc0::sectionField(body, rc0::kSectionTrack1, "WavLen"));
         CHECK_EQ(slot.measures, rc0::sectionField(body, rc0::kSectionTrack1, "MeasLen"));

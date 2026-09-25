@@ -65,10 +65,16 @@ int main()
 
     // An RC-500 card is byte-plausible RC-5: same 99 mems, same field names.
     // Only the root name attribute gives it away (header shape from the
-    // boss-rc500-editor template quoted in issue #35) — the refusal must name
-    // the intruder, not report a "broken" card.
+    // boss-rc500-editor template quoted in issue #35). The root names a model
+    // the table knows (DeviceProfile.hpp) whose memories carry two tracks —
+    // and these carry one, so the refusal names what is missing, not a
+    // "broken" card. Reading such a card is refused at the read gate, in
+    // the guard's old words (commands_tests, device_profile_tests).
     CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database name=\"RC-500\" revision=\"0\">")),
-                 "RC-500");
+                 "carries no <TRACK2> section");
+    // An RC model the table does not know is refused by name.
+    CHECK_THROWS(rc0::assertMemoryFile(withHeader("<database name=\"RC-505\" revision=\"0\">")),
+                 "this is an \"RC-505\" card, not an RC-5");
 
     // The header claims RC-5 but a two-track section is present: the card
     // lies about its family, and <TRACK2> outs it.
@@ -78,7 +84,8 @@ int main()
         CHECK(at != std::string::npos);
         liar.insert(at + std::string("</TRACK1>").size(),
                     "\n<TRACK2>\n\t<Rev>0</Rev>\n</TRACK2>");
-        CHECK_THROWS(rc0::assertMemoryFile(liar), "TRACK2");
+        CHECK_THROWS(rc0::assertMemoryFile(liar), "carries <TRACK2> sections");
+        CHECK_THROWS(rc0::assertMemoryFile(liar), "LooperCat only speaks RC-5");
     }
 
     // A root with no name attribute at all is not an RC0 memory file.
