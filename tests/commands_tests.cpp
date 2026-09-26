@@ -2684,5 +2684,39 @@ int main()
         CHECK(!intoEmpty.noteLengthReplaced);
     }
 
+    // --- doctor names a boot hazard, and only where the cost is known ---
+    //
+    // The sweep cleans our own litter wherever we left it, the card's root
+    // included (a write to the marker leaves a sidecar beside it). The report
+    // is a different question: "the pedal may refuse to boot" is measured for
+    // the ROLAND tree and nowhere else. A card that has been mounted on a Mac
+    // carries .Spotlight-V100 and .fseventsd in its root and boots fine, so a
+    // root sidecar must not be reported as a reason it might not.
+
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        commands::writeFileBytes(volume / ".DS_Store", "finder");
+        commands::writeFileBytes(volume / "._loopercat-card.json", "sidecar");
+        CHECK(commands::doctor(volume).empty()); // root litter: swept, never reported
+
+        commands::writeFileBytes(volume / "ROLAND" / "DATA" / "._MEMORY1.RC0", "sidecar");
+        const auto findings = commands::doctor(volume);
+        CHECK_EQ(findings.size(), static_cast<std::size_t>(1));
+        if (findings.size() == 1) {
+            CHECK(findings[0].level == commands::Level::error);
+            CHECK(findings[0].message.find("._MEMORY1.RC0") != std::string::npos);
+            CHECK(findings[0].message.find(".DS_Store") == std::string::npos);
+        }
+
+        // And the sweep still takes all three, root included: a write removes
+        // our litter even though the doctor would not have mentioned it.
+        const auto swept = volume::sweepJunk(volume);
+        CHECK_EQ(swept.removed.size(), static_cast<std::size_t>(3));
+        CHECK(!fs::exists(volume / ".DS_Store"));
+        CHECK(!fs::exists(volume / "._loopercat-card.json"));
+        CHECK(commands::doctor(volume).empty());
+    }
+
     return testkit::summary("commands");
 }

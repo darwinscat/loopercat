@@ -180,6 +180,20 @@ int main()
         CHECK(std::find(junk.begin(), junk.end(), pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav")
               != junk.end());
 
+        // The same card, asked the other question: what may be CALLED a boot
+        // hazard. Only the pedal's tree, because that is the only place the
+        // cost is measured. Our own sidecar in the root is still swept above —
+        // it is our litter — but a report that named it would be claiming
+        // something about hardware nobody has tested.
+        const auto hazards = volume::bootHazardJunk(pedal);
+        CHECK_EQ(hazards.size(), 1u);
+        CHECK(std::find(hazards.begin(), hazards.end(),
+                        pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav")
+              != hazards.end());
+        CHECK(std::find(hazards.begin(), hazards.end(), pedal / ".DS_Store") == hazards.end());
+        CHECK(std::find(hazards.begin(), hazards.end(), pedal / "._loopercat-card.json")
+              == hazards.end());
+
         const auto swept = volume::sweepJunk(pedal);
         CHECK_EQ(swept.removed.size(), 3u);
         CHECK(swept.failed.empty());
