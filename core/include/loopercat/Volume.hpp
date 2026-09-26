@@ -168,6 +168,31 @@ inline bool isJunkName(std::string_view name)
 // enter — the pedal has booted beside them for a year and a half, macOS
 // refuses to open .Spotlight-V100 at all, and nothing in them is a sidecar
 // of ours. ROLAND is the pedal's tree, where every sidecar is a boot hazard.
+//
+// Two different questions, and they must not be answered with one list —
+// see bootHazardJunk below, which is what a REPORT is allowed to use:
+//
+//   what we clean up after ourselves  -> findJunk, root included
+//   what we may call a boot hazard    -> bootHazardJunk, the ROLAND tree
+//
+// The root sidecar of our own marker is ours to remove, and removing it is
+// hygiene. Calling it a reason the pedal may not boot would be a claim about
+// hardware nobody has tested: a card that has been mounted on a Mac carries
+// .Spotlight-V100 and .fseventsd in its root, and those pedals boot.
+// Every junk file under the pedal's own tree, recursively — the ones we can
+// say cost something: ROLAND is where the pedal reads, and a sidecar there is
+// a boot hazard. This is what a report to a musician may call an error.
+inline std::vector<fs::path> bootHazardJunk(const fs::path& volume)
+{
+    std::vector<fs::path> junk;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(volume / "ROLAND", ec), end; !ec && it != end;
+         it.increment(ec))
+        if (!it->is_directory(ec) && isJunkName(it->path().filename().string()))
+            junk.push_back(it->path());
+    return junk;
+}
+
 inline std::vector<fs::path> findJunk(const fs::path& volume)
 {
     std::vector<fs::path> junk;
@@ -177,13 +202,8 @@ inline std::vector<fs::path> findJunk(const fs::path& volume)
             if (!it->is_directory(ec) && isJunkName(it->path().filename().string()))
                 junk.push_back(it->path());
     }
-    {
-        std::error_code ec;
-        for (fs::recursive_directory_iterator it(volume / "ROLAND", ec), end; !ec && it != end;
-             it.increment(ec))
-            if (!it->is_directory(ec) && isJunkName(it->path().filename().string()))
-                junk.push_back(it->path());
-    }
+    for (const fs::path& deeper : bootHazardJunk(volume))
+        junk.push_back(deeper);
     return junk;
 }
 

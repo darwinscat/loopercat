@@ -1329,7 +1329,10 @@ struct Finding {
 inline std::vector<Finding> doctor(const fs::path& volume)
 {
     std::vector<Finding> findings;
-    for (const auto& junk : volume::findJunk(volume))
+    // Only the pedal's own tree: a sidecar there is the boot hazard this
+    // message names. The root is swept too (volume::findJunk) but never
+    // reported — see the two questions spelled out in Volume.hpp.
+    for (const auto& junk : volume::bootHazardJunk(volume))
         findings.push_back({ Level::error,
                              "AppleDouble junk (pedal may refuse to boot): " + junk.string() });
 

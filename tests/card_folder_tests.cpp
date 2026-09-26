@@ -327,6 +327,17 @@ int main()
                  static_cast<std::size_t>(rc0::kSlotCount));
         CHECK(commands::doctor(noisy).empty()); // strangers in the root are not junk on the card
 
+        // The other half of the same question: the root sidecar is still OUR
+        // litter, so a sweep takes it — the player's own files and the marker
+        // stay, and the report says nothing either side. A sidecar under
+        // ROLAND is the case that IS reported (commands_tests covers that).
+        const auto sweptNoisy = volume::sweepJunk(noisy);
+        CHECK_EQ(sweptNoisy.removed.size(), static_cast<std::size_t>(1));
+        CHECK(!fs::exists(noisy / ".DS_Store"));
+        CHECK(fs::exists(noisy / "README.txt"));
+        CHECK(fs::exists(noisy / "loopercat-card.json"));
+        CHECK(commands::doctor(noisy).empty());
+
         // A real card's memory file in a folder reads as that card.
         const fs::path real = tmp.path / "Real";
         fs::create_directories(volume::dataDir(real));
