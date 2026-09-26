@@ -133,6 +133,11 @@ int main()
 
     CHECK(&profile::byFamilyName("RC-5") == &profile::kRc5);
     CHECK(&profile::byFamilyName("RC-500") == &profile::kRc500);
+    // The same lookup for a caller with a name and no card: nothing, not a throw.
+    CHECK(profile::findFamily("RC-5") == &profile::kRc5);
+    CHECK(profile::findFamily("RC-500") == &profile::kRc500);
+    CHECK(profile::findFamily("RC-505") == nullptr);
+    CHECK(profile::findFamily("") == nullptr);
     // Unknown, and every near-miss, refused by name in the guard's own words.
     for (const char* name : { "RC-505", "RC-600", "RC-10R", "rc-5", "RC-5 ", "", "RC" }) {
         CHECK_THROWS(profile::byFamilyName(name), "not an RC-5");

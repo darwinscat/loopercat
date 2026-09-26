@@ -249,7 +249,10 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
 
 void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
 {
-    if (columnId == kName || columnId == kTempo) { // double-click = edit in place
+    // Double-click = edit in place, where the card may be written to; on a
+    // card this app only reads the name and the tempo are facts, and the
+    // double-click is what it is on every other cell.
+    if ((columnId == kName && allowed().rename) || (columnId == kTempo && allowed().tempo)) {
         startCellEdit(row, columnId);
         return;
     }
@@ -283,18 +286,19 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
             onSlotContextMenu(slotOfRow(row), e.getScreenPosition());
         return;
     }
-    // The One Shot cell IS the toggle — click flips it (reference web UI).
-    if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0) {
+    // The One Shot cell IS the toggle — click flips it (reference web UI) —
+    // on a card that may be written to; elsewhere it is a lamp.
+    if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0 && allowed().oneShot) {
         onOneShotToggled(slotOfRow(row));
         return;
     }
     // Same gesture for the Count-In cell.
-    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0) {
+    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0 && allowed().countIn) {
         onCountInToggled(slotOfRow(row));
         return;
     }
     // The empty-slot hint is a button: click opens the WAV chooser.
-    if (columnId == kWavFile && onEmptyWavCellClicked && slotOfRow(row) > 0) {
+    if (columnId == kWavFile && onEmptyWavCellClicked && slotOfRow(row) > 0 && allowed().push) {
         const SlotRow& r = rows_[static_cast<std::size_t>(row)];
         if (!r.info.hasAudio && r.wavFile.empty())
             onEmptyWavCellClicked(r.info.slot);
@@ -359,6 +363,8 @@ bool SlotTable::isImportableAudio(const juce::String& path)
 
 bool SlotTable::isInterestedInFileDrag(const juce::StringArray& files)
 {
+    if (!allowed().push)
+        return false; // a card this app only reads takes no file
     for (const auto& file : files)
         if (isImportableAudio(file))
             return true;
@@ -385,7 +391,7 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
     const int row = rowAt(x, y);
     dragRow_ = -1;
     table_.repaint();
-    if (slotOfRow(row) <= 0 || !onAudioDropped)
+    if (slotOfRow(row) <= 0 || !onAudioDropped || !allowed().push)
         return;
     for (const auto& file : files)
         if (isImportableAudio(file)) {
@@ -401,7 +407,8 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
 // (swap not wired, a job running, or an editor open under the mouse).
 juce::var SlotTable::getDragSourceDescription(const juce::SparseSet<int>& selectedRows)
 {
-    if (!onSwapRequested || busySlot_ > 0 || cellEditor_ != nullptr || selectedRows.size() != 1)
+    if (!onSwapRequested || busySlot_ > 0 || cellEditor_ != nullptr || selectedRows.size() != 1
+        || !allowed().swap)
         return {};
     const int slot = slotOfRow(selectedRows[0]);
     return slot > 0 ? juce::var(slot) : juce::var();
@@ -497,8 +504,12 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kCountIn:  break; // drawn as a dot below
     case kLufs:     break; // drawn from the loudness cells below
     case kWavFile:
+        // The empty-slot hint invites a push; a card this app only reads
+        // gets no invitation.
         text = r.wavFile.empty() && !loaded
-                 ? juce::String::fromUTF8("\xe2\x80\x94 drop audio here, or click to choose")
+                 ? (allowed().push
+                        ? juce::String::fromUTF8("\xe2\x80\x94 drop audio here, or click to choose")
+                        : juce::String())
                  : utf8(r.wavFile);
         break;
     default:        break;
@@ -520,16 +531,20 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
 
     if (columnId == kOneShot || columnId == kCountIn) {
         // The cell is the toggle: filled = on, hollow = off (click flips it).
+        // On a card this app only reads it is a lamp, not a button: the
+        // same dot, dimmed, and a click does nothing.
         const bool on = columnId == kOneShot ? r.info.oneShot : r.info.countIn;
+        const bool clickable = columnId == kOneShot ? allowed().oneShot : allowed().countIn;
         const float d = 7.0f;
         const float x = static_cast<float>(area.getX()) + 2.0f;
         const float y = (static_cast<float>(height) - d) * 0.5f;
         if (on) {
-            g.setColour(columnId == kOneShot ? felitronics::appkit::brand::orange
-                                             : felitronics::appkit::brand::lilac);
+            g.setColour((columnId == kOneShot ? felitronics::appkit::brand::orange
+                                              : felitronics::appkit::brand::lilac)
+                            .withAlpha(clickable ? 1.0f : 0.45f));
             g.fillEllipse(x, y, d, d);
         } else {
-            g.setColour(kDim.withAlpha(0.55f));
+            g.setColour(kDim.withAlpha(clickable ? 0.55f : 0.25f));
             g.drawEllipse(x, y, d, d, 1.2f);
         }
         return;
