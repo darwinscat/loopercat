@@ -43,6 +43,7 @@ public:
         juce::String detail;    // "4:36 -> 0:39"
         juce::String state;     // "failed", "interrupted", "recorded on the pedal", or empty
         juce::String audio;     // "take kept", or per slot when there are several
+        juce::String hint;      // the row's tooltip, when it has one: a legacy row's folders
         std::vector<int> slots; // the badges, ascending
         bool playable = false;
         bool restorable = false;
@@ -87,6 +88,7 @@ public:
     // The slot whose badge sits under x in a visible row, if any: what a
     // click there filters to.
     std::optional<int> badgeAt(int visibleIndex, int x) const;
+    juce::String hintAt(int visibleIndex) const;
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -98,6 +100,7 @@ private:
     void selectedRowsChanged(int lastRowSelected) override;
     void listBoxItemClicked(int row, const juce::MouseEvent&) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override;
+    juce::String getTooltipForRow(int row) override { return hintAt(row); }
 
     void rebuildVisible(std::int64_t keepSelectedOp);
     void updateOffers();

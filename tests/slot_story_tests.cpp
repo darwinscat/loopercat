@@ -144,9 +144,12 @@ int main()
 
     // --- a row this build has no words for says its own name ---
     {
-        const story::Line line = story::tell({ .kind = "legacy", .note = "trash/2026-09-01T21-35-46" });
-        CHECK_EQ(line.action, std::string("legacy"));
-        CHECK_EQ(line.detail, std::string("trash/2026-09-01T21-35-46"));
+        const story::Line line = story::tell({ .kind = "teleport", .note = "to slot 99" });
+        CHECK_EQ(line.action, std::string("teleport"));
+        CHECK_EQ(line.detail, std::string("to slot 99"));
+        // a row from before the history is not one of those any more: it has words
+        CHECK_EQ(story::tell({ .kind = "legacy", .note = "trash/2026-09-01T21-35-46" }).action,
+                 std::string("Before the history"));
     }
 
     // --- lengths and tempos read the way a musician says them ---
@@ -217,6 +220,33 @@ int main()
         CHECK_EQ(mixed.detail, std::string("RxCh 1 -> 2, Ctl1 17 -> -1, Ctl2 18 -> 22"));
         CHECK_EQ(story::tellSystem({}).action, std::string("Pedal settings changed"));
         CHECK_EQ(story::tellSystem({}).detail, std::string());
+    }
+
+    // --- a row from before the history speaks a player's words; the folders go to the hint ---
+    {
+        const auto take = story::tell({ .kind = "legacy", .takeName = "005_1.WAV", .take = story::Take::kept,
+                                        .note = "trash/2026-09-01T21-35-46" });
+        CHECK_EQ(take.action, std::string("Before the history"));
+        CHECK_EQ(take.detail, std::string("a take was replaced (from the old folders)"));
+        CHECK_EQ(take.hint, std::string("trash/2026-09-01T21-35-46"));
+        CHECK_EQ(take.audio, std::string("take kept"));
+        CHECK(take.action.find("legacy") == std::string::npos && take.detail.find("/") == std::string::npos);
+        const auto lost = story::tell({ .kind = "legacy", .takeName = "005_1.WAV", .take = story::Take::lost,
+                                        .note = "trash/x" });
+        CHECK_EQ(lost.detail, std::string("a take was replaced (from the old folders)"));
+        CHECK_EQ(lost.audio, std::string("take no longer kept"));
+        const auto backup = story::tell({ .kind = "legacy", .take = story::Take::none,
+                                          .note = "backups/2026-07-22T17-36-55" });
+        CHECK_EQ(backup.action, std::string("Before the history"));
+        CHECK_EQ(backup.detail, std::string("a backup was taken (from the old folders)"));
+        CHECK_EQ(backup.hint, std::string("backups/2026-07-22T17-36-55"));
+        CHECK_EQ(backup.audio, std::string());
+        // every other row leaves the hint empty; a kind without words keeps its own name
+        CHECK_EQ(story::tell({ .kind = "trim", .take = story::Take::none }).hint, std::string());
+        const auto odd = story::tell({ .kind = "teleport", .take = story::Take::none, .note = "far" });
+        CHECK_EQ(odd.action, std::string("teleport"));
+        CHECK_EQ(odd.detail, std::string("far"));
+        CHECK_EQ(odd.hint, std::string());
     }
 
     return testkit::summary("slot_story_tests");
