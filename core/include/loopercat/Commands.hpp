@@ -537,6 +537,20 @@ inline WriteResult setCountIn(const fs::path& volume, const std::vector<int>& sl
     return writeMemoryPair(volume, text, options);
 }
 
+// The rhythm card (#22): one slot, any subset of the RHYTHM fields the card
+// owns. The rules — what "on" and "off" do next to a count-in, the manual's
+// lists and ranges, BEAT locked once a take is recorded — live in
+// usecases::rhythm; this is the transaction around them, the same one as
+// setCountIn's: one gated read, one backup, one pair-write.
+inline WriteResult setRhythm(const fs::path& volume, int slot,
+                             const usecases::rhythm::Edits& edits, const WriteOptions& options)
+{
+    std::string text = readMemoryFor(volume, profile::Operation::setRhythm);
+    text = rc0::replaceSlotBody(text, slot,
+                                usecases::rhythm::apply(rc0::slotBody(text, slot), edits));
+    return writeMemoryPair(volume, text, options);
+}
+
 // The pedal's supported tempo range, tenths of BPM (RC-5 display: 40.0–300.0).
 inline constexpr long long kTempoTenthsMin = 400;
 inline constexpr long long kTempoTenthsMax = 3000;
