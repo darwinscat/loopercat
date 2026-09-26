@@ -30,7 +30,8 @@ public:
         const auto args = getCommandLineParameters();
         return args.contains("--snapshot") || args.contains("--midi-probe")
             || args.contains("--cycle") || args.contains("--import-legacy")
-            || args.contains("--history-storage");
+            || args.contains("--history-storage") || args.contains("--history-window")
+            || args.contains("--undo-plan") || args.contains("--edit");
     }
 
     void initialise(const juce::String&) override
@@ -154,6 +155,31 @@ public:
         // home (--data).
         if (args.contains("--history-storage")) {
             setApplicationReturnValue(runHistoryStorage(args, explicitVolume, dataOverride));
+            quit();
+            return;
+        }
+
+        // --history-window <file.png>, --undo-plan <op | undo | redo>, and
+        // --edit <undo,redo,...> [--anyway]: the History window and Edit -> Undo /
+        // Redo (#73) without the window — for a verification run against a
+        // synthetic pedal (--volume) and a scratch data home (--data).
+        const int historyWindowFlag = args.indexOf("--history-window");
+        if (historyWindowFlag >= 0) {
+            setApplicationReturnValue(runHistoryWindow(args[historyWindowFlag + 1],
+                                                       explicitVolume.toStdString(), dataOverride));
+            quit();
+            return;
+        }
+        const int undoPlanFlag = args.indexOf("--undo-plan");
+        if (undoPlanFlag >= 0) {
+            setApplicationReturnValue(runUndoPlan(args[undoPlanFlag + 1], dataOverride));
+            quit();
+            return;
+        }
+        const int editFlag = args.indexOf("--edit");
+        if (editFlag >= 0) {
+            setApplicationReturnValue(runHistoryEdits(args[editFlag + 1], args.contains("--anyway"),
+                                                      explicitVolume.toStdString(), dataOverride));
             quit();
             return;
         }
@@ -286,6 +312,161 @@ private:
 
         std::cout << "banners seen in total: " << seen.size() << std::endl;
         return content.volumePath().empty() ? 0 : 2;
+    }
+
+    // --history-window <file.png>: the History window's view, fed from the
+    // store through the worker exactly as Window -> History feeds it, printed
+    // row by row with what each row offers, and rendered. The Edit menu's two
+    // items are printed too, as the menu would read them now.
+    static int runHistoryWindow(const juce::String& path, const std::string& explicitVolume,
+                                const juce::File& dataOverride)
+    {
+        MainComponent content(explicitVolume, dataOverride);
+        content.refreshNow();
+        content.feedHistoryWindow();
+        if (!waitFor([&content] { return content.historyWindowFeeds() > 0 && content.undoOfferRead(); },
+                     15000)) {
+            std::cerr << "the History window was never fed\n";
+            return 2;
+        }
+        HistoryWindow& view = content.historyWindowView();
+        std::cout << "rows: " << view.visibleRows() << std::endl;
+        for (int i = 0; i < view.visibleRows(); ++i) {
+            const HistoryWindow::Row& row = *view.visibleRow(i);
+            juce::String slots;
+            for (const int slot : row.slots)
+                slots << (slots.isEmpty() ? "" : ",") << slot;
+            std::cout << "  op " << row.op << " | " << row.when << " | " << row.action
+                      << (row.detail.isEmpty() ? juce::String() : " | " + row.detail)
+                      << (row.state.isEmpty() ? juce::String() : " | " + row.state)
+                      << (row.audio.isEmpty() ? juce::String() : " | " + row.audio) << " | slots "
+                      << (slots.isEmpty() ? juce::String("-") : slots) << " |"
+                      << (row.playable ? " play" : "") << (row.restorable ? " restore" : "")
+                      << (row.pinned ? " pinned" : "") << std::endl;
+        }
+        const auto item = [&content](bool redo) {
+            return content.undoMenuText(redo) + (content.undoEnabled(redo) ? "" : " (disabled)");
+        };
+        std::cout << "Edit menu: " << item(false) << " / " << item(true) << std::endl;
+        return writePng(view, path);
+    }
+
+    // --undo-plan <op | undo | redo>: what reverting that operation would put
+    // back, read from the store alone — no window, no pedal — in words: each
+    // slot, each settings section, the refusal if there is one, and what the
+    // press would ask about first.
+    static int runUndoPlan(const juce::String& which, const juce::File& dataOverride)
+    {
+        try {
+            AppSettings settings(dataOverride);
+            history::HistoryStore store(std::filesystem::path(
+                settings.dataDir().getChildFile("history").getFullPathName().toStdString()));
+            const auto timeline = store.cardTimeline();
+            const auto targets = store.offeredTargets();
+            const history::undo::Offer offer = history::undo::offerFrom(targets, timeline);
+            std::cout << "Edit menu: " << history::undo::menuText(false, offer) << " / "
+                      << history::undo::menuText(true, offer) << std::endl;
+            std::optional<std::int64_t> target;
+            if (which == "undo")
+                target = targets.undo;
+            else if (which == "redo")
+                target = targets.redo;
+            else if (which.containsOnly("0123456789") && which.isNotEmpty())
+                target = which.getLargeIntValue();
+            else {
+                std::cout << "--undo-plan needs an operation number, undo or redo" << std::endl;
+                return 2;
+            }
+            if (!target) {
+                std::cout << "nothing to " << which << std::endl;
+                return 3;
+            }
+            const history::undo::Plan plan = history::undo::plan(timeline, *target);
+            std::cout << history::undo::describe(plan, timeline);
+            return plan.possible() ? 0 : 3;
+        } catch (const std::exception& e) {
+            std::cout << "the history cannot be read: " << e.what() << std::endl;
+            return 1;
+        }
+    }
+
+    // --edit <undo|redo>[,<undo|redo>...] [--anyway]: Edit -> Undo / Redo
+    // pressed headless on the pinned volume, in that order, in ONE session —
+    // through the very function the menu and Cmd-Z call. The speed bump
+    // prints what it would ask and answers yes only with --anyway; a crossing
+    // already answered in this session is not asked about again, which a
+    // sequence shows. Prints each press's outcome; 0 when every press ran,
+    // 3 when one was refused or declined (the rest are not pressed), 2 when
+    // nothing settled in time.
+    static int runHistoryEdits(const juce::String& sequence, bool anyway, const std::string& explicitVolume,
+                               const juce::File& dataOverride)
+    {
+        juce::StringArray presses;
+        presses.addTokens(sequence, ",", "");
+        presses.trim();
+        presses.removeEmptyStrings();
+        for (const auto& press : presses)
+            if (press != "undo" && press != "redo") {
+                std::cerr << "--edit takes undo and redo, separated by commas\n";
+                return 2;
+            }
+        if (presses.isEmpty()) {
+            std::cerr << "--edit takes undo and redo, separated by commas\n";
+            return 2;
+        }
+        MainComponent content(explicitVolume, dataOverride);
+        content.refreshNow();
+        // Ready as a player would find it: the volume up, its marker read (a
+        // job of its own on first sight of a card), the offer read.
+        if (!waitFor([&content] {
+                return content.undoOfferRead() && content.lifecycleStateName() == "connected"
+                    && content.cardNameReady();
+            }, 15000)) {
+            std::cerr << "the pedal volume or the history never became ready (state "
+                      << content.lifecycleStateName() << ")\n";
+            return 2;
+        }
+        content.askFirst = [anyway](const juce::String& title, const juce::String& message,
+                                    const juce::String& confirm, std::function<void(bool)> answer) {
+            std::cout << "  asks first: " << title << "\n    "
+                      << message.trimEnd().replace("\n", "\n    ") << "\n"
+                      << "  answer: " << (anyway ? confirm : juce::String("Cancel")) << std::endl;
+            answer(anyway);
+        };
+        for (const auto& press : presses) {
+            const bool redo = press == "redo";
+            // The menu is grey while the pedal is busy; a player waits for it.
+            waitFor([&content, redo] { return content.undoEnabled(redo); }, 5000);
+            std::cout << press << ": offered " << content.undoMenuText(redo)
+                      << (content.undoEnabled(redo) ? "" : " (disabled)") << std::endl;
+            if (!content.undoEnabled(redo))
+                return 3;
+            const int settled = content.historyEditsSettled();
+            content.pressUndo(redo);
+            if (!waitFor([&content, settled] { return content.historyEditsSettled() > settled; },
+                         60000)) {
+                std::cerr << "the press never settled\n";
+                return 2;
+            }
+            const juce::String outcome = content.lastHistoryEditOutcome();
+            std::cout << "  outcome: " << outcome << std::endl;
+            // The job's own result lands first; the offer is read after it.
+            const int reads = content.undoOfferReadCount();
+            waitFor([&content, reads] { return content.undoOfferReadCount() > reads; }, 5000);
+            if (!outcome.endsWith("done"))
+                return 3;
+        }
+        for (const std::string& line : content.bannerLines())
+            std::cout << "  banner: " << line << std::endl;
+        return 0;
+    }
+
+    static bool waitFor(const std::function<bool()>& done, int ms)
+    {
+        const auto deadline = juce::Time::getMillisecondCounterHiRes() + ms;
+        while (!done() && juce::Time::getMillisecondCounterHiRes() < deadline)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+        return done();
     }
 
     static int runHistoryStorage(const juce::StringArray& args, const juce::String& explicitVolume,

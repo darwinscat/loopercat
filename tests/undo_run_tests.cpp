@@ -402,6 +402,34 @@ int main()
         CHECK_SAME(cardState(b.volume), now);
     }
 
+    // --- a crossing is asked about once: keyed by the connection gone back into ---
+    {
+        Bench b;
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "a.wav", 44100 * 4), 5, { .write = o });
+        });
+        const std::int64_t first = newest(b.rec->store()).session;
+        b.rec = std::make_shared<HistoryRecorder>(b.tmp.path / "history", "RC-5", tick); // the app again
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "b.wav", 44100 * 3), 7, { .write = o });
+        });
+        CHECK(newest(b.rec->store()).session != first);
+        CHECK_EQ(b.press(false), std::string()); // the push into 7: this session, nothing crossed
+
+        const auto bumpNow = [&b]() {
+            const auto timeline = b.rec->store().cardTimeline();
+            return undo::bumpFor(undo::plan(timeline, *undo::offer(b.rec->store()).undo), timeline);
+        };
+        const undo::Bump into = bumpNow(); // back into the first run's push
+        CHECK(into.needed());
+        CHECK(into.keys == (std::vector<std::string> { "connection:" + std::to_string(first) }));
+        CHECK_EQ(b.press(false), std::string());
+        CHECK_EQ(b.press(true), std::string());
+        // The press wrote rows in this session; going back into the same
+        // connection again is the same crossing, under the same key.
+        CHECK(bumpNow().keys == into.keys);
+    }
+
     // --- which later operations are still in effect ---
     {
         const auto entry = [](std::int64_t op, const std::string& kind, std::optional<std::int64_t> reverts) {

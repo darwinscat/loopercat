@@ -199,17 +199,10 @@ inline Bump bumpFor(const Plan& plan, const std::vector<HistoryStore::CardEntry>
     if (target == nullptr || !plan.possible())
         return out;
     if (plan.crossesConnection) {
-        // The newest finished session after the target, read as the plan reads it.
-        std::int64_t newest = target->session;
-        bool after = false;
-        for (const auto& entry : timeline) {
-            if (entry.op == target->op)
-                after = true;
-            else if (after && entry.status == "done")
-                newest = entry.session;
-        }
-        out.keys.push_back("connection:" + std::to_string(target->session) + ">"
-                           + std::to_string(newest));
+        // Keyed by the connection the press goes back INTO: once a player has
+        // said yes to reaching into it, the next press there — after the
+        // first one wrote its own row in this session — is the same crossing.
+        out.keys.push_back("connection:" + std::to_string(target->session));
         out.reasons.push_back("It goes back past another connection of the pedal.");
     }
     if (plan.crossesPedal) {

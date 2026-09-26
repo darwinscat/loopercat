@@ -4,6 +4,8 @@
 #pragma once
 
 #include <loopercat/CardMarker.hpp>
+
+#include <set>
 #include <loopercat/Connect.hpp>
 #include <loopercat/StorageRegister.hpp>
 
@@ -22,9 +24,14 @@
 #include "PedalPresence.h"
 #include "PedalWorker.h"
 #include "HistoryPane.h"
+#include "HistoryWindow.h"
+#include "HistoryWindowHost.h"
 #include "history/SlotRows.h"
 #include "history/TakeAudition.h"
 #include "history/HistoryRecorder.h"
+#include "history/UndoRun.h"
+#include "history/CardRestore.h"
+#include "history/TakeExport.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
 #include "RhythmPane.h"
@@ -116,6 +123,34 @@ public:
     std::string volumePath() const;
     std::vector<std::string> bannerLines() const;
 
+    // The card's whole history in a window of its own (#73): Window ->
+    // History. The view is fed on the worker from the store, needs no pedal,
+    // and is read again after every job. Public for the --history-window
+    // seam, which feeds the very view the window shows without a window.
+    void openHistoryWindow();
+    void feedHistoryWindow();
+    HistoryWindow& historyWindowView() { return historyView; }
+    int historyWindowFeeds() const { return historyWindowFed; }
+
+    // Edit -> Undo / Redo over the history (#73), and Cmd-Z / Cmd-Shift-Z.
+    // What is on offer is read from the store after every job; a press is
+    // planned on the worker, may ask first (the speed bump), and runs as one
+    // recorded operation. Public for the --undo / --redo seam.
+    void pressUndo(bool redo);
+    juce::String undoMenuText(bool redo) const;
+    bool undoEnabled(bool redo) const;
+    void refreshUndoOffer();
+    bool undoOfferRead() const { return undoOfferReads > 0; }
+    int undoOfferReadCount() const { return undoOfferReads; }
+    int historyEditsSettled() const { return historyEditsDone; }
+    juce::String lastHistoryEditOutcome() const { return historyEditOutcome; }
+    // How a press that crosses something asks first: the title, the reasons,
+    // the confirming button's words, and where the answer goes. A dialog in
+    // the app; the seams answer from the command line instead.
+    std::function<void(const juce::String& title, const juce::String& message,
+                       const juce::String& confirm, std::function<void(bool)> answer)>
+        askFirst;
+
     void paint(juce::Graphics& g) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress& key) override;
@@ -171,6 +206,49 @@ private:
     void applyHistoryRows(std::vector<HistoryPane::Row> rows, int slot);
     void playFromHistory(std::int64_t op);    // an archived take, out of the store
     void restoreFromHistory(std::int64_t op); // a recorded state, back onto the card
+    void playArchivedTake(int slot, std::string hash, juce::String title); // tab and window alike
+
+    // The History window's rows as the owner needs them for the buttons: the
+    // take a row plays and exports, and the slots its restore touches.
+    struct WindowEntry {
+        std::int64_t op = 0;
+        int slot = 0;          // the slot of the take the row plays
+        std::string takeHash;  // empty: nothing to play or export
+        std::string takeName;  // the name it is exported under
+        juce::String action;
+        std::vector<int> slots;
+        bool restorable = false;
+    };
+    std::vector<WindowEntry> windowEntries;
+    int historyWindowFed = 0;
+    const WindowEntry* windowEntry(std::int64_t op) const;
+    void playFromWindow(std::int64_t op);
+    void exportFromWindow(std::int64_t op);
+    void restoreFromWindow(std::int64_t op);
+    void pinFromWindow(std::int64_t op, bool pinned);
+    bool historyKeys(const juce::KeyPress& key); // Cmd-Z / Cmd-Shift-Z, from either window
+
+    // A press of Undo or Redo, planned on the worker and handed back.
+    struct HistoryEdit {
+        bool redo = false;
+        std::int64_t target = 0;
+        juce::String words;      // "Undo trim of slot 14"
+        juce::String refusal;    // why it cannot run; empty when it can
+        std::vector<int> slots;  // the player lets go of these first
+        std::vector<std::string> crossings; // the speed bump's keys
+        std::vector<std::string> reasons;   // and its lines
+    };
+    void proposeHistoryEdit(HistoryEdit edit);
+    void runHistoryEdit(HistoryEdit edit);
+    void settleHistoryEdit(juce::String outcome);
+    bool cardTakesEdits() const;
+    history::undo::Offer undoOffer;
+    int undoOfferReads = 0;
+    bool historyEditPending = false;
+    juce::String historyEditDescription; // the running press's job, to credit its result
+    std::set<std::string> acknowledgedCrossings; // asked once a session, per crossing
+    int historyEditsDone = 0;
+    juce::String historyEditOutcome;
     int historyRows = 0; // what the tab last received, for the --history seam
     void applyColumnPreferences();          // Settings -> Columns, onto the table
     // Settings -> History (issue #74): the limit in force, the read that
@@ -286,6 +364,10 @@ private:
     // and must become no-ops once destruction has begun (the worker may
     // already be gone by the time a DiskArbitration callback lands).
     std::shared_ptr<bool> uiAlive = std::make_shared<bool>(true);
+    // The History window's view outlives its frame: closing the window hides
+    // the frame, and the view keeps its rows and selection for the next open.
+    HistoryWindow historyView;
+    std::unique_ptr<HistoryWindowHost> historyHost;
     std::unique_ptr<AppMenu> appMenu; // after the components its actions touch
     app::DeviceWatcher deviceWatcher; // before the worker: its probe runs on the worker thread
     // The history (#72). Only the worker thread touches it; declared before the
