@@ -258,6 +258,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     // table and the studio offer only that, and the core refuses the rest.
     table.permissions = [this] { return CardPermissions::of(snapshot.family); };
     inspector.permissions = [this] { return CardPermissions::of(snapshot.family); };
+    rhythmPane.permissions = [this] { return CardPermissions::of(snapshot.family); };
     player.permissions = [this] { return CardPermissions::of(snapshot.family); };
     table.onSlotContextMenu = [this](int slot, juce::Point<int> at) { showSlotMenu(slot, at); };
     table.onSlotsContextMenu = [this](std::vector<int> slots, juce::Point<int> at) {
@@ -336,7 +337,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             toggleCountIn(slot, row->info.countIn);
     };
-    inspector.onRhythmEdited = [this](int slot, usecases::rhythm::Edits edits) {
+    rhythmPane.onEdit = [this](int slot, usecases::rhythm::Edits edits) {
         if (!pedalBusy && slotRowFor(slot) != nullptr)
             editRhythm(slot, std::move(edits));
     };
@@ -533,6 +534,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             return; // a read-only check pulses its row and locks nothing (issue #61)
         pedalBusy = busy;
         inspector.setBusy(busy);
+        rhythmPane.setBusy(busy);
         updateStatusText();
         updateToolbar();
         if (!busy)
@@ -664,6 +666,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(table);  // shown once a pedal is mounted
     addChildComponent(bottomTabs);
     addChildComponent(inspector);
+    addChildComponent(rhythmPane);
     addChildComponent(history);
     history.onPlay = [this](std::int64_t op) { playFromHistory(op); };
     history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
@@ -1061,6 +1064,7 @@ void MainComponent::updateTableRows()
 void MainComponent::updateInspector()
 {
     inspector.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
+    rhythmPane.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
     if (history.isVisible())
         updateHistory();
 }
@@ -1186,13 +1190,15 @@ void MainComponent::applyHistoryRows(std::vector<HistoryPane::Row> rows, int slo
     history.setRows(std::move(rows), slot);
 }
 
-// The bottom pane has two faces for the selected slot: listen to it (the
-// player) or set it up (its properties). One pane, so the table never moves.
+// The bottom pane has four faces for the selected slot: listen to it (the
+// player), set it up (its properties), its drums (the rhythm), and what
+// happened to it (the history). One pane, so the table never moves.
 void MainComponent::showBottomTab(int index)
 {
     const bool mounted = table.isVisible();
     player.setVisible(mounted && index == kAudioTab);
     inspector.setVisible(mounted && index == kPropertiesTab);
+    rhythmPane.setVisible(mounted && index == kRhythmTab);
     history.setVisible(mounted && index == kHistoryTab);
     if (mounted && index == kHistoryTab)
         updateHistory();
@@ -2614,6 +2620,7 @@ void MainComponent::resized()
     bottomTabs.setBounds(bottom.removeFromTop(26));
     player.setBounds(bottom);
     inspector.setBounds(bottom);
+    rhythmPane.setBounds(bottom);
     history.setBounds(bottom);
     area.removeFromBottom(8);
     table.setBounds(area.reduced(12, 0));

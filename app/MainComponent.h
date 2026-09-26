@@ -27,6 +27,7 @@
 #include "history/HistoryRecorder.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
+#include "RhythmPane.h"
 #include "SettingsDialog.h"
 #include "SlotInspector.h"
 #include "SlotTable.h"
@@ -78,6 +79,7 @@ public:
     void selectSlot(int slot);
     void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
     void showHistory() { bottomTabs.select(kHistoryTab); }       // --history, for snapshots
+    void showRhythm() { bottomTabs.select(kRhythmTab); }         // --rhythm, for snapshots
     bool historyReady() const { return historyRows > 0; }        // its rows have landed
     // The card's own name (issue #99): read from its marker once the volume
     // is up, minted when it has none. For the --snapshot seam: whether that
@@ -119,7 +121,8 @@ public:
     bool keyPressed(const juce::KeyPress& key) override;
 
 private:
-    static constexpr int kAudioTab = 0, kPropertiesTab = 1, kHistoryTab = 2; // the bottom pane's faces
+    static constexpr int kAudioTab = 0, kPropertiesTab = 1, kRhythmTab = 2,
+                         kHistoryTab = 3; // the bottom pane's faces
 
     void applySnapshot(const PedalSnapshot& snapshot);
     void slotChosen(int slot, bool startPlaying);
@@ -234,9 +237,10 @@ private:
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
-    TabStrip bottomTabs { { "Audio", "Properties", "History" } };
+    TabStrip bottomTabs { { "Audio", "Properties", "Rhythm", "History" } };
     HistoryPane history;
     SlotInspector inspector;
+    RhythmPane rhythmPane;
     Toast toast;
     BatchOverlay batchOverlay;
     juce::TooltipWindow tooltips { this, 600 }; // hover hints (the player's loudness readout first)

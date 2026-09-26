@@ -55,7 +55,7 @@ public:
         // The headless proof that the window actually draws — no display
         // permissions involved; used by the DoD check and CI screenshots.
         // --select <slot> additionally selects that slot (1..99) and waits
-        // for its waveform before rendering; --properties and --history
+        // for its waveform before rendering; --properties, --rhythm and --history
         // switch the bottom pane to those tabs, so those faces render
         // headless too.
         // --midi-probe: list the MIDI outputs the app can see, send the
@@ -380,6 +380,8 @@ private:
         content.refreshNow();
         if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--properties"))
             content.showProperties();
+        if (juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--rhythm"))
+            content.showRhythm();
         const bool wantsHistory =
             juce::JUCEApplicationBase::getCommandLineParameterArray().contains("--history");
         if (wantsHistory)
