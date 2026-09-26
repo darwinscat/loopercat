@@ -21,12 +21,15 @@ namespace loopercat::pedallink {
 
 namespace {
 
-    // Waits for the one frame that answers the storage query. Frames arrive
-    // on JUCE's MIDI thread; the query thread sleeps on the condition until
-    // an answer lands or its timeout runs out. The first verdict wins; every
+    // Waits for the one frame that answers the storage query — the answer
+    // of the model asked, judged by StorageRegister.hpp. Frames arrive on
+    // JUCE's MIDI thread; the query thread sleeps on the condition until an
+    // answer lands or its timeout runs out. The first verdict wins; every
     // later frame is ignored.
     class ReplyListener final : public juce::MidiInputCallback {
     public:
+        explicit ReplyListener(const sysex::ModelId& model) : model_(model) {}
+
         void handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& message) override
         {
             if (!message.isSysEx())
@@ -37,7 +40,7 @@ namespace {
             std::optional<storage::State> state;
             std::string problem;
             try {
-                state = storage::parseReply(frame);
+                state = storage::parseReply(frame, model_);
             } catch (const Error& e) {
                 problem = e.what();
             }
@@ -74,6 +77,7 @@ namespace {
         }
 
     private:
+        const sysex::ModelId model_;
         mutable std::mutex mutex_;
         std::condition_variable signal_;
         bool decidedFlag_ = false;
@@ -83,14 +87,15 @@ namespace {
 
 } // namespace
 
-juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& pedal)
+juce::String requestStorageMode(bool enter, const Pedal& pedal)
 {
     // Opened by identifier, never by name: with two RC-5s the names are equal
     // and only the identifier says which pedal this is.
-    const auto out = juce::MidiOutput::openDevice(pedal.identifier);
+    const auto out = juce::MidiOutput::openDevice(pedal.endpoint.identifier);
     if (out == nullptr)
-        return "cannot open MIDI device " + pedal.name + " (" + pedal.identifier + ")";
-    const auto frame = enter ? sysex::enterStorageMode() : sysex::exitStorageMode();
+        return "cannot open MIDI device " + pedal.endpoint.name + " (" + pedal.endpoint.identifier + ")";
+    // With THIS pedal's model id: the RC-500 ignores the RC-5's in silence.
+    const auto frame = enter ? sysex::enterStorageMode(pedal.modelId()) : sysex::exitStorageMode(pedal.modelId());
     // JUCE wraps the payload in F0/F7 itself.
     out->sendMessageNow(juce::MidiMessage::createSysExMessage(
         frame.data() + 1, static_cast<int>(frame.size()) - 2));
@@ -105,22 +110,27 @@ juce::String requestStorageMode(bool enter)
     return requestStorageMode(enter, *device);
 }
 
-StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs)
+StorageQuery readStorageState(const Pedal& pedal, int timeoutMs)
 {
     if (timeoutMs <= 0)
         throw Error("storage query: the timeout must be positive");
-    const auto out = juce::MidiOutput::openDevice(pedal.identifier);
+    const auto out = juce::MidiOutput::openDevice(pedal.endpoint.identifier);
     if (out == nullptr)
-        throw Error("cannot open MIDI device " + pedal.name.toStdString() + " ("
-                    + pedal.identifier.toStdString() + ")");
-    const auto inputs = findPedalInputs();
-    if (inputs.empty())
-        throw Error("no RC-5 MIDI input on the bus");
+        throw Error("cannot open MIDI device " + pedal.endpoint.name.toStdString() + " ("
+                    + pedal.endpoint.identifier.toStdString() + ")");
 
-    // Every RC-5 input is opened: with two pedals the inputs are named alike
-    // and nothing pairs an input with the output asked — but only the pedal
-    // asked answers, so whichever input carries the answer is its.
-    ReplyListener listener;
+    // Every input of the pedal's family is opened: with two pedals of one
+    // model the inputs are named alike and nothing pairs an input with the
+    // output asked — but only the pedal asked answers, and the answer is
+    // judged against its model, so whichever input carries it is its.
+    std::vector<juce::MidiDeviceInfo> inputs;
+    for (const auto& candidate : findFamilyInputs())
+        if (candidate.profile == pedal.profile)
+            inputs.push_back(candidate.endpoint);
+    if (inputs.empty())
+        throw Error("no " + std::string(pedal.family()) + " MIDI input on the bus");
+
+    ReplyListener listener(pedal.modelId());
     std::vector<std::unique_ptr<juce::MidiInput>> opened;
     for (const auto& input : inputs)
         if (auto in = juce::MidiInput::openDevice(input.identifier, &listener)) {
@@ -128,9 +138,9 @@ StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs)
             opened.push_back(std::move(in));
         }
     if (opened.empty())
-        throw Error("cannot open any RC-5 MIDI input");
+        throw Error("cannot open any " + std::string(pedal.family()) + " MIDI input");
 
-    const auto request = storage::readRequest();
+    const auto request = storage::readRequest(pedal.modelId());
     // JUCE wraps the payload in F0/F7 itself.
     out->sendMessageNow(juce::MidiMessage::createSysExMessage(
         request.data() + 1, static_cast<int>(request.size()) - 2));

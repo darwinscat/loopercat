@@ -5,6 +5,7 @@
 
 #include "PedalPortName.h"
 
+#include <loopercat/DeviceProfile.hpp>
 #include <loopercat/StorageRegister.hpp>
 #include <loopercat/Sysex.hpp>
 
@@ -12,14 +13,15 @@
 
 #include <functional>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 //==============================================================================
-// loopercat::pedallink — the pedal's MIDI face: find the RC-5 endpoints and
-// flip one's storage mode. The frames come from core/Sysex.hpp (wire-verified,
-// issue #22); this layer only locates the device and sends. The pedal's MIDI
-// endpoint is present in BOTH modes, so Connect works from the looper screen
-// and Disconnect works from storage.
+// loopercat::pedallink — the pedals' MIDI face: find the RC endpoints on the
+// bus and flip one's storage mode. The frames come from core/Sysex.hpp
+// (wire-verified, issue #22); this layer only locates the device and sends.
+// A pedal's MIDI endpoint is present in BOTH modes, so Connect works from the
+// looper screen and Disconnect works from storage.
 //
 // Finding the pedal is JUCE's job everywhere: enumeration has never been in
 // doubt on any platform. SENDING is a per-platform backend, because on Linux
@@ -33,8 +35,20 @@
 // per-pedal signal there is before either is in STORAGE. So this layer hands
 // out ALL the pedals with their identifiers and sends to the one it is given;
 // choosing between them is the caller's (issue #98).
+//
+// The family: every RC model announces itself by name ("BOSS_RC-5",
+// "BOSS_RC-500"), and the profile table (DeviceProfile.hpp) says which of
+// those this app has a profile for, and what each one's model id is. A
+// Pedal carries its profile, so a frame goes out with THAT pedal's model
+// id — the RC-500 ignores the RC-5's in silence, and the other way round —
+// and an answer is judged against it. The RC-5-only forms remain for the
+// callers that mean the RC-5.
 //==============================================================================
 namespace loopercat::pedallink {
+
+// ---------------------------------------------------------------------------
+// The RC-5 alone — the forms the app was written around.
+// ---------------------------------------------------------------------------
 
 // Every RC-5 output endpoint among `devices`, in the order given — never
 // another RC model that shares the prefix (PedalPortName.h). Pure over the
@@ -48,6 +62,43 @@ inline std::vector<juce::MidiDeviceInfo> pedalsAmong(const juce::Array<juce::Mid
     return pedals;
 }
 
+// ---------------------------------------------------------------------------
+// The family.
+// ---------------------------------------------------------------------------
+
+// One endpoint of a pedal this app has a profile for.
+struct Pedal {
+    juce::MidiDeviceInfo endpoint;          // the name the OS gave, and its identifier
+    const profile::DeviceProfile* profile;  // never null: the model the name announces
+
+    std::string_view family() const { return profile->familyName; }
+    const sysex::ModelId& modelId() const { return profile->modelId; }
+};
+
+// Every endpoint among `devices` whose name announces a model in the profile
+// table, in the order given, each with its profile. An RC model without a
+// profile (the RC-600, say) is not here: it is announced to the player by
+// the window, not spoken to. Pure over the list.
+inline std::vector<Pedal> familyAmong(const juce::Array<juce::MidiDeviceInfo>& devices)
+{
+    std::vector<Pedal> pedals;
+    for (const auto& device : devices)
+        if (const auto* found = portname::familyProfile(device.name.toStdString()))
+            pedals.push_back(Pedal { device, found });
+    return pedals;
+}
+
+// The Pedal an endpoint is — or an Error, for an endpoint whose name
+// announces no model this app has a profile for.
+inline Pedal pedalOf(const juce::MidiDeviceInfo& endpoint)
+{
+    const auto* found = portname::familyProfile(endpoint.name.toStdString());
+    if (found == nullptr)
+        throw Error("MIDI device " + endpoint.name.toStdString() + " (" + endpoint.identifier.toStdString()
+                    + ") is not an RC model this app has a profile for");
+    return Pedal { endpoint, found };
+}
+
 namespace detail {
 
     // CoreMIDI can hand back an EMPTY endpoint list right after the client is
@@ -56,13 +107,13 @@ namespace detail {
     // a bus that is honestly empty costs that moment and nothing else.
     inline constexpr int kEnumerationRetryMs = 100;
 
-    inline std::vector<juce::MidiDeviceInfo>
-    enumerateTwice(const std::function<juce::Array<juce::MidiDeviceInfo>()>& list)
+    template <typename Filter>
+    auto enumerateTwice(const std::function<juce::Array<juce::MidiDeviceInfo>()>& list, Filter filter)
     {
-        auto pedals = pedalsAmong(list());
+        auto pedals = filter(list());
         if (pedals.empty()) {
             juce::Thread::sleep(kEnumerationRetryMs);
-            pedals = pedalsAmong(list());
+            pedals = filter(list());
         }
         return pedals;
     }
@@ -73,19 +124,31 @@ namespace detail {
 // MESSAGE THREAD or a worker; blocks for the retry moment when the bus looks empty.
 inline std::vector<juce::MidiDeviceInfo> findPedals()
 {
-    return detail::enumerateTwice([] { return juce::MidiOutput::getAvailableDevices(); });
+    return detail::enumerateTwice([] { return juce::MidiOutput::getAvailableDevices(); }, pedalsAmong);
 }
 
 // The RC-5 INPUT endpoints — where the pedal's answers arrive. An input's
 // identifier is not its output's (they are different endpoints of one
 // device), and nothing in the OS pairs them; the storage query below opens
-// every RC-5 input and lets the answer tell.
+// every input of the pedal's family and lets the answer tell.
 inline std::vector<juce::MidiDeviceInfo> findPedalInputs()
 {
-    return detail::enumerateTwice([] { return juce::MidiInput::getAvailableDevices(); });
+    return detail::enumerateTwice([] { return juce::MidiInput::getAvailableDevices(); }, pedalsAmong);
 }
 
-// The first of them, for callers that have not learned to choose. With two
+// Every profiled RC OUTPUT endpoint on the bus, with its profile.
+inline std::vector<Pedal> findFamily()
+{
+    return detail::enumerateTwice([] { return juce::MidiOutput::getAvailableDevices(); }, familyAmong);
+}
+
+// Every profiled RC INPUT endpoint on the bus, with its profile.
+inline std::vector<Pedal> findFamilyInputs()
+{
+    return detail::enumerateTwice([] { return juce::MidiInput::getAvailableDevices(); }, familyAmong);
+}
+
+// The first RC-5, for callers that have not learned to choose. With two
 // RC-5s this is whichever the OS listed first — on 2026-09-24 the new pedal,
 // not the main one — which is why it is named for what it is. MESSAGE THREAD.
 inline std::optional<juce::MidiDeviceInfo> findPedal()
@@ -96,10 +159,30 @@ inline std::optional<juce::MidiDeviceInfo> findPedal()
     return pedals.front();
 }
 
-// Send the storage-mode switch to ONE endpoint — one of findPedals(), chosen
-// by the caller. Returns an error message; empty = sent. MESSAGE THREAD.
-// Implemented once per platform.
-juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& pedal);
+// ---------------------------------------------------------------------------
+// The storage switch. Entering is a WRITE to the pedal: it leaves the looper
+// screen and hands its card to the computer; leaving returns it. Whether a
+// pedal's CARD may then be read is the profile's word (allows(read)), not
+// this layer's — a caller that sends the frame to a model whose card the app
+// refuses gets a mounted volume the scan will turn away, and a pedal that
+// stays in storage until Disconnect.
+// ---------------------------------------------------------------------------
+
+// Send the storage-mode switch to ONE pedal — one of findFamily(), chosen by
+// the caller — with that pedal's own model id. Returns an error message;
+// empty = sent. MESSAGE THREAD. Implemented once per platform.
+juce::String requestStorageMode(bool enter, const Pedal& pedal);
+
+// The same, to an endpoint of any profiled model (the profile is read from
+// the name) — the form callers with a bare MidiDeviceInfo use.
+inline juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& endpoint)
+{
+    try {
+        return requestStorageMode(enter, pedalOf(endpoint));
+    } catch (const Error& e) {
+        return e.what();
+    }
+}
 
 // The same, to the first RC-5 on the bus (findPedal()).
 juce::String requestStorageMode(bool enter);
@@ -143,14 +226,21 @@ inline const char* describe(StorageQuery query)
     return "?";
 }
 
-// Send the read request to ONE endpoint (one of findPedals()) and wait for
-// its answer, at most timeoutMs. Short-lived: the pedal's input is opened
-// for the query and closed after it — no standing listener. BLOCKS for up
-// to timeoutMs, so it belongs on a worker thread, never the message thread.
-// Throws loopercat::Error when the endpoint cannot be opened, when no RC-5
-// input is on the bus, or when the register reads a value this app does
-// not know (StorageRegister.hpp names the byte). Implemented once per
-// platform.
-StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs = kStorageQueryTimeoutMs);
+// Send the read request to ONE pedal, with its model id, and wait for its
+// answer — judged against that model, so with two pedals on the bus the
+// other one's frames are not it — at most timeoutMs. Short-lived: the inputs
+// of the pedal's family are opened for the query and closed after it — no
+// standing listener. BLOCKS for up to timeoutMs, so it belongs on a worker
+// thread, never the message thread. Throws loopercat::Error when the
+// endpoint cannot be opened, when no input of the pedal's family is on the
+// bus, or when the register reads a value this app does not know
+// (StorageRegister.hpp names the byte). Implemented once per platform.
+StorageQuery readStorageState(const Pedal& pedal, int timeoutMs = kStorageQueryTimeoutMs);
+
+// The same, for an endpoint of any profiled model.
+inline StorageQuery readStorageState(const juce::MidiDeviceInfo& endpoint, int timeoutMs = kStorageQueryTimeoutMs)
+{
+    return readStorageState(pedalOf(endpoint), timeoutMs);
+}
 
 } // namespace loopercat::pedallink
