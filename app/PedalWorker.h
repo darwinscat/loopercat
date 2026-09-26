@@ -5,7 +5,9 @@
 
 #include <loopercat/Catalog.hpp>
 #include <loopercat/Commands.hpp>
+#include <loopercat/DeviceProfile.hpp>
 #include <loopercat/Lifecycle.hpp>
+#include <loopercat/Rc0.hpp>
 #include <loopercat/Volume.hpp>
 
 #include <juce_events/juce_events.h>
@@ -40,8 +42,9 @@ namespace loopercat
 struct SlotRow
 {
     catalog::SlotInfo info;
-    std::string wavFile; // on-pedal filename(s), comma-joined; empty when none
-    std::string wavPath; // absolute path of the first wav — what playback opens
+    std::string wavFile; // on-pedal filename(s), comma-joined; empty when none. On a
+                         // multi-track model each name carries its track ("T1 001_1.WAV")
+    std::string wavPath; // absolute path of track 1's first wav — what playback opens
 
     bool operator==(const SlotRow&) const = default;
 };
@@ -50,6 +53,9 @@ struct PedalSnapshot
 {
     std::string volume;                      // mount path; empty = no pedal found
     std::string error;                       // non-empty = the volume is there but unreadable
+    std::string family;                      // the card's model, as its root element names it
+                                             // (profile::DeviceProfile::familyName); empty
+                                             // until a memory file has been read
     lifecycle::State state = lifecycle::State::disconnected; // the connection truth (issue #17)
     long long freeBytes = 0;                 // available space on the volume
     std::vector<SlotRow> slots;              // all 99 when readable
@@ -61,7 +67,8 @@ struct PedalSnapshot
     bool operator==(const PedalSnapshot& other) const
     {
         constexpr long long kFreeBytesBucket = 100'000'000; // 0.1 GB, the shown precision
-        return volume == other.volume && error == other.error && state == other.state
+        return volume == other.volume && error == other.error && family == other.family
+            && state == other.state
             && freeBytes / kFreeBytesBucket == other.freeBytes / kFreeBytesBucket
             && slots == other.slots && findings == other.findings;
     }
@@ -209,14 +216,29 @@ public:
         }
         try {
             const std::string text = commands::readMemory(*found);
+            // The model is the card's own word for itself, and it says how
+            // many tracks a memory has (DeviceProfile.hpp).
+            const profile::DeviceProfile& family = rc0::profileOf(text);
+            snapshot.family = std::string(family.familyName);
             for (auto& info : catalog::listSlots(text)) {
+                // Every track's files, in track order, each named with its
+                // track on a multi-track model; on the RC-5 the one-track text
+                // it always was. Playback opens track 1's first file — a mix
+                // of the tracks is a later piece.
                 std::string files, firstPath;
-                for (const auto& name : volume::listSlotWavs(*found, info.slot)) {
-                    if (files.empty())
-                        firstPath = (volume::wavDir(*found, info.slot) / name).string();
-                    else
-                        files += ", ";
-                    files += name;
+                for (int track = 1; track <= family.trackCount; ++track) {
+                    for (const auto& name :
+                         volume::listTrackWavs(*found, family, info.slot, track)) {
+                        if (track == 1 && firstPath.empty())
+                            firstPath =
+                                (volume::trackDir(*found, family, info.slot, track) / name)
+                                    .string();
+                        if (!files.empty())
+                            files += ", ";
+                        if (family.trackCount > 1)
+                            files += "T" + std::to_string(track) + " ";
+                        files += name;
+                    }
                 }
                 snapshot.slots.push_back({ std::move(info), std::move(files), std::move(firstPath) });
             }

@@ -26,9 +26,13 @@
 
 #include "../app/PedalWorker.h"
 
+#include <loopercat/DeviceProfile.hpp>
 #include <loopercat/Rc0.hpp>
+#include <loopercat/Volume.hpp>
 
 #include <juce_gui_basics/juce_gui_basics.h>
+
+#include <tuple>
 
 #include <chrono>
 #include <filesystem>
@@ -105,6 +109,7 @@ int main()
     if (!deliveries.empty()) {
         CHECK(!deliveries.back().error.empty());
         CHECK(deliveries.back().slots.empty());
+        CHECK(deliveries.back().family.empty()); // nothing read, no model
     }
 
     // 2. The pedal content lands (a mount): a delivery with all 99 slots.
@@ -114,6 +119,7 @@ int main()
         const auto& s = deliveries.back();
         CHECK_EQ(s.volume, volume.string());
         CHECK_EQ(s.error, "");
+        CHECK_EQ(s.family, "RC-5"); // the card's own word for its model
         CHECK_EQ(s.slots.size(), static_cast<std::size_t>(rc0::kSlotCount));
         CHECK_EQ(s.slots.at(0).info.name, "Memory 01   ");
     }
@@ -233,6 +239,49 @@ int main()
         CHECK(after.find("Phantom") == std::string::npos);
 
         fs::remove_all(ghostVolume);
+    }
+
+    // 8. A two-track model's card (the synthetic file from #107, its takes at
+    // the pedal's addresses NNN_1 and NNN_2) scans as one row per memory:
+    // the model named, every track's file in the row with its track, playback
+    // on track 1's file — and a memory whose take sits on track 2 alone shows
+    // its file and plays nothing. The scan changes nothing on the card.
+    {
+        const fs::path twoTrack =
+            fs::temp_directory_path() / ("loopercat-twotrack-" + std::to_string(stamp));
+        fs::remove_all(twoTrack);
+        fs::create_directories(twoTrack / "ROLAND" / "WAVE");
+        writeMemoryPair(twoTrack, testkit::syntheticTwoTrackMemoryText());
+        const auto take = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410 });
+        const std::string_view bytes(reinterpret_cast<const char*>(take.data()), take.size());
+        for (const auto& [slot, track, name] :
+             { std::tuple { 1, 1, "001_1.WAV" }, std::tuple { 1, 2, "001_2.WAV" },
+               std::tuple { 11, 2, "011_2.WAV" } }) {
+            const fs::path dir = volume::trackDir(twoTrack, profile::kRc500, slot, track);
+            fs::create_directories(dir);
+            commands::writeFileBytes(dir / name, bytes);
+        }
+        std::vector<PedalSnapshot> ignored;
+        PedalWorker scanner(twoTrack.string(), [&ignored](const PedalSnapshot& s) {
+            ignored.push_back(s);
+        });
+        const PedalSnapshot s = scanner.scanOnce();
+        CHECK_EQ(s.error, "");
+        CHECK_EQ(s.family, "RC-500");
+        CHECK_EQ(s.slots.size(), static_cast<std::size_t>(rc0::kSlotCount));
+        if (s.slots.size() == static_cast<std::size_t>(rc0::kSlotCount)) {
+            CHECK_EQ(s.slots.at(0).info.tracks.size(), 2u);
+            CHECK_EQ(s.slots.at(0).wavFile, "T1 001_1.WAV, T2 001_2.WAV");
+            CHECK_EQ(s.slots.at(0).wavPath,
+                     (volume::trackDir(twoTrack, profile::kRc500, 1, 1) / "001_1.WAV").string());
+            CHECK_EQ(s.slots.at(10).wavFile, "T2 011_2.WAV");
+            CHECK_EQ(s.slots.at(10).wavPath, ""); // nothing on track 1 to play
+            CHECK(!s.slots.at(10).info.hasAudio); // TRACK1's fact, as the flat field says
+            CHECK(s.slots.at(10).info.tracks.at(1).hasAudio);
+            CHECK_EQ(s.slots.at(1).wavFile, "");  // memory 2: a take indexed, no file on disk here
+        }
+        // An RC-5 card's rows read exactly as before: no track prefix.
+        fs::remove_all(twoTrack);
     }
 
     return testkit::summary("pedal_monitor_harness");

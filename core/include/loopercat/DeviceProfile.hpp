@@ -16,10 +16,10 @@
 //
 // The operation set is the guard's other half. Knowing a model is not the
 // same as being allowed to touch its card: the two-track model is known here
-// and nothing is open on it, because two of our operations would corrupt
-// such a card silently — a swap carries only the first track's audio across,
-// a clear writes a one-track factory body. On this table they are not
-// untested on it; they are unreachable.
+// and only read, because two of our operations would corrupt such a card
+// silently — a swap carries only the first track's audio across, a clear
+// writes a one-track factory body. On this table they are not untested on
+// it; they are unreachable.
 
 #pragma once
 
@@ -184,9 +184,10 @@ inline constexpr DeviceProfile kRc5 {
 // NNN_1 and NNN_2, 99 memories), the sysex probe with both pedals on the bus
 // (model id 00 00 00 77 answers, 76 and 78 are silent; Identity Reply family
 // 0x0377), ioreg (product id 0x0252). Its factory body is not on record here,
-// and nothing is open on it: known, and left alone.
+// and reading is the one thing open on it: the browser lists such a card,
+// and nothing changes it — every write, pull included, is still refused.
 inline constexpr DeviceProfile kRc500 {
-    "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {}, kNoOperation
+    "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {}, bit(Operation::read)
 };
 
 inline constexpr std::array<const DeviceProfile*, 2> kAll { &kRc5, &kRc500 };
