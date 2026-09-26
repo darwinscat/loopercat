@@ -281,8 +281,18 @@ int main()
     choose(*kit, 4);
     type(*level, "10");
     CHECK_EQ(heard.calls, 10);
+    // A greyed CHOICE keeps nothing either: a dropdown left open when the job
+    // started still commits its pick, and the tab must snap back to the
+    // memory's own value rather than name a groove it does not have. (A
+    // greyed field takes no typing at all, so only a choice can drift.)
+    CHECK_EQ(kit->getText(), "Studio");
     pane.setBusy(false);
     CHECK(toggle->isEnabled() && kit->isEnabled());
+    // Whatever the greying left behind, the tab shows the memory again the
+    // moment it can be touched — the controls' own invariant, not the
+    // owner's: nothing pushed values in between.
+    CHECK_EQ(kit->getText(), "Studio");
+    CHECK_EQ(level->getText(), "100");
 
     // --- no slot again: the controls go away ---
     pane.setSlot(nullptr);

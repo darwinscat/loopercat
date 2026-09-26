@@ -123,9 +123,17 @@ void RhythmControls::makeChoice(juce::ComboBox& box, const char* id,
     box.setColour(juce::ComboBox::focusedOutlineColourId, felitronics::appkit::brand::violet);
     // A lamp reports nothing, whoever set it: a locked BEAT stays locked
     // even for a caller that reaches the box past its greyed face.
+    // A control nobody can act on reports nothing AND keeps nothing: a
+    // dropdown left open when a job starts still commits its pick, so a
+    // greyed box that was moved snaps back to the memory's own value
+    // instead of naming a groove the memory does not have.
     box.onChange = [this, &box, makeEdit] {
+        if (!box.isEnabled()) {
+            refresh();
+            return;
+        }
         const int selected = box.getSelectedId();
-        if (selected > 0 && box.isEnabled() && onEdit_)
+        if (selected > 0 && onEdit_)
             onEdit_(makeEdit(selected - 1));
     };
     addAndMakeVisible(box);
@@ -158,8 +166,12 @@ void RhythmControls::commitNumber(juce::TextEditor& editor,
                                   const std::function<long long()>& current,
                                   const std::function<rhythm::Edits(long long)>& makeEdit)
 {
+    if (!isEnabled()) { // the same rule as the choices: refuse, and show the truth
+        refresh();
+        return;
+    }
     const juce::String text = editor.getText().trim();
-    if (text.isEmpty() || text == "-" || !onEdit_ || !isEnabled())
+    if (text.isEmpty() || text == "-" || !onEdit_)
         return;
     const long long value = text.getLargeIntValue();
     if (value == current())
@@ -195,13 +207,18 @@ void RhythmControls::refresh()
     put(toneHigh_, signedNumber(values_.toneHigh));
 }
 
+// Controls nobody can act on still show what the slot holds: going grey (or
+// coming back) puts the memory's own values on them. A dropdown left open
+// when a job starts still commits its pick — the edit is refused, as it must
+// be, but without this the tab would go on naming a groove the memory does
+// not have until the job ends.
 void RhythmControls::enablementChanged()
 {
     for (auto* control : std::initializer_list<juce::Component*> { &pattern_, &kit_, &variation_,
                                                                    &level_, &reverb_, &toneLow_,
                                                                    &toneHigh_ })
         control->setEnabled(isEnabled());
-    beat_.setEnabled(isEnabled() && !values_.beatLocked);
+    refresh(); // also re-applies BEAT's own lock
 }
 
 void RhythmControls::resized()
