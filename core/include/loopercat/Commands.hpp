@@ -265,6 +265,12 @@ struct SlotChange {
     std::string after;
 };
 
+// The same for the pedal's own settings, one entry per section this edit
+// changes, in the file's own order (SETUP, MIDI, CTL) and only the sections
+// that differ. The type lives with the file it describes (SystemFile.hpp); it
+// is named here so the journal's two halves read alike.
+using SectionChange = sysfile::SectionChange;
+
 // What a command tells the history while it runs. Each resource is reported
 // before IT changes: a take goes to the archive before its file does, and
 // the bodies are reported before the memory pair is written — until then
@@ -279,6 +285,10 @@ struct Journal {
     // After a take has landed on the card, with its bytes: the post-state's
     // audio, so the history never has to read it back over USB.
     std::function<void(int slot, const std::string& fileName, std::string_view bytes)> audioWritten;
+    // Just before the settings pair is written, with every section this edit
+    // changes — the pedal's own settings are undoable like a memory is
+    // (sysfile::SectionChange carries the section's bytes either side).
+    std::function<void(const std::vector<sysfile::SectionChange>&)> systemChanging;
 };
 
 struct WriteOptions {
@@ -437,6 +447,11 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
 // stamp both banks past the highest generation on the volume, verify each by
 // re-reading, sweep the sidecars macOS leaves behind.
 //
+// Two refusals, in the order they are asked: a card whose settings cannot be
+// read at all is refused by name (the document on it is the history's
+// "before", so it is needed before anything else), and a card whose settings
+// carry no write counter is refused for the generation it cannot offer.
+//
 // Two deliberate differences from the memory pair, both because we know less
 // here. There is no factory pair to restart from — the RC-5's own SYSTEM
 // counters sit wherever that pedal's history left them (0x0524/0x0525 on one
@@ -454,6 +469,11 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
 {
     sysfile::assertSystemFile(text);
     profile::requireWrites(rc0::profileOf(text));
+    // Described before anything is written, exactly as a memory write is: a
+    // change the history could not describe does not happen, and the card is
+    // left as it was. The document on the card is the "before".
+    const std::vector<sysfile::SectionChange> changes =
+        sysfile::sectionChanges(readSystem(volume), text);
     const auto base = detail::highestGeneration(volume, volume::Bank::system);
     if (!base)
         throw Error("refusing to write settings: neither SYSTEM bank on " + volume.string()
@@ -461,6 +481,8 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
     WriteResult result;
     if (!options.skipBackup)
         result.backedUp = backup(volume, options.backupRoot, options.opId);
+    if (options.journal.systemChanging)
+        options.journal.systemChanging(changes);
     detail::writePairStamped(volume, volume::Bank::system, text, *base);
     volume::SweepResult sweep = volume::sweepJunk(volume);
     result.swept = std::move(sweep.removed);
