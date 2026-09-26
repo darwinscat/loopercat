@@ -61,6 +61,12 @@ namespace
     // The pedal book (issue #98): endpoint -> the card it carried and its
     // name, in the book's own text form (PedalBook.h).
     constexpr auto kPedalBookKey = "pedalBook";
+
+    // A pedal in one word for the log: its family and the OS's endpoint id.
+    juce::String pedalTag(const pedallink::Pedal& pedal)
+    {
+        return juce::String(std::string(pedal.family())) + "@" + pedal.endpoint.identifier;
+    }
     // A release hands the file's free pages back a slice at a time — 16 KB
     // pages, so 256 of them is 4 MB per transaction.
     constexpr int kVacuumSlicePages = 256;
@@ -448,6 +454,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                 return;
             // The pedal surrendered the medium — the attempt stops resending;
             // the mount + scan pipeline reports its own failures from here.
+            trace(connectAttempt.active() ? "connect: a disk appeared \xe2\x80\x94 the pedal heard us"
+                                          : "connect: a disk appeared with no attempt running (storage mode by hand?)");
             connectAttempt.diskAppeared();
             worker.pokeRescan();
         });
@@ -457,9 +465,11 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             if (!*alive)
                 return;
             if (ok) {
+                trace("connect: mounted " + note);
                 toast.show("Mounted " + note);
                 worker.pokeRescan();
             } else {
+                trace("connect: the card would not mount: " + note);
                 endConnectAttempt(); // the attempt's outcome is this banner
                 banners.showError(banners::Source::connection,
                                   "The pedal's card would not mount (" + note
@@ -481,6 +491,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     if (!*alive)
                         return;
                     worker.postEjectFinished(unmounted);
+                    trace(unmounted ? "disconnect: ejected" + (note.isNotEmpty() ? " (" + note + ")" : juce::String())
+                                    : "disconnect: eject refused" + (note.isNotEmpty() ? " (" + note + ")" : juce::String()));
                     if (!unmounted) {
                         juce::String text = juce::String::fromUTF8(
                             "The volume would not eject \xe2\x80\x94 something is still using "
@@ -502,6 +514,9 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     const juce::String exitError = connectTarget
                         ? pedallink::requestStorageMode(false, *connectTarget)
                         : pedallink::requestStorageMode(false);
+                    trace("disconnect: exit-storage frame \xe2\x86\x92 "
+                          + (connectTarget ? pedalTag(*connectTarget) : juce::String("the first pedal on the bus"))
+                          + ": " + (exitError.isEmpty() ? juce::String("sent") : "NOT sent (" + exitError + ")"));
                     connectTarget.reset();
                     if (exitError.isNotEmpty()) {
                         banners.showError(
@@ -758,6 +773,16 @@ void MainComponent::pollMidiPresence()
 // Both buttons route through these, so a headless verification run exercises
 // the same code a finger does.
 
+// One line per step of a connection in operations.log, so "Connect did
+// nothing" has an answer after the toast is gone: which pedals were on the
+// bus, which was chosen, what its register said, every frame and its send
+// result, the disk appearing, the give-up, the walk out. The log's appends
+// are one write each, so a line from here never splits one of the worker's.
+void MainComponent::trace(const juce::String& line)
+{
+    oplog::append(settings.dataDir(), line);
+}
+
 void MainComponent::beginConnect()
 {
     // The pedal Connect goes to is chosen here, once, and remembered: the
@@ -769,10 +794,16 @@ void MainComponent::beginConnect()
     // mode is a write to the pedal, and a card the app would then refuse is
     // a trip for nothing (PedalPresence.h draws the same line).
     std::vector<pedallink::Pedal> pedals;
-    for (const auto& pedal : pedallink::findFamily())
+    juce::String bus;
+    for (const auto& pedal : pedallink::findFamily()) {
+        bus << (bus.isEmpty() ? "" : ", ") << pedalTag(pedal)
+            << (pedal.profile->allows(profile::Operation::read) ? "" : " (card not readable)");
         if (pedal.profile->allows(profile::Operation::read))
             pedals.push_back(pedal);
+    }
+    trace("connect: on the bus: " + (bus.isEmpty() ? juce::String("nothing this app speaks to") : bus));
     if (pedals.empty()) {
+        trace("connect: no readable pedal to connect to");
         banners.showError(banners::Source::connection,
                           juce::String::fromUTF8("No looper this app can read is on USB "
                                                  "\xe2\x80\x94 plug the pedal in, then press Connect."));
@@ -782,6 +813,7 @@ void MainComponent::beginConnect()
     }
     if (pedals.size() == 1) {
         connectTarget = pedals.front();
+        trace("connect: the one pedal, " + pedalTag(*connectTarget));
         askPedalBeforeConnect(*connectTarget);
         return;
     }
@@ -789,12 +821,20 @@ void MainComponent::beginConnect()
     const auto labels = pedalChoiceLabels(pedals);
     for (std::size_t i = 0; i < pedals.size(); ++i)
         which.addItem(static_cast<int>(i) + 1, utf8(labels[i]));
+    trace("connect: asked which of " + juce::String(static_cast<int>(pedals.size())));
     juce::Component::SafePointer<MainComponent> safe(this);
     which.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&connectButton),
-                        [safe, pedals](int chosen) {
-                            if (chosen <= 0 || safe == nullptr)
+                        [safe, pedals, labels](int chosen) {
+                            if (safe == nullptr)
+                                return;
+                            if (chosen <= 0) {
+                                safe->trace("connect: the choice was dismissed, nothing sent");
                                 return; // dismissed: no pedal was asked anything
-                            safe->connectTarget = pedals[static_cast<std::size_t>(chosen) - 1];
+                            }
+                            const auto index = static_cast<std::size_t>(chosen) - 1;
+                            safe->connectTarget = pedals[index];
+                            safe->trace("connect: chose \xe2\x80\x9c" + utf8(labels[index]) + "\xe2\x80\x9d = "
+                                        + pedalTag(pedals[index]));
                             safe->askPedalBeforeConnect(*safe->connectTarget);
                         });
 }
@@ -851,7 +891,7 @@ void MainComponent::askPedalBeforeConnect(pedallink::Pedal pedal)
                              failure = juce::String::fromUTF8(e.what());
                          }
                          oplog::append(logDir,
-                                       "connect: the pedal's register says "
+                                       "connect: " + pedalTag(pedal) + " register says "
                                            + juce::String(answer ? storage::describe(*answer) : "nothing")
                                            + (failure.isNotEmpty() ? " (" + failure + ")" : juce::String()));
                          juce::MessageManager::callAsync([safe, alive, answer] {
@@ -873,16 +913,19 @@ void MainComponent::gateConnect(std::optional<storage::State> answer)
     switch (decision.verdict) {
     case connectgate::Verdict::refuse:
         // Nothing is sent, nothing is retried: the sentence says what to do.
+        trace("connect: refused, nothing sent \xe2\x80\x94 " + utf8(decision.reason));
         connectTarget.reset();
         banners.showError(banners::Source::connection, utf8(decision.reason));
         break;
     case connectgate::Verdict::alreadyInStorage:
         // The pedal is offering its medium already: no frame, just look for it.
+        trace("connect: already in storage mode, no frame \xe2\x80\x94 looking for the card");
         toast.show(juce::String::fromUTF8(
             "The pedal is in storage mode already \xe2\x80\x94 looking for its card\xe2\x80\xa6"));
         worker.pokeRescan();
         break;
     case connectgate::Verdict::sendFrame:
+        trace("connect: attempt begins");
         startConnectAttempt();
         return; // the attempt refreshed status and toolbar itself
     }
@@ -892,6 +935,7 @@ void MainComponent::gateConnect(std::optional<storage::State> answer)
 
 void MainComponent::beginDisconnect()
 {
+    trace("disconnect: requested for " + utf8(snapshot.volume));
     // Release our own hold on the volume first: the read-ahead thread keeps
     // the slot WAV open, and an open file dissents the unmount. The eject
     // completion then walks the pedal out of STORAGE.
@@ -935,6 +979,9 @@ void MainComponent::sendEnterStorage()
 {
     lastConnectSendError = connectTarget ? pedallink::requestStorageMode(true, *connectTarget)
                                          : pedallink::requestStorageMode(true);
+    trace("connect: enter-storage frame \xe2\x86\x92 "
+          + (connectTarget ? pedalTag(*connectTarget) : juce::String("the first pedal on the bus")) + ": "
+          + (lastConnectSendError.isEmpty() ? juce::String("sent") : "NOT sent (" + lastConnectSendError + ")"));
 }
 
 void MainComponent::tickConnectAttempt()
@@ -948,6 +995,8 @@ void MainComponent::tickConnectAttempt()
         sendEnterStorage();
         return;
     case connect::Action::giveUp:
+        trace("connect: gave up \xe2\x80\x94 no disk appeared after the resend budget"
+              + (lastConnectSendError.isEmpty() ? juce::String() : "; last send error: " + lastConnectSendError));
         banners.showError(
             banners::Source::connection,
             lastConnectSendError.isEmpty()
@@ -1592,6 +1641,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         card.reset();
         cardNameVolume = snapshot.volume;
         cardNameSettled = false;
+        trace("connect: card up at " + utf8(snapshot.volume) + " (" + utf8(snapshot.family) + ")");
         readCardName();
     }
     if (card) {
