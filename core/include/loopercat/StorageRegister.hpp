@@ -46,26 +46,31 @@ enum class State : std::uint8_t {
     busy = 0x02, // playing, or an unsaved take — the pedal does not say which
 };
 
-// RQ1 for one byte at the storage register:
-//   F0 41 10 00 00 00 76 11 7F 70 00 00 00 00 00 01 10 F7
-inline std::vector<std::uint8_t> readRequest()
+// RQ1 for one byte at the storage register, addressed to one model:
+//   F0 41 10 00 00 00 76 11 7F 70 00 00 00 00 00 01 10 F7   (RC-5)
+//   F0 41 10 00 00 00 77 11 7F 70 00 00 00 00 00 01 10 F7   (RC-500)
+// — the model sits outside the checksummed body, so the sum is the same.
+inline std::vector<std::uint8_t> readRequest(const sysex::ModelId& model = sysex::kModelRc5)
 {
-    return sysex::rq1(sysex::kStorageModeAddress, { 0x00, 0x00, 0x00, 0x01 });
+    return sysex::rq1(sysex::kStorageModeAddress, { 0x00, 0x00, 0x00, 0x01 }, model);
 }
 
 // The answer's exact shape: F0 41 10 <model:4> 12 <address:4> <value> <checksum> F7.
 inline constexpr std::size_t kReplyLength = 15;
 
-// The pedal's DT1 answer to readRequest(), or no value for any frame that is
-// not it — another model (an RC-500 answers with 77 where the RC-5 says 76),
-// another address (the ready flag lives next door at 7F 70 00 01), a request
-// rather than an answer, a wrong checksum, a frame cut short or padded, not
-// Roland at all. A bus carries other traffic; those frames are simply not
-// the answer, and the caller keeps listening until its own timeout.
+// The answer of the pedal with THIS model id to readRequest(model), or no
+// value for any frame that is not it — another model (an RC-500 answers with
+// 77 where the RC-5 says 76, and with two pedals on the bus the other one's
+// answer is not this one's), another address (the ready flag lives next door
+// at 7F 70 00 01), a request rather than an answer, a wrong checksum, a
+// frame cut short or padded, not Roland at all. A bus carries other traffic;
+// those frames are simply not the answer, and the caller keeps listening
+// until its own timeout.
 //
 // A DT1 to the register with a value the hardware has never shown is an
 // Error naming the byte: an unknown state is not "idle by default".
-inline std::optional<State> parseReply(std::span<const std::uint8_t> frame)
+inline std::optional<State> parseReply(std::span<const std::uint8_t> frame,
+                                       const sysex::ModelId& model = sysex::kModelRc5)
 {
     if (frame.size() != kReplyLength)
         return std::nullopt;
@@ -73,8 +78,8 @@ inline std::optional<State> parseReply(std::span<const std::uint8_t> frame)
         return std::nullopt;
     if (frame[1] != sysex::kRolandId || frame[2] != sysex::kDeviceId)
         return std::nullopt;
-    for (std::size_t i = 0; i < sysex::kModelRc5.size(); ++i)
-        if (frame[3 + i] != sysex::kModelRc5[i])
+    for (std::size_t i = 0; i < model.size(); ++i)
+        if (frame[3 + i] != model[i])
             return std::nullopt;
     if (frame[7] != sysex::kCmdDt1)
         return std::nullopt;
