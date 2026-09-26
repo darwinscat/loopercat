@@ -3,6 +3,8 @@
 
 #include "MainComponent.h"
 
+#include "ConnectGate.h"
+
 #include "OperationId.h"
 #include "history/HistoryRecorder.h"
 #include "history/SlotRows.h"
@@ -475,7 +477,13 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     // The volume is safely ejected — now walk the pedal out
                     // of STORAGE too, and close the lifecycle: the medium
                     // story is over, which is exactly what deviceLost means.
-                    const juce::String exitError = pedallink::requestStorageMode(false);
+                    // The same pedal Connect chose walks out (issue #98); a
+                    // volume that was mounted by hand has no chosen pedal,
+                    // and then the first RC-5 on the bus is all there is.
+                    const juce::String exitError = connectTarget
+                        ? pedallink::requestStorageMode(false, *connectTarget)
+                        : pedallink::requestStorageMode(false);
+                    connectTarget.reset();
                     if (exitError.isNotEmpty()) {
                         banners.showError(
                             banners::Source::connection,
@@ -713,7 +721,99 @@ void MainComponent::pollMidiPresence()
 
 void MainComponent::beginConnect()
 {
-    startConnectAttempt();
+    // The pedal Connect goes to is chosen here, once, and remembered: the
+    // frames of this attempt and the walk out at Disconnect go to the same
+    // endpoint (issue #98). Two RC-5s are told apart only by the OS's
+    // endpoint id until the card marker names them; until that dialog
+    // exists the first one is taken, and said so.
+    const auto pedals = pedallink::findPedals();
+    if (pedals.empty()) {
+        banners.showError(banners::Source::connection,
+                          juce::String::fromUTF8("No RC-5 on USB \xe2\x80\x94 plug the pedal in, "
+                                                 "then press Connect."));
+        updateStatusText();
+        updateToolbar();
+        return;
+    }
+    connectTarget = pedals.front();
+    if (pedals.size() > 1)
+        toast.show(juce::String(static_cast<int>(pedals.size()))
+                   + juce::String::fromUTF8(" RC-5s on USB \xe2\x80\x94 connecting to endpoint ")
+                   + connectTarget->identifier);
+    askPedalBeforeConnect(*connectTarget);
+}
+
+// Before the first frame the pedal is asked whether it can hand over its
+// card at all (issue #85): the storage register says 02 while a loop plays
+// or an unsaved take sits in the current memory, and then the enter-storage
+// frame is refused on the spot — no resend budget changes that, only the
+// musician can. The exchange blocks for up to the query timeout, so it runs
+// on the worker like every other wait on the pedal; the answer comes back
+// to the message thread and the gate (ConnectGate.h) decides. For the
+// player Connect is under way from the click: the status says so and the
+// button is off, even though no frame has gone out yet.
+void MainComponent::askPedalBeforeConnect(juce::MidiDeviceInfo pedal)
+{
+    connectQueryPending = true;
+    toast.show(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"));
+    updateStatusText();
+    updateToolbar();
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue({ "Ask the pedal before connecting",
+                     0,
+                     [pedal, safe, alive = uiAlive, logDir = settings.dataDir()](const volume::fs::path&) {
+                         std::optional<storage::State> answer;
+                         juce::String failure;
+                         try {
+                             switch (pedallink::readStorageState(pedal)) {
+                             case pedallink::StorageQuery::idle: answer = storage::State::idle; break;
+                             case pedallink::StorageQuery::inStorage: answer = storage::State::inStorage; break;
+                             case pedallink::StorageQuery::busy: answer = storage::State::busy; break;
+                             case pedallink::StorageQuery::noAnswer: break;
+                             }
+                         } catch (const Error& e) {
+                             // An exchange that failed is silence with a reason:
+                             // the attempt runs as it always did, the reason is logged.
+                             failure = juce::String::fromUTF8(e.what());
+                         }
+                         oplog::append(logDir,
+                                       "connect: the pedal's register says "
+                                           + juce::String(answer ? storage::describe(*answer) : "nothing")
+                                           + (failure.isNotEmpty() ? " (" + failure + ")" : juce::String()));
+                         juce::MessageManager::callAsync([safe, alive, answer] {
+                             if (*alive && safe != nullptr)
+                                 safe->gateConnect(answer);
+                         });
+                     },
+                     nullptr,
+                     0,
+                     false,    // not background: the player pressed Connect and waits
+                     true,     // quiet: the gate's outcome is what the window shows
+                     false }); // and it needs no card — the card is the thing being asked about
+}
+
+void MainComponent::gateConnect(std::optional<storage::State> answer)
+{
+    connectQueryPending = false;
+    const connectgate::Decision decision = connectgate::decide(answer);
+    switch (decision.verdict) {
+    case connectgate::Verdict::refuse:
+        // Nothing is sent, nothing is retried: the sentence says what to do.
+        connectTarget.reset();
+        banners.showError(banners::Source::connection, utf8(decision.reason));
+        break;
+    case connectgate::Verdict::alreadyInStorage:
+        // The pedal is offering its medium already: no frame, just look for it.
+        toast.show(juce::String::fromUTF8(
+            "The pedal is in storage mode already \xe2\x80\x94 looking for its card\xe2\x80\xa6"));
+        worker.pokeRescan();
+        break;
+    case connectgate::Verdict::sendFrame:
+        startConnectAttempt();
+        return; // the attempt refreshed status and toolbar itself
+    }
+    updateStatusText();
+    updateToolbar();
 }
 
 void MainComponent::beginDisconnect()
@@ -759,7 +859,8 @@ void MainComponent::startConnectAttempt()
 // honest give-up banner.
 void MainComponent::sendEnterStorage()
 {
-    lastConnectSendError = pedallink::requestStorageMode(true);
+    lastConnectSendError = connectTarget ? pedallink::requestStorageMode(true, *connectTarget)
+                                         : pedallink::requestStorageMode(true);
 }
 
 void MainComponent::tickConnectAttempt()
@@ -1041,7 +1142,7 @@ void MainComponent::updateToolbar()
     // Connect: the pedal shows its MIDI face, no honest volume is up, no
     // attempt is already running, and the post-disconnect hold has passed
     // (the re-enumerating MIDI side eats frames — issue #2).
-    connectButton.setEnabled(midiPedalPresent && !pedalBusy
+    connectButton.setEnabled(midiPedalPresent && !pedalBusy && !connectQueryPending
                              && snapshot.state == lifecycle::State::disconnected
                              && !connectAttempt.active() && !connectHoldActive());
     if (appMenu != nullptr)
@@ -1173,7 +1274,7 @@ void MainComponent::updateStatusText()
         status.setColour(juce::Label::textColourId, kStatusText);
         return;
     }
-    if (connectAttempt.active() && snapshot.volume.empty()) {
+    if ((connectAttempt.active() || connectQueryPending) && snapshot.volume.empty()) {
         status.setText(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"),
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
