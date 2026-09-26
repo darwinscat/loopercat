@@ -6,6 +6,8 @@
 #include "Schema.h"
 #include "Undo.h"
 
+#include <loopercat/SystemFile.hpp>
+
 #include <juce_cryptography/juce_cryptography.h>
 
 #include <algorithm>
@@ -38,6 +40,21 @@ std::string hex(std::string_view raw)
         out += digits[b & 0xF];
     }
     return out;
+}
+
+// The text of one section of a SYSTEM file and nothing else: its own opening
+// tag first, its own closing tag last, the opening tag once.
+bool isSectionText(const std::string& section, const std::string& text)
+{
+    const std::string open = "<" + section + ">";
+    const std::string close = "</" + section + ">";
+    if (text.size() < open.size() + close.size())
+        return false;
+    if (text.compare(0, open.size(), open) != 0)
+        return false;
+    if (text.compare(text.size() - close.size(), close.size(), close) != 0)
+        return false;
+    return text.find(open, open.size()) == std::string::npos;
 }
 
 } // namespace
@@ -610,6 +627,17 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
         }
     }
 
+    // What each operation did to the pedal's own settings, in section order.
+    sqlite::Statement settings(db_, "SELECT section, before, after FROM system_changes "
+                                    "WHERE op = ?1 ORDER BY CASE section "
+                                    "  WHEN 'SETUP' THEN 0 WHEN 'MIDI' THEN 1 ELSE 2 END");
+    for (CardEntry& entry : entries) {
+        settings.bind(1, entry.op);
+        while (settings.step())
+            entry.system.push_back({ settings.text(0), settings.text(1), settings.text(2) });
+        settings.reset();
+    }
+
     // The last finished operation on a slot, in this order, is the state it
     // is in; a write that failed or was cut off may never have reached the card.
     std::map<int, CardEntry::Slot*> last;
@@ -620,6 +648,33 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
     for (auto& [slot, touched] : last)
         touched->newest = true;
     return entries;
+}
+
+void HistoryStore::recordSystemChange(std::int64_t op, const SystemChange& change)
+{
+    if (change.section != sysfile::kSectionSetup && change.section != sysfile::kSectionMidi
+        && change.section != sysfile::kSectionCtl)
+        throw Error("\"" + change.section + "\" is not a section of the pedal's settings");
+    if (!isSectionText(change.section, change.before) || !isSectionText(change.section, change.after))
+        throw Error("a settings change records the <" + change.section
+                    + "> section's own text, before and after");
+    if (change.before == change.after)
+        throw Error("the <" + change.section + "> section did not change");
+    sqlite::Statement row(db_, "INSERT INTO system_changes(op, section, before, after) "
+                               "VALUES (?1, ?2, ?3, ?4)");
+    row.bind(1, op).bindText(2, change.section).bindText(3, change.before).bindText(4, change.after);
+    row.run();
+}
+
+std::vector<HistoryStore::SystemChange> HistoryStore::systemChanges(std::int64_t op)
+{
+    std::vector<SystemChange> out;
+    sqlite::Statement read(db_, "SELECT section, before, after FROM system_changes WHERE op = ?1 "
+                                "ORDER BY CASE section WHEN 'SETUP' THEN 0 WHEN 'MIDI' THEN 1 ELSE 2 END");
+    read.bind(1, op);
+    while (read.step())
+        out.push_back({ read.text(0), read.text(1), read.text(2) });
+    return out;
 }
 
 } // namespace loopercat::history

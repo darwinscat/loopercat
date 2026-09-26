@@ -221,6 +221,16 @@ public:
     // offered back like any other. An operation that touched no slot (it
     // failed before the card, or kept only documents) is an entry with no
     // slots.
+    // What an operation did to one section of the pedal's own settings
+    // (SYSTEM*.RC0, issue #73): the section's text — <CTL>...</CTL> — as the
+    // card held it before the write, and as the write left it. The section,
+    // not the file: the pedal restamps the file's trailer by itself.
+    struct SystemChange {
+        std::string section; // sysfile::kSectionSetup / kSectionMidi / kSectionCtl
+        std::string before;
+        std::string after;
+    };
+
     // A take named by a row: what an operation archived before it wrote.
     struct TakeRef {
         std::string name;
@@ -246,9 +256,21 @@ public:
             std::optional<TakeRef> archived;
         };
         std::vector<Slot> slots; // ascending by slot
+        // What the operation did to the pedal's own settings, per section:
+        // an operation that changed settings and no slot is an entry with
+        // no slots and these.
+        std::vector<SystemChange> system; // in section order: SETUP, MIDI, CTL
     };
     std::vector<CardEntry> cardTimeline();
 
+
+    // --- the pedal's own settings in the history (system_changes, v4) ---
+
+    // One row per operation and section, checked on the way in: a section
+    // the file has, both texts that very section (its own tags around a
+    // body), and a change that changed something. Refused otherwise.
+    void recordSystemChange(std::int64_t op, const SystemChange& change);
+    std::vector<SystemChange> systemChanges(std::int64_t op);
 
 private:
     // What one operation recorded about one slot — the take it offers and,

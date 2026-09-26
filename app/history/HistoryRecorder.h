@@ -65,6 +65,10 @@ public:
     // reverts (#73). Called before the job touches the card, so the row
     // names its target even if the write is then cut off.
     void reverts(const std::string& opId, std::int64_t target);
+    // What an operation is about to do to the pedal's own settings, per
+    // section, reported before the settings pair is written — the core's
+    // journal hook for SYSTEM*.RC0 lands here.
+    void systemChanges(const std::string& opId, const std::vector<HistoryStore::SystemChange>& changes);
 
     HistoryStore& store();
 
@@ -105,8 +109,8 @@ private:
 // The one wiring from an operation's WriteOptions into the history, shared by
 // the app and its tests so the tests exercise what ships: each replaced take
 // is kept by the history FIRST and then handed to `alsoKeep` (the transitional
-// trash folder; null for none), and the journal's bodies and landed takes are
-// recorded under the operation's id.
+// trash folder; null for none), and the journal's bodies, landed takes and
+// settings sections are recorded under the operation's id.
 commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recorder,
                                    commands::WriteOptions options, commands::Archive alsoKeep);
 

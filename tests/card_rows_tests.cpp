@@ -234,6 +234,23 @@ int main()
         }
     }
 
+    // --- a settings change: no slots, the section's words, the fields that moved ---
+    {
+        Card controls = op(30, 30000, "controls");
+        controls.system = { { "CTL", "<CTL>\n\t<Ctl1>17</Ctl1>\n\t<Ctl2>18</Ctl2>\n\t<Cc80>0</Cc80>\n</CTL>",
+                                     "<CTL>\n\t<Ctl1>17</Ctl1>\n\t<Ctl2>22</Ctl2>\n\t<Cc80>1</Cc80>\n</CTL>" } };
+        const auto made = rows::forCard({ controls });
+        CHECK_EQ(made.size(), 1u);
+        CHECK_EQ(made.front().action, std::string("Pedal controls changed"));
+        CHECK_EQ(made.front().detail, std::string("Ctl2 18 -> 22, Cc80 0 -> 1"));
+        CHECK(made.front().slots().empty());
+        CHECK(!made.front().playable() && !made.front().restorable());
+        Card midi = op(31, 31000, "midi");
+        midi.system = { { "MIDI", "<MIDI>\n\t<RxCh>1</RxCh>\n</MIDI>", "<MIDI>\n\t<RxCh>2</RxCh>\n</MIDI>" } };
+        CHECK_EQ(rows::forCard({ midi }).front().action, std::string("Pedal settings changed"));
+        CHECK_EQ(rows::forCard({ midi }).front().detail, std::string("RxCh 1 -> 2"));
+    }
+
     // --- pins ride along; an empty card has no rows ---
     {
         Card pinned = op(1, 1000, "rename");

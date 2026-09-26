@@ -191,8 +191,9 @@ int main()
 
         HistoryStore store(tmp.path / "history");
         sqlite::Db& db = store.db();
-        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 3);
-        CHECK_EQ(schema::kVersion, 3);
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 4);
+        CHECK_EQ(schema::kVersion, 4);
+        CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'system_changes'"), 1);
         CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'legacy_files'"), 1);
         // version 3's column, unpinned on every row that was there
         CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE pinned = 0"), 2);
@@ -246,7 +247,7 @@ int main()
         writeVersion1(tmp.path / "history");
         { HistoryStore first(tmp.path / "history"); }
         HistoryStore second(tmp.path / "history");
-        CHECK_EQ(schema::pragmaInteger(second.db(), "user_version"), 3);
+        CHECK_EQ(schema::pragmaInteger(second.db(), "user_version"), 4);
         CHECK_EQ(count(second.db(), "SELECT count(*) FROM ops"), 2);
         CHECK_EQ(count(second.db(), "SELECT count(*) FROM sqlite_master WHERE name = 'legacy_files'"), 1);
     }
@@ -263,8 +264,8 @@ int main()
         const auto b = column(fresh.db(), sql);
         CHECK(a == b);
         CHECK(!a.empty());
-        CHECK_EQ(count(fresh.db(), "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 8);
-        CHECK_EQ(schema::pragmaInteger(fresh.db(), "user_version"), 3);
+        CHECK_EQ(count(fresh.db(), "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 9);
+        CHECK_EQ(schema::pragmaInteger(fresh.db(), "user_version"), 4);
     }
 
     // --- a version-2 store (the ledger, no pins) opens as version 3, rows intact ---
@@ -273,7 +274,7 @@ int main()
         writeVersion(tmp.path / "history", 2);
         HistoryStore store(tmp.path / "history");
         sqlite::Db& db = store.db();
-        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 3);
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 4);
         CHECK_EQ(count(db, "SELECT count(*) FROM legacy_files WHERE kind = 'take'"), 1);
         CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE pinned = 0"), 2);
         CHECK(store.takeBytes(HistoryStore::contentHash(kTake)) == kTake);
@@ -298,9 +299,38 @@ int main()
         CHECK_THROWS(HistoryStore(tmp.path / "history"), "auto_vacuum");
     }
 
+    // --- a version-3 store (pins, no settings rows) opens as version 4, rows and pins intact ---
+    {
+        TempDir tmp;
+        writeVersion(tmp.path / "history", 2);
+        {
+            auto raw = sqlite::Db::open(tmp.path / "history" / "history.db");
+            raw.exec("ALTER TABLE ops ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))");
+            raw.exec("UPDATE ops SET pinned = 1 WHERE seq = 1");
+            raw.exec("PRAGMA user_version = 3");
+        }
+        HistoryStore store(tmp.path / "history");
+        sqlite::Db& db = store.db();
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 4);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops"), 2);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE pinned = 1"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM legacy_files"), 1);
+        CHECK(store.takeBytes(HistoryStore::contentHash(kTake)) == kTake);
+        CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 0);
+        // the new table holds what version 4 promises
+        CHECK_THROWS(db.exec("INSERT INTO system_changes(op, section, before, after) VALUES (1, 'MEM', 'a', 'b')"), "CHECK");
+        CHECK_THROWS(db.exec("INSERT INTO system_changes(op, section, before, after) VALUES (99, 'CTL', 'a', 'b')"), "FOREIGN KEY");
+        db.exec("INSERT INTO system_changes(op, section, before, after) VALUES (1, 'CTL', 'a', 'b')");
+        CHECK_THROWS(db.exec("INSERT INTO system_changes(op, section, before, after) VALUES (1, 'CTL', 'c', 'd')"), "UNIQUE");
+        HistoryStore fresh(tmp.path / "fresh");
+        const std::string sql = "SELECT type || ' ' || name || ' ' || coalesce(sql, '') "
+                                "FROM sqlite_master ORDER BY type, name";
+        CHECK(column(db, sql) == column(fresh.db(), sql));
+    }
+
     // --- one step per version, and the released step is the one that shipped ---
     {
-        CHECK_EQ(sizeof(schema::kSteps) / sizeof(schema::kSteps[0]), 3u);
+        CHECK_EQ(sizeof(schema::kSteps) / sizeof(schema::kSteps[0]), 4u);
         CHECK_EQ(std::string(schema::kSteps[0]), std::string(kVersion1));
         CHECK_EQ(std::string(schema::kSteps[1]), std::string(kVersion2Addition));
     }

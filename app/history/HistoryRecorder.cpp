@@ -122,6 +122,14 @@ void HistoryRecorder::reverts(const std::string& opId, std::int64_t target)
     store().setReverts(opRow(opId), target);
 }
 
+void HistoryRecorder::systemChanges(const std::string& opId,
+                                    const std::vector<HistoryStore::SystemChange>& changes)
+{
+    const std::int64_t row = opRow(opId);
+    for (const auto& change : changes)
+        store().recordSystemChange(row, change);
+}
+
 void HistoryRecorder::finish(const std::string& opId, const std::string& error,
                              const std::string& note)
 {
@@ -159,6 +167,16 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     options.journal.audioWritten = [recorder, opId](int slot, const std::string& fileName,
                                                     std::string_view bytes) {
         recorder->landed(opId, slot, fileName, bytes);
+    };
+    // The settings pair, before it is written: each changed section, its
+    // text before and after (sysfile::sectionChanges, in the core). A throw
+    // here stops the write with the card as it was.
+    options.journal.systemChanging = [recorder, opId](const std::vector<commands::SectionChange>& changes) {
+        std::vector<HistoryStore::SystemChange> rows;
+        rows.reserve(changes.size());
+        for (const auto& change : changes)
+            rows.push_back({ change.section, change.before, change.after });
+        recorder->systemChanges(opId, rows);
     };
     return options;
 }

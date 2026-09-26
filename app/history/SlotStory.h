@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 //==============================================================================
@@ -168,6 +169,93 @@ inline Line tell(const Facts& facts)
         case Take::onCard: line.audio = "in the slot now"; break;
         case Take::lost: line.audio = "take no longer kept"; break;
     }
+    return line;
+}
+
+// --- the pedal's own settings (SYSTEM*.RC0) ---
+
+// One field of a settings section that moved.
+struct FieldChange {
+    std::string tag;
+    long long before = 0;
+    long long after = 0;
+};
+
+// The <Tag>value</Tag> pairs of a section's text, in order — the flat shape
+// every section of the file has. A tag whose value is not a number is left
+// out: nothing in these files is, and a word for it would be a guess.
+inline std::vector<std::pair<std::string, long long>> sectionFields(const std::string& text)
+{
+    std::vector<std::pair<std::string, long long>> out;
+    std::size_t at = 0;
+    while ((at = text.find('<', at)) != std::string::npos) {
+        const std::size_t close = text.find('>', at);
+        if (close == std::string::npos)
+            break;
+        const std::string tag = text.substr(at + 1, close - at - 1);
+        at = close + 1;
+        if (tag.empty() || tag[0] == '/' || tag[0] == '?')
+            continue;
+        const std::size_t end = text.find("</" + tag + ">", at);
+        if (end == std::string::npos)
+            continue;
+        const std::string value = text.substr(at, end - at);
+        if (value.empty() || value.find('<') != std::string::npos)
+            continue; // a section's own opener, not a field
+        bool number = true;
+        for (std::size_t i = 0; i < value.size(); ++i)
+            if (!((value[i] >= '0' && value[i] <= '9') || (i == 0 && value[i] == '-')))
+                number = false;
+        if (number)
+            out.emplace_back(tag, std::stoll(value));
+        at = end;
+    }
+    return out;
+}
+
+// The fields that differ between a section's text before and after, in the
+// section's order. A tag on one side only is not a change: the file's shape
+// is fixed, and a word for such a row would be a guess.
+inline std::vector<FieldChange> fieldChanges(const std::string& before, const std::string& after)
+{
+    std::vector<FieldChange> out;
+    const auto was = sectionFields(before);
+    const auto now = sectionFields(after);
+    for (const auto& [tag, value] : was)
+        for (const auto& [tagNow, valueNow] : now)
+            if (tag == tagNow) {
+                if (value != valueNow)
+                    out.push_back({ tag, value, valueNow });
+                break;
+            }
+    return out;
+}
+
+// What one operation did to the pedal's own settings, section by section:
+// "Pedal controls changed" for CTL, "Pedal settings changed" otherwise, and
+// the fields that moved as tag, old -> new. The tags stand until the
+// controls' names arrive (issue #109); the numbers are the file's own.
+struct SystemFacts {
+    std::string section;
+    std::string before;
+    std::string after;
+};
+
+inline Line tellSystem(const std::vector<SystemFacts>& changes)
+{
+    Line line;
+    bool controlsOnly = !changes.empty();
+    for (const SystemFacts& change : changes)
+        if (change.section != "CTL")
+            controlsOnly = false;
+    line.action = controlsOnly ? "Pedal controls changed" : "Pedal settings changed";
+    for (const SystemFacts& change : changes)
+        for (const FieldChange& field : fieldChanges(change.before, change.after)) {
+            if (!line.detail.empty())
+                line.detail += ", ";
+            line.detail += field.tag + " " + std::to_string(field.before) + " -> "
+                + std::to_string(field.after);
+        }
     return line;
 }
 
