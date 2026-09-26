@@ -19,6 +19,7 @@
 #include "PedalLight.h"
 #include "PedalBook.h"
 #include "PedalLink.h"
+#include "PedalPresence.h"
 #include "PedalWorker.h"
 #include "HistoryPane.h"
 #include "history/SlotRows.h"
@@ -133,8 +134,8 @@ private:
 
     // The supervised Connect (issue #2): the attempt machine owns the
     // retry/give-up policy, these own the clock, the MIDI send and the UI.
-    std::vector<std::string> pedalChoiceLabels(const std::vector<juce::MidiDeviceInfo>& pedals) const;
-    void askPedalBeforeConnect(juce::MidiDeviceInfo pedal); // the register read (#85), on the worker
+    std::vector<std::string> pedalChoiceLabels(const std::vector<pedallink::Pedal>& pedals) const;
+    void askPedalBeforeConnect(pedallink::Pedal pedal); // the register read (#85), on the worker
     void gateConnect(std::optional<storage::State> answer); // the answer arrives: refuse, wait, or attempt
     void startConnectAttempt();
     void sendEnterStorage();
@@ -257,13 +258,14 @@ private:
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
-    bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
-    juce::String otherLooperOnBus;    // another RC model on USB ("RC-500"), named, not connected
+    bool midiPedalPresent = false;    // a pedal whose card this build reads is on USB (normal mode)
+    juce::String otherLooperOnBus;    // an RC model the profile table does not know, named, not spoken to
+    presence::Verdict presenceWords;  // what the empty window and the status strip say about the bus
     connect::Attempt connectAttempt;  // the supervised Connect (issue #2)
     // The endpoint Connect chose (issue #98): the frames of this attempt go
     // to it, and Disconnect walks the same pedal out — never "the first RC-5
     // on the bus", which with two pedals is whichever the OS listed first.
-    std::optional<juce::MidiDeviceInfo> connectTarget;
+    std::optional<pedallink::Pedal> connectTarget;
     bool connectQueryPending = false; // the register is being read: Connect is under way, no frame yet
     pedalbook::Book pedalBook;          // endpoint -> the card it carried, and its name (settings)
     std::optional<marker::Card> card;   // the mounted card's marker, once read

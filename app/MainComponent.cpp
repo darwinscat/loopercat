@@ -712,27 +712,31 @@ void MainComponent::timerCallback()
 // a Connect the pedal never answers.
 void MainComponent::pollMidiPresence()
 {
-    bool present = false;
+    // Every pedal the profile table knows, with the table's read gate
+    // deciding whether Connect is offered (PedalPresence.h); an RC model the
+    // table does not know is named for what it is, and spoken to by nobody.
+    const auto devices = juce::MidiInput::getAvailableDevices();
+    std::vector<presence::Seen> seen;
+    for (const auto& pedal : pedallink::familyAmong(devices))
+        seen.push_back(presence::seen(*pedal.profile));
     juce::String other;
-    for (const auto& device : juce::MidiInput::getAvailableDevices()) {
-        const std::string name = device.name.toStdString();
-        if (portname::isRc5(name))
-            present = true;
-        else if (const auto model = portname::announcedModel(name); model && other.isEmpty())
-            other = juce::String(*model);
-    }
-    if (present == midiPedalPresent && other == otherLooperOnBus)
+    if (seen.empty())
+        for (const auto& device : devices)
+            if (const auto model = portname::announcedModel(device.name.toStdString());
+                model && other.isEmpty())
+                other = juce::String(*model);
+    const presence::Verdict words = presence::describe(seen);
+    if (words.connectable == midiPedalPresent && words.hint == presenceWords.hint
+        && other == otherLooperOnBus)
         return;
-    midiPedalPresent = present;
+    midiPedalPresent = words.connectable;
+    presenceWords = words;
     otherLooperOnBus = other;
-    hint.setText(midiPedalPresent
-                     ? juce::String::fromUTF8("RC-5 detected \xe2\x80\x94 click Connect "
-                                              "to browse loops")
-                 : otherLooperOnBus.isNotEmpty()
+    hint.setText(otherLooperOnBus.isNotEmpty() && !midiPedalPresent
                      ? otherLooperOnBus
-                           + juce::String::fromUTF8(" detected \xe2\x80\x94 LooperCat only "
-                                                    "speaks RC-5")
-                     : juce::String("Connect your looper via USB"),
+                           + juce::String::fromUTF8(" detected \xe2\x80\x94 ")
+                           + utf8(profile::onlySpeaks())
+                     : utf8(presenceWords.hint),
                  juce::dontSendNotification);
     updateStatusText();
     updateToolbar();
@@ -754,11 +758,17 @@ void MainComponent::beginConnect()
     // endpoint (issue #98). One pedal: nothing to ask. More than one: ask,
     // by the name on its card when the book has met the endpoint, and by
     // model and endpoint id when it has not — never by a made-up name.
-    const auto pedals = pedallink::findPedals();
+    // Only pedals whose card this build reads are offered: entering storage
+    // mode is a write to the pedal, and a card the app would then refuse is
+    // a trip for nothing (PedalPresence.h draws the same line).
+    std::vector<pedallink::Pedal> pedals;
+    for (const auto& pedal : pedallink::findFamily())
+        if (pedal.profile->allows(profile::Operation::read))
+            pedals.push_back(pedal);
     if (pedals.empty()) {
         banners.showError(banners::Source::connection,
-                          juce::String::fromUTF8("No RC-5 on USB \xe2\x80\x94 plug the pedal in, "
-                                                 "then press Connect."));
+                          juce::String::fromUTF8("No looper this app can read is on USB "
+                                                 "\xe2\x80\x94 plug the pedal in, then press Connect."));
         updateStatusText();
         updateToolbar();
         return;
@@ -786,19 +796,17 @@ void MainComponent::beginConnect()
 // knows by the same name (a card copied between them, or the same default
 // name twice) are told apart by their endpoint, so no line is ambiguous.
 std::vector<std::string>
-MainComponent::pedalChoiceLabels(const std::vector<juce::MidiDeviceInfo>& pedals) const
+MainComponent::pedalChoiceLabels(const std::vector<pedallink::Pedal>& pedals) const
 {
     std::vector<std::string> labels;
     for (const auto& pedal : pedals) {
-        const auto family = portname::announcedModel(pedal.name.toStdString());
-        labels.push_back(pedalbook::choiceLabel(family ? *family : std::string("looper"),
-                                                pedal.identifier.toStdString(),
-                                                pedalBook.find(pedal.identifier.toStdString())));
+        const std::string endpoint = pedal.endpoint.identifier.toStdString();
+        labels.push_back(pedalbook::choiceLabel(pedal.family(), endpoint, pedalBook.find(endpoint)));
     }
     for (std::size_t i = 0; i < labels.size(); ++i)
         for (std::size_t j = 0; j < labels.size(); ++j)
             if (i != j && labels[i] == labels[j])
-                labels[i] += " (endpoint " + pedals[i].identifier.toStdString() + ")";
+                labels[i] += " (endpoint " + pedals[i].endpoint.identifier.toStdString() + ")";
     return labels;
 }
 
@@ -811,7 +819,7 @@ MainComponent::pedalChoiceLabels(const std::vector<juce::MidiDeviceInfo>& pedals
 // to the message thread and the gate (ConnectGate.h) decides. For the
 // player Connect is under way from the click: the status says so and the
 // button is off, even though no frame has gone out yet.
-void MainComponent::askPedalBeforeConnect(juce::MidiDeviceInfo pedal)
+void MainComponent::askPedalBeforeConnect(pedallink::Pedal pedal)
 {
     connectQueryPending = true;
     toast.show(juce::String::fromUTF8("Connecting to the pedal\xe2\x80\xa6"));
@@ -1278,7 +1286,7 @@ void MainComponent::cardNamed(marker::Card named, bool minted, std::string sweep
     // The endpoint Connect chose carried this card: the book learns it, so
     // the next Connect can ask by name before the card is readable.
     if (connectTarget) {
-        pedalBook.remember({ connectTarget->identifier.toStdString(), card->id, card->name,
+        pedalBook.remember({ connectTarget->endpoint.identifier.toStdString(), card->id, card->name,
                              card->model, static_cast<std::int64_t>(juce::Time::currentTimeMillis()) });
         savePedalBook();
     }
@@ -1470,13 +1478,10 @@ void MainComponent::updateStatusText()
         return;
     }
     if (snapshot.volume.empty()) {
-        status.setText(midiPedalPresent
-                           ? juce::String::fromUTF8(
-                                 "RC-5 on USB \xe2\x80\x94 ready to connect")
-                       : otherLooperOnBus.isNotEmpty()
+        status.setText(otherLooperOnBus.isNotEmpty() && !midiPedalPresent
                            ? otherLooperOnBus
-                                 + juce::String::fromUTF8(" on USB \xe2\x80\x94 not an RC-5")
-                           : juce::String("No looper found"),
+                                 + juce::String::fromUTF8(" on USB \xe2\x80\x94 not spoken to")
+                           : utf8(presenceWords.status),
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
         return;
