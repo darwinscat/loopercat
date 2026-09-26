@@ -9,9 +9,11 @@
 
 //==============================================================================
 // loopercat::PedalLight — the connection indicator, top-right of the header:
-// a lit violet dot + the volume's name while a pedal is mounted, a dim hollow
-// ring + "no pedal" while not. Read-only glanceable state; the status strip
-// keeps the full path and counts.
+// a lit violet dot + the pedal's name while a pedal is mounted (the name from
+// its card, issue #99; the volume's label until that is read), a dim hollow
+// ring + "no pedal" while not. Glanceable state; the status strip keeps the
+// full path and counts. While mounted the name is a button: a click asks to
+// rename the pedal, and the owner writes the card.
 //==============================================================================
 namespace loopercat
 {
@@ -27,7 +29,21 @@ public:
             return;
         connected_ = connected;
         label_ = std::move(label);
+        setMouseCursor(connected_ ? juce::MouseCursor::PointingHandCursor
+                                  : juce::MouseCursor::NormalCursor);
         repaint();
+    }
+
+    bool connected() const { return connected_; }
+    juce::String label() const { return label_; }
+
+    // The name was clicked while a pedal is mounted.
+    std::function<void()> onClick;
+
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        if (connected_ && onClick && getLocalBounds().contains(e.getPosition()))
+            onClick();
     }
 
     void paint(juce::Graphics& g) override

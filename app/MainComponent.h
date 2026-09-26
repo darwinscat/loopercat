@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <loopercat/CardMarker.hpp>
 #include <loopercat/Connect.hpp>
 #include <loopercat/StorageRegister.hpp>
 
@@ -16,7 +17,9 @@
 #include "DeviceWatcher.h"
 #include "LooperMark.h"
 #include "PedalLight.h"
+#include "PedalBook.h"
 #include "PedalLink.h"
+#include "PedalPresence.h"
 #include "PedalWorker.h"
 #include "HistoryPane.h"
 #include "history/SlotRows.h"
@@ -76,6 +79,11 @@ public:
     void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
     void showHistory() { bottomTabs.select(kHistoryTab); }       // --history, for snapshots
     bool historyReady() const { return historyRows > 0; }        // its rows have landed
+    // The card's own name (issue #99): read from its marker once the volume
+    // is up, minted when it has none. For the --snapshot seam: whether that
+    // has settled, and what the corner says.
+    bool cardNameReady() const { return cardNameSettled; }
+    std::string pedalName() const { return pedalLight.label().toStdString(); }
     void showAbout(); // the menu About and --about: opens the version badge's popover
     // The Settings dialog, built and wired exactly as the gear opens it: the
     // storage panel fed from the store on the worker, its limit and its
@@ -126,13 +134,23 @@ private:
 
     // The supervised Connect (issue #2): the attempt machine owns the
     // retry/give-up policy, these own the clock, the MIDI send and the UI.
-    void askPedalBeforeConnect(juce::MidiDeviceInfo pedal); // the register read (#85), on the worker
+    std::vector<std::string> pedalChoiceLabels(const std::vector<pedallink::Pedal>& pedals) const;
+    void askPedalBeforeConnect(pedallink::Pedal pedal); // the register read (#85), on the worker
     void gateConnect(std::optional<storage::State> answer); // the answer arrives: refuse, wait, or attempt
     void startConnectAttempt();
     void sendEnterStorage();
     void tickConnectAttempt();
     void endConnectAttempt();
     bool connectHoldActive() const;
+
+    // The card's identity (issues #98, #99): its marker is read on the worker
+    // once the volume is up — minted with the model's name when the card has
+    // none — and the name lands in the corner and in the pedal book under
+    // the endpoint Connect chose. A click on the name renames the card.
+    void readCardName();
+    void cardNamed(marker::Card card, bool minted, std::string sweepNote);
+    void renamePedal();
+    void savePedalBook();
 
     void runBackup();
     void runCleanJunk();
@@ -240,14 +258,19 @@ private:
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
-    bool midiPedalPresent = false;    // the RC-5 as a USB-MIDI device (normal mode)
-    juce::String otherLooperOnBus;    // another RC model on USB ("RC-500"), named, not connected
+    bool midiPedalPresent = false;    // a pedal whose card this build reads is on USB (normal mode)
+    juce::String otherLooperOnBus;    // an RC model the profile table does not know, named, not spoken to
+    presence::Verdict presenceWords;  // what the empty window and the status strip say about the bus
     connect::Attempt connectAttempt;  // the supervised Connect (issue #2)
     // The endpoint Connect chose (issue #98): the frames of this attempt go
     // to it, and Disconnect walks the same pedal out — never "the first RC-5
     // on the bus", which with two pedals is whichever the OS listed first.
-    std::optional<juce::MidiDeviceInfo> connectTarget;
+    std::optional<pedallink::Pedal> connectTarget;
     bool connectQueryPending = false; // the register is being read: Connect is under way, no frame yet
+    pedalbook::Book pedalBook;          // endpoint -> the card it carried, and its name (settings)
+    std::optional<marker::Card> card;   // the mounted card's marker, once read
+    std::string cardNameVolume;         // the volume the marker was read for (one read per mount)
+    bool cardNameSettled = false;       // read, minted, or given up — for the seam
     juce::String lastConnectSendError; // last enter-storage send result — the honest give-up
     std::int64_t connectHoldUntilMs = 0; // Connect held while the pedal re-boots its MIDI face
     std::unique_ptr<juce::FileChooser> fileChooser; // the one live async chooser
