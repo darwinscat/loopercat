@@ -142,11 +142,18 @@ int main()
         legacy.slots = { slot };
 
         const auto made = rows::forCard({ legacy });
-        CHECK_EQ(made.front().action, std::string("legacy"));
-        CHECK_EQ(made.front().detail, std::string("trash/2026-09-01T21-35-46"));
+        CHECK_EQ(made.front().action, std::string("Before the history"));
+        CHECK_EQ(made.front().detail, std::string("a take was replaced (from the old folders)"));
+        CHECK_EQ(made.front().hint, std::string("trash/2026-09-01T21-35-46"));
         CHECK(made.front().playable());
         CHECK(!made.front().restorable());
         CHECK_EQ(made.front().state, std::string());
+        // even as the last row on its slot it is not where the slot is
+        Card last = legacy;
+        last.slots[0].newest = true;
+        const auto asNewest = rows::forCard({ last });
+        CHECK_EQ(asNewest.front().takes.front().audio, std::string("take kept"));
+        CHECK(asNewest.front().playable());
     }
 
     // --- a legacy row that kept only documents: a row with no slots, its own name ---
@@ -154,8 +161,9 @@ int main()
         Card legacy = op(501, 200, "legacy", "legacy");
         legacy.note = "backups/2026-07-22T17-36-55";
         const auto made = rows::forCard({ legacy });
-        CHECK_EQ(made.front().action, std::string("legacy"));
-        CHECK_EQ(made.front().detail, std::string("backups/2026-07-22T17-36-55"));
+        CHECK_EQ(made.front().action, std::string("Before the history"));
+        CHECK_EQ(made.front().detail, std::string("a backup was taken (from the old folders)"));
+        CHECK_EQ(made.front().hint, std::string("backups/2026-07-22T17-36-55"));
         CHECK(made.front().slots().empty());
         CHECK(!made.front().playable());
         CHECK(!made.front().restorable());
@@ -178,6 +186,11 @@ int main()
             CHECK(!row.playable());
             CHECK(!row.restorable());
         }
+        Card odd = op(12, 12000, "teleport");
+        odd.note = "far";
+        CHECK_EQ(rows::forCard({ odd }).front().action, std::string("teleport"));
+        CHECK_EQ(rows::forCard({ odd }).front().detail, std::string("far"));
+        CHECK_EQ(rows::forCard({ odd }).front().hint, std::string());
     }
 
     // --- Restore needs every recorded state to go back; Play needs one kept take ---

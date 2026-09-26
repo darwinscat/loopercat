@@ -197,6 +197,12 @@ std::optional<int> HistoryWindow::badgeAt(int visibleIndex, int x) const
     return std::nullopt;
 }
 
+juce::String HistoryWindow::hintAt(int visibleIndex) const
+{
+    const Row* row = visibleRow(visibleIndex);
+    return row != nullptr ? row->hint : juce::String();
+}
+
 void HistoryWindow::selectedRowsChanged(int)
 {
     updateOffers();

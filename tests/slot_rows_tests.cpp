@@ -130,11 +130,49 @@ int main()
         later.afterBody = bodyWith(0, "Named");
 
         const auto made = rows::forSlot({ legacy, later });
-        CHECK_EQ(made.front().line.action, std::string("legacy")); // its own name, not a guess
-        CHECK_EQ(made.front().line.detail, std::string("trash/2026-09-01T21-35-46"));
+        CHECK_EQ(made.front().line.action, std::string("Before the history"));
+        CHECK_EQ(made.front().line.detail, std::string("a take was replaced (from the old folders)"));
+        CHECK_EQ(made.front().line.hint, std::string("trash/2026-09-01T21-35-46")); // the folder, for a tooltip
         CHECK(made.front().playable);
         CHECK(!made.front().restorable);
         CHECK_EQ(made.front().takeHash, std::string(32, '\x44'));
+    }
+
+    // --- the newest row from before the history is not where the slot is ---
+    {
+        // what Alisa's slot 14 showed after the import: four legacy rows and
+        // nothing after them. The last holds the take the slot had BEFORE that
+        // old operation — kept and listenable, and no word about the slot now.
+        Entry older = op(1, "legacy");
+        older.actor = "legacy";
+        older.note = "trash/2026-08-01T17-55-07";
+        older.takeName = "014_1.WAV";
+        older.takeHash = std::string(32, '\x55');
+        older.takeKept = true;
+        Entry newest = op(2, "legacy");
+        newest.actor = "legacy";
+        newest.note = "trash/2026-09-01T23-34-45";
+        newest.takeName = "014_1.WAV";
+        newest.takeHash = std::string(32, '\x66');
+        newest.takeKept = true;
+
+        const auto made = rows::forSlot({ older, newest });
+        CHECK_EQ(made.back().line.audio, std::string("take kept")); // not "in the slot now"
+        CHECK(made.back().playable);
+        CHECK(!made.back().restorable);
+        CHECK_EQ(made.back().takeHash, std::string(32, '\x66'));
+        CHECK_EQ(made.back().line.action, std::string("Before the history"));
+        CHECK_EQ(made.back().line.hint, std::string("trash/2026-09-01T23-34-45"));
+        // one whose bytes are gone says so, still not "in the slot now"
+        newest.takeKept = false;
+        CHECK_EQ(rows::forSlot({ older, newest }).back().line.audio, std::string("take no longer kept"));
+        // the app's own newest row still is where the slot is
+        Entry pushed = op(3, "push");
+        pushed.beforeBody = empty;
+        pushed.afterBody = loaded;
+        pushed.takeName = "take.wav";
+        pushed.takeHash = std::string(32, '\x77');
+        CHECK_EQ(rows::forSlot({ older, pushed }).back().line.audio, std::string("in the slot now"));
     }
 
     // --- rows that never held audio say nothing about it ---

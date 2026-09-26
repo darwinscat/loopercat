@@ -54,6 +54,8 @@ struct Line {
     std::string action; // "Trimmed", "Swapped with slot 43"
     std::string detail; // "4:36 -> 0:39", "Memory42 -> TEST_42_HIST", or empty
     std::string audio;  // "0:39 kept", "nothing kept", or empty
+    std::string hint;   // for a tooltip, never for the row: a row from before the history
+                        // names the folders it was read from here, not in the line
 };
 
 // Seconds are cut, not rounded — the slot table and the player already show
@@ -153,10 +155,20 @@ inline Line tell(const Facts& facts)
     } else if (facts.kind == "normalize") {
         line.action = "Normalized";
         line.detail = facts.note;
+    } else if (facts.kind == "legacy") {
+        // A row from the folders that predate the store (#72). What it knows
+        // is a take that was replaced, or a backup that was taken; "legacy"
+        // and a folder's path are a developer's words, so the path goes to
+        // the tooltip. The final words are Alisa's.
+        const bool hasTake = !facts.takeName.empty() || facts.take != Take::none;
+        line.action = "Before the history";
+        line.detail = hasTake ? "a take was replaced (from the old folders)"
+                              : "a backup was taken (from the old folders)";
+        line.hint = facts.note;
     } else {
         // An operation this build has no words for — a newer LooperCat wrote
-        // the row, or the legacy import did. Its own name is better than a
-        // guess, and better than an empty line.
+        // the row. Its own name is better than a guess, and better than an
+        // empty line.
         line.action = facts.kind;
         line.detail = facts.note;
     }

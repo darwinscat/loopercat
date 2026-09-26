@@ -52,9 +52,13 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
 {
     const bool hasTake = entry.takeHash.has_value() || !entry.takeName.empty();
 
+    // A row from before the history holds the take the slot had BEFORE the
+    // operation it stands for, so even as the newest row it does not say
+    // what the slot holds now: its take is kept, or lost, never "on card".
+    const bool onCard = newest && entry.actor != "legacy";
     story::Take take = story::Take::none;
     if (hasTake)
-        take = newest          ? story::Take::onCard
+        take = onCard          ? story::Take::onCard
             : entry.takeKept   ? story::Take::kept
                                : story::Take::lost;
 
@@ -113,6 +117,7 @@ struct CardRow {
     std::string action;
     std::string detail;
     std::string state;
+    std::string hint;        // for a tooltip: a legacy row's folders
     std::vector<Take> takes; // one per touched slot, ascending
 
     std::vector<int> slots() const
@@ -173,6 +178,7 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             if (row.action.empty()) {
                 row.action = slotRow.line.action;
                 row.detail = slotRow.line.detail;
+                row.hint = slotRow.line.hint;
             }
             row.takes.push_back({ touched.slot, slotRow.line.audio, slotRow.playable,
                                   slotRow.restorable, slotRow.takeHash });
@@ -197,11 +203,14 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             }
         }
         if (row.action.empty()) {
-            // Nothing recorded about any slot: the operation's own name and
-            // its line are all there is, as story::tell says for a kind it
-            // has no words for.
-            row.action = entry.kind;
-            row.detail = entry.note;
+            // Nothing recorded about any slot: the words story::tell has for
+            // the operation itself — a row from before the history that kept
+            // only documents, or a kind this build has no words for.
+            const story::Line bare = story::tell({ .kind = entry.kind, .take = story::Take::none,
+                                                   .note = entry.note });
+            row.action = bare.action;
+            row.detail = bare.detail.empty() ? entry.note : bare.detail; // a failed op's reason
+            row.hint = bare.hint;
         }
         out.push_back(std::move(row));
     }
