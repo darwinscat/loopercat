@@ -58,6 +58,9 @@ namespace
     // keeps before it starts offering the oldest for release. 5 GB out of
     // the box (retention::kDefaultLimit); nothing goes without a press.
     constexpr auto kHistoryLimitKey = "historyLimitBytes";
+    // The pedal book (issue #98): endpoint -> the card it carried and its
+    // name, in the book's own text form (PedalBook.h).
+    constexpr auto kPedalBookKey = "pedalBook";
     // A release hands the file's free pages back a slice at a time — 16 KB
     // pages, so 256 of them is 4 MB per transaction.
     constexpr int kVacuumSlicePages = 256;
@@ -631,6 +634,20 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
 
     addAndMakeVisible(header);
     addAndMakeVisible(pedalLight); // over the header's right side
+    pedalLight.onClick = [this] { renamePedal(); };
+    // The pedal book is a convenience, never the truth: a book that cannot
+    // be read is said out loud and started afresh, so a stale cache can
+    // never stop Connect.
+    if (auto* file = settings.file()) {
+        try {
+            pedalBook = pedalbook::Book::parse(file->getValue(kPedalBookKey).toStdString());
+        } catch (const Error& e) {
+            oplog::append(settings.dataDir(), "pedal book unreadable, starting afresh: "
+                                                  + juce::String::fromUTF8(e.what()));
+            toast.show(juce::String::fromUTF8("The list of known pedals could not be read "
+                                              "\xe2\x80\x94 starting afresh (see operations.log)"));
+        }
+    }
     addAndMakeVisible(versionChip);
     addAndMakeVisible(devMark);
     addAndMakeVisible(status);
@@ -1164,6 +1181,125 @@ void MainComponent::updateToolbar()
         appMenu->menuItemsChanged(); // the Maintenance items follow the same gate
 }
 
+// The card's identity, from the card itself (issues #98, #99). The marker at
+// the volume root carries the id the history knows the card by and the
+// name the player gave the pedal; a card without one gets one here, named
+// after its model until the player renames it. On the worker, like every
+// touch of the card: minting is a write, and it sweeps the sidecar macOS
+// plants beside it. Quiet on success — the corner is the report — and a
+// marker this build cannot read (foreign, damaged, newer) is a job error
+// that reaches the toast with its reason, while the corner keeps the
+// volume's label.
+void MainComponent::readCardName()
+{
+    juce::Component::SafePointer<MainComponent> safe(this);
+    PedalWorker::Job job {
+        "Read the card's name",
+        0,
+        [safe, alive = uiAlive](const volume::fs::path& volumePath) {
+            std::optional<marker::Card> found = marker::read(volumePath);
+            bool minted = false;
+            std::string sweepNote;
+            if (!found) {
+                const std::string text = commands::readMemory(volumePath);
+                const marker::Written written =
+                    marker::mint(volumePath, rc0::familyOf(text).familyName);
+                found = written.card;
+                minted = true;
+                if (!written.sweep.failed.empty())
+                    sweepNote = "a sidecar would not delete: " + written.sweep.failed.front().string();
+            }
+            juce::MessageManager::callAsync([safe, alive, c = *found, minted, sweepNote] {
+                if (*alive && safe != nullptr)
+                    safe->cardNamed(c, minted, sweepNote);
+            });
+        },
+        nullptr,
+        0,
+        false, // not background: a mint writes the card
+        true,  // quiet: the corner is the report; a failure still speaks
+        true   // the card is the point
+    };
+    // Whatever happened, the seam must not wait forever.
+    job.after = [safe, alive = uiAlive](const std::string& error) {
+        if (error.empty())
+            return;
+        juce::MessageManager::callAsync([safe, alive] {
+            if (*alive && safe != nullptr)
+                safe->cardNameSettled = true;
+        });
+    };
+    worker.enqueue(std::move(job));
+}
+
+void MainComponent::cardNamed(marker::Card named, bool minted, std::string sweepNote)
+{
+    if (snapshot.volume.empty() || snapshot.volume != cardNameVolume)
+        return; // the pedal went away while the card was being read
+    card = std::move(named);
+    cardNameSettled = true;
+    pedalLight.set(true, utf8(card->name));
+    if (minted)
+        toast.show(juce::String::fromUTF8("This card is now known as \xe2\x80\x9c") + utf8(card->name)
+                   + juce::String::fromUTF8("\xe2\x80\x9d \xe2\x80\x94 click the name to change it"));
+    if (!sweepNote.empty())
+        banners.showError(banners::Source::connection, utf8(sweepNote));
+    // The endpoint Connect chose carried this card: the book learns it, so
+    // the next Connect can ask by name before the card is readable.
+    if (connectTarget) {
+        pedalBook.remember({ connectTarget->identifier.toStdString(), card->id, card->name,
+                             card->model, static_cast<std::int64_t>(juce::Time::currentTimeMillis()) });
+        savePedalBook();
+    }
+}
+
+// Rename the pedal: the marker's name changes, nothing else on the card
+// does (issue #99). Asked in a small dialog on the name itself; written on
+// the worker; said out loud when done.
+void MainComponent::renamePedal()
+{
+    if (!card || snapshot.volume.empty() || pedalBusy)
+        return;
+    auto* ask = new juce::AlertWindow("Name this pedal",
+                                      "The name is written on the card and shown in the corner. "
+                                      "Loops, settings and history are untouched.",
+                                      juce::MessageBoxIconType::NoIcon);
+    ask->addTextEditor("name", utf8(card->name));
+    ask->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    ask->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MainComponent> safe(this);
+    ask->enterModalState(true, juce::ModalCallbackFunction::create([safe, ask](int result) {
+        if (result != 1 || safe == nullptr || !safe->card)
+            return;
+        const std::string newName = ask->getTextEditorContents("name").trim().toStdString();
+        if (newName.empty() || newName == safe->card->name)
+            return;
+        auto* self = safe.getComponent();
+        const std::string cardId = self->card->id;
+        juce::Component::SafePointer<MainComponent> again(self);
+        self->worker.enqueue({ "Rename the pedal to \xe2\x80\x9c" + utf8(newName) + "\xe2\x80\x9d",
+                               0,
+                               [newName, again, alive = self->uiAlive](const volume::fs::path& volumePath) {
+                                   const marker::Written written = marker::rename(volumePath, newName);
+                                   juce::MessageManager::callAsync([again, alive, c = written.card] {
+                                       if (*alive && again != nullptr)
+                                           again->cardNamed(c, false, {});
+                                   });
+                               },
+                               nullptr, 0, false, false, true });
+        self->pedalBook.renamed(cardId, newName);
+        self->savePedalBook();
+    }), true);
+}
+
+void MainComponent::savePedalBook()
+{
+    if (auto* file = settings.file()) {
+        file->setValue(kPedalBookKey, juce::String::fromUTF8(pedalBook.serialize().c_str()));
+        file->saveIfNeeded();
+    }
+}
+
 void MainComponent::runBackup()
 {
     // A snapshot on request changes nothing on the card, so it is not an
@@ -1399,12 +1535,29 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         ghostCleanupStarted = false; // the episode is over
     }
 
+    // The corner wears the card's own name (issue #99) once the marker has
+    // been read; until then, the volume's label. One read per mount: the
+    // volume path changing is what makes it a new card.
+    if (!mounted) {
+        card.reset();
+        cardNameVolume.clear();
+        cardNameSettled = false;
+    } else if (snapshot.volume != cardNameVolume) {
+        card.reset();
+        cardNameVolume = snapshot.volume;
+        cardNameSettled = false;
+        readCardName();
+    }
+    if (card) {
+        pedalLight.set(true, utf8(card->name));
+    } else {
 #if JUCE_WINDOWS
-    // "D:\" has no filename to show — the light wears the volume label.
-    pedalLight.set(mounted, juce::File(utf8(snapshot.volume)).getVolumeLabel());
+        // "D:\" has no filename to show — the light wears the volume label.
+        pedalLight.set(mounted, juce::File(utf8(snapshot.volume)).getVolumeLabel());
 #else
-    pedalLight.set(mounted, utf8(volume::fs::path(snapshot.volume).filename().string()));
+        pedalLight.set(mounted, utf8(volume::fs::path(snapshot.volume).filename().string()));
 #endif
+    }
 
     updateTableRows();
     updateToolbar();

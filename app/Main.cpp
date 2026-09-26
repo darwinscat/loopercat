@@ -427,6 +427,16 @@ private:
                 return 2;
             }
         }
+        if (!content.volumePath().empty()) {
+            // The corner reads (or mints) the card's marker on the worker;
+            // the shot waits for it the way it waits for a waveform, and
+            // says what the corner ended up showing.
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 10000;
+            while (!content.cardNameReady() && juce::Time::getMillisecondCounterHiRes() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+            std::cout << "pedal name: " << content.pedalName()
+                      << (content.cardNameReady() ? "" : " (not settled)") << std::endl;
+        }
         if (wantsHistory) {
             // The tab reads its rows on the worker, so the render has to wait
             // for them the way it waits for a waveform — an empty slot has no
