@@ -8,7 +8,11 @@
 
 #include "support.hpp"
 
+#include <loopercat/DeviceProfile.hpp>
 #include <loopercat/Sysex.hpp>
+
+#include <cstdint>
+#include <vector>
 
 using namespace loopercat;
 
@@ -60,6 +64,34 @@ int main()
 
     CHECK_THROWS(sysex::dt1(sysex::kStorageModeAddress, {}), "empty payload");
     CHECK_THROWS(sysex::dt1(sysex::kStorageModeAddress, { 0x80 }), "7-bit");
+
+    // --- the same frames for the RC-500: model 00 00 00 77 from its profile,
+    // address and data unchanged, so the checksum is unchanged too (the
+    // model sits outside the checksummed body). Measured with both pedals on
+    // the bus, 2026-09-16..25 ---
+
+    {
+        using Bytes = std::vector<std::uint8_t>;
+        const auto& rc500 = profile::kRc500.modelId;
+        CHECK((sysex::enterStorageMode(rc500)
+               == Bytes { 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x77, 0x12, 0x7F, 0x70, 0x00, 0x00, 0x01, 0x10, 0xF7 }));
+        CHECK((sysex::exitStorageMode(rc500)
+               == Bytes { 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x77, 0x12, 0x7F, 0x70, 0x00, 0x00, 0x00, 0x11, 0xF7 }));
+        CHECK((sysex::rq1(sysex::kStorageModeAddress, { 0x00, 0x00, 0x00, 0x01 }, rc500)
+               == Bytes { 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x77, 0x11, 0x7F, 0x70, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x01, 0x10, 0xF7 }));
+        CHECK((sysex::rq1(sysex::kStorageReadyAddress, { 0x00, 0x00, 0x00, 0x01 }, rc500)
+               == Bytes { 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x77, 0x11, 0x7F, 0x70, 0x00, 0x01, 0x00, 0x00,
+                          0x00, 0x01, 0x0F, 0xF7 }));
+        // The default is the RC-5's id, and the profile is its source.
+        CHECK(sysex::enterStorageMode() == sysex::enterStorageMode(profile::kRc5.modelId));
+        CHECK(sysex::kModelRc5 == profile::kRc5.modelId);
+        // All four bytes travel, not the last one: a model that differs
+        // higher up would still be framed as its profile says.
+        const sysex::ModelId elsewhere { 0x00, 0x01, 0x02, 0x03 };
+        CHECK((sysex::exitStorageMode(elsewhere)
+               == Bytes { 0xF0, 0x41, 0x10, 0x00, 0x01, 0x02, 0x03, 0x12, 0x7F, 0x70, 0x00, 0x00, 0x00, 0x11, 0xF7 }));
+    }
 
     return testkit::summary("sysex");
 }

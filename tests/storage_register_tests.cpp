@@ -14,6 +14,7 @@
 
 #include "support.hpp"
 
+#include <loopercat/DeviceProfile.hpp>
 #include <loopercat/StorageRegister.hpp>
 
 #include <cstdint>
@@ -85,6 +86,25 @@ int main()
     CHECK(!parse({ 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x76, 0x12, 0x7F, 0x70, 0x00, 0x00, 0x00, 0x11, 0x00 }));
     // An 8-bit byte where the value sits: not a sysex payload, not an answer, not a crash.
     CHECK(!parse({ 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x76, 0x12, 0x7F, 0x70, 0x00, 0x00, 0x80, 0x11, 0xF7 }));
+
+    // --- the model asked is the model answered: with two pedals on the bus,
+    // the RC-500's frame is the answer only when the RC-500 was asked ---
+
+    {
+        const Bytes rc500Idle { 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x77, 0x12, 0x7F, 0x70, 0x00, 0x00, 0x00, 0x11, 0xF7 };
+        const Bytes rc500Busy { 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x77, 0x12, 0x7F, 0x70, 0x00, 0x00, 0x02, 0x0F, 0xF7 };
+        const auto& rc500 = profile::kRc500.modelId;
+        CHECK(storage::parseReply(rc500Idle, rc500) == storage::State::idle);
+        CHECK(storage::parseReply(rc500Busy, rc500) == storage::State::busy);
+        CHECK(!storage::parseReply(kIdle, rc500));          // the RC-5's answer is not the RC-500's
+        CHECK(!storage::parseReply(rc500Idle, profile::kRc5.modelId));
+        CHECK(storage::parseReply(kIdle, profile::kRc5.modelId) == storage::State::idle);
+        // The request to the RC-500 carries its id and the same checksum.
+        CHECK((storage::readRequest(rc500)
+               == Bytes { 0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x77, 0x11, 0x7F, 0x70, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x01, 0x10, 0xF7 }));
+        CHECK(storage::readRequest() == storage::readRequest(profile::kRc5.modelId));
+    }
 
     // --- an unknown state is named, never defaulted ---
 

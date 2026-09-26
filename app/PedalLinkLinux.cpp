@@ -38,6 +38,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace loopercat::pedallink {
@@ -45,11 +46,11 @@ namespace loopercat::pedallink {
 namespace {
 
     // "hw:<card>,<device>,0" for the first rawmidi OUTPUT whose port name
-    // names the pedal — the same portname::isRc5 rule findPedals() uses, so
-    // both halves agree on what the pedal is. The walk mirrors what
-    // `amidi -l` does: every card, every rawmidi device on it — or, with a
-    // card given, that card alone.
-    std::optional<std::string> findPedalRawMidi(std::optional<int> onCard = std::nullopt)
+    // announces `family` — the same portname rule the enumerations use, so
+    // both halves agree on what a pedal is. The walk mirrors what `amidi -l`
+    // does: every card, every rawmidi device on it — or, with a card given,
+    // that card alone.
+    std::optional<std::string> findRawMidi(std::string_view family, std::optional<int> onCard = std::nullopt)
     {
         int card = -1;
         while (snd_card_next(&card) == 0 && card >= 0) {
@@ -74,7 +75,8 @@ namespace {
                 const char* sub = snd_rawmidi_info_get_subdevice_name(info);
                 const std::string haystack = std::string(name != nullptr ? name : "") + " "
                                            + std::string(sub != nullptr ? sub : "");
-                if (portname::isRc5(haystack))
+                const auto announced = portname::announcedModel(haystack);
+                if (announced && *announced == family)
                     found = cardName + "," + std::to_string(device) + ",0";
             }
             snd_ctl_close(control);
@@ -87,8 +89,8 @@ namespace {
     // JUCE names an ALSA endpoint "<client>-<port>" (sequencer ids). The
     // sequencer knows which sound card a kernel client belongs to — and the
     // card is what rawmidi addresses. That is the bridge from "the pedal the
-    // caller chose" to "the port this backend writes": with two RC-5s, both
-    // named alike, the card number is what keeps the choice.
+    // caller chose" to "the port this backend writes": with two pedals of one
+    // model, both named alike, the card number is what keeps the choice.
     std::optional<int> cardOfSequencerClient(const juce::String& identifier)
     {
         const int dash = identifier.indexOfChar('-');
@@ -110,7 +112,22 @@ namespace {
         return card;
     }
 
-    juce::String sendFrame(const std::string& port, bool enter)
+    // The rawmidi port of one chosen pedal: its sound card, then the port on
+    // it that announces the pedal's own family.
+    std::string portOf(const Pedal& pedal)
+    {
+        const auto card = cardOfSequencerClient(pedal.endpoint.identifier);
+        if (!card)
+            throw Error("cannot tell which sound card MIDI endpoint " + pedal.endpoint.identifier.toStdString()
+                        + " (" + pedal.endpoint.name.toStdString() + ") belongs to");
+        const auto port = findRawMidi(pedal.family(), card);
+        if (!port)
+            throw Error("no " + std::string(pedal.family()) + " rawmidi port on sound card "
+                        + std::to_string(*card) + " (" + pedal.endpoint.name.toStdString() + ")");
+        return *port;
+    }
+
+    juce::String sendFrame(const std::string& port, const std::vector<std::uint8_t>& frame)
     {
         snd_rawmidi_t* out = nullptr;
         if (const int opened = snd_rawmidi_open(nullptr, &out, port.c_str(), 0); opened < 0)
@@ -119,7 +136,6 @@ namespace {
         // The frame from core/Sysex.hpp is complete, F0 through F7: rawmidi is a
         // byte stream, so it goes out exactly as written — no framing done for
         // us, and none to be undone.
-        const auto frame = enter ? sysex::enterStorageMode() : sysex::exitStorageMode();
         const ssize_t written = snd_rawmidi_write(out, frame.data(), frame.size());
         const int drained = snd_rawmidi_drain(out);
         snd_rawmidi_close(out);
@@ -136,46 +152,37 @@ namespace {
 
 } // namespace
 
-juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& pedal)
+juce::String requestStorageMode(bool enter, const Pedal& pedal)
 {
-    const auto card = cardOfSequencerClient(pedal.identifier);
-    if (!card)
-        return "cannot tell which sound card MIDI endpoint " + pedal.identifier + " (" + pedal.name
-             + ") belongs to";
-    const auto port = findPedalRawMidi(card);
-    if (!port)
-        return "no RC-5 rawmidi port on sound card " + juce::String(*card) + " (" + pedal.name + ")";
-    return sendFrame(*port, enter);
+    try {
+        const auto frame = enter ? sysex::enterStorageMode(pedal.modelId()) : sysex::exitStorageMode(pedal.modelId());
+        return sendFrame(portOf(pedal), frame);
+    } catch (const Error& e) {
+        return e.what();
+    }
 }
 
 juce::String requestStorageMode(bool enter)
 {
-    const auto port = findPedalRawMidi();
+    const auto port = findRawMidi(profile::kRc5.familyName);
     if (!port)
         return "no RC-5 MIDI device on the bus";
-    return sendFrame(*port, enter);
+    return sendFrame(*port, enter ? sysex::enterStorageMode() : sysex::exitStorageMode());
 }
 
-StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs)
+StorageQuery readStorageState(const Pedal& pedal, int timeoutMs)
 {
     if (timeoutMs <= 0)
         throw Error("storage query: the timeout must be positive");
-    const auto card = cardOfSequencerClient(pedal.identifier);
-    if (!card)
-        throw Error("cannot tell which sound card MIDI endpoint " + pedal.identifier.toStdString() + " ("
-                    + pedal.name.toStdString() + ") belongs to");
-    const auto port = findPedalRawMidi(card);
-    if (!port)
-        throw Error("no RC-5 rawmidi port on sound card " + std::to_string(*card) + " ("
-                    + pedal.name.toStdString() + ")");
+    const std::string port = portOf(pedal);
 
     // The rawmidi port is bidirectional: the same hw:card,device carries the
     // pedal's answer back, so there is nothing to pair. Non-blocking, so the
     // wait below is ours to time.
     snd_rawmidi_t* in = nullptr;
     snd_rawmidi_t* out = nullptr;
-    if (const int opened = snd_rawmidi_open(&in, &out, port->c_str(), SND_RAWMIDI_NONBLOCK); opened < 0)
-        throw Error("cannot open " + *port + ": " + snd_strerror(opened));
+    if (const int opened = snd_rawmidi_open(&in, &out, port.c_str(), SND_RAWMIDI_NONBLOCK); opened < 0)
+        throw Error("cannot open " + port + ": " + snd_strerror(opened));
     struct Closer {
         snd_rawmidi_t* input;
         snd_rawmidi_t* output;
@@ -186,7 +193,7 @@ StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs)
         }
     } const closer { in, out };
 
-    const auto request = storage::readRequest();
+    const auto request = storage::readRequest(pedal.modelId());
     const ssize_t written = snd_rawmidi_write(out, request.data(), request.size());
     if (written < 0)
         throw Error(std::string("MIDI write failed: ") + snd_strerror(static_cast<int>(written)));
@@ -198,7 +205,7 @@ StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs)
 
     const int count = snd_rawmidi_poll_descriptors_count(in);
     if (count <= 0)
-        throw Error("cannot poll " + *port);
+        throw Error("cannot poll " + port);
     std::vector<pollfd> fds(static_cast<size_t>(count));
     snd_rawmidi_poll_descriptors(in, fds.data(), static_cast<unsigned int>(count));
 
@@ -243,7 +250,7 @@ StorageQuery readStorageState(const juce::MidiDeviceInfo& pedal, int timeoutMs)
             frame.push_back(byte);
             if (byte == sysex::kSysexEnd) {
                 inFrame = false;
-                if (const auto state = storage::parseReply(frame))
+                if (const auto state = storage::parseReply(frame, pedal.modelId()))
                     return toQuery(*state);
             }
         }

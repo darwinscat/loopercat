@@ -3,7 +3,8 @@
 
 #pragma once
 
-#include <loopercat/Rc0.hpp> // kFamilyName — the model this app speaks
+#include <loopercat/DeviceProfile.hpp> // the family table: which RC models have a profile
+#include <loopercat/Rc0.hpp>           // kFamilyName — the model this app speaks
 
 #include <cstddef>
 #include <optional>
@@ -76,6 +77,23 @@ inline bool isRc5(std::string_view portName)
 {
     const auto model = announcedModel(portName);
     return model.has_value() && *model == rc0::kFamilyName;
+}
+
+// The profile behind a port name: the RC model the name announces, looked
+// up in the family table (DeviceProfile.hpp) — or null, for an RC model this
+// app has no profile for (an RC-600 on the bus is announced, not spoken to)
+// and for anything that is not an RC at all. The name a pedal gives the bus
+// is the name its card carries in the root element, so the table's family
+// names are the lookup key.
+inline const profile::DeviceProfile* familyProfile(std::string_view portName)
+{
+    const auto model = announcedModel(portName);
+    if (!model)
+        return nullptr;
+    for (const profile::DeviceProfile* candidate : profile::kAll)
+        if (candidate->familyName == *model)
+            return candidate;
+    return nullptr;
 }
 
 } // namespace loopercat::portname

@@ -109,5 +109,19 @@ int main()
         CHECK(std::none_of(bus.begin(), bus.end(), [](std::string_view n) { return isRc5(n); }));
     }
 
+    // --- the profile behind a name: the two models on the desk resolve to
+    // their table entries, the rest of the family and everything else to none ---
+
+    CHECK(familyProfile("BOSS_RC-5") == &loopercat::profile::kRc5);
+    CHECK(familyProfile("BOSS_RC-500") == &loopercat::profile::kRc500);
+    CHECK(familyProfile("MIDIIN2 (BOSS_RC-500)") == &loopercat::profile::kRc500);
+    CHECK(familyProfile("BOSS_RC-5 BOSS_RC-5 MIDI 1") == &loopercat::profile::kRc5);
+    for (const std::string_view name :
+         { "BOSS_RC-600", "BOSS_RC-505", "BOSS_RC-10R", "BOSS_RC-50", "Quad Cortex", "Clarett+ 8Pre", "" })
+        CHECK(familyProfile(name) == nullptr);
+    // The profile carries the model id the frames go out with.
+    CHECK(familyProfile("BOSS_RC-500")->modelId[3] == 0x77);
+    CHECK(familyProfile("BOSS_RC-5")->modelId[3] == 0x76);
+
     return testkit::summary("pedal_port_name");
 }
