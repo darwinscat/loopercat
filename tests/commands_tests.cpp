@@ -2725,5 +2725,102 @@ int main()
         CHECK(commands::doctor(volume).empty());
     }
 
+    // --- pull takes every track a memory has ---
+    //
+    // A memory of a multi-track model can hold a take on any of its tracks:
+    // the second alone is an ordinary card, because recording the second track
+    // first is a thing a player does. So an empty track is skipped and only a
+    // memory with nothing anywhere refuses. The decision half is pure, which
+    // is the only way to test the shape of a two-track pull today: that model's
+    // profile is closed, deliberately, until its face in the app exists.
+
+    {
+        const commands::PullOptions named { .dest = "/tmp/out" };
+        const commands::PullOptions raw { .dest = "/tmp/out", .rawNames = true };
+
+        // Both tracks recorded: two jobs, each naming its track.
+        {
+            const auto jobs = commands::slotPullJobs(profile::kRc500, 5, "My Loop     ",
+                                                     { { "005_1.WAV" }, { "005_2.WAV" } }, named);
+            CHECK_EQ(jobs.size(), static_cast<std::size_t>(2));
+            if (jobs.size() == 2) {
+                CHECK_EQ(jobs[0].track, 1);
+                CHECK_EQ(jobs[1].track, 2);
+                CHECK_EQ(jobs[0].base, std::string("05 - My Loop T1.wav"));
+                CHECK_EQ(jobs[1].base, std::string("05 - My Loop T2.wav"));
+                CHECK_EQ(jobs[0].onPedal, std::string("005_1.WAV"));
+                CHECK_EQ(jobs[1].onPedal, std::string("005_2.WAV"));
+            }
+        }
+
+        // The second track alone: one job, and it says which track it is —
+        // not "track 1" by default, which would be a lie about the card.
+        {
+            const auto jobs = commands::slotPullJobs(profile::kRc500, 11, "Solo Two    ",
+                                                     { {}, { "011_2.WAV" } }, named);
+            CHECK_EQ(jobs.size(), static_cast<std::size_t>(1));
+            if (jobs.size() == 1) {
+                CHECK_EQ(jobs[0].track, 2);
+                CHECK_EQ(jobs[0].base, std::string("11 - Solo Two T2.wav"));
+            }
+        }
+
+        // Nothing anywhere: the same refusal as before, by slot.
+        CHECK_THROWS(commands::slotPullJobs(profile::kRc500, 7, "Empty       ", { {}, {} }, named),
+                     "slot 7 has no audio to pull");
+
+        // With raw names the pedal's own filenames already carry the track.
+        {
+            const auto jobs = commands::slotPullJobs(profile::kRc500, 5, "My Loop     ",
+                                                     { { "005_1.WAV" }, { "005_2.WAV" } }, raw);
+            CHECK_EQ(jobs.size(), static_cast<std::size_t>(2));
+            if (jobs.size() == 2) {
+                CHECK_EQ(jobs[0].base, std::string("005_1.WAV"));
+                CHECK_EQ(jobs[1].base, std::string("005_2.WAV"));
+            }
+        }
+
+        // A player's own filename keeps it, with the track added.
+        {
+            const auto jobs = commands::slotPullJobs(profile::kRc500, 2, "Anything    ",
+                                                     { { "i-am-projection.wav" }, {} }, named);
+            CHECK_EQ(jobs.size(), static_cast<std::size_t>(1));
+            if (jobs.size() == 1)
+                CHECK_EQ(jobs[0].base, std::string("i-am-projection T1.wav"));
+        }
+
+        // The one-track model is untouched: no suffix, ever.
+        {
+            const auto jobs = commands::slotPullJobs(profile::kRc5, 5, "My Loop     ",
+                                                     { { "005_1.WAV" } }, named);
+            CHECK_EQ(jobs.size(), static_cast<std::size_t>(1));
+            if (jobs.size() == 1) {
+                CHECK_EQ(jobs[0].track, 1);
+                CHECK_EQ(jobs[0].base, std::string("05 - My Loop.wav"));
+            }
+        }
+
+        // A file list per track, or the caller is confused about the model.
+        CHECK_THROWS(commands::slotPullJobs(profile::kRc5, 5, "x", { { "a.wav" }, { "b.wav" } },
+                                            named),
+                     "track(s), got 2 file list(s)");
+        CHECK_THROWS(commands::slotPullJobs(profile::kRc500, 5, "x", { { "a.wav" } }, named),
+                     "track(s), got 1 file list(s)");
+    }
+
+    // And the gate still stands: a card of the multi-track model is not pulled
+    // at all today, whatever this function could do with it.
+    {
+        TempDir tmp;
+        const fs::path volume = tmp.path / "PEDAL";
+        fs::create_directories(volume / "ROLAND" / "WAVE");
+        fs::create_directories(volume::dataDir(volume));
+        const std::string twoTrack = testkit::syntheticTwoTrackMemoryText();
+        for (const int fileNo : { 1, 2 })
+            commands::writeFileBytes(volume::memoryPath(volume, fileNo), twoTrack);
+        CHECK_THROWS(commands::pull(volume, { 1 }, { .dest = tmp.path / "out" }),
+                     "LooperCat only speaks RC-5");
+    }
+
     return testkit::summary("commands");
 }

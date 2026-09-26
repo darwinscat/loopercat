@@ -304,5 +304,25 @@ int main()
     CHECK_EQ(wav::pullFileName(2, "My Loop", "TRACK.WAV"), "02 - My Loop.wav");
     CHECK_EQ(wav::pullFileName(2, "My Loop", "dropped.wav"), "dropped.wav");
 
+    // --- a track in the name, from two tracks up ---
+    //
+    // A one-track model's files must land exactly as they always have, so the
+    // name is untouched there. From two tracks up the track belongs in the
+    // name: without it the two takes of one memory are one filename, and the
+    // second either overwrites the first or gets a number that says nothing
+    // about where it came from. T1/T2 is what the pedal calls its tracks.
+
+    CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 1, 1), std::string("05 - My Loop.wav"));
+    CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 1, 2), std::string("05 - My Loop T1.wav"));
+    CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 2, 2), std::string("05 - My Loop T2.wav"));
+    // The suffix goes before the extension, whatever the name holds.
+    CHECK_EQ(wav::trackFileName("a.b.wav", 2, 2), std::string("a.b T2.wav"));
+    CHECK_EQ(wav::trackFileName("noextension", 2, 2), std::string("noextension T2"));
+    CHECK_EQ(wav::trackFileName("010_1.WAV", 1, 2), std::string("010_1 T1.WAV"));
+    // A track the model does not have is a caller bug, not a name.
+    CHECK_THROWS(wav::trackFileName("x.wav", 0, 2), "track out of range");
+    CHECK_THROWS(wav::trackFileName("x.wav", 3, 2), "track out of range");
+    CHECK_THROWS(wav::trackFileName("x.wav", 2, 1), "track out of range");
+
     return testkit::summary("wav");
 }

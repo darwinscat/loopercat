@@ -294,4 +294,25 @@ inline std::string pullFileName(int slot, std::string_view slotName, std::string
                                            : std::string(onPedalName);
 }
 
+// The same name for one track of a memory that has several. A one-track model
+// keeps the name untouched — the RC-5's files must land exactly as they always
+// have. From two tracks up the track is part of the name, because otherwise
+// the two takes of one memory would be one filename, and the second would
+// either overwrite the first or need a number that says nothing about which
+// track it came from. "T1"/"T2" is what the pedal's own tracks are called and
+// what the app's solo buttons say.
+inline std::string trackFileName(std::string_view base, int track, int trackCount)
+{
+    if (track < 1 || track > trackCount)
+        throw Error("track out of range 1.." + std::to_string(trackCount) + ": "
+                    + std::to_string(track));
+    if (trackCount == 1)
+        return std::string(base);
+    const std::string suffix = " T" + std::to_string(track);
+    const auto dot = base.rfind('.');
+    if (dot == std::string_view::npos)
+        return std::string(base) + suffix;
+    return std::string(base.substr(0, dot)) + suffix + std::string(base.substr(dot));
+}
+
 } // namespace loopercat::wav
