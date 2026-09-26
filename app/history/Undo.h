@@ -134,7 +134,11 @@ struct Plan {
     std::vector<Step> steps;                  // ascending by slot
     std::vector<SystemStep> system;           // the settings' sections, in section order
     std::optional<std::pair<int, int>> swapBack; // a swap goes back by swapping again: no bytes needed
-    std::vector<std::int64_t> writesOver;     // finished operations after the target on the same slots
+    // Finished operations after the target on the same slots — AS RECORDED:
+    // undo and redo rows and operations already undone are in it too. What is
+    // still in effect, the list a warning may rest on, is
+    // UndoRun.h's stillInEffect(); to move here after #73 lands.
+    std::vector<std::int64_t> writesOver;
     bool crossesConnection = false;           // the target is from another session than the newest operation
     bool crossesPedal = false;                // a change made on the pedal itself lies after the target
 
@@ -193,7 +197,26 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
         out.system.push_back({ change.section, change.before });
     }
 
-    if (entry.kind == "swap" && entry.slots.size() == 2) {
+    // An undo or redo of a swap moved the audio the way the swap did — by
+    // exchanging the folders, archiving nothing — so it goes back the same
+    // way, at any depth of undo on undo. Per-slot steps would put each
+    // slot's old body beside the other slot's take.
+    const auto revertsASwap = [&timeline](const HistoryStore::CardEntry& row) {
+        const HistoryStore::CardEntry* at = &row;
+        for (std::size_t hops = 0; hops <= timeline.size(); ++hops) {
+            if (at->kind == "swap")
+                return true;
+            if ((at->kind != "undo" && at->kind != "redo") || !at->reverts)
+                return false;
+            const auto next = std::find_if(timeline.begin(), timeline.end(),
+                                           [&](const auto& e) { return e.op == *at->reverts; });
+            if (next == timeline.end())
+                return false;
+            at = &*next;
+        }
+        return false; // a cycle in reverts is no swap
+    };
+    if (entry.slots.size() == 2 && revertsASwap(entry)) {
         out.swapBack = std::make_pair(entry.slots[0].slot, entry.slots[1].slot);
     } else {
         for (const HistoryStore::CardEntry::Slot& touched : entry.slots) {
