@@ -267,6 +267,7 @@ loopercat_core_test(downmix_tests)
 loopercat_core_test(loudness_tests)
 loopercat_core_test(normalize_tests)
 loopercat_core_test(usecase_count_in_tests)
+loopercat_core_test(usecase_rhythm_tests)
 # The pedal's controls (SETUP > CONTROL) as a use case over the SYSTEM file.
 loopercat_core_test(usecase_controls_tests)
 # Parsing and decisions only — no syscalls, no Linux headers — so the
@@ -414,6 +415,7 @@ target_sources(LooperCat PRIVATE
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
     app/PlayerPane.cpp
+    app/RhythmCard.cpp
     app/SlotInspector.cpp
     app/SlotTable.cpp
     app/WavImport.cpp)

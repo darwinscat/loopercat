@@ -22,6 +22,7 @@
 #include "DeviceProfile.hpp"
 #include "Rc0.hpp"
 #include "usecases/CountIn.hpp"
+#include "usecases/Rhythm.hpp"
 
 #include <string>
 #include <utility>
@@ -66,6 +67,7 @@ struct SlotInfo {
     long long measures;     // MeasLen: whole bars, as the pedal displays them
     long long recTempoTenths; // RecTmp: tenths of BPM the take was recorded at —
                               // when Tempo differs, the pedal time-stretches on playback
+    usecases::rhythm::Values rhythm; // the drums: on, which groove, and the RHYTHM card's fields
     // Every track of the memory, TRACK1 first — as many as the model has. The
     // flat fields above are tracks.front()'s.
     std::vector<TrackInfo> tracks;
@@ -107,6 +109,7 @@ inline SlotInfo readSlot(std::string_view memoryText, const profile::DeviceProfi
              rc0::sectionField(body, rc0::kSectionMaster, "Tempo"),
              first.measures,
              first.recTempoTenths,
+             usecases::rhythm::read(body),
              std::move(tracks) };
 }
 

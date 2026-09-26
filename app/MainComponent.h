@@ -156,6 +156,7 @@ private:
                              std::vector<std::string> hashes);
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
+    void editRhythm(int slot, usecases::rhythm::Edits edits);
     void releasePlayerIfHolding(int slotA, int slotB);
     void choosePushWav(int slot, bool slotOccupied);
     void pullSlot(int slot);

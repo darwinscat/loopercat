@@ -4,6 +4,7 @@
 #pragma once
 
 #include "PedalWorker.h"
+#include "RhythmCard.h"
 #include "UseCaseCard.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -38,6 +39,7 @@ public:
     std::function<void(int, long long)> onTempoCommitted;
     std::function<void(int)> onOneShotToggled;
     std::function<void(int)> onCountInToggled;
+    std::function<void(int, usecases::rhythm::Edits)> onRhythmEdited;
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -58,6 +60,7 @@ private:
     juce::TextEditor nameEditor_, tempoEditor_;
     UseCaseCard countIn_ { "Play Count-In" };
     UseCaseCard oneShot_ { "One Shot" };
+    RhythmCard rhythm_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SlotInspector)
 };
