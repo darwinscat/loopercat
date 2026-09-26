@@ -45,6 +45,8 @@ struct SlotRow
     std::string wavFile; // on-pedal filename(s), comma-joined; empty when none. On a
                          // multi-track model each name carries its track ("T1 001_1.WAV")
     std::string wavPath; // absolute path of track 1's first wav — what playback opens
+    std::vector<std::string> trackPaths; // one per track the model has, in track order:
+                                         // the track's first wav, or empty for no take
 
     bool operator==(const SlotRow&) const = default;
 };
@@ -226,11 +228,13 @@ public:
                 // it always was. Playback opens track 1's first file — a mix
                 // of the tracks is a later piece.
                 std::string files, firstPath;
+                std::vector<std::string> trackPaths;
                 for (int track = 1; track <= family.trackCount; ++track) {
+                    std::string trackPath;
                     for (const auto& name :
                          volume::listTrackWavs(*found, family, info.slot, track)) {
-                        if (track == 1 && firstPath.empty())
-                            firstPath =
+                        if (trackPath.empty())
+                            trackPath =
                                 (volume::trackDir(*found, family, info.slot, track) / name)
                                     .string();
                         if (!files.empty())
@@ -239,8 +243,12 @@ public:
                             files += "T" + std::to_string(track) + " ";
                         files += name;
                     }
+                    if (track == 1)
+                        firstPath = trackPath;
+                    trackPaths.push_back(std::move(trackPath));
                 }
-                snapshot.slots.push_back({ std::move(info), std::move(files), std::move(firstPath) });
+                snapshot.slots.push_back({ std::move(info), std::move(files), std::move(firstPath),
+                                           std::move(trackPaths) });
             }
         } catch (const Error& e) {
             snapshot.error = e.what();

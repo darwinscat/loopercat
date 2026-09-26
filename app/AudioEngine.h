@@ -4,10 +4,12 @@
 #pragma once
 
 #include "SectionLoopSource.h"
+#include "TrackMixSource.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <memory>
+#include <vector>
 
 //==============================================================================
 // loopercat::AudioEngine — slot playback over the stock real-time-safe JUCE
@@ -40,6 +42,7 @@ public:
         transport_.setSource(nullptr);
         sectionSource_.reset();
         readerSource_.reset();
+        mixSource_.reset();
         readAhead_.stopThread(2000);
     }
 
@@ -77,15 +80,79 @@ public:
         return juce::Result::ok();
     }
 
+    // One entry per track the memory has, in track order: the take's file
+    // (a nonexistent File for a track without one) and its level as a gain.
+    struct MixTrack {
+        juce::File file;
+        float gain = 1.0f;
+    };
+
+    // Load a multi-track memory as its mix (TrackMixSource): every take at
+    // its level, each looping on its own length, one stream to the transport
+    // and the section loop above it. Same discipline as load(): headers
+    // only here, bulk I/O on the read-ahead thread; the previous source is
+    // released first. At least one track must have a file, and every file
+    // must share one sample rate — the pedal's own takes do.
+    juce::Result loadMix(const std::vector<MixTrack>& tracks)
+    {
+        unload();
+        std::vector<TrackMixSource::Track> sources;
+        double rate = 0.0;
+        for (const auto& track : tracks) {
+            TrackMixSource::Track entry;
+            entry.gain = track.gain;
+            if (track.file != juce::File()) {
+                std::unique_ptr<juce::AudioFormatReader> reader(
+                    formats_.createReaderFor(track.file));
+                if (reader == nullptr)
+                    return juce::Result::fail("cannot read " + track.file.getFullPathName());
+                if (rate > 0.0 && !juce::exactlyEqual(reader->sampleRate, rate))
+                    return juce::Result::fail("the tracks of this memory are not at one sample"
+                                              " rate: " + track.file.getFullPathName());
+                rate = reader->sampleRate;
+                entry.source =
+                    std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
+            }
+            sources.push_back(std::move(entry));
+        }
+        if (rate <= 0.0)
+            return juce::Result::fail("this memory has no take to play");
+        sampleRate_ = rate;
+        mixSource_ = std::make_unique<TrackMixSource>(std::move(sources), readAhead_,
+                                                      kReadAheadSamples);
+        mixSource_->setLooping(looping_);
+        fileFrames_ = mixSource_->longestLength();
+        // The mix buffers per track and sums above the buffers, so the
+        // transport takes it as is — a buffer here would put the solo a
+        // second and a half behind the button.
+        transport_.setSource(mixSource_.get(), 0, nullptr, sampleRate_);
+        transport_.setPosition(0);
+        return juce::Result::ok();
+    }
+
     void unload()
     {
         transport_.stop();
         transport_.setSource(nullptr);
         sectionSource_.reset();
         readerSource_.reset();
+        mixSource_.reset();
     }
 
-    bool hasSource() const { return readerSource_ != nullptr; }
+    bool hasSource() const { return readerSource_ != nullptr || mixSource_ != nullptr; }
+
+    // The loaded mix's track count; 0 for a one-track load.
+    int mixTrackCount() const { return mixSource_ != nullptr ? mixSource_->trackCount() : 0; }
+
+    // Solo one track of the mix (1-based); 0 plays them all. A one-track
+    // load has nothing to solo and ignores this.
+    void setSolo(int track)
+    {
+        if (mixSource_ != nullptr)
+            mixSource_->setSolo(track);
+    }
+
+    int solo() const { return mixSource_ != nullptr ? mixSource_->solo() : 0; }
 
     void play()
     {
@@ -107,7 +174,7 @@ public:
     double positionSeconds() const
     {
         const double raw = transport_.getCurrentPosition();
-        if (sectionSource_ == nullptr || !sectionSource_->hasSection() || sampleRate_ <= 0)
+        if (!hasSection() || sampleRate_ <= 0)
             return raw;
         const auto linear = static_cast<juce::int64>(std::llround(raw * sampleRate_));
         return static_cast<double>(SectionLoopSource::mapToSection(
@@ -136,6 +203,8 @@ public:
         looping_ = shouldLoop;
         if (readerSource_ != nullptr)
             readerSource_->setLooping(shouldLoop);
+        if (mixSource_ != nullptr)
+            mixSource_->setLooping(shouldLoop);
     }
 
     bool isLooping() const { return looping_; }
@@ -149,12 +218,15 @@ public:
     // playback is outside the section it is pulled to the section start.
     void setSection(double startSeconds, double endSeconds)
     {
-        if (sectionSource_ == nullptr)
+        if (sectionSource_ == nullptr && mixSource_ == nullptr)
             return;
         const double audible = positionSeconds(); // BEFORE the bounds move
         sectionStartSeconds_ = startSeconds;
         sectionEndSeconds_ = endSeconds;
-        sectionSource_->setSection(framesFor(startSeconds), framesFor(endSeconds));
+        if (mixSource_ != nullptr) // the mix loops the section on every track
+            mixSource_->setSection(framesFor(startSeconds), framesFor(endSeconds));
+        else
+            sectionSource_->setSection(framesFor(startSeconds), framesFor(endSeconds));
         if (audible < startSeconds || audible >= endSeconds)
             transport_.setPosition(startSeconds);
         else
@@ -163,14 +235,21 @@ public:
 
     void clearSection()
     {
-        if (sectionSource_ == nullptr || !sectionSource_->hasSection())
+        if (!hasSection())
             return;
         const double audible = positionSeconds();
-        sectionSource_->clearSection();
+        if (mixSource_ != nullptr)
+            mixSource_->clearSection();
+        else
+            sectionSource_->clearSection();
         transport_.setPosition(audible); // back to plain file coordinates
     }
 
-    bool hasSection() const { return sectionSource_ != nullptr && sectionSource_->hasSection(); }
+    bool hasSection() const
+    {
+        return (sectionSource_ != nullptr && sectionSource_->hasSection())
+            || (mixSource_ != nullptr && mixSource_->hasSection());
+    }
 
     // --- AudioIODeviceCallback: a thin delegate to the stock player chain ---
 
@@ -205,6 +284,7 @@ private:
     juce::AudioSourcePlayer player_;
     juce::AudioTransportSource transport_;
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource_;
+    std::unique_ptr<TrackMixSource> mixSource_; // one of the two is the source, never both
     std::unique_ptr<SectionLoopSource> sectionSource_;
     double sampleRate_ = 44100.0;
     juce::int64 fileFrames_ = 0;

@@ -25,6 +25,8 @@ namespace
     // under the buttons (it did, once — a 96 px time zone was ~35 px short).
     constexpr int kTimeZone = 160;
     constexpr int kOpsZone = 164;
+    constexpr int kTitleLeft = 244;   // past play, loop and the fader
+    constexpr int kSoloZone = 8 + 2 * (34 + 4); // the T1/T2 pair, when a memory has tracks
     constexpr int kReadoutRight = 6 + kTimeZone + kOpsZone + 10;
     constexpr float kMarkerGrabZone = 7.0f;
     constexpr double kMinSectionSeconds = 0.1;
@@ -85,7 +87,22 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
     };
 
 
+    // Solo, one button per track of a multi-track memory: a toggle each,
+    // and pressing one releases the other — the pedal has one solo at a time.
+    for (std::size_t i = 0; i < soloButtons_.size(); ++i) {
+        auto& button = soloButtons_[i];
+        button.setClickingTogglesState(true);
+        button.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
+        button.setColour(juce::TextButton::buttonOnColourId, felitronics::appkit::brand::violet);
+        button.setColour(juce::TextButton::textColourOffId, kDim);
+        button.setColour(juce::TextButton::textColourOnId, kText);
+        button.setTooltip("Solo track " + juce::String(i + 1));
+        button.onClick = [this, track = static_cast<int>(i) + 1] { soloPressed(track); };
+        addChildComponent(button); // appear with a multi-track memory
+    }
+
     thumbnail_.addChangeListener(this); // repaint as the background build progresses
+    thumbnail2_.addChangeListener(this);
 
     addAndMakeVisible(playButton_);
     addAndMakeVisible(loopButton_);
@@ -103,6 +120,7 @@ PlayerPane::~PlayerPane()
 {
     readPass_.stop(); // before anything it reads from goes away
     thumbnail_.removeChangeListener(this);
+    thumbnail2_.removeChangeListener(this);
 }
 
 void PlayerPane::setVolume(double percent)
@@ -119,7 +137,69 @@ void PlayerPane::setSlot(int slot, const juce::File& wav, const juce::String& ti
     title_ = title;
     oneShot_ = oneShot;
     slotFrames_ = frames;
+    trackCount_ = 1;
     applyFile(wav);
+}
+
+void PlayerPane::setTracks(int slot, const std::vector<TrackFile>& tracks,
+                           const juce::String& title, bool oneShot)
+{
+    slot_ = slot;
+    title_ = title;
+    oneShot_ = oneShot;
+    slotFrames_ = 0; // the frame math re-derives from the readers
+    trackCount_ = juce::jlimit(1, static_cast<int>(soloButtons_.size()),
+                               static_cast<int>(tracks.size()));
+    applyTracks(tracks);
+}
+
+void PlayerPane::applyTracks(const std::vector<TrackFile>& tracks)
+{
+    readPass_.stop();
+    error_.clear();
+    currentPath_.clear();
+    thumbnail_.clear();
+    thumbnail2_.clear();
+    inSeconds_ = outSeconds_ = 0.0;
+    clearLoudness(); // a mix is not measured: the readout stays empty
+    engine_.setSolo(0);
+    for (auto& button : soloButtons_) {
+        button.setToggleState(false, juce::dontSendNotification);
+        button.setVisible(trackCount_ > 1);
+    }
+
+    std::vector<AudioEngine::MixTrack> mix;
+    std::vector<juce::File> files;
+    for (const auto& track : tracks) {
+        mix.push_back({ track.file, track.gain });
+        files.push_back(track.file);
+        if (currentPath_.isEmpty() && track.file != juce::File())
+            currentPath_ = track.file.getFullPathName(); // the first take: the pane's identity
+    }
+    const juce::Result loaded = engine_.loadMix(mix);
+    if (loaded.failed()) {
+        error_ = loaded.getErrorMessage();
+        currentPath_.clear();
+    } else {
+        engine_.setLooping(!oneShot_);
+        outSeconds_ = engine_.lengthSeconds();
+        readPass_.start(std::move(files), slot_); // both waveforms, one pass
+    }
+    markersChanged();
+    updateTransportRow();
+    layoutReadout();
+    resized(); // the solo buttons take their room
+    repaint();
+}
+
+void PlayerPane::soloPressed(int track)
+{
+    const bool on = soloButtons_[static_cast<std::size_t>(track - 1)].getToggleState();
+    for (std::size_t i = 0; i < soloButtons_.size(); ++i)
+        if (static_cast<int>(i) + 1 != track)
+            soloButtons_[i].setToggleState(false, juce::dontSendNotification);
+    engine_.setSolo(on ? track : 0);
+    repaint();
 }
 
 void PlayerPane::applyFile(const juce::File& wav)
@@ -131,6 +211,12 @@ void PlayerPane::applyFile(const juce::File& wav)
     inSeconds_ = outSeconds_ = 0.0;
     clearLoudness(); // new bytes (or a new slot): the owner re-feeds what it knows
 
+    thumbnail2_.clear();
+    engine_.setSolo(0);
+    for (auto& button : soloButtons_) {
+        button.setToggleState(false, juce::dontSendNotification);
+        button.setVisible(false); // a one-track memory has nothing to solo
+    }
     const juce::Result loaded = engine_.load(wav);
     if (loaded.failed()) {
         error_ = loaded.getErrorMessage();
@@ -138,7 +224,7 @@ void PlayerPane::applyFile(const juce::File& wav)
         currentPath_ = wav.getFullPathName();
         engine_.setLooping(!oneShot_); // preview with the slot's own behavior
         outSeconds_ = engine_.lengthSeconds();
-        readPass_.start(wav, slot_); // waveform and loudness, one read
+        readPass_.start({ wav }, slot_); // waveform and loudness, one read
         setLoudnessPending(slot_);
     }
     markersChanged();
@@ -149,8 +235,8 @@ void PlayerPane::applyFile(const juce::File& wav)
 
 void PlayerPane::reload()
 {
-    if (currentPath_.isEmpty())
-        return;
+    if (currentPath_.isEmpty() || trackCount_ > 1)
+        return; // a multi-track memory is never rewritten by this app (no trim on it)
     const juce::File file(currentPath_); // same path, new bytes — applyFile reads it afresh
     slotFrames_ = 0; // unknown until the next snapshot; frame math re-derives from the reader
     applyFile(file);
@@ -235,17 +321,16 @@ void PlayerPane::clearLoudness(int slot)
 
 // --- the read pass ---
 
-void PlayerPane::ReadPass::start(const juce::File& file, int slot)
+void PlayerPane::ReadPass::start(std::vector<juce::File> files, int slot)
 {
     stop();
-    file_ = file;
+    files_ = std::move(files);
     slot_ = slot;
     startThread();
 }
 
 void PlayerPane::ReadPass::run()
 {
-    std::unique_ptr<juce::AudioFormatReader> reader(owner_.engine_.formats().createReaderFor(file_));
     const int slot = slot_;
     juce::Component::SafePointer<PlayerPane> owner(&owner_);
     const auto finish = [owner, slot](std::optional<wav::LoudnessReading> reading) {
@@ -254,56 +339,77 @@ void PlayerPane::ReadPass::run()
                 owner->passFinished(slot, reading);
         });
     };
-    if (reader == nullptr || reader->numChannels < 1) {
-        finish(std::nullopt);
-        return;
-    }
-    const int channels = static_cast<int>(reader->numChannels);
-    const juce::int64 total = reader->lengthInSamples;
-    owner_.thumbnail_.reset(channels, reader->sampleRate, total); // thread-safe, like addBlock
+    // The meter measures one loop; a multi-track memory draws its lanes and
+    // reports no reading.
+    const bool measure = files_.size() == 1;
+    std::optional<wav::LoudnessReading> reading;
+    for (std::size_t lane = 0; lane < files_.size() && lane < 2; ++lane) {
+        juce::AudioThumbnail& thumbnail = owner_.thumbnailFor(static_cast<int>(lane));
+        if (files_[lane] == juce::File()) {
+            thumbnail.reset(2, 44100.0, 0); // a track without a take: an empty lane, drawn
+            continue;
+        }
+        std::unique_ptr<juce::AudioFormatReader> reader(
+            owner_.engine_.formats().createReaderFor(files_[lane]));
+        if (reader == nullptr || reader->numChannels < 1) {
+            if (measure)
+                finish(std::nullopt);
+            return;
+        }
+        const int channels = static_cast<int>(reader->numChannels);
+        const juce::int64 total = reader->lengthInSamples;
+        thumbnail.reset(channels, reader->sampleRate, total); // thread-safe, like addBlock
 
-    // A rate the meter cannot cut into 100 ms sub-blocks is not audio the
-    // pedal plays anyway, and a program past the meter's capacity is not one
-    // it can read; the waveform still draws, the reading is simply absent.
-    std::optional<loudness::Meter> meter;
-    try {
-        meter.emplace(static_cast<int>(reader->sampleRate));
-    } catch (const Error&) {
-    }
-    bool metered = meter.has_value();
-
-    juce::AudioBuffer<float> buffer(channels, kReadBlock);
-    std::vector<float> interleaved(2 * static_cast<std::size_t>(kReadBlock));
-    juce::int64 position = 0;
-    while (position < total && !threadShouldExit()) {
-        const int n = static_cast<int>(std::min<juce::int64>(kReadBlock, total - position));
-        if (!reader->read(&buffer, 0, n, position, true, true))
-            break;
-        owner_.thumbnail_.addBlock(position, buffer, 0, n);
-        if (metered) {
-            // Mono feeds both meter channels — the pedal plays it that way.
-            const float* left = buffer.getReadPointer(0);
-            const float* right = buffer.getReadPointer(channels >= 2 ? 1 : 0);
-            for (int i = 0; i < n; ++i) {
-                interleaved[2 * static_cast<std::size_t>(i)] = left[i];
-                interleaved[2 * static_cast<std::size_t>(i) + 1] = right[i];
-            }
+        // A rate the meter cannot cut into 100 ms sub-blocks is not audio the
+        // pedal plays anyway, and a program past the meter's capacity is not
+        // one it can read; the waveform still draws, the reading is simply
+        // absent.
+        std::optional<loudness::Meter> meter;
+        if (measure) {
             try {
-                meter->process(interleaved.data(), static_cast<std::size_t>(n));
+                meter.emplace(static_cast<int>(reader->sampleRate));
             } catch (const Error&) {
-                metered = false; // past the meter's capacity: the waveform still draws
             }
         }
-        position += n;
+        bool metered = meter.has_value();
+
+        juce::AudioBuffer<float> buffer(channels, kReadBlock);
+        std::vector<float> interleaved(2 * static_cast<std::size_t>(kReadBlock));
+        juce::int64 position = 0;
+        while (position < total && !threadShouldExit()) {
+            const int n = static_cast<int>(std::min<juce::int64>(kReadBlock, total - position));
+            if (!reader->read(&buffer, 0, n, position, true, true))
+                break;
+            thumbnail.addBlock(position, buffer, 0, n);
+            if (metered) {
+                // Mono feeds both meter channels — the pedal plays it that way.
+                const float* left = buffer.getReadPointer(0);
+                const float* right = buffer.getReadPointer(channels >= 2 ? 1 : 0);
+                for (int i = 0; i < n; ++i) {
+                    interleaved[2 * static_cast<std::size_t>(i)] = left[i];
+                    interleaved[2 * static_cast<std::size_t>(i) + 1] = right[i];
+                }
+                try {
+                    meter->process(interleaved.data(), static_cast<std::size_t>(n));
+                } catch (const Error&) {
+                    metered = false; // past the meter's capacity: the waveform still draws
+                }
+            }
+            position += n;
+        }
+        if (threadShouldExit())
+            return; // stopped for a newer file: no verdict, and no message
+        if (measure) {
+            if (position < total || !metered) {
+                finish(std::nullopt); // a short read is not a reading
+                return;
+            }
+            reading = wav::LoudnessReading { meter->integratedLufs(), meter->samplePeak(),
+                                             meter->truePeakDb(), meter->wildSamples() };
+        }
     }
-    if (threadShouldExit())
-        return; // stopped for a newer file: no verdict, and no message
-    if (position < total || !metered) {
-        finish(std::nullopt); // a short read is not a reading
-        return;
-    }
-    finish(wav::LoudnessReading { meter->integratedLufs(), meter->samplePeak(),
-                                  meter->truePeakDb(), meter->wildSamples() });
+    if (measure)
+        finish(reading);
 }
 
 void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> reading)
@@ -329,10 +435,10 @@ void PlayerPane::layoutReadout()
     juce::GlyphArrangement glyphs;
     glyphs.addLineOfText(juce::Font(juce::FontOptions(13.0f)), title_, 0.0f, 0.0f);
     const int titleWidth =
-        juce::jlimit(0, juce::jmax(0, row.getWidth() - 244 - 420),
+        juce::jlimit(0, juce::jmax(0, row.getWidth() - titleLeft() - 420),
                      juce::roundToInt(glyphs.getBoundingBox(0, -1, true).getWidth()));
     readout_.setBounds(
-        row.withTrimmedLeft(244 + titleWidth + 8)
+        row.withTrimmedLeft(titleLeft() + titleWidth + 8)
             .withTrimmedRight(tempoNote_.isNotEmpty() ? kReadoutRight + 280 : kReadoutRight));
 }
 
@@ -342,7 +448,9 @@ void PlayerPane::layoutReadout()
 // (the command would refuse — better not to offer).
 void PlayerPane::updateLoudnessButtons()
 {
-    const bool show = engine_.hasSource() && slot_ > 0 && !markersActive();
+    // A multi-track memory is neither measured nor normalized here: the
+    // meter reads one loop, and its model is not open for normalize.
+    const bool show = engine_.hasSource() && slot_ > 0 && !markersActive() && trackCount_ <= 1;
     normalizeButton_.setVisible(show);
     readout_.setVisible(show);
     normalizeButton_.setEnabled(!loudnessPending_ && !loudnessDamaged_);
@@ -362,6 +470,12 @@ void PlayerPane::clear()
     readPass_.stop();
     engine_.unload();
     thumbnail_.clear();
+    thumbnail2_.clear();
+    trackCount_ = 1;
+    for (auto& button : soloButtons_) {
+        button.setToggleState(false, juce::dontSendNotification);
+        button.setVisible(false);
+    }
     title_.clear();
     error_.clear();
     currentPath_.clear();
@@ -473,7 +587,7 @@ void PlayerPane::paint(juce::Graphics& g)
         // no selection owns the row (issue #61) — a meter beside the
         // waveform, DAW-style. layoutReadout() places it past the name.
         g.setColour(kText);
-        g.drawText(title_, row.withTrimmedLeft(244).withTrimmedRight(420),
+        g.drawText(title_, row.withTrimmedLeft(titleLeft()).withTrimmedRight(420),
                    juce::Justification::centredLeft, true);
     }
     if (tempoNote_.isNotEmpty()) {
@@ -551,8 +665,31 @@ void PlayerPane::paint(juce::Graphics& g)
         return;
     }
 
-    g.setColour(felitronics::appkit::brand::violet.withAlpha(0.85f));
-    thumbnail_.drawChannels(g, waveArea().reduced(2), 0.0, thumbnail_.getTotalLength(), 0.95f);
+    if (trackCount_ > 1) {
+        // One lane per track, the pedal's own numbering down the left; a
+        // track the solo has muted is drawn dim. The playhead and the
+        // markers below span every lane: one clock, one section.
+        const int solo = engine_.solo();
+        for (int lane = 0; lane < trackCount_; ++lane) {
+            const auto area = laneArea(lane);
+            const bool muted = solo != 0 && solo != lane + 1;
+            g.setColour(felitronics::appkit::brand::violet.withAlpha(muted ? 0.25f : 0.85f));
+            thumbnailFor(lane).drawChannels(g, area.reduced(2), 0.0,
+                                            thumbnailFor(lane).getTotalLength(), 0.95f);
+            g.setColour(kDim);
+            g.setFont(juce::FontOptions(11.0f));
+            g.drawText("T" + juce::String(lane + 1), area.reduced(4, 2),
+                       juce::Justification::topLeft, false);
+            if (lane > 0) {
+                g.setColour(kDim.withAlpha(0.5f));
+                g.fillRect(area.getX(), area.getY(), area.getWidth(), 1);
+            }
+        }
+    } else {
+        g.setColour(felitronics::appkit::brand::violet.withAlpha(0.85f));
+        thumbnail_.drawChannels(g, waveArea().reduced(2), 0.0, thumbnail_.getTotalLength(),
+                                0.95f);
+    }
 
     // Outside the markers: dimmed; the section reads as the surviving take.
     if (markersActive()) {
@@ -587,6 +724,14 @@ void PlayerPane::resized()
     loopButton_.setBounds(row.removeFromLeft(64));
     volumeIconArea_ = row.removeFromLeft(16);
     volumeSlider_.setBounds(row.removeFromLeft(84).reduced(0, 3));
+    if (trackCount_ > 1) {
+        // The solo pair rides after the fader; the title shifts past it.
+        row.removeFromLeft(8);
+        for (auto& button : soloButtons_) {
+            button.setBounds(row.removeFromLeft(34).reduced(0, 2));
+            row.removeFromLeft(4);
+        }
+    }
     row.removeFromRight(kTimeZone); // the time readout, drawn in paint()
     // One zone, two modes (issue #61): [Reset][Trim] while a selection is
     // active, [Measure][Normalize…] otherwise — never both at once.
@@ -658,6 +803,20 @@ void PlayerPane::mouseMove(const juce::MouseEvent& e)
                              || std::abs(e.position.x - xOf(outSeconds_)) <= kMarkerGrabZone);
     setMouseCursor(nearMarker ? juce::MouseCursor::LeftRightResizeCursor
                               : juce::MouseCursor::NormalCursor);
+}
+
+int PlayerPane::titleLeft() const
+{
+    return kTitleLeft + (trackCount_ > 1 ? kSoloZone : 0);
+}
+
+// The waveform strip split into one lane per track, top to bottom.
+juce::Rectangle<int> PlayerPane::laneArea(int lane) const
+{
+    const auto whole = waveArea();
+    const int lanes = juce::jmax(1, trackCount_);
+    const int height = whole.getHeight() / lanes;
+    return whole.withY(whole.getY() + lane * height).withHeight(height);
 }
 
 void PlayerPane::seekTo(juce::Point<float> position)

@@ -11,7 +11,9 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <array>
 #include <optional>
+#include <vector>
 
 //==============================================================================
 // loopercat::PlayerPane — the listening strip for the selected slot: transport
@@ -37,6 +39,21 @@ public:
     // trim math runs on it). A load failure shows in the pane.
     void setSlot(int slot, const juce::File& wav, const juce::String& title, bool oneShot,
                  long long frames);
+
+    // One track of a multi-track memory: its take (a nonexistent File for a
+    // track without one) and its level as a gain (PlyLvl / 100).
+    struct TrackFile {
+        juce::File file;
+        float gain = 1.0f;
+    };
+
+    // Load a multi-track memory for listening: every take at its level, as
+    // the pedal plays it, one waveform lane per track, solo buttons per
+    // track. The track list is the memory's — as many entries as its model
+    // has tracks (DeviceProfile), which is what puts the solo buttons on the
+    // row: a one-track model never shows them.
+    void setTracks(int slot, const std::vector<TrackFile>& tracks, const juce::String& title,
+                   bool oneShot);
     void clear();
 
     // Re-open the current file after it changed on disk (a trim landed):
@@ -47,11 +64,17 @@ public:
     void setMarkers(double inSeconds, double outSeconds);
 
     const juce::String& currentPath() const { return currentPath_; }
-    // True once the read pass has fed the whole file into the waveform.
+    // True once the read pass has fed every loaded file into its waveform —
+    // both lanes of a two-track memory (an empty lane counts as drawn).
     bool isThumbnailReady() const
     {
-        return !readPass_.isThreadRunning() && thumbnail_.isFullyLoaded();
+        return !readPass_.isThreadRunning() && thumbnail_.isFullyLoaded()
+            && thumbnail2_.isFullyLoaded();
     }
+
+    // The tracks the pane holds: 1 for a one-track load, the model's count
+    // for a multi-track memory.
+    int trackCount() const { return trackCount_; }
 
     std::function<void(double)> onVolumeChanged;                     // preview volume moved (0..100)
 
@@ -100,6 +123,11 @@ private:
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override { repaint(); }
     void applyFile(const juce::File& wav);
+    void applyTracks(const std::vector<TrackFile>& tracks);
+    void soloPressed(int track);
+    juce::AudioThumbnail& thumbnailFor(int lane) { return lane == 0 ? thumbnail_ : thumbnail2_; }
+    juce::Rectangle<int> laneArea(int lane) const;
+    int titleLeft() const; // where the title starts: past the transport, and past the solo pair
     void seekTo(juce::Point<float> position);
     void markersChanged();
     bool markersActive() const;
@@ -121,13 +149,16 @@ private:
     public:
         explicit ReadPass(PlayerPane& owner)
             : juce::Thread("LooperCat player read pass"), owner_(owner) {}
-        void start(const juce::File& file, int slot);
+        // One file per lane; a nonexistent File leaves its lane empty. The
+        // loudness meter runs for a single file only — a mix is not a loop
+        // the meter is asked about.
+        void start(std::vector<juce::File> files, int slot);
         void stop() { stopThread(5000); }
         void run() override;
 
     private:
         PlayerPane& owner_;
-        juce::File file_;
+        std::vector<juce::File> files_;
         int slot_ = 0;
     };
 
@@ -147,6 +178,9 @@ private:
     AudioEngine& engine_;
     juce::AudioThumbnailCache thumbnailCache_ { 8 };
     juce::AudioThumbnail thumbnail_ { 512, engine_.formats(), thumbnailCache_ };
+    juce::AudioThumbnail thumbnail2_ { 512, engine_.formats(), thumbnailCache_ }; // lane 2
+    int trackCount_ = 1;
+    std::array<juce::TextButton, 2> soloButtons_ { juce::TextButton("T1"), juce::TextButton("T2") };
 
     juce::TextButton playButton_;
     juce::ToggleButton loopButton_ { "Loop" };

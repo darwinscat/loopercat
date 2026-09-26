@@ -122,6 +122,8 @@ int main()
         CHECK_EQ(s.family, "RC-5"); // the card's own word for its model
         CHECK_EQ(s.slots.size(), static_cast<std::size_t>(rc0::kSlotCount));
         CHECK_EQ(s.slots.at(0).info.name, "Memory 01   ");
+        CHECK_EQ(s.slots.at(0).trackPaths.size(), 1u); // one track, no take yet
+        CHECK_EQ(s.slots.at(0).trackPaths.at(0), "");
     }
 
     // A quiet volume delivers nothing new about the card: give the monitor
@@ -279,6 +281,15 @@ int main()
             CHECK(!s.slots.at(10).info.hasAudio); // TRACK1's fact, as the flat field says
             CHECK(s.slots.at(10).info.tracks.at(1).hasAudio);
             CHECK_EQ(s.slots.at(1).wavFile, "");  // memory 2: a take indexed, no file on disk here
+            // Every track's path in track order — what the mix player opens.
+            CHECK_EQ(s.slots.at(0).trackPaths.size(), 2u);
+            CHECK_EQ(s.slots.at(0).trackPaths.at(0), s.slots.at(0).wavPath);
+            CHECK_EQ(s.slots.at(0).trackPaths.at(1),
+                     (volume::trackDir(twoTrack, profile::kRc500, 1, 2) / "001_2.WAV").string());
+            CHECK_EQ(s.slots.at(10).trackPaths.at(0), "");
+            CHECK_EQ(s.slots.at(10).trackPaths.at(1),
+                     (volume::trackDir(twoTrack, profile::kRc500, 11, 2) / "011_2.WAV").string());
+            CHECK((s.slots.at(1).trackPaths == std::vector<std::string> { "", "" }));
         }
         // An RC-5 card's rows read exactly as before: no track prefix.
         fs::remove_all(twoTrack);
