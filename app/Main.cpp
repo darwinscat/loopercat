@@ -382,7 +382,9 @@ private:
                 return 3;
             }
             const history::undo::Plan plan = history::undo::plan(timeline, *target);
-            std::cout << history::undo::describe(plan, timeline);
+            // No recorder here, so no session of this run: every target reads
+            // as across a connection, as it would for the first press.
+            std::cout << history::undo::describe(plan, timeline, std::nullopt);
             return plan.possible() ? 0 : 3;
         } catch (const std::exception& e) {
             std::cout << "the history cannot be read: " << e.what() << std::endl;

@@ -282,7 +282,7 @@ int main()
         const undo::Plan plan = undo::plan(timeline, *second.undo);
         CHECK_EQ(plan.writesOver.size(), std::size_t { 2 }); // as recorded: the rename, the undo row
         CHECK(undo::stillInEffect(timeline, plan.writesOver).empty());
-        CHECK(!undo::bumpFor(plan, timeline).needed());
+        CHECK(!undo::bumpFor(plan, timeline, b.rec->sessionOn(b.volume)).needed());
 
         CHECK_EQ(b.press(false), std::string());
         CHECK_SAME(cardState(b.volume), pushed); // the untrimmed take, byte for byte
@@ -402,6 +402,30 @@ int main()
         CHECK_SAME(cardState(b.volume), now);
     }
 
+    // --- the first press after the app starts reaches into another connection ---
+    {
+        Bench b;
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "a.wav", 44100 * 4), 5, { .write = o });
+        });
+        const std::int64_t first = newest(b.rec->store()).session;
+        CHECK(b.rec->sessionOn(b.volume) == first);
+        CHECK(!b.rec->sessionOn(b.tmp.path / "another card").has_value());
+        b.rec = std::make_shared<HistoryRecorder>(b.tmp.path / "history", "RC-5", tick); // the app again
+        CHECK(!b.rec->sessionOn(b.volume).has_value()); // nothing written in this run yet
+        const auto timeline = b.rec->store().cardTimeline();
+        const undo::Plan plan = undo::plan(timeline, *undo::offer(b.rec->store()).undo);
+        CHECK(!plan.crossesConnection); // the plan's proxy misses it: nothing newer on the card
+        const undo::Bump bump = undo::bumpFor(plan, timeline, b.rec->sessionOn(b.volume));
+        CHECK(bump.needed());
+        CHECK(bump.keys == (std::vector<std::string> { "connection:" + std::to_string(first) }));
+        // Once this run has written, a target of this run crosses nothing.
+        CHECK_EQ(b.press(false), std::string());
+        const auto after = b.rec->store().cardTimeline();
+        const undo::Offer offer = undo::offer(b.rec->store());
+        CHECK(!undo::bumpFor(undo::plan(after, *offer.redo), after, b.rec->sessionOn(b.volume)).needed());
+    }
+
     // --- a crossing is asked about once: keyed by the connection gone back into ---
     {
         Bench b;
@@ -418,7 +442,8 @@ int main()
 
         const auto bumpNow = [&b]() {
             const auto timeline = b.rec->store().cardTimeline();
-            return undo::bumpFor(undo::plan(timeline, *undo::offer(b.rec->store()).undo), timeline);
+            return undo::bumpFor(undo::plan(timeline, *undo::offer(b.rec->store()).undo), timeline,
+                                 b.rec->sessionOn(b.volume));
         };
         const undo::Bump into = bumpNow(); // back into the first run's push
         CHECK(into.needed());

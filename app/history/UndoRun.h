@@ -192,13 +192,24 @@ inline std::string rowWords(const HistoryStore::CardEntry& entry)
     return words;
 }
 
-inline Bump bumpFor(const Plan& plan, const std::vector<HistoryStore::CardEntry>& timeline)
+// `current` is the session this run records in on the card (the recorder's
+// sessionOn): a target from any other session lies across a connection, and
+// with no session yet — the first press after the app started — every target
+// does. Plan::crossesConnection compares with the newest operation's session
+// instead, and so misses exactly that first press.
+inline bool crossesConnection(const HistoryStore::CardEntry& target, std::optional<std::int64_t> current)
+{
+    return !current || target.session != *current;
+}
+
+inline Bump bumpFor(const Plan& plan, const std::vector<HistoryStore::CardEntry>& timeline,
+                    std::optional<std::int64_t> current)
 {
     Bump out;
     const auto* target = findEntry(timeline, plan.target);
     if (target == nullptr || !plan.possible())
         return out;
-    if (plan.crossesConnection) {
+    if (crossesConnection(*target, current)) {
         // Keyed by the connection the press goes back INTO: once a player has
         // said yes to reaching into it, the next press there — after the
         // first one wrote its own row in this session — is the same crossing.
@@ -228,7 +239,8 @@ inline Bump bumpFor(const Plan& plan, const std::vector<HistoryStore::CardEntry>
 
 // The plan in words, for the --undo-plan seam: what would go back where,
 // what it crosses, and why it would be refused.
-inline std::string describe(const Plan& plan, const std::vector<HistoryStore::CardEntry>& timeline)
+inline std::string describe(const Plan& plan, const std::vector<HistoryStore::CardEntry>& timeline,
+                            std::optional<std::int64_t> current)
 {
     std::string out;
     const auto* target = findEntry(timeline, plan.target);
@@ -252,8 +264,10 @@ inline std::string describe(const Plan& plan, const std::vector<HistoryStore::Ca
     }
     for (const SystemStep& step : plan.system)
         out += "  settings: <" + step.section + "> back\n";
-    const Bump bump = bumpFor(plan, timeline);
-    out += std::string("crosses a connection: ") + (plan.crossesConnection ? "yes" : "no") + "\n";
+    const Bump bump = bumpFor(plan, timeline, current);
+    out += std::string("crosses a connection: ")
+        + (target != nullptr && crossesConnection(*target, current) ? "yes" : "no")
+        + (current ? "" : " (no session in this run yet)") + "\n";
     out += std::string("crosses a change on the pedal: ") + (plan.crossesPedal ? "yes" : "no") + "\n";
     out += "writes over (recorded): " + std::to_string(plan.writesOver.size()) + ", still in effect: "
         + std::to_string(stillInEffect(timeline, plan.writesOver).size()) + "\n";

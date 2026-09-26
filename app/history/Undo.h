@@ -139,7 +139,11 @@ struct Plan {
     // still in effect, the list a warning may rest on, is
     // UndoRun.h's stillInEffect(); to move here after #73 lands.
     std::vector<std::int64_t> writesOver;
-    bool crossesConnection = false;           // the target is from another session than the newest operation
+    // The target is from another session than the newest operation — a
+    // proxy that misses the first press of a new run, before it has written
+    // anything. The warning rests on the recorder's current session instead:
+    // UndoRun.h bumpFor(), with HistoryRecorder::sessionOn().
+    bool crossesConnection = false;
     bool crossesPedal = false;                // a change made on the pedal itself lies after the target
 
     bool possible() const { return refusal == Refusal::none; }

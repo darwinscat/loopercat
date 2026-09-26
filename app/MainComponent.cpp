@@ -2967,7 +2967,8 @@ void MainComponent::pressUndo(bool redo)
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue({ redo ? "Plan the redo" : "Plan the undo",
                      0,
-                     [rec = recorder, redo, target, safe, alive = uiAlive](const volume::fs::path&) {
+                     [rec = recorder, redo, target, volume = snapshot.volume, safe,
+                      alive = uiAlive](const volume::fs::path&) {
                          history::HistoryStore& store = rec->store();
                          const auto timeline = store.cardTimeline();
                          const history::undo::Offer offer = history::undo::offerFrom(store.offeredTargets(), timeline);
@@ -2987,7 +2988,10 @@ void MainComponent::pressUndo(bool redo)
                          }
                          for (const auto& step : plan.steps)
                              edit.slots.push_back(step.slot);
-                         const history::undo::Bump bump = history::undo::bumpFor(plan, timeline);
+                         // Across a connection means: from another session than the
+                         // one this run records in — none yet counts as another.
+                         const history::undo::Bump bump = history::undo::bumpFor(
+                             plan, timeline, rec->sessionOn(volume::fs::path(volume)));
                          edit.crossings = bump.keys;
                          edit.reasons = bump.reasons;
                          juce::MessageManager::callAsync([safe, alive, edit] {
