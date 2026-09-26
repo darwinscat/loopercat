@@ -51,9 +51,10 @@ enum class Operation : unsigned {
     restore,
     swap,
     setControls, // the pedal's own settings: what its footswitches and CC#80..87 do
+    setRhythm,   // a memory's drums: on/off, pattern, kit, beat, variation, level, reverb, tone
 };
 
-inline constexpr unsigned kOperationCount = 14;
+inline constexpr unsigned kOperationCount = 15;
 
 inline constexpr std::string_view operationName(Operation op)
 {
@@ -72,6 +73,7 @@ inline constexpr std::string_view operationName(Operation op)
     case Operation::restore: return "restore";
     case Operation::swap: return "swap";
     case Operation::setControls: return "set controls";
+    case Operation::setRhythm: return "set rhythm";
     }
     throw Error("unknown operation"); // a value no enumerator has
 }
