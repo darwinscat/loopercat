@@ -60,7 +60,11 @@ void PlayStopCard::makeCaption(juce::Label& label, const juce::String& text)
 
 // Item ids are the manual's numbers plus one: JUCE keeps 0 for "nothing". A
 // choice reports itself only when it differs from what the slot has, and
-// never from a greyed box: a lamp is mute whoever reaches it.
+// never from a greyed box: a lamp is mute whoever reaches it — and it keeps
+// nothing either. A dropdown left open when a job starts still commits the
+// pick the player releases on, so a greyed box that was moved goes straight
+// back to the slot's own value instead of naming a mode the slot does not
+// have for as long as the write takes (the same rule as the Rhythm tab's).
 void PlayStopCard::makeChoice(juce::ComboBox& box, const char* id,
                               std::function<long long()> current,
                               std::function<playstop::Edits(long long)> makeEdit)
@@ -72,8 +76,12 @@ void PlayStopCard::makeChoice(juce::ComboBox& box, const char* id,
     box.setColour(juce::ComboBox::arrowColourId, cardlook::kCaption);
     box.setColour(juce::ComboBox::focusedOutlineColourId, felitronics::appkit::brand::violet);
     box.onChange = [this, &box, current, makeEdit] {
+        if (!box.isEnabled()) {
+            refresh();
+            return;
+        }
         const int selected = box.getSelectedId();
-        if (selected <= 0 || !box.isEnabled() || !onEdit)
+        if (selected <= 0 || !onEdit)
             return;
         const long long number = selected - 1;
         if (number != current())

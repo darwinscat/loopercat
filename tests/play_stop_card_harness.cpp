@@ -72,13 +72,17 @@ int main()
     CHECK_EQ(fade->getText(), "2MEAS");
     CHECK(labelSaying(card, "FADE TIME (no fade set)") != nullptr);
 
-    // A greyed card is mute, whoever reaches its boxes — and what such a
-    // reach left on a box does not outlive the greying: the card shows the
-    // slot's own values again the moment it can be touched.
+    // A greyed card is mute, whoever reaches its boxes — and it keeps nothing
+    // either: a dropdown left open when a job starts still commits its pick,
+    // and the box must snap back to the slot's own value at once rather than
+    // name a mode the slot does not have for as long as the write takes.
     card.setEnabled(false);
     choose(*start, 1);
     choose(*fade, 10);
     CHECK_EQ(calls, 0);
+    CHECK_EQ(start->getText(), "IMMEDIATE");
+    CHECK_EQ(fade->getText(), "2MEAS");
+    // And the same on the way back, without anyone pushing values in between.
     card.setEnabled(true);
     CHECK_EQ(start->getText(), "IMMEDIATE");
     CHECK_EQ(fade->getText(), "2MEAS");
