@@ -551,6 +551,18 @@ inline WriteResult setRhythm(const fs::path& volume, int slot,
     return writeMemoryPair(volume, text, options);
 }
 
+// Start & Stop (#22): one slot, any subset of START, STOP, FADE TIME. The
+// lists and the ownership live in usecases::playstop; this is the same
+// transaction as setRhythm's: one gated read, one backup, one pair-write.
+inline WriteResult setPlayStop(const fs::path& volume, int slot,
+                               const usecases::playstop::Edits& edits, const WriteOptions& options)
+{
+    std::string text = readMemoryFor(volume, profile::Operation::setPlayStop);
+    text = rc0::replaceSlotBody(text, slot,
+                                usecases::playstop::apply(rc0::slotBody(text, slot), edits));
+    return writeMemoryPair(volume, text, options);
+}
+
 // The pedal's supported tempo range, tenths of BPM (RC-5 display: 40.0–300.0).
 inline constexpr long long kTempoTenthsMin = 400;
 inline constexpr long long kTempoTenthsMax = 3000;
