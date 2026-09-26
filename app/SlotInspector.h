@@ -5,7 +5,6 @@
 
 #include "CardPermissions.h"
 #include "PedalWorker.h"
-#include "RhythmCard.h"
 #include "UseCaseCard.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -40,7 +39,6 @@ public:
     std::function<void(int, long long)> onTempoCommitted;
     std::function<void(int)> onOneShotToggled;
     std::function<void(int)> onCountInToggled;
-    std::function<void(int, usecases::rhythm::Edits)> onRhythmEdited;
 
     // What the card may be asked (CardPermissions.h), from the owner: a field
     // the card cannot take is read-only, a card that cannot flip is a lamp,
@@ -67,7 +65,6 @@ private:
     juce::TextEditor nameEditor_, tempoEditor_;
     UseCaseCard countIn_ { "Play Count-In" };
     UseCaseCard oneShot_ { "One Shot" };
-    RhythmCard rhythm_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SlotInspector)
 };

@@ -78,14 +78,9 @@ SlotInspector::SlotInspector()
         if (hasSlot_ && !busy_ && onOneShotToggled)
             onOneShotToggled(info_.slot);
     };
-    rhythm_.onEdit = [this](usecases::rhythm::Edits edits) {
-        if (hasSlot_ && !busy_ && onRhythmEdited)
-            onRhythmEdited(info_.slot, std::move(edits));
-    };
-
     for (auto* child : std::initializer_list<juce::Component*> {
              &nameCaption_, &tempoCaption_, &barsHint_, &footer_, &nameEditor_, &tempoEditor_,
-             &countIn_, &oneShot_, &rhythm_ })
+             &countIn_, &oneShot_ })
         addAndMakeVisible(child);
 
     setSlot(nullptr);
@@ -127,7 +122,6 @@ void SlotInspector::refresh()
     tempoEditor_.setReadOnly(!can.tempo);
     countIn_.setEnabled(live && can.countIn);
     oneShot_.setEnabled(live && can.oneShot);
-    rhythm_.setEnabled(live && can.rhythm);
     footer_.setText(can.anyWrite() ? juce::String("Disconnect to hear the changes.")
                                    : juce::String(CardPermissions::writesOnlyTo()),
                     juce::dontSendNotification);
@@ -135,7 +129,7 @@ void SlotInspector::refresh()
     for (auto* child : std::initializer_list<juce::Component*> { &nameCaption_, &tempoCaption_,
                                                                 &barsHint_, &footer_,
                                                                 &nameEditor_, &tempoEditor_,
-                                                                &countIn_, &oneShot_, &rhythm_ })
+                                                                &countIn_, &oneShot_ })
         child->setVisible(hasSlot_);
 
     if (!hasSlot_) {
@@ -165,14 +159,7 @@ void SlotInspector::refresh()
                       info_.oneShot ? "Plays once and stops at the end of the loop."
                                     : "Loops until you stop it.");
 
-    // The groove that "off" would forget: only with a count-in in front of
-    // playing drums does off mean Blank rather than State off (Rhythm.hpp).
-    rhythm_.setValues(info_.rhythm,
-                      info_.rhythm.on && info_.countIn
-                          ? std::optional<long long>(info_.rhythm.pattern)
-                          : std::nullopt);
-
-    resized(); // a card grows when it has something to warn about
+    resized(); // the count-in card grows when it has something to warn about
     repaint();
 }
 
@@ -269,16 +256,12 @@ void SlotInspector::resized()
     footer_.setBounds(identity); // the "disconnect to hear it" note rides the same row
 
     area.removeFromTop(8);
-    const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight(),
-                                      rhythm_.preferredHeight());
+    const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight());
     auto cards = area.removeFromTop(juce::jmin(cardHeight, area.getHeight()));
-    // Three cards across, each no wider than it needs: the studio is a strip.
-    const int cardWidth = juce::jmin(320, (cards.getWidth() - 2 * kCardGap) / 3);
+    const int cardWidth = juce::jmin(320, (cards.getWidth() - kCardGap) / 2);
     countIn_.setBounds(cards.removeFromLeft(cardWidth));
     cards.removeFromLeft(kCardGap);
     oneShot_.setBounds(cards.removeFromLeft(cardWidth));
-    cards.removeFromLeft(kCardGap);
-    rhythm_.setBounds(cards.removeFromLeft(cardWidth));
 }
 
 } // namespace loopercat
