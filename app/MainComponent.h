@@ -151,6 +151,7 @@ private:
     void cardNamed(marker::Card card, bool minted, std::string sweepNote);
     void renamePedal();
     void savePedalBook();
+    void trace(const juce::String& line); // one step of a connection into operations.log
 
     void runBackup();
     void runCleanJunk();
