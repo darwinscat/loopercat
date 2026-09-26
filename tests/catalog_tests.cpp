@@ -137,6 +137,7 @@ int main()
         CHECK_EQ(s.tracks.size(), 1u);
         const catalog::TrackInfo& t = s.tracks.front();
         CHECK_EQ(t.track, 1);
+        CHECK_EQ(t.level, 100); // the synthetic RC-5 body's PlyLvl
         CHECK(t.hasAudio == s.hasAudio);
         CHECK_EQ(t.frames, s.frames);
         CHECK(t.oneShot == s.oneShot);
@@ -156,24 +157,25 @@ int main()
 
         // Memory 1: both tracks 8 bars at 132.0 BPM.
         using catalog::TrackInfo;
-        CHECK(memories.at(0).tracks.at(0) == (TrackInfo { 1, true, 641408, false, 8, 1320 }));
-        CHECK(memories.at(0).tracks.at(1) == (TrackInfo { 2, true, 641408, false, 8, 1320 }));
+        // ...and each track at its own level (PlyLvl): the card's 69 and 39.
+        CHECK(memories.at(0).tracks.at(0) == (TrackInfo { 1, true, 641408, false, 8, 1320, 69 }));
+        CHECK(memories.at(0).tracks.at(1) == (TrackInfo { 2, true, 641408, false, 8, 1320, 39 }));
         CHECK_EQ(memories.at(0).tempoTenths, 1320);
         // Memory 3: a 4-bar track 1 beside an 8-bar track 2 — different
         // lengths under one tempo.
-        CHECK(memories.at(2).tracks.at(0) == (TrackInfo { 1, true, 282240, false, 4, 1500 }));
-        CHECK(memories.at(2).tracks.at(1) == (TrackInfo { 2, true, 564480, false, 8, 1500 }));
+        CHECK(memories.at(2).tracks.at(0) == (TrackInfo { 1, true, 282240, false, 4, 1500, 100 }));
+        CHECK(memories.at(2).tracks.at(1) == (TrackInfo { 2, true, 564480, false, 8, 1500, 100 }));
         // Memory 2: track 2 empty, factory-shaped.
-        CHECK(memories.at(1).tracks.at(1) == (TrackInfo { 2, false, 0, false, 0, 959 }));
+        CHECK(memories.at(1).tracks.at(1) == (TrackInfo { 2, false, 0, false, 0, 959, 100 }));
         // Memory 11: the take is on track 2 alone. The flat fields are
         // TRACK1's and say "empty" — the one-track view's honest limit, which
         // is why a caller showing this card reads `tracks`.
         CHECK(!memories.at(10).hasAudio);
         CHECK_EQ(memories.at(10).frames, 0);
-        CHECK(memories.at(10).tracks.at(1) == (TrackInfo { 2, true, 362496, false, 4, 1167 }));
+        CHECK(memories.at(10).tracks.at(1) == (TrackInfo { 2, true, 362496, false, 4, 1167, 100 }));
         // Memory 42: factory-empty on both tracks.
-        CHECK(memories.at(41).tracks.at(0) == (TrackInfo { 1, false, 0, false, 0, 1200 }));
-        CHECK(memories.at(41).tracks.at(1) == (TrackInfo { 2, false, 0, false, 0, 1200 }));
+        CHECK(memories.at(41).tracks.at(0) == (TrackInfo { 1, false, 0, false, 0, 1200, 100 }));
+        CHECK(memories.at(41).tracks.at(1) == (TrackInfo { 2, false, 0, false, 0, 1200, 100 }));
         // readSlot, told the model or reading it off the root, agrees.
         CHECK(catalog::readSlot(twoTrack, 3) == memories.at(2));
         CHECK(catalog::readSlot(twoTrack, profile::kRc500, 3) == memories.at(2));

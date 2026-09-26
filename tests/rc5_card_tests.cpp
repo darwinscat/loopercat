@@ -76,6 +76,8 @@ int main()
         // One track per memory, and the flat fields are its.
         CHECK_EQ(slot.tracks.size(), 1u);
         CHECK_EQ(slot.tracks.front().frames, slot.frames);
+        CHECK_EQ(slot.tracks.front().level,
+                 rc0::sectionField(body, rc0::kSectionTrack1, "PlyLvl")); // 100 on every memory
         // The view agrees with the sections the values live in.
         CHECK_EQ(slot.frames, rc0::sectionField(body, rc0::kSectionTrack1, "WavLen"));
         CHECK_EQ(slot.measures, rc0::sectionField(body, rc0::kSectionTrack1, "MeasLen"));

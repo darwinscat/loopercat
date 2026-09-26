@@ -37,6 +37,8 @@ struct TrackInfo {
     bool oneShot;             // One == 1
     long long measures;       // MeasLen: whole bars, as the pedal displays them
     long long recTempoTenths; // RecTmp: tenths of BPM the take was recorded at
+    long long level;          // PlyLvl: the track's own level, 100 = unity (LOOP LEVEL
+                              // 0-200 on the screen; a real two-track card carries 69/39)
 
     bool operator==(const TrackInfo&) const = default;
 };
@@ -83,7 +85,7 @@ inline TrackInfo readTrack(std::string_view body, int track)
         return rc0::sectionField(body, section, tag);
     };
     return { track,      field("WavStat") == 1, field("WavLen"),
-             field("One") == 1, field("MeasLen"), field("RecTmp") };
+             field("One") == 1, field("MeasLen"), field("RecTmp"), field("PlyLvl") };
 }
 
 // A memory as the model it belongs to lays it out: the profile says how many
