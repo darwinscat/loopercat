@@ -229,6 +229,9 @@ loopercat_core_test(connect_tests)
 # The gate in front of Connect's first frame (issue #85): pure over the
 # register's answer, so it is built like a core suite though it lives in app/.
 loopercat_core_test(connect_gate_tests)
+# What the app remembers about the pedals it has met (issue #98): pure, so
+# it is a core suite though it lives in app/.
+loopercat_core_test(pedal_book_tests)
 loopercat_core_test(params_tests)
 loopercat_core_test(quit_tests)
 loopercat_core_test(rc0_tests)
