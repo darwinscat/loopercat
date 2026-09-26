@@ -94,6 +94,11 @@ public:
         std::string takeName;
         std::optional<std::string> takeHash;
         bool takeKept = false; // the bytes are in the store: it can be played
+        // The take is the one the operation left in the slot (its 'after'
+        // side). False when the row offers the take it archived instead — a
+        // clear, an undo that emptied the slot, a legacy row: that take is
+        // not on the card, whatever the row's place in the timeline.
+        bool takeIsAfter = false;
     };
 
     // Ordered by time, not by insertion: rows imported from the folders that

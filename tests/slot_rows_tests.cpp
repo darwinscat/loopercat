@@ -58,6 +58,7 @@ int main()
         pushed.takeName = "take.wav";
         pushed.takeHash = std::string(32, '\x11');
         pushed.takeKept = false; // the bytes are on the card; nothing replaced them yet
+        pushed.takeIsAfter = true; // the take the push left in the slot
 
         const auto made = rows::forSlot({ pushed });
         CHECK_EQ(made.size(), 1u);
@@ -80,6 +81,7 @@ int main()
         trimmed.afterBody = bodyWith(441000, "TEST_42_HIST");
         trimmed.takeName = "take.wav";
         trimmed.takeHash = std::string(32, '\x22');
+        trimmed.takeIsAfter = true;
 
         const auto made = rows::forSlot({ pushed, trimmed });
         CHECK_EQ(made.size(), 2u);
@@ -166,13 +168,67 @@ int main()
         // one whose bytes are gone says so, still not "in the slot now"
         newest.takeKept = false;
         CHECK_EQ(rows::forSlot({ older, newest }).back().line.audio, std::string("take no longer kept"));
+        // a row from before the history stands for a past operation: even a
+        // take recorded on its 'after' side is not what the slot holds now
+        newest.takeKept = true;
+        newest.takeIsAfter = true;
+        CHECK_EQ(rows::forSlot({ older, newest }).back().line.audio, std::string("take kept"));
         // the app's own newest row still is where the slot is
         Entry pushed = op(3, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
         pushed.takeName = "take.wav";
         pushed.takeHash = std::string(32, '\x77');
+        pushed.takeIsAfter = true;
         CHECK_EQ(rows::forSlot({ older, pushed }).back().line.audio, std::string("in the slot now"));
+    }
+
+    // --- a newest row whose take is the one it archived is not where the slot is ---
+    {
+        // Alisa's run: push b.wav into slot 4, then Undo. The undo archived
+        // b.wav and left the slot empty; the store keeps no 'after' take for
+        // it, so the row's take is the archived one — not on the card.
+        Entry pushed = op(1, "push");
+        pushed.beforeBody = empty;
+        pushed.afterBody = loaded;
+        pushed.takeName = "b.wav";
+        pushed.takeHash = std::string(32, '\x0b');
+        pushed.takeKept = true;
+        pushed.takeIsAfter = true;
+        Entry undone = op(2, "undo");
+        undone.note = "push";
+        undone.beforeBody = loaded;
+        undone.afterBody = empty;
+        undone.takeName = "b.wav";
+        undone.takeHash = std::string(32, '\x0b');
+        undone.takeKept = true;
+        undone.takeIsAfter = false; // the archived 'before' side
+        const auto made = rows::forSlot({ pushed, undone });
+        CHECK_EQ(made.back().line.audio, std::string("take kept")); // not "in the slot now"
+        CHECK(made.back().line.audio.find("in the slot now") == std::string::npos);
+        CHECK(made.back().playable); // the kept take can still be heard
+        CHECK_EQ(made.back().takeHash, std::string(32, '\x0b'));
+        CHECK_EQ(made.back().line.action, std::string("Undid push"));
+
+        // the newest clear, the same way; lost once its bytes are gone
+        Entry cleared = op(3, "clear");
+        cleared.beforeBody = loaded;
+        cleared.afterBody = empty;
+        cleared.takeName = "b.wav";
+        cleared.takeHash = std::string(32, '\x0b');
+        cleared.takeKept = true;
+        CHECK_EQ(rows::forSlot({ pushed, cleared }).back().line.audio, std::string("take kept"));
+        cleared.takeKept = false;
+        CHECK_EQ(rows::forSlot({ pushed, cleared }).back().line.audio, std::string("take no longer kept"));
+
+        // a newest normalize — no bodies, a take it left — is still where the slot is
+        Entry normalized = op(4, "normalize");
+        normalized.note = "normalized -3.2 dB";
+        normalized.takeName = "b.wav";
+        normalized.takeHash = std::string(32, '\x0c');
+        normalized.takeIsAfter = true;
+        CHECK_EQ(rows::forSlot({ pushed, normalized }).back().line.audio, std::string("in the slot now"));
+        CHECK(!rows::forSlot({ pushed, normalized }).back().playable); // on the card: the Audio tab plays it
     }
 
     // --- rows that never held audio say nothing about it ---
