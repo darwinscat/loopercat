@@ -28,6 +28,13 @@
 namespace loopercat::history::story
 {
 
+// A fact a push or a trim reports (PushResult / TrimResult::noteLengthReplaced,
+// issue #92): the slot's length was set as a note value and the new take
+// replaced it with a bar count. The job writes exactly this line into its
+// note, so the toast and the row say the same words from one place. The
+// words are Alisa's to change.
+inline constexpr std::string_view kNoteLengthReplaced = "note length replaced by bars";
+
 // The audio a row can offer, and what the tab may do with it.
 enum class Take {
     none,      // the slot held nothing at this point
@@ -101,6 +108,14 @@ inline Line tell(const Facts& facts)
         return std::pair { track(*facts.beforeBody, tag), track(*facts.afterBody, tag) };
     };
 
+    // A push or a trim that replaced a note-value length says so, after its
+    // own numbers: the fact travels in the job's note, by the line above.
+    const auto sayNoteLength = [&facts, &line] {
+        if (facts.note.find(kNoteLengthReplaced) == std::string::npos)
+            return;
+        line.detail += (line.detail.empty() ? "" : " - ") + std::string(kNoteLengthReplaced);
+    };
+
     if (facts.kind == "push") {
         line.action = "Pushed";
         line.detail = facts.takeName;
@@ -109,12 +124,14 @@ inline Line tell(const Facts& facts)
             (void) was;
             line.detail += " - " + minutes(now) + " - " + bpm(tempoTenths(*facts.afterBody));
         }
+        sayNoteLength();
     } else if (facts.kind == "trim") {
         line.action = "Trimmed";
         if (bodies) {
             const auto [was, now] = both("WavLen");
             line.detail = minutes(was) + " -> " + minutes(now);
         }
+        sayNoteLength();
     } else if (facts.kind == "rename") {
         line.action = "Renamed";
         if (bodies)

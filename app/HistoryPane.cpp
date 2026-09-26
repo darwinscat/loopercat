@@ -100,6 +100,12 @@ void HistoryPane::selectedRowsChanged(int)
     updateOffers();
 }
 
+juce::String HistoryPane::getTooltipForRow(int row)
+{
+    return row >= 0 && row < static_cast<int>(rows_.size()) ? rows_[static_cast<std::size_t>(row)].hint
+                                                            : juce::String();
+}
+
 void HistoryPane::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
 {
     if (row >= 0 && row < static_cast<int>(rows_.size()) && rows_[static_cast<std::size_t>(row)].playable
