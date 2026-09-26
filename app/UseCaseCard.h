@@ -21,6 +21,44 @@
 namespace loopercat
 {
 
+// The look every card in the studio shares, so a second card cannot drift
+// from the first: the switch, and the field a value is typed into.
+namespace cardlook
+{
+    inline const juce::Colour kText { 0xffd8d8d8 };
+    inline const juce::Colour kCaption { 0xff8a8a92 };
+    inline const juce::Colour kField { 0xff17171d };
+    inline const juce::Colour kOutline { 0xff2a2a34 };
+    constexpr int kSwitchWidth = 46; // the strip a card keeps for its switch
+
+    inline void drawSwitch(juce::Graphics& g, juce::Rectangle<float> area, bool on, float alpha)
+    {
+        const auto track = area.withSizeKeepingCentre(38.0f, 18.0f);
+        const float radius = track.getHeight() * 0.5f;
+        g.setColour((on ? felitronics::appkit::brand::violet.withAlpha(0.55f)
+                        : juce::Colour(0xff2a2a34))
+                        .withMultipliedAlpha(alpha));
+        g.fillRoundedRectangle(track, radius);
+        g.setColour((on ? felitronics::appkit::brand::lilac : juce::Colour(0xff5a5a66))
+                        .withMultipliedAlpha(alpha));
+        const float knob = track.getHeight() - 4.0f;
+        g.fillEllipse(on ? track.getRight() - knob - 2.0f : track.getX() + 2.0f,
+                      track.getY() + 2.0f, knob, knob);
+    }
+
+    inline void styleFieldEditor(juce::TextEditor& editor)
+    {
+        editor.setFont(juce::FontOptions(13.0f));
+        editor.setColour(juce::TextEditor::backgroundColourId, kField);
+        editor.setColour(juce::TextEditor::textColourId, kText);
+        editor.setColour(juce::TextEditor::outlineColourId, kOutline);
+        editor.setColour(juce::TextEditor::focusedOutlineColourId,
+                         felitronics::appkit::brand::violet);
+        editor.setColour(juce::TextEditor::highlightColourId,
+                         felitronics::appkit::brand::violet.withAlpha(0.4f));
+    }
+} // namespace cardlook
+
 class UseCaseCard final : public juce::Component
 {
 public:
@@ -65,7 +103,7 @@ public:
 
         const float alpha = isEnabled() ? 1.0f : 0.45f;
         auto text = getLocalBounds().reduced(14, 10);
-        const auto switchArea = text.removeFromRight(46);
+        const auto switchArea = text.removeFromRight(cardlook::kSwitchWidth);
 
         g.setColour(juce::Colour(0xffd8d8d8).withMultipliedAlpha(alpha));
         g.setFont(juce::FontOptions(13.5f));
@@ -82,25 +120,10 @@ public:
             g.drawFittedText(cost_, text, juce::Justification::topLeft, 2);
         }
 
-        paintSwitch(g, switchArea.withHeight(20).withY(12).toFloat(), alpha);
+        cardlook::drawSwitch(g, switchArea.withHeight(20).withY(12).toFloat(), on_, alpha);
     }
 
 private:
-    void paintSwitch(juce::Graphics& g, juce::Rectangle<float> area, float alpha) const
-    {
-        const auto track = area.withSizeKeepingCentre(38.0f, 18.0f);
-        const float radius = track.getHeight() * 0.5f;
-        g.setColour((on_ ? felitronics::appkit::brand::violet.withAlpha(0.55f)
-                         : juce::Colour(0xff2a2a34))
-                        .withMultipliedAlpha(alpha));
-        g.fillRoundedRectangle(track, radius);
-        g.setColour((on_ ? felitronics::appkit::brand::lilac : juce::Colour(0xff5a5a66))
-                        .withMultipliedAlpha(alpha));
-        const float knob = track.getHeight() - 4.0f;
-        g.fillEllipse(on_ ? track.getRight() - knob - 2.0f : track.getX() + 2.0f,
-                      track.getY() + 2.0f, knob, knob);
-    }
-
     const juce::String title_;
     juce::String meaning_, cost_;
     bool on_ = false;

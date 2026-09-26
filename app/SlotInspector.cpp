@@ -18,24 +18,14 @@ namespace loopercat
 namespace
 {
     const juce::Colour kPaneBackground { 0xff0e0e13 };
-    const juce::Colour kText { 0xffd8d8d8 };
     const juce::Colour kDim { 0xff63636d };
-    const juce::Colour kCaption { 0xff8a8a92 };
+    const juce::Colour& kCaption = cardlook::kCaption;
 
     constexpr int kPad = 14;
     constexpr int kTempoDigits = 5; // "300.0", the pedal's widest tempo
+    constexpr int kCardGap = 10;
 
-    void styleEditor(juce::TextEditor& editor)
-    {
-        editor.setFont(juce::FontOptions(13.0f));
-        editor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff17171d));
-        editor.setColour(juce::TextEditor::textColourId, kText);
-        editor.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff2a2a34));
-        editor.setColour(juce::TextEditor::focusedOutlineColourId,
-                         felitronics::appkit::brand::violet);
-        editor.setColour(juce::TextEditor::highlightColourId,
-                         felitronics::appkit::brand::violet.withAlpha(0.4f));
-    }
+    void styleEditor(juce::TextEditor& editor) { cardlook::styleFieldEditor(editor); }
 }
 
 SlotInspector::SlotInspector()
@@ -88,10 +78,14 @@ SlotInspector::SlotInspector()
         if (hasSlot_ && !busy_ && onOneShotToggled)
             onOneShotToggled(info_.slot);
     };
+    rhythm_.onEdit = [this](usecases::rhythm::Edits edits) {
+        if (hasSlot_ && !busy_ && onRhythmEdited)
+            onRhythmEdited(info_.slot, std::move(edits));
+    };
 
     for (auto* child : std::initializer_list<juce::Component*> {
              &nameCaption_, &tempoCaption_, &barsHint_, &footer_, &nameEditor_, &tempoEditor_,
-             &countIn_, &oneShot_ })
+             &countIn_, &oneShot_, &rhythm_ })
         addAndMakeVisible(child);
 
     setSlot(nullptr);
@@ -123,13 +117,13 @@ void SlotInspector::refresh()
 {
     const bool live = hasSlot_ && !busy_;
     for (auto* child : std::initializer_list<juce::Component*> { &nameEditor_, &tempoEditor_,
-                                                                &countIn_, &oneShot_ })
+                                                                &countIn_, &oneShot_, &rhythm_ })
         child->setEnabled(live);
 
     for (auto* child : std::initializer_list<juce::Component*> { &nameCaption_, &tempoCaption_,
                                                                 &barsHint_, &footer_,
                                                                 &nameEditor_, &tempoEditor_,
-                                                                &countIn_, &oneShot_ })
+                                                                &countIn_, &oneShot_, &rhythm_ })
         child->setVisible(hasSlot_);
 
     if (!hasSlot_) {
@@ -159,7 +153,14 @@ void SlotInspector::refresh()
                       info_.oneShot ? "Plays once and stops at the end of the loop."
                                     : "Loops until you stop it.");
 
-    resized(); // the count-in card grows when it has something to warn about
+    // The groove that "off" would forget: only with a count-in in front of
+    // playing drums does off mean Blank rather than State off (Rhythm.hpp).
+    rhythm_.setValues(info_.rhythm,
+                      info_.rhythm.on && info_.countIn
+                          ? std::optional<long long>(info_.rhythm.pattern)
+                          : std::nullopt);
+
+    resized(); // a card grows when it has something to warn about
     repaint();
 }
 
@@ -256,12 +257,16 @@ void SlotInspector::resized()
     footer_.setBounds(identity); // the "disconnect to hear it" note rides the same row
 
     area.removeFromTop(8);
-    const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight());
+    const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight(),
+                                      rhythm_.preferredHeight());
     auto cards = area.removeFromTop(juce::jmin(cardHeight, area.getHeight()));
-    const int cardWidth = juce::jmin(320, (cards.getWidth() - 10) / 2);
+    // Three cards across, each no wider than it needs: the studio is a strip.
+    const int cardWidth = juce::jmin(320, (cards.getWidth() - 2 * kCardGap) / 3);
     countIn_.setBounds(cards.removeFromLeft(cardWidth));
-    cards.removeFromLeft(10);
+    cards.removeFromLeft(kCardGap);
     oneShot_.setBounds(cards.removeFromLeft(cardWidth));
+    cards.removeFromLeft(kCardGap);
+    rhythm_.setBounds(cards.removeFromLeft(cardWidth));
 }
 
 } // namespace loopercat

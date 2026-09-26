@@ -321,6 +321,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             toggleCountIn(slot, row->info.countIn);
     };
+    inspector.onRhythmEdited = [this](int slot, usecases::rhythm::Edits edits) {
+        if (!pedalBusy && slotRowFor(slot) != nullptr)
+            editRhythm(slot, std::move(edits));
+    };
     table.onLoudnessCellDoubleClicked = [this](int slot) { measureSlotLoudness(slot); };
     // The player read the file for its waveform anyway; the meter rode along.
     player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading) {
@@ -1459,6 +1463,23 @@ void MainComponent::toggleCountIn(int slot, bool currentlyOn)
                               [slot, on = !currentlyOn, options](const volume::fs::path& volumePath) {
                                   commands::setCountIn(volumePath, { slot }, on, options);
                               } }));
+}
+
+// One job per change on the Rhythm card: the switch, or one of the RHYTHM
+// screen's fields. The change rides as the job's note, in the card's own
+// words (usecases::rhythm::describe): the banner reads "Rhythm on slot 7 —
+// kit Jazz", and the history row keeps the same words, not "field 5 = 2".
+void MainComponent::editRhythm(int slot, usecases::rhythm::Edits edits)
+{
+    const auto options = makeWriteOptions();
+    worker.enqueue(recorded("rhythm", options,
+                            { "Rhythm on slot " + juce::String(slot),
+                              slot,
+                              [slot, edits, options](const volume::fs::path& volumePath) {
+                                  commands::setRhythm(volumePath, slot, edits, options);
+                              },
+                              std::make_shared<juce::String>(
+                                  utf8(usecases::rhythm::describe(edits))) }));
 }
 
 void MainComponent::choosePushWav(int slot, bool slotOccupied)
