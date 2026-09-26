@@ -68,6 +68,13 @@ public:
             for (const auto& device : juce::MidiOutput::getAvailableDevices())
                 std::cout << "midi out: [" << device.name << "] id=[" << device.identifier
                           << "]\n";
+            // Every pedal this app has a profile for, with the model its name
+            // announces — two RC-5s and an RC-500 print as three lines.
+            for (const auto& pedal : pedallink::findFamily())
+                std::cout << "pedal: [" << pedal.endpoint.name << "] id=[" << pedal.endpoint.identifier
+                          << "] family=" << std::string(pedal.family())
+                          << (pedal.profile->allows(profile::Operation::read) ? "" : " (card not readable)")
+                          << "\n";
             const auto found = pedallink::findPedal();
             std::cout << "found: " << (found ? found->name : juce::String("NOTHING")) << "\n";
             const int probeFlag = args.indexOf("--midi-probe");
@@ -77,17 +84,19 @@ public:
             // honest silence, without the window.
             if (probeFlag >= 0 && args[probeFlag + 1] == "read") {
                 const juce::String wanted = args[probeFlag + 2];
-                std::optional<juce::MidiDeviceInfo> pedal;
-                for (const auto& candidate : pedallink::findPedals())
-                    if (candidate.identifier == wanted)
+                std::optional<pedallink::Pedal> pedal;
+                for (const auto& candidate : pedallink::findFamily())
+                    if (candidate.endpoint.identifier == wanted)
                         pedal = candidate;
                 if (!pedal) {
-                    std::cout << "register: no RC-5 output with identifier [" << wanted << "]" << std::endl;
+                    std::cout << "register: no profiled RC output with identifier [" << wanted << "]"
+                              << std::endl;
                     setApplicationReturnValue(1);
                 } else {
                     try {
                         const auto state = pedallink::readStorageState(*pedal);
-                        std::cout << "register: " << pedallink::describe(state) << std::endl;
+                        std::cout << "register: " << std::string(pedal->family()) << " "
+                                  << pedallink::describe(state) << std::endl;
                         setApplicationReturnValue(0);
                     } catch (const loopercat::Error& e) {
                         std::cout << "register: error: " << e.what() << std::endl;

@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Darwin's Cat. Part of Looper Cat — see LICENSE.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// The RC-5's MIDI sysex dialect: Roland DT1/RQ1 framing, and the one register
-// we have cracked so far — the storage-mode switch.
+// The RC family's MIDI sysex dialect: Roland DT1/RQ1 framing, and the one
+// register we have cracked so far — the storage-mode switch.
 //
 // Knowledge source: a live capture of BOSS Tone Studio's handshake
 // (2026-07-24, snoize MIDI Monitor; raw log in docs/midi-protocol/captures/),
@@ -16,6 +16,14 @@
 //   F0 41 <device> <model:4> <11=RQ1|12=DT1> <addr:4> <payload> <checksum> F7
 // where RQ1's payload is a 4-byte size, DT1's payload is the data, and the
 // checksum is 128 - (sum of address+payload bytes mod 128), with 128 -> 0.
+//
+// The model id is what differs across the family: the RC-5 is 00 00 00 76,
+// the RC-500 00 00 00 77 (both measured with both pedals on the bus,
+// 2026-09-16; each ignores the other's id in silence). Address and data are
+// the same, so the checksum is the same too — the model sits outside the
+// checksummed body. Every builder takes the model as the profile carries it
+// (all four bytes, DeviceProfile::modelId) and defaults to the RC-5's; a
+// pedal's id comes from the profile table, never from a literal at a call.
 
 #pragma once
 
@@ -37,6 +45,8 @@ inline constexpr std::uint8_t kDeviceId = 0x10; // factory default unit number
 // The model id is the profile's (DeviceProfile.hpp); the frames below are
 // addressed to the RC-5, the one model Connect speaks to.
 inline constexpr std::array<std::uint8_t, 4> kModelRc5 = profile::kRc5.modelId;
+
+using ModelId = std::array<std::uint8_t, 4>;
 
 inline constexpr std::uint8_t kCmdRq1 = 0x11; // read request
 inline constexpr std::uint8_t kCmdDt1 = 0x12; // data set
@@ -62,14 +72,15 @@ namespace detail {
 
     inline std::vector<std::uint8_t> frame(std::uint8_t command,
                                            const std::array<std::uint8_t, 4>& address,
-                                           const std::vector<std::uint8_t>& payload)
+                                           const std::vector<std::uint8_t>& payload,
+                                           const ModelId& model)
     {
         if (payload.empty())
             throw Error("sysex frame with an empty payload");
         std::vector<std::uint8_t> body(address.begin(), address.end());
         body.insert(body.end(), payload.begin(), payload.end());
         std::vector<std::uint8_t> out { kSysexStart, kRolandId, kDeviceId };
-        out.insert(out.end(), kModelRc5.begin(), kModelRc5.end());
+        out.insert(out.end(), model.begin(), model.end());
         out.push_back(command);
         out.insert(out.end(), body.begin(), body.end());
         out.push_back(checksum(body));
@@ -79,22 +90,31 @@ namespace detail {
 
 } // namespace detail
 
-// DT1: write `data` starting at `address`.
+// DT1: write `data` starting at `address`, to the pedal with this model id.
 inline std::vector<std::uint8_t> dt1(const std::array<std::uint8_t, 4>& address,
-                                     const std::vector<std::uint8_t>& data)
+                                     const std::vector<std::uint8_t>& data,
+                                     const ModelId& model = kModelRc5)
 {
-    return detail::frame(kCmdDt1, address, data);
+    return detail::frame(kCmdDt1, address, data, model);
 }
 
-// RQ1: ask for `size` bytes starting at `address`.
+// RQ1: ask for `size` bytes starting at `address`, from the pedal with this model id.
 inline std::vector<std::uint8_t> rq1(const std::array<std::uint8_t, 4>& address,
-                                     const std::array<std::uint8_t, 4>& size)
+                                     const std::array<std::uint8_t, 4>& size,
+                                     const ModelId& model = kModelRc5)
 {
-    return detail::frame(kCmdRq1, address, { size.begin(), size.end() });
+    return detail::frame(kCmdRq1, address, { size.begin(), size.end() }, model);
 }
 
-// The two frames behind the app's Connect / Disconnect.
-inline std::vector<std::uint8_t> enterStorageMode() { return dt1(kStorageModeAddress, { 0x01 }); }
-inline std::vector<std::uint8_t> exitStorageMode() { return dt1(kStorageModeAddress, { 0x00 }); }
+// The two frames behind the app's Connect / Disconnect. Entering is a WRITE
+// to the pedal: it leaves the looper screen and hands over its card.
+inline std::vector<std::uint8_t> enterStorageMode(const ModelId& model = kModelRc5)
+{
+    return dt1(kStorageModeAddress, { 0x01 }, model);
+}
+inline std::vector<std::uint8_t> exitStorageMode(const ModelId& model = kModelRc5)
+{
+    return dt1(kStorageModeAddress, { 0x00 }, model);
+}
 
 } // namespace loopercat::sysex

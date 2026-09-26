@@ -65,5 +65,30 @@ int main()
     if (one.size() == 1)
         CHECK_EQ(one[0].identifier.toStdString(), "883557304");
 
+    // --- the family: the same bus, every profiled pedal with its model ---
+
+    const auto family = pedallink::familyAmong(bus);
+    CHECK_EQ(family.size(), 3u);
+    if (family.size() == 3) {
+        CHECK_EQ(std::string(family[0].family()), "RC-5");
+        CHECK_EQ(family[0].endpoint.identifier.toStdString(), "883557304");
+        CHECK_EQ(std::string(family[1].family()), "RC-500");
+        CHECK_EQ(family[1].endpoint.identifier.toStdString(), "904629978");
+        CHECK_EQ(std::string(family[2].family()), "RC-5");
+        CHECK_EQ(family[2].endpoint.identifier.toStdString(), "2016199893");
+        // Each carries its own model id — the RC-500's frames go out with 77.
+        CHECK(family[1].modelId() == loopercat::profile::kRc500.modelId);
+        CHECK(family[0].modelId() == loopercat::profile::kRc5.modelId);
+        CHECK(family[0].profile == family[2].profile);
+        CHECK(family[0].profile != family[1].profile);
+    }
+    // An RC model without a profile is announced, not handed out.
+    CHECK(pedallink::familyAmong({ juce::MidiDeviceInfo("BOSS_RC-600", "1"), juce::MidiDeviceInfo("IRX", "2") })
+              .empty());
+    // A bare endpoint becomes a Pedal by its name, or is refused by name.
+    CHECK_EQ(std::string(pedallink::pedalOf(juce::MidiDeviceInfo("BOSS_RC-500", "904629978")).family()), "RC-500");
+    CHECK_THROWS(pedallink::pedalOf(juce::MidiDeviceInfo("BOSS_RC-600", "7")), "not an RC model this app has a profile for");
+    CHECK_THROWS(pedallink::pedalOf(juce::MidiDeviceInfo("Quad Cortex", "9")), "not an RC model");
+
     return testkit::summary("pedal_link");
 }
