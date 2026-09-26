@@ -133,6 +133,7 @@ private:
 
     // The supervised Connect (issue #2): the attempt machine owns the
     // retry/give-up policy, these own the clock, the MIDI send and the UI.
+    std::vector<std::string> pedalChoiceLabels(const std::vector<juce::MidiDeviceInfo>& pedals) const;
     void askPedalBeforeConnect(juce::MidiDeviceInfo pedal); // the register read (#85), on the worker
     void gateConnect(std::optional<storage::State> answer); // the answer arrives: refuse, wait, or attempt
     void startConnectAttempt();

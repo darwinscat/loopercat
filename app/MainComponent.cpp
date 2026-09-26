@@ -751,9 +751,9 @@ void MainComponent::beginConnect()
 {
     // The pedal Connect goes to is chosen here, once, and remembered: the
     // frames of this attempt and the walk out at Disconnect go to the same
-    // endpoint (issue #98). Two RC-5s are told apart only by the OS's
-    // endpoint id until the card marker names them; until that dialog
-    // exists the first one is taken, and said so.
+    // endpoint (issue #98). One pedal: nothing to ask. More than one: ask,
+    // by the name on its card when the book has met the endpoint, and by
+    // model and endpoint id when it has not — never by a made-up name.
     const auto pedals = pedallink::findPedals();
     if (pedals.empty()) {
         banners.showError(banners::Source::connection,
@@ -763,12 +763,43 @@ void MainComponent::beginConnect()
         updateToolbar();
         return;
     }
-    connectTarget = pedals.front();
-    if (pedals.size() > 1)
-        toast.show(juce::String(static_cast<int>(pedals.size()))
-                   + juce::String::fromUTF8(" RC-5s on USB \xe2\x80\x94 connecting to endpoint ")
-                   + connectTarget->identifier);
-    askPedalBeforeConnect(*connectTarget);
+    if (pedals.size() == 1) {
+        connectTarget = pedals.front();
+        askPedalBeforeConnect(*connectTarget);
+        return;
+    }
+    juce::PopupMenu which;
+    const auto labels = pedalChoiceLabels(pedals);
+    for (std::size_t i = 0; i < pedals.size(); ++i)
+        which.addItem(static_cast<int>(i) + 1, utf8(labels[i]));
+    juce::Component::SafePointer<MainComponent> safe(this);
+    which.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&connectButton),
+                        [safe, pedals](int chosen) {
+                            if (chosen <= 0 || safe == nullptr)
+                                return; // dismissed: no pedal was asked anything
+                            safe->connectTarget = pedals[static_cast<std::size_t>(chosen) - 1];
+                            safe->askPedalBeforeConnect(*safe->connectTarget);
+                        });
+}
+
+// The lines of the "which pedal?" menu, in bus order. Two pedals the book
+// knows by the same name (a card copied between them, or the same default
+// name twice) are told apart by their endpoint, so no line is ambiguous.
+std::vector<std::string>
+MainComponent::pedalChoiceLabels(const std::vector<juce::MidiDeviceInfo>& pedals) const
+{
+    std::vector<std::string> labels;
+    for (const auto& pedal : pedals) {
+        const auto family = portname::announcedModel(pedal.name.toStdString());
+        labels.push_back(pedalbook::choiceLabel(family ? *family : std::string("looper"),
+                                                pedal.identifier.toStdString(),
+                                                pedalBook.find(pedal.identifier.toStdString())));
+    }
+    for (std::size_t i = 0; i < labels.size(); ++i)
+        for (std::size_t j = 0; j < labels.size(); ++j)
+            if (i != j && labels[i] == labels[j])
+                labels[i] += " (endpoint " + pedals[i].identifier.toStdString() + ")";
+    return labels;
 }
 
 // Before the first frame the pedal is asked whether it can hand over its
