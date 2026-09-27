@@ -295,3 +295,32 @@ structure with the same field names — but the dialect differs exactly where
 it hurts (tempo arithmetic, two-track audio layout). That is why LooperCat
 checks who it is talking to: a foreign card is refused at the door by name
 (#35), nothing read, nothing written.
+
+## The card's name and identity
+
+On first connection, LooperCat writes `loopercat.toml` at the card's root. It
+holds a fresh UUID, the pedal's name (initially its model), the model read from
+the card, and a UTC creation string:
+
+```toml
+[loopercat_card]
+format = 1
+id = "11111111-2222-4333-8444-555555555555"
+name = "RC-5"
+model = "RC-5"
+created = "2026-09-24T21:34:33Z"
+by = "LooperCat"
+```
+
+Renaming the pedal changes only `name`. Names must be 1–64 UTF-8 bytes and
+contain no control characters, including escaped ones. The identity, creation
+time and unknown entries survive. The canonical TOML writer removes comments
+and normalizes spacing; `created` stays a quoted string. Each write is staged
+through `loopercat.toml.part`, read back before and after replacement, and
+followed by a sweep of host sidecars.
+
+A malformed, foreign or newer marker is refused with its reason and source
+position; the corner keeps the folder or volume name. Markers over 64 KiB are
+refused. The former JSON format is ignored and left untouched; it is not
+migrated. The TOML subset accepts double-quoted strings, but rejects
+single-quoted strings and unquoted dates.
