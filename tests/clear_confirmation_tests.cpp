@@ -57,6 +57,8 @@ struct FakeDevice final : juce::AudioIODevice {
     int getInputLatencyInSamples() override { return 0; }
 };
 
+enum class TakeOrigin { push, pedal };
+
 struct Fixture {
     fs::path root = fs::temp_directory_path()
         / ("loopercat-clear-" + std::to_string(
@@ -64,7 +66,7 @@ struct Fixture {
     fs::path card = root / "card";
     std::shared_ptr<history::HistoryRecorder> rec;
 
-    Fixture()
+    explicit Fixture(TakeOrigin origin = TakeOrigin::push)
     {
         fs::create_directories(volume::dataDir(card));
         fs::create_directories(card / "ROLAND" / "WAVE");
@@ -83,9 +85,24 @@ struct Fixture {
                 for (unsigned byte = 0; byte < 4; ++byte)
                     wav[offset + byte] = static_cast<unsigned char>((bits >> (byte * 8)) & 0xff);
             }
+        const std::string_view bytes(reinterpret_cast<const char*>(wav.data()), wav.size());
+        if (origin == TakeOrigin::pedal) {
+            // A recording already on the pedal: no push, archive or journal
+            // hook has seen it. Clear will be the app's first recorded write.
+            fs::create_directories(volume::wavDir(card, 4));
+            commands::writeFileBytes(volume::wavDir(card, 4) / "Pedal take.wav", bytes);
+            auto memory = commands::readMemory(card);
+            auto body = testkit::syntheticSlotBody("Pedal take");
+            body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat", 1);
+            body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavLen", kFrames);
+            memory = rc0::replaceSlotBody(memory, 4, body);
+            for (const int bank : { 1, 2 })
+                commands::writeFileBytes(volume::memoryPath(card, bank),
+                    rc0::setTailMarker(memory, bank));
+            return;
+        }
         const auto source = root / "take.wav";
-        commands::writeFileBytes(source,
-            std::string_view(reinterpret_cast<const char*>(wav.data()), wav.size()));
+        commands::writeFileBytes(source, bytes);
         run("push", [&](const auto& write) {
             commands::PushOptions options {};
             options.write = write;
@@ -189,8 +206,18 @@ int main()
     // Supply the modal result without creating an AlertWindow: its constructor
     // creates a native peer, which requires an X display on Linux CI.
     // Cancel, Clear, dismissal and unexpected results use the app's actual gate.
+    // Both an imported take and an original pedal recording must survive
+    // Clear and be recoverable through the History tab's actual button.
+    for (const auto origin : { TakeOrigin::push, TakeOrigin::pedal })
     for (const int response : { 0, 1, -1, 2 }) {
-        Fixture fixture;
+        Fixture fixture(origin);
+        const bool onPedal = origin == TakeOrigin::pedal;
+        const auto checkBefore = [&] {
+            if (onPedal)
+                checkTimeline(fixture, {});
+            else
+                checkTimeline(fixture, { "snapshot", "push" });
+        };
         const auto before = fixture.cardBytes();
         const auto body = rc0::slotBody(commands::readMemory(fixture.card), 4);
         const auto names = volume::listSlotWavs(fixture.card, 4);
@@ -228,7 +255,7 @@ int main()
         CHECK_EQ(asks, 1);
         CHECK_EQ(jobs, 0);
         CHECK(fixture.cardBytes() == before);
-        checkTimeline(fixture, { "snapshot", "push" });
+        checkBefore();
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
         CHECK(decide != nullptr);
         if (decide == nullptr)
@@ -236,34 +263,46 @@ int main()
         settle();
         CHECK_EQ(jobs, 0);
         CHECK(fixture.cardBytes() == before);
-        checkTimeline(fixture, { "snapshot", "push" });
+        checkBefore();
         decide(response);
         settle();
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
         if (response != 1) {
             CHECK_EQ(jobs, 0);
             CHECK(fixture.cardBytes() == before); // includes both banks, WAVs and every card file
-            checkTimeline(fixture, { "snapshot", "push" });
+            checkBefore();
             CHECK(!fixture.rec->store().takeBytes(history::HistoryStore::contentHash(take)));
             continue;
         }
         CHECK_EQ(jobs, 1);
-        checkTimeline(fixture, { "snapshot", "push", "clear" });
+        if (onPedal)
+            checkTimeline(fixture, { "snapshot", "clear" });
+        else
+            checkTimeline(fixture, { "snapshot", "push", "clear" });
         CHECK(volume::listSlotWavs(fixture.card, 4).empty());
         CHECK(rc0::slotBody(commands::readMemory(fixture.card), 4) == rc0::factorySlotBody(4));
         const auto rows = history::rows::forSlot(fixture.rec->store().slotTimeline(4));
-        CHECK_EQ(rows.size(), 3u);
-        if (rows.size() != 3u)
+        const std::size_t expectedRows = onPedal ? 2u : 3u;
+        CHECK_EQ(rows.size(), expectedRows);
+        if (rows.size() != expectedRows)
             continue;
         const auto& snapshot = rows[0];
-        const auto& pushed = rows[1];
-        const auto& cleared = rows[2];
+        const int restoreIndex = onPedal ? 0 : 1;
+        const auto& original = rows[static_cast<std::size_t>(restoreIndex)];
+        const auto& cleared = rows.back();
         CHECK_EQ(snapshot.line.action, std::string("Card first seen"));
-        CHECK(!snapshot.playable); // the slot was empty before the push
-        CHECK(snapshot.takeHash.empty());
+        CHECK_EQ(snapshot.playable, onPedal);
+        CHECK_EQ(snapshot.takeHash.empty(), !onPedal);
         CHECK(snapshot.restorable);
-        CHECK_EQ(pushed.line.action, std::string("Pushed"));
-        CHECK(pushed.restorable);
+        CHECK_EQ(original.line.action, std::string(onPedal ? "Card first seen" : "Pushed"));
+        CHECK(original.playable);
+        CHECK(original.restorable);
+        CHECK_EQ(original.takeHash, history::HistoryStore::contentHash(take));
+        CHECK(fixture.rec->store().takeBytes(original.takeHash) == take);
+        if (onPedal) {
+            CHECK_EQ(snapshot.line.detail, name);
+            CHECK_EQ(snapshot.line.audio, std::string("take kept"));
+        }
         CHECK_EQ(cleared.line.action, std::string("Cleared"));
         CHECK(cleared.playable);
 
@@ -326,23 +365,29 @@ int main()
         int restores = 0;
         pane.onRestore = [&](std::int64_t op) {
             ++restores;
-            CHECK_EQ(op, pushed.op);
-            if (op != pushed.op)
+            CHECK_EQ(op, original.op);
+            if (op != original.op)
                 return;
             fixture.run("restore", [&](const auto& write) {
-                history::restoreOperation(fixture.rec->store(), op, fixture.card, write);
+                history::restoreOperation(fixture.rec->store(), op, fixture.card, write, 4);
             });
         };
         for (auto* child : pane.getChildren())
             if (auto* list = dynamic_cast<juce::ListBox*>(child))
-                list->selectRow(1); // the pushed state, after the empty snapshot
+                list->selectRow(restoreIndex);
         auto* restore = buttonNamed(pane, "Restore this state");
         CHECK(restore != nullptr && restore->isEnabled());
         if (restore != nullptr)
             restore->triggerClick();
         settle();
         CHECK_EQ(restores, 1);
+        if (onPedal)
+            checkTimeline(fixture, { "snapshot", "clear", "restore" });
+        else
+            checkTimeline(fixture, { "snapshot", "push", "clear", "restore" });
         CHECK(rc0::slotBody(commands::readMemory(fixture.card), 4) == body);
+        for (const int bank : { 1, 2 })
+            CHECK(rc0::slotBody(commands::readFileBytes(volume::memoryPath(fixture.card, bank)), 4) == body);
         CHECK(volume::listSlotWavs(fixture.card, 4) == std::vector<std::string> { name });
         const auto restored = volume::wavDir(fixture.card, 4) / name;
         CHECK(fs::is_regular_file(restored));
