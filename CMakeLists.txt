@@ -755,6 +755,26 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
+# First sighting, interruption and foreground writes on synthetic cards.
+juce_add_console_app(first_seen_tests PRODUCT_NAME "first_seen_tests")
+target_sources(first_seen_tests PRIVATE tests/first_seen_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(first_seen_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(first_seen_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_events
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME first_seen_tests COMMAND first_seen_tests)
+
 # Undo and Redo carried out on a card (#73): real core commands on a synthetic
 # pedal, recorded through history::withHistory, undone and redone through the
 # two halves the app's job runs — the card compared byte for byte.
