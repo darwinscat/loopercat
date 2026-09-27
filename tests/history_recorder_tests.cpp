@@ -17,7 +17,8 @@
 
 #include "support.hpp"
 
-#include "../app/history/HistoryRecorder.h"
+#include "../app/history/WriteOptionsFactory.h"
+#include "../app/OperationsLog.h"
 
 #include <loopercat/Commands.hpp>
 
@@ -131,7 +132,8 @@ int main()
     {
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
-        auto rec = recorderAt(tmp.path / "history");
+        const auto dataHome = tmp.path / "app-data";
+        auto rec = recorderAt(dataHome / "history");
         CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM ops"), 0);
         putWav(volume, 4, "take.wav", 132300);
         const fs::path incoming = tmp.path / "incoming.wav";
@@ -143,8 +145,8 @@ int main()
             const auto files = volume::listSlotWavs(volume, 4);
             CHECK_EQ(files.size(), 1u);
             const auto beforeTake = commands::readFileBytes(volume::wavDir(volume, 4) / files.front());
-            CHECK_EQ(run(*rec, kind, kind, volume, [&] {
-                const auto write = options(rec, kind);
+            const auto write = history::makeWriteOptions(rec);
+            CHECK_EQ(run(*rec, write.opId, kind, volume, [&] {
                 if (kind == "push")
                     commands::push(volume, incoming, 4, { .force = true, .write = write });
                 else if (kind == "trim")
@@ -154,12 +156,17 @@ int main()
                 else
                     commands::clear(volume, { 4 }, { .write = write });
             }), std::string());
-            CHECK(!fs::exists(tmp.path / "backups"));
-            CHECK(!fs::exists(tmp.path / "trash"));
+            oplog::append(juce::File(dataHome.string()), juce::String(kind));
+            CHECK(fs::exists(dataHome / "operations.log"));
+            for (const auto& entry : fs::directory_iterator(dataHome))
+                CHECK(entry.path().filename() == "history"
+                      || entry.path().filename() == "operations.log");
+            for (const auto& entry : fs::directory_iterator(dataHome / "history"))
+                CHECK(entry.path().filename() == "history.db");
             sqlite::Statement bodies(rec->store().db(),
                 "SELECT before_body, after_body FROM slot_changes c JOIN ops o ON o.seq = c.op "
                 "WHERE o.id = ?1 AND c.slot = 4");
-            bodies.bindText(1, kind);
+            bodies.bindText(1, write.opId);
             CHECK(bodies.step());
             CHECK(bodies.blob(0) == beforeBody);
             CHECK(bodies.blob(1) == rc0::slotBody(commands::readMemory(volume), 4));
@@ -326,11 +333,33 @@ int main()
                                     { .write = options(rec, "op-unbegun") }),
                      "without having begun");
         CHECK(volumeBytes(volume) == before);
+        CHECK_THROWS(commands::clear(volume, { 4 }, { .write = options(rec, "op-unbegun") }),
+                     "without having begun");
+        CHECK(volumeBytes(volume) == before);
         CHECK_THROWS(([&] {
                          rec->begin("op-twice", "rename", volume);
                          rec->begin("op-twice", "rename", volume);
                      }()),
                      "already begun");
+    }
+
+    // One operation cannot archive the same slot twice: preserve both takes.
+    {
+        TempDir tmp;
+        const auto volume = makePedal(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        putWav(volume, 5, "005_1.WAV", 4410);
+        const auto first = commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV");
+        const auto write = history::makeWriteOptions(rec);
+        rec->begin(write.opId, "clear", volume);
+        commands::clear(volume, { 5 }, { .write = write });
+        putWav(volume, 5, "005_1.WAV", 8820);
+        const auto beforeSecond = volumeBytes(volume);
+        CHECK_THROWS(commands::clear(volume, { 5 }, { .write = write }), "UNIQUE");
+        CHECK(volumeBytes(volume) == beforeSecond);
+        CHECK(rec->store().takeBytes(HistoryStore::contentHash(first)) == first);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM slot_audio WHERE side = 'before'"), 1);
+        rec->finish(write.opId, "duplicate clear refused");
     }
 
     // --- sessions follow the volume ---

@@ -5,7 +5,7 @@
 
 #include "ConnectGate.h"
 
-#include "OperationId.h"
+#include "history/WriteOptionsFactory.h"
 #include "history/HistoryRecorder.h"
 #include "history/SlotRows.h"
 #include "OperationsLog.h"
@@ -1761,9 +1761,7 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
 
 commands::WriteOptions MainComponent::makeWriteOptions()
 {
-    const juce::String label = juce::Time::getCurrentTime().formatted("%Y-%m-%dT%H-%M-%S");
-    const std::string opId = opid::make(label.toStdString());
-    return history::withHistory(recorder, { .opId = opId });
+    return history::makeWriteOptions(recorder);
 }
 
 // The operation opens in the history once the worker has let the job through
