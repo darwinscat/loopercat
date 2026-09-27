@@ -81,6 +81,7 @@ int main()
         CHECK_EQ(plan.takesFreed, 1);
         CHECK_EQ(plan.bytesFreed, static_cast<std::int64_t>(only.size()));
         CHECK(!plan.hasHolds());
+        CHECK(plan.cutsUndo);
         const auto size = fs::file_size(f.dir / "history.db");
         CHECK(f.store.forgetSlot(f.card, 4, 40) == plan);
         CHECK(!f.store.takeBytes(HistoryStore::contentHash(only)));

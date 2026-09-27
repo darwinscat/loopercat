@@ -611,7 +611,8 @@ HistoryStore::ForgetPlan HistoryStore::planForgetSlot(std::int64_t cardId, int s
     if (slot < 1 || slot > 99) throw Error("a slot is 1..99");
     ForgetPlan plan;
     const auto targets = retentionTargets({});
-    sqlite::Statement rows(db_, "SELECT o.seq, o.pinned, o.status FROM ops o "
+    sqlite::Statement rows(db_, "SELECT o.seq, o.pinned, o.status, "
+        "o.kind <> 'snapshot' AND o.seq > (SELECT undo_floor FROM cards WHERE id = ?1) FROM ops o "
         "JOIN sessions s ON s.id = o.session WHERE s.card = ?1 AND "
         "(EXISTS (SELECT 1 FROM slot_changes c WHERE c.op = o.seq AND c.slot = ?2) OR "
         "EXISTS (SELECT 1 FROM slot_audio a WHERE a.op = o.seq AND a.slot = ?2)) ORDER BY o.seq");
@@ -621,6 +622,7 @@ HistoryStore::ForgetPlan HistoryStore::planForgetSlot(std::int64_t cardId, int s
         plan.operations.push_back(op);
         if (rows.integer(1)) plan.pinned.push_back(op);
         plan.inFlight |= rows.text(2) == "pending";
+        plan.cutsUndo |= rows.integer(3) != 0;
         if (std::any_of(targets.begin(), targets.end(), [op](const auto& t) {
                 return t.undo == op || t.redo == op || t.redoRestores == op;
             })) plan.undoTargets.push_back(op);

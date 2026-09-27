@@ -775,6 +775,26 @@ target_link_libraries(first_seen_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME first_seen_tests COMMAND first_seen_tests)
 
+# Injected confirmations and the recorded worker job: no native windows.
+juce_add_console_app(clear_history_action_tests PRODUCT_NAME "clear_history_action_tests")
+target_sources(clear_history_action_tests PRIVATE tests/clear_history_action_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(clear_history_action_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(clear_history_action_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_events
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME clear_history_action_tests COMMAND clear_history_action_tests)
+
 # Undo and Redo carried out on a card (#73): real core commands on a synthetic
 # pedal, recorded through history::withHistory, undone and redone through the
 # two halves the app's job runs — the card compared byte for byte.
@@ -903,6 +923,23 @@ target_link_libraries(history_window_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_window_tests COMMAND history_window_tests)
+
+# GUI contract: built in restricted environments, run by the coordinator.
+juce_add_console_app(history_pane_tests PRODUCT_NAME "history_pane_tests")
+target_sources(history_pane_tests PRIVATE tests/history_pane_tests.cpp
+    app/HistoryPane.cpp)
+target_compile_definitions(history_pane_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_pane_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_pane_tests COMMAND history_pane_tests)
 
 # The storage panel (issue #74's visible part): driven without a mouse, a
 # database or a worker — it shows what it is handed and offers only what the

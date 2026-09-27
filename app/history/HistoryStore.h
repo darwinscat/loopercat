@@ -199,6 +199,7 @@ public:
         std::vector<std::int64_t> undoTargets;
         std::vector<std::string> hashes;
         bool inFlight = false;
+        bool cutsUndo = false; // the boundary advances even if the current target survives
         bool hasHolds() const { return !pinned.empty() || !undoTargets.empty(); }
         bool operator==(const ForgetPlan&) const = default;
     };

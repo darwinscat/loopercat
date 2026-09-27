@@ -7,6 +7,8 @@
 
 #include "history/WriteOptionsFactory.h"
 #include "history/HistoryRecorder.h"
+#include "history/ForgetSlotJob.h"
+#include "ClearSlotHistoryAction.h"
 #include "history/SlotRows.h"
 #include "OperationsLog.h"
 #include "PedalPortName.h"
@@ -572,6 +574,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         inspector.setBusy(busy);
         rhythmPane.setBusy(busy);
         historyView.setBusy(busy);
+        history.setBusy(busy || clearingHistory);
         updateStatusText();
         updateToolbar();
         if (!busy) {
@@ -723,6 +726,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(inspector);
     addChildComponent(rhythmPane);
     addChildComponent(history);
+    history.onClearHistory = [this](int slot) { clearSlotHistory(slot); };
     history.onPlay = [this](std::int64_t op) { playFromHistory(op); };
     history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
     // The History window (#73): the view knows nothing of the store; its
@@ -1202,8 +1206,9 @@ void MainComponent::updateHistory()
                                               row.playable, row.restorable, row.op });
                          }
                          juce::MessageManager::callAsync(
-                             [safe, rows, loaded = std::move(entries), slot, alive]() mutable {
-                                 if (*alive && safe != nullptr) {
+                             [safe, rows, loaded = std::move(entries), slot, alive, loadedCard = rec->store().selectedCard()]() mutable {
+                                 if (*alive && safe != nullptr && safe->selectedSlot == slot) {
+                                     safe->historyCard = loadedCard;
                                      safe->historyEntries = std::move(loaded);
                                      safe->applyHistoryRows(std::move(rows), slot);
                                  }
@@ -1214,6 +1219,60 @@ void MainComponent::updateHistory()
                      true,      // background: a player did not sit down to wait for it
                      true,      // quiet: only a failure is worth saying out loud
                      false }); // and it needs no card
+}
+
+namespace {
+void confirmClearHistory(clearhistory::Question question, clearhistory::Answer answer)
+{
+    auto* dialog = new juce::AlertWindow(juce::String(question.title), juce::String(question.message),
+                                        juce::MessageBoxIconType::WarningIcon);
+    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::returnKey),
+                                  juce::KeyPress(juce::KeyPress::escapeKey));
+    dialog->addButton("Clear history", 1);
+    dialog->getButton(1)->setColour(juce::TextButton::buttonColourId, juce::Colour(0xffa52d38));
+    dialog->getButton(1)->setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    dialog->enterModalState(true, juce::ModalCallbackFunction::create(
+        [onAnswer = std::move(answer)](int result) { onAnswer(result == 1); }), true);
+    dialog->getButton(0)->grabKeyboardFocus();
+}
+} // namespace
+
+void MainComponent::clearSlotHistory(int slot)
+{
+    if (clearingHistory || pedalBusy || !historyCard || slot != selectedSlot) return;
+    clearingHistory = true;
+    history.setBusy(true);
+    const auto cardId = *historyCard;
+    juce::Component::SafePointer<MainComponent> safe(this);
+    auto settled = [safe, alive = uiAlive] {
+        juce::MessageManager::callAsync([safe, alive] {
+            if (!*alive || safe == nullptr) return;
+            safe->clearingHistory = false;
+            safe->history.setBusy(safe->pedalBusy);
+            safe->updateHistory();
+            safe->feedHistoryWindow();
+            safe->refreshUndoOffer();
+        });
+    };
+    PedalWorker::Job read {
+        "Review the history of slot " + juce::String(slot), 0,
+        [rec = recorder, cardId, slot, safe, alive = uiAlive, settled](const volume::fs::path&) {
+            const auto plan = rec->store().planForgetSlot(cardId, slot);
+            if (plan.inFlight) throw Error("the slot's history is still being recorded; try again when it finishes");
+            juce::MessageManager::callAsync([rec, cardId, slot, safe, alive, settled, plan] {
+                if (!*alive || safe == nullptr) return;
+                clearhistory::ask(slot, plan, confirmClearHistory,
+                    [rec, cardId, slot, safe, alive, settled, plan](bool confirmed) {
+                        if (!*alive || safe == nullptr) return;
+                        if (!confirmed) { settled(); return; }
+                        safe->worker.enqueue(history::forgetSlotJob(rec, cardId, slot, plan,
+                                                                    plan.hasHolds(), settled));
+                    });
+            });
+        }, nullptr, 0, true, true, false
+    };
+    read.after = [settled](const std::string& error) { if (!error.empty()) settled(); };
+    worker.enqueue(std::move(read));
 }
 
 // Listening to a take the store kept: the bytes become a file on this
