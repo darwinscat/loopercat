@@ -151,8 +151,15 @@ int main()
     for (const int version : { 1, 2, 3, 4 }) {
         TempDir tmp;
         const fs::path file = tmp.path / "history.db";
+        std::string resolvedFile;
         {
             auto db = sqlite::Db::open(file);
+            // SQLite may retain a Windows 8.3 path that filesystem::canonical
+            // expands. Match the store's resolver, including its full filename.
+            resolvedFile = sqlite3_db_filename(db.raw(), "main");
+            const fs::path resolvedPath(std::u8string(resolvedFile.begin(), resolvedFile.end()));
+            CHECK(resolvedPath.is_absolute());
+            CHECK(fs::equivalent(resolvedPath, file));
             db.exec("PRAGMA page_size = 16384");
             db.exec("PRAGMA auto_vacuum = INCREMENTAL");
             db.exec(kPreview4);
@@ -164,7 +171,7 @@ int main()
         }
         const std::string before = commands::readFileBytes(file);
         CHECK_THROWS(HistoryStore(tmp.path),
-                     "This is a preview store. Delete " + fs::canonical(file).string()
+                     "This is a preview store. Delete " + resolvedFile
                          + " to start a new history.");
         CHECK(commands::readFileBytes(file) == before);
         auto db = sqlite::Db::open(file);
