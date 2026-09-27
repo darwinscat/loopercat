@@ -734,6 +734,7 @@ struct PullOptions {
 
 struct PullJob {
     int slot;
+    int track = 1;       // which track of the memory this take is
     std::string base;    // destination filename
     std::string onPedal; // source filename on the volume
     fs::path src, destFile;
@@ -743,21 +744,59 @@ struct PullJob {
 // pedal. Technical DOS 8.3 names become "NN - Slot Name.wav"; duplicates
 // across slots are disambiguated by slot number instead of silently
 // overwriting within one run.
+// One memory's takes, track by track — the decision half of a pull, with the
+// volume's file lists handed in. Pure, so the shape of a multi-track pull can
+// be tested without a card of that model and without opening its profile.
+//
+// A memory can hold a take on any of its tracks: the second alone is a normal
+// card (recording the second track first is a thing a player does), so an
+// empty track is skipped, not an error, and only a memory with nothing on any
+// track refuses. Names carry the track from two tracks up (wav::trackFileName);
+// with rawNames the pedal's own filenames already do (NNN_1.WAV / NNN_2.WAV).
+inline std::vector<PullJob> slotPullJobs(const profile::DeviceProfile& family, int slot,
+                                         std::string_view slotName,
+                                         const std::vector<std::vector<std::string>>& perTrackFiles,
+                                         const PullOptions& options)
+{
+    if (static_cast<int>(perTrackFiles.size()) != family.trackCount)
+        throw Error("a \"" + std::string(family.familyName) + "\" memory has "
+                    + std::to_string(family.trackCount) + " track(s), got "
+                    + std::to_string(perTrackFiles.size()) + " file list(s)");
+    std::vector<PullJob> jobs;
+    for (int track = 1; track <= family.trackCount; ++track) {
+        const std::vector<std::string>& files =
+            perTrackFiles[static_cast<std::size_t>(track - 1)];
+        if (files.empty())
+            continue; // an empty track, not a failure
+        const std::string base =
+            options.rawNames
+                ? files.front()
+                : wav::trackFileName(wav::pullFileName(slot, slotName, files.front()), track,
+                                     family.trackCount);
+        jobs.push_back({ slot, track, base, files.front(), {}, {} });
+    }
+    if (jobs.empty())
+        throw Error("slot " + std::to_string(slot) + " has no audio to pull");
+    return jobs;
+}
+
 inline std::vector<PullJob> pull(const fs::path& volume, const std::vector<int>& slots,
                                  const PullOptions& options)
 {
     if (options.dest.empty())
         throw Error("pull requires a destination directory");
     const std::string text = readMemoryFor(volume, profile::Operation::pull);
+    const profile::DeviceProfile& family = rc0::profileOf(text);
     std::vector<PullJob> jobs;
     for (const int slot : slots) {
-        const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
-        if (files.empty())
-            throw Error("slot " + std::to_string(slot) + " has no audio to pull");
+        std::vector<std::vector<std::string>> perTrackFiles;
+        for (int track = 1; track <= family.trackCount; ++track)
+            perTrackFiles.push_back(volume::listTrackWavs(volume, family, slot, track));
         const std::string name = rc0::decodeName(rc0::slotBody(text, slot));
-        const std::string base =
-            options.rawNames ? files.front() : wav::pullFileName(slot, name, files.front());
-        jobs.push_back({ slot, base, files.front(), volume::wavDir(volume, slot) / files.front(), {} });
+        for (PullJob& job : slotPullJobs(family, slot, name, perTrackFiles, options)) {
+            job.src = volume::trackDir(volume, family, slot, job.track) / job.onPedal;
+            jobs.push_back(std::move(job));
+        }
     }
     std::map<std::string, int> seen;
     for (const auto& job : jobs)
