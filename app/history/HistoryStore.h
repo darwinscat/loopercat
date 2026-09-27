@@ -41,7 +41,7 @@
 namespace loopercat::history
 {
 
-enum class OpStatus { done, failed };
+enum class OpStatus { done, failed, interrupted };
 
 class HistoryStore
 {
@@ -55,7 +55,15 @@ public:
     static std::string contentHash(std::string_view bytes);
 
     // --- where and when ---
-    std::int64_t card(const std::string& model, const std::string& label, std::int64_t nowMs);
+    std::int64_t card(const std::string& markerId, const std::string& model,
+                      const std::string& name, std::int64_t nowMs);
+    void selectCard(std::int64_t card) { selectedCard_ = card; }
+
+    // One baseline per marker. Resuming keeps the operation and committed slots.
+    std::int64_t firstSeen(std::int64_t session, const std::string& opId, std::int64_t nowMs);
+    struct SnapshotTake { int track; std::string name; std::string bytes; };
+    void snapshotSlot(std::int64_t op, int slot, const std::string& body,
+                      const std::vector<SnapshotTake>& takes, std::int64_t nowMs);
     std::int64_t openSession(std::int64_t card, std::int64_t nowMs);
     void closeSession(std::int64_t session, std::int64_t nowMs);
 
@@ -264,6 +272,7 @@ private:
 
     std::filesystem::path file_;
     sqlite::Db db_;
+    std::optional<std::int64_t> selectedCard_;
 };
 
 } // namespace loopercat::history

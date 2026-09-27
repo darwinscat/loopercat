@@ -300,7 +300,7 @@ int main()
         TempDir dir;
         history::HistoryStore store(dir.path);
         const std::int64_t t0 = 1'000'000;
-        const auto session = store.openSession(store.card("RC-5", "BOSS RC-5", t0), t0);
+        const auto session = store.openSession(store.card("test-RC-5", "RC-5", "BOSS RC-5", t0), t0);
         std::vector<std::string> hashes;
         for (int i = 0; i < 3; ++i) {
             const std::string bytes = take(static_cast<std::size_t>(3 * MB), static_cast<unsigned>(i + 1));

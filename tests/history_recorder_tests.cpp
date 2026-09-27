@@ -115,7 +115,7 @@ std::int64_t tick() { return ++clockAt; }
 
 std::shared_ptr<HistoryRecorder> recorderAt(const fs::path& dir)
 {
-    return std::make_shared<HistoryRecorder>(dir, "RC-5", tick);
+    return std::make_shared<HistoryRecorder>(dir, tick);
 }
 
 commands::WriteOptions options(const std::shared_ptr<HistoryRecorder>& rec, const std::string& opId)
@@ -554,7 +554,7 @@ int main()
         TempDir tmp;
         CHECK_THROWS(history::withHistory(nullptr, { .opId = "x" }), "without a recorder");
         CHECK_THROWS(history::withHistory(recorderAt(tmp.path), {}), "without an id");
-        CHECK_THROWS(HistoryRecorder(tmp.path, "RC-5", nullptr), "needs a clock");
+        CHECK_THROWS(HistoryRecorder(tmp.path, nullptr), "needs a clock");
     }
 
     return testkit::summary("history_recorder_tests");

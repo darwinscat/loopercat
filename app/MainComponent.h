@@ -379,7 +379,6 @@ private:
     std::vector<history::rows::Row> historyEntries; // what the tab is showing, for its buttons
     std::shared_ptr<history::HistoryRecorder> recorder = std::make_shared<history::HistoryRecorder>(
         std::filesystem::path(settings.dataDir().getChildFile("history").getFullPathName().toStdString()),
-        "RC-5",
         [] { return static_cast<std::int64_t>(juce::Time::currentTimeMillis()); });
     PedalWorker worker;
 

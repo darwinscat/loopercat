@@ -105,25 +105,64 @@ std::string HistoryStore::contentHash(std::string_view bytes)
     return std::string(static_cast<const char*>(raw.getData()), raw.getSize());
 }
 
-std::int64_t HistoryStore::card(const std::string& model, const std::string& label,
-                                std::int64_t nowMs)
+std::int64_t HistoryStore::card(const std::string& markerId, const std::string& model,
+                                const std::string& name, std::int64_t nowMs)
 {
     sqlite::Transaction tx(db_);
-    sqlite::Statement find(db_, "SELECT id FROM cards WHERE model = ?1 AND label = ?2");
-    find.bindText(1, model).bindText(2, label);
+    sqlite::Statement find(db_, "SELECT id FROM cards WHERE marker_id = ?1");
+    find.bindText(1, markerId);
     std::int64_t id = 0;
     if (find.step()) {
         id = find.integer(0);
-        sqlite::Statement seen(db_, "UPDATE cards SET last_seen = ?2 WHERE id = ?1");
-        seen.bind(1, id).bind(2, nowMs).run();
+        sqlite::Statement seen(db_, "UPDATE cards SET last_seen = ?2, model = ?3, name = ?4 WHERE id = ?1");
+        seen.bind(1, id).bind(2, nowMs).bindText(3, model).bindText(4, name).run();
     } else {
-        sqlite::Statement add(db_, "INSERT INTO cards(model, label, first_seen, last_seen) "
-                                   "VALUES (?1, ?2, ?3, ?3)");
-        add.bindText(1, model).bindText(2, label).bind(3, nowMs).run();
+        sqlite::Statement add(db_, "INSERT INTO cards(marker_id, model, name, label, first_seen, last_seen) "
+                                   "VALUES (?1, ?2, ?3, '', ?4, ?4)");
+        add.bindText(1, markerId).bindText(2, model).bindText(3, name).bind(4, nowMs).run();
         id = db_.lastInsertRowid();
     }
     tx.commit();
     return id;
+}
+
+std::int64_t HistoryStore::firstSeen(std::int64_t session, const std::string& opId,
+                                    std::int64_t nowMs)
+{
+    sqlite::Transaction tx(db_);
+    sqlite::Statement read(db_, "SELECT c.id, c.snapshot_op FROM cards c JOIN sessions s "
+                                "ON s.card = c.id WHERE s.id = ?1");
+    read.bind(1, session);
+    if (!read.step())
+        throw Error("no session for the card's first sighting");
+    const auto cardId = read.integer(0);
+    std::int64_t op;
+    if (read.isNull(1)) {
+        op = beginOp(session, opId, "snapshot", nowMs);
+        sqlite::Statement set(db_, "UPDATE cards SET snapshot_op = ?2 WHERE id = ?1");
+        set.bind(1, cardId).bind(2, op).run();
+    } else {
+        op = read.integer(1);
+        sqlite::Statement resume(db_, "UPDATE ops SET status = 'pending', note = NULL "
+                                      "WHERE seq = ?1 AND status = 'interrupted'");
+        resume.bind(1, op).run();
+    }
+    tx.commit();
+    return op;
+}
+
+void HistoryStore::snapshotSlot(std::int64_t op, int slot, const std::string& body,
+                                const std::vector<SnapshotTake>& takes, std::int64_t nowMs)
+{
+    sqlite::Transaction tx(db_);
+    sqlite::Statement row(db_, "INSERT INTO slot_changes(op, slot, before_body, after_body) "
+                               "VALUES (?1, ?2, NULL, ?3)");
+    row.bind(1, op).bind(2, slot).bindBlob(3, body).run();
+    for (const auto& take : takes) {
+        keepBlob(contentHash(take.bytes), take.bytes, nowMs);
+        recordLanded(op, slot, take.track, take.name, take.bytes);
+    }
+    tx.commit();
 }
 
 std::int64_t HistoryStore::openSession(std::int64_t card, std::int64_t nowMs)
@@ -214,7 +253,9 @@ void HistoryStore::finishOp(std::int64_t op, OpStatus status, const std::string&
 {
     sqlite::Statement finish(db_, "UPDATE ops SET status = ?2, note = ?3 "
                                   "WHERE seq = ?1 AND status = 'pending'");
-    finish.bind(1, op).bindText(2, status == OpStatus::done ? "done" : "failed");
+    const char* word = status == OpStatus::done ? "done"
+                     : status == OpStatus::interrupted ? "interrupted" : "failed";
+    finish.bind(1, op).bindText(2, word);
     if (note.empty())
         finish.bindNull(3);
     else
@@ -262,6 +303,9 @@ std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slo
 {
     sqlite::Statement read(db_, "SELECT hash FROM slot_audio WHERE slot = ?2 AND side = 'after' "
                                 "AND name = ?3 AND size = ?4 AND op < ?1 AND hash IS NOT NULL "
+                                "AND op IN (SELECT o.seq FROM ops o JOIN sessions s ON s.id = o.session "
+                                "WHERE s.card = (SELECT s2.card FROM ops o2 JOIN sessions s2 "
+                                "ON s2.id = o2.session WHERE o2.seq = ?1)) "
                                 "ORDER BY op DESC LIMIT 1");
     read.bind(1, op).bind(2, slot).bindText(3, name).bind(4, size);
     if (!read.step())
@@ -278,8 +322,13 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
                            "FROM ops o LEFT JOIN slot_changes c ON c.op = o.seq AND c.slot = ?1 "
                            "WHERE o.seq IN (SELECT op FROM slot_changes WHERE slot = ?1 "
                            "                UNION SELECT op FROM slot_audio WHERE slot = ?1) "
+                           "AND (?2 IS NULL OR o.session IN (SELECT id FROM sessions WHERE card = ?2)) "
                            "ORDER BY o.at, o.seq");
     read.bind(1, slot);
+    if (selectedCard_)
+        read.bind(2, *selectedCard_);
+    else
+        read.bindNull(2);
     while (read.step()) {
         TimelineEntry row;
         row.op = read.integer(0);
@@ -369,7 +418,13 @@ HistoryStore::Usage HistoryStore::usage()
 std::vector<HistoryStore::OpSummary> HistoryStore::operations()
 {
     std::vector<OpSummary> out;
-    sqlite::Statement read(db_, "SELECT seq, kind, status, actor, reverts FROM ops ORDER BY at, seq");
+    sqlite::Statement read(db_, "SELECT seq, kind, status, actor, reverts FROM ops "
+                                "WHERE (?1 IS NULL OR session IN (SELECT id FROM sessions WHERE card = ?1)) "
+                                "ORDER BY at, seq");
+    if (selectedCard_)
+        read.bind(1, *selectedCard_);
+    else
+        read.bindNull(1);
     while (read.step()) {
         OpSummary op;
         op.op = read.integer(0);
@@ -510,7 +565,12 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
 {
     std::vector<CardEntry> entries;
     sqlite::Statement read(db_, "SELECT seq, at, kind, actor, status, note, pinned, session, reverts "
-                                "FROM ops ORDER BY at, seq");
+                                "FROM ops WHERE (?1 IS NULL OR session IN (SELECT id FROM sessions WHERE card = ?1)) "
+                                "ORDER BY at, seq");
+    if (selectedCard_)
+        read.bind(1, *selectedCard_);
+    else
+        read.bindNull(1);
     while (read.step()) {
         CardEntry entry;
         entry.op = read.integer(0);

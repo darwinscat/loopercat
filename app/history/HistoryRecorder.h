@@ -4,6 +4,7 @@
 #pragma once
 
 #include "HistoryStore.h"
+#include <loopercat/CardMarker.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -30,9 +31,9 @@
 // without its undo is the thing this whole feature exists to prevent. Browsing
 // the card does not go through here and keeps working.
 //
-// A card is, for now, its model and volume label; a session runs from the
-// first operation on a volume until the next operation on another one, or the
-// app's exit. The connect stage of #72 replaces both with real signals.
+// Sessions and timelines follow the marker identity, including when two cards
+// mount at the same path. The first sighting is resumed one committed slot at
+// a time; foreground writes preserve any affected slot before changing it.
 //==============================================================================
 namespace loopercat::history
 {
@@ -42,7 +43,7 @@ class HistoryRecorder
 public:
     using Clock = std::function<std::int64_t()>; // milliseconds since the epoch
 
-    HistoryRecorder(std::filesystem::path dir, std::string model, Clock clock);
+    HistoryRecorder(std::filesystem::path dir, Clock clock);
     ~HistoryRecorder();
     HistoryRecorder(const HistoryRecorder&) = delete;
     HistoryRecorder& operator=(const HistoryRecorder&) = delete;
@@ -69,6 +70,20 @@ public:
     // section, reported before the settings pair is written — the core's
     // journal hook for SYSTEM*.RC0 lands here.
     void systemChanges(const std::string& opId, const std::vector<HistoryStore::SystemChange>& changes);
+
+    struct Snapshot {
+        std::int64_t op;
+        std::string markerId;
+        std::filesystem::path volume;
+    };
+    std::optional<Snapshot> firstSeen(const std::filesystem::path& volume);
+    // Returns the number of committed slots (99 completes the operation).
+    int snapshotStep(const Snapshot& snapshot, int slot);
+    void interruptSnapshot(const Snapshot& snapshot, const std::string& reason);
+    void disconnect();
+    // Resolve the mounted identity before checking a queued history action.
+    void selectVolume(const std::filesystem::path& volume) { sessionFor(volume); }
+    void preserveSlots(const std::string& opId, const std::vector<int>& slots);
 
     HistoryStore& store();
 
@@ -109,12 +124,13 @@ private:
     static constexpr int kTrack = 1;
 
     std::filesystem::path dir_;
-    std::string model_;
     Clock clock_;
     std::optional<HistoryStore> store_;
     std::string openError_;
     std::optional<std::int64_t> session_;
     std::filesystem::path sessionVolume_;
+    std::string sessionMarker_;
+    std::optional<Snapshot> snapshot_;
     std::map<std::string, Operation> ops_;
 };
 

@@ -61,6 +61,8 @@ inline Targets cursor(const std::vector<Entry>& entries)
     std::vector<std::int64_t> live;
     std::vector<std::pair<std::int64_t, std::int64_t>> undone; // {operation, the undo row that took it}
     for (const Entry& e : entries) {
+        if (e.kind == "snapshot")
+            continue; // a baseline observed the card; it did not change it
         if (e.status == "interrupted") {
             undone.clear(); // the card may have changed: no way back past here
             continue;

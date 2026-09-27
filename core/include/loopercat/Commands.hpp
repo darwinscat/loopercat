@@ -241,6 +241,8 @@ struct Journal {
     // changes — the pedal's own settings are undoable like a memory is
     // (sysfile::SectionChange carries the section's bytes either side).
     std::function<void(const std::vector<sysfile::SectionChange>&)> systemChanging;
+    // Optional baseline capture, before any body OR audio in these slots changes.
+    std::function<void(const std::vector<int>&)> slotsChanging;
 };
 
 struct WriteOptions {
@@ -268,6 +270,8 @@ inline void archiveTake(const WriteOptions& options, const char* command, int sl
         throw Error(std::string(command) + " on slot " + std::to_string(slot)
                     + " needs an archive — a take is never destroyed without one");
     requireMemoryJournal(options);
+    if (options.journal.slotsChanging)
+        options.journal.slotsChanging({ slot });
     options.archive(slot, fileName, bytes);
 }
 
@@ -376,6 +380,11 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
     // describe is refused with the volume as it was.
     const std::vector<SlotChange> changes = slotChanges(readMemory(volume), text);
     requireMemoryJournal(options);
+    if (options.journal.slotsChanging) {
+        std::vector<int> slots;
+        for (const auto& change : changes) slots.push_back(change.slot);
+        options.journal.slotsChanging(slots);
+    }
     options.journal.bodiesChanging(changes);
     return detail::writeMemoryPairRecorded(volume, text);
 }
@@ -636,6 +645,8 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     // comes first: hand it to the archive, remove it from the slot only after
     // the archive has it.
     requireMemoryJournal(options.write);
+    if (options.write.journal.slotsChanging)
+        options.write.journal.slotsChanging({ slot });
     const fs::path dir = volume::wavDir(volume, slot);
     std::error_code ec;
     fs::create_directories(dir, ec);
@@ -1217,6 +1228,8 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
     // All checks passed — the writes begin. The archive first: whatever the
     // slot holds is handed over whole, and leaves the card only after that.
     requireMemoryJournal(options);
+    if (options.journal.slotsChanging)
+        options.journal.slotsChanging({ slot });
     RestoreResult result { {}, frames, {} };
     std::error_code ec;
     for (const auto& old : existing) {
@@ -1310,6 +1323,8 @@ inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
 
     requireMemoryJournal(options);
     const auto changes = slotChanges(text, swapped);
+    if (options.journal.slotsChanging)
+        options.journal.slotsChanging({ slotA, slotB });
     options.journal.bodiesChanging(changes);
     swapSlotAudio(volume, slotA, slotB);
     try {

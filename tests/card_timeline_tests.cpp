@@ -67,7 +67,7 @@ struct Ready {
     int ops = 0;
     explicit Ready(const fs::path& dir) : store(dir)
     {
-        session = store.openSession(store.card("RC-5", "BOSS RC-5", 1000), 1000);
+        session = store.openSession(store.card("test-RC-5", "RC-5", "BOSS RC-5", 1000), 1000);
     }
     std::int64_t begin(const std::string& kind)
     {

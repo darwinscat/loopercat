@@ -79,7 +79,7 @@ struct Ready {
 
     explicit Ready(const fs::path& dir) : store(dir)
     {
-        session = store.openSession(store.card("RC-5", "BOSS RC-5", 1000), 1000);
+        session = store.openSession(store.card("test-RC-5", "RC-5", "BOSS RC-5", 1000), 1000);
     }
     std::int64_t now() { return ++clock; }
 
@@ -125,10 +125,10 @@ int main()
         Ready r(tmp.path);
         const auto empty = r.store.usage();
         CHECK_EQ(empty.audioBytes, 0);
-        CHECK_EQ(empty.freeBytes, 0);
+        CHECK(empty.freeBytes >= 0); // schema migration may leave reusable pages
         CHECK(empty.fileBytes > 0);
         CHECK_EQ(empty.fileBytes, static_cast<std::int64_t>(fs::file_size(tmp.path / "history.db")));
-        CHECK_EQ(empty.otherBytes, empty.fileBytes);
+        CHECK_EQ(empty.otherBytes, empty.fileBytes - empty.freeBytes);
         CHECK(empty.diskAvailable > 0);
 
         const std::string one = take(static_cast<std::size_t>(MB), 1);

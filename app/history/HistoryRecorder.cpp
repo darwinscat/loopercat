@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "HistoryRecorder.h"
+#include "../OperationId.h"
 
 namespace loopercat::history
 {
 
-HistoryRecorder::HistoryRecorder(std::filesystem::path dir, std::string model, Clock clock)
-    : dir_(std::move(dir)), model_(std::move(model)), clock_(std::move(clock))
+HistoryRecorder::HistoryRecorder(std::filesystem::path dir, Clock clock)
+    : dir_(std::move(dir)), clock_(std::move(clock))
 {
     if (!clock_)
         throw Error("the history recorder needs a clock");
@@ -17,7 +18,7 @@ HistoryRecorder::~HistoryRecorder()
 {
     if (store_ && session_) {
         try {
-            store_->closeSession(*session_, clock_());
+            disconnect();
         } catch (const Error&) {
             // The app is going away; the session reads as never closed, which
             // is what it would read after a crash too.
@@ -42,22 +43,84 @@ HistoryStore& HistoryRecorder::store()
 
 std::int64_t HistoryRecorder::sessionFor(const std::filesystem::path& volume)
 {
-    if (session_ && sessionVolume_ == volume)
-        return *session_;
+    // Open first: failure must not even mint a marker on the card.
+    auto& history = store();
+    auto identity = marker::read(volume);
+    if (!identity)
+        identity = marker::mint(volume, rc0::familyOf(commands::readMemory(volume)).familyName).card;
     const std::int64_t now = clock_();
+    const auto card = history.card(identity->id, identity->model, identity->name, now);
+    history.selectCard(card);
+    if (session_ && sessionVolume_ == volume && sessionMarker_ == identity->id)
+        return *session_;
+    disconnect();
+    session_ = history.openSession(card, now);
+    sessionVolume_ = volume;
+    sessionMarker_ = identity->id;
+    return *session_;
+}
+
+void HistoryRecorder::disconnect()
+{
+    if (snapshot_)
+        interruptSnapshot(*snapshot_, "The card disconnected before its first snapshot finished");
+    snapshot_.reset();
     if (session_) {
-        store().closeSession(*session_, now);
+        store().closeSession(*session_, clock_());
         session_.reset();
     }
-    std::filesystem::path named = volume;
-    if (named.filename().empty())
-        named = named.parent_path(); // "/Volumes/BOSS RC-5/" names its card too
-    const std::string label = sqlite::utf8(named.filename());
-    if (label.empty())
-        throw Error("cannot name the card mounted at " + volume.string());
-    session_ = store().openSession(store().card(model_, label, now), now);
-    sessionVolume_ = volume;
-    return *session_;
+    sessionVolume_.clear();
+    sessionMarker_.clear();
+}
+
+std::optional<HistoryRecorder::Snapshot> HistoryRecorder::firstSeen(const std::filesystem::path& volume)
+{
+    const auto session = sessionFor(volume);
+    const auto op = store().firstSeen(session, opid::make("first-seen"), clock_());
+    if (store().opStatus(op) == "done")
+        return std::nullopt;
+    snapshot_ = Snapshot { op, sessionMarker_, volume };
+    return snapshot_;
+}
+
+int HistoryRecorder::snapshotStep(const Snapshot& snapshot, int slot)
+{
+    const auto identity = marker::read(snapshot.volume);
+    if (!identity || identity->id != snapshot.markerId)
+        throw Error("the card changed before its first snapshot finished");
+    auto slots = store().touchedSlots(snapshot.op);
+    if (std::find(slots.begin(), slots.end(), slot) == slots.end()) {
+        const auto memory = commands::readMemory(snapshot.volume);
+        const auto& family = rc0::profileOf(memory);
+        std::vector<HistoryStore::SnapshotTake> takes;
+        for (int track = 1; track <= family.trackCount; ++track)
+            for (const auto& name : volume::listTrackWavs(snapshot.volume, family, slot, track))
+                takes.push_back({ track, name, commands::readFileBytes(
+                    volume::trackDir(snapshot.volume, family, slot, track) / name) });
+        store().snapshotSlot(snapshot.op, slot, rc0::slotBody(memory, slot), takes, clock_());
+        slots.push_back(slot);
+    }
+    if (slots.size() == 99 && store().opStatus(snapshot.op) == "pending")
+        store().finishOp(snapshot.op, OpStatus::done, "");
+    return static_cast<int>(slots.size());
+}
+
+void HistoryRecorder::interruptSnapshot(const Snapshot& snapshot, const std::string& reason)
+{
+    if (store().opStatus(snapshot.op) == "pending")
+        store().finishOp(snapshot.op, OpStatus::interrupted, reason);
+}
+
+void HistoryRecorder::preserveSlots(const std::string& opId, const std::vector<int>& slots)
+{
+    const auto found = ops_.find(opId);
+    if (found == ops_.end())
+        throw Error("operation " + opId + " reported to the history without having begun");
+    if (!snapshot_ || snapshot_->volume != found->second.volume
+        || store().opStatus(snapshot_->op) == "done")
+        return;
+    for (int slot : slots)
+        snapshotStep(*snapshot_, slot);
 }
 
 void HistoryRecorder::begin(const std::string& opId, const std::string& kind,
@@ -165,6 +228,9 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     options.journal.audioWritten = [recorder, opId](int slot, const std::string& fileName,
                                                     std::string_view bytes) {
         recorder->landed(opId, slot, fileName, bytes);
+    };
+    options.journal.slotsChanging = [recorder, opId](const std::vector<int>& slots) {
+        recorder->preserveSlots(opId, slots);
     };
     // The settings pair, before it is written: each changed section, its
     // text before and after (sysfile::sectionChanges, in the core). A throw
