@@ -133,6 +133,21 @@ CREATE TABLE system_changes(
 
 int main()
 {
+    for (const int version : { -1, -5, -2147483647 - 1 }) {
+        TempDir tmp;
+        const auto file = tmp.path / "history.db";
+        {
+            auto db = sqlite::Db::open(file);
+            db.exec("PRAGMA user_version = " + std::to_string(version));
+        }
+        const auto before = commands::readFileBytes(file);
+        CHECK_THROWS(HistoryStore(tmp.path), "invalid negative store version " + std::to_string(version));
+        CHECK(commands::readFileBytes(file) == before);
+        auto db = sqlite::Db::open(file);
+        CHECK_THROWS(schema::migrate(db), "invalid negative store version");
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), version);
+    }
+
     for (const int version : { 1, 2, 3, 4 }) {
         TempDir tmp;
         const fs::path file = tmp.path / "history.db";
@@ -149,7 +164,8 @@ int main()
         }
         const std::string before = commands::readFileBytes(file);
         CHECK_THROWS(HistoryStore(tmp.path),
-                     "This is a preview store. Delete history.db to start a new history.");
+                     "This is a preview store. Delete " + fs::canonical(file).string()
+                         + " to start a new history.");
         CHECK(commands::readFileBytes(file) == before);
         auto db = sqlite::Db::open(file);
         CHECK_EQ(schema::pragmaInteger(db, "user_version"), version);

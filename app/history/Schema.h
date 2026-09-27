@@ -161,12 +161,16 @@ inline std::string pragmaText(sqlite::Db& db, const std::string& pragma)
 inline void requireSupportedVersion(sqlite::Db& db)
 {
     const std::int64_t found = pragmaInteger(db, "main.user_version");
+    if (found < 0)
+        throw Error("the history has an invalid negative store version " + std::to_string(found));
     if (found > kVersion)
         throw Error("the history was written by a newer LooperCat (store version "
                     + std::to_string(found) + ", this one reads up to "
                     + std::to_string(kVersion) + ")");
     if (found > 0 && found < kBaseVersion)
-        throw Error("This is a preview store. Delete history.db to start a new history.");
+        throw Error("This is a preview store. Delete "
+                    + std::string(sqlite3_db_filename(db.raw(), "main"))
+                    + " to start a new history.");
 }
 
 // Brings a freshly opened store to version kVersion, or refuses. Idempotent:
