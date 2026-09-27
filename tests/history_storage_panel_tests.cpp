@@ -172,6 +172,33 @@ int main()
         CHECK_EQ(panel.offeredRows(), 0);
     }
 
+    // --- the offer, list and confirmed release put first-seen takes last ---
+    {
+        HistoryStoragePanel panel;
+        auto original = blob("original", "Card first seen — slot 1 take.wav", 100 * MB, 1000);
+        original.snapshotOnly = true;
+        auto newerOriginal = blob("newer-original", "Card first seen — slot 2 take.wav", 100 * MB, 2000);
+        newerOriginal.snapshotOnly = true;
+        panel.show(facts({ newerOriginal, blob("new", "slot 3 take.wav", 100 * MB, 4000),
+                           original, blob("old", "slot 4 take.wav", 100 * MB, 3000) }, 200 * MB));
+        CHECK(panel.offeredHashes() == (std::vector<std::string> { "old", "new" }));
+        CHECK(!has(panel.offerLine(), "first seen"));
+        panel.setKeepTarget(100 * MB);
+        CHECK(panel.offeredHashes() == (std::vector<std::string> { "old", "new", "original" }));
+        CHECK_EQ(panel.offeredRows(), 3);
+        CHECK(has(panel.offerLine(), "including 1 take from when the card was first seen"));
+        panel.setKeepTarget(0);
+        const std::vector<std::string> expected { "old", "new", "original", "newer-original" };
+        CHECK(panel.offeredHashes() == expected);
+        CHECK_EQ(panel.offeredRows(), 4);
+        CHECK(has(panel.offerLine(), "including 2 takes from when the card was first seen"));
+        CHECK_EQ(panel.releaseButtonText(), juce::String("Release 4 takes (400 MB)"));
+        std::vector<std::string> released;
+        panel.onRelease = [&](std::vector<std::string> hashes) { released = std::move(hashes); };
+        panel.confirmRelease();
+        CHECK(released == expected);
+    }
+
     // --- everything held: nothing on offer, and the sentence says why ---
     {
         HistoryStoragePanel panel;

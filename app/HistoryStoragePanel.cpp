@@ -131,8 +131,8 @@ void HistoryStoragePanel::show(Facts facts)
     std::int64_t kept = 0;
     for (const auto& blob : facts_->blobs)
         kept += blob.size;
-    // Over the limit the offer starts at the limit: the oldest unheld takes
-    // that bring the history back under it. Under it, at "nothing goes".
+    // Over the limit the offer starts at the limit, with first-seen takes
+    // offered last. Under it, at "nothing goes".
     keep_.setEnabled(kept > 0);
     keep_.setRange(0.0, static_cast<double>(std::max<std::int64_t>(kept, 1)), 1.0);
     keep_.setValue(static_cast<double>(std::min(kept, facts_->limit)), juce::dontSendNotification);
@@ -264,7 +264,8 @@ void HistoryStoragePanel::resized()
     keepCaption_.setBounds(keepRow.removeFromLeft(100));
     keep_.setBounds(keepRow);
     area.removeFromTop(6);
-    offer_.setBounds(area.removeFromTop(18));
+    // Leave room for the sentence to name first-seen takes in the offer.
+    offer_.setBounds(area.removeFromTop(54));
     area.removeFromTop(4);
     auto buttonRow = area.removeFromBottom(26);
     release_.setBounds(buttonRow.removeFromLeft(220));
