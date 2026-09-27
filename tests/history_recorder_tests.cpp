@@ -126,6 +126,77 @@ commands::WriteOptions options(const std::shared_ptr<HistoryRecorder>& rec, cons
 
 int main()
 {
+    // Every write uses the app's history wiring. The data home stays free of
+    // extra directories while the store records exactly what the card held.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM ops"), 0);
+        putWav(volume, 4, "take.wav", 132300);
+        const fs::path incoming = tmp.path / "incoming.wav";
+        const auto wav = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 176400 });
+        commands::writeFileBytes(incoming,
+            std::string_view(reinterpret_cast<const char*>(wav.data()), wav.size()));
+        for (const std::string kind : { "push", "trim", "rename", "clear" }) {
+            const std::string beforeBody = rc0::slotBody(commands::readMemory(volume), 4);
+            const auto files = volume::listSlotWavs(volume, 4);
+            CHECK_EQ(files.size(), 1u);
+            const auto beforeTake = commands::readFileBytes(volume::wavDir(volume, 4) / files.front());
+            CHECK_EQ(run(*rec, kind, kind, volume, [&] {
+                const auto write = options(rec, kind);
+                if (kind == "push")
+                    commands::push(volume, incoming, 4, { .force = true, .write = write });
+                else if (kind == "trim")
+                    commands::trim(volume, 4, 0, 88200, { .write = write });
+                else if (kind == "rename")
+                    commands::rename(volume, 4, "New name", write);
+                else
+                    commands::clear(volume, { 4 }, { .write = write });
+            }), std::string());
+            CHECK(!fs::exists(tmp.path / "backups"));
+            CHECK(!fs::exists(tmp.path / "trash"));
+            sqlite::Statement bodies(rec->store().db(),
+                "SELECT before_body, after_body FROM slot_changes c JOIN ops o ON o.seq = c.op "
+                "WHERE o.id = ?1 AND c.slot = 4");
+            bodies.bindText(1, kind);
+            CHECK(bodies.step());
+            CHECK(bodies.blob(0) == beforeBody);
+            CHECK(bodies.blob(1) == rc0::slotBody(commands::readMemory(volume), 4));
+            if (kind != "rename")
+                CHECK(rec->store().takeBytes(HistoryStore::contentHash(beforeTake)) == beforeTake);
+        }
+        CHECK(volume::listSlotWavs(volume, 4).empty());
+        CHECK(rc0::slotBody(commands::readMemory(volume), 4) == rc0::factorySlotBody(4));
+    }
+
+    // Existing folders are inert: even unreadable contents do not block a
+    // write, and no file in them is changed, imported or removed.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "take.wav", 132300);
+        for (const auto* name : { "backups", "trash" }) {
+            fs::create_directories(tmp.path / name / "old");
+            commands::writeFileBytes(tmp.path / name / "old" / "untouched", "old bytes");
+        }
+        const auto beforeBackup = volumeBytes(tmp.path / "backups");
+        const auto beforeTrash = volumeBytes(tmp.path / "trash");
+        fs::permissions(tmp.path / "backups", fs::perms::none);
+        fs::permissions(tmp.path / "trash", fs::perms::none);
+        auto rec = recorderAt(tmp.path / "history");
+        const auto error = run(*rec, "clear", "clear", volume, [&] {
+            commands::clear(volume, { 4 }, { .write = options(rec, "clear") });
+        });
+        fs::permissions(tmp.path / "backups", fs::perms::owner_all);
+        fs::permissions(tmp.path / "trash", fs::perms::owner_all);
+        CHECK_EQ(error, std::string());
+        CHECK(volumeBytes(tmp.path / "backups") == beforeBackup);
+        CHECK(volumeBytes(tmp.path / "trash") == beforeTrash);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM ops"), 1);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM blobs"), 1);
+    }
+
     // --- trim: the take kept, the landed take named, both bodies, op done ---
     {
         TempDir tmp;
