@@ -13,9 +13,7 @@ namespace loopercat::clearSlotAction
 {
 namespace {
 
-// Keep the confirmation and its gate together so a test can drive the same
-// dialog as the slot menu. No job is prepared or queued before Clear.
-void showClearSlotConfirmation(int slot, std::function<void()> clear)
+void showClearSlotConfirmation(int slot, std::function<void(int)> decided)
 {
     auto* dialog = new juce::AlertWindow(
         "Clear slot " + juce::String(slot) + "?",
@@ -24,11 +22,8 @@ void showClearSlotConfirmation(int slot, std::function<void()> clear)
         juce::MessageBoxIconType::WarningIcon);
     dialog->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
     dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-    dialog->enterModalState(true, juce::ModalCallbackFunction::create(
-        [confirmed = std::move(clear)](int choice) {
-            if (choice == 1)
-                confirmed();
-        }), true);
+    dialog->enterModalState(true,
+        juce::ModalCallbackFunction::create(std::move(decided)), true);
 }
 
 } // namespace
@@ -39,13 +34,17 @@ void addToMenu(juce::PopupMenu& menu, bool hasTake)
 }
 
 void request(int slot, bool hasTake, std::shared_ptr<history::HistoryRecorder> recorder,
-             std::function<void(PedalWorker::Job)> enqueue)
+             std::function<void(PedalWorker::Job)> enqueue, AskConfirmation ask)
 {
     if (!hasTake)
         return;
 
-    showClearSlotConfirmation(slot, [slot, rec = std::move(recorder),
-                                     submit = std::move(enqueue)] {
+    if (!ask)
+        ask = showClearSlotConfirmation;
+    ask(slot, [slot, rec = std::move(recorder), submit = std::move(enqueue)](int choice) {
+        // No job is prepared or queued before an explicit Clear decision.
+        if (choice != 1)
+            return;
         const auto options = history::makeWriteOptions(rec);
         PedalWorker::Job job {
             "Clear slot " + juce::String(slot), slot,
