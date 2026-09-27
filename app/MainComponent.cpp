@@ -347,6 +347,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         if (!pedalBusy && slotRowFor(slot) != nullptr)
             editRhythm(slot, std::move(edits));
     };
+    inspector.onPlayStopEdited = [this](int slot, usecases::playstop::Edits edits) {
+        if (!pedalBusy && slotRowFor(slot) != nullptr)
+            editPlayStop(slot, std::move(edits));
+    };
     table.onLoudnessCellDoubleClicked = [this](int slot) { measureSlotLoudness(slot); };
     // The player read the file for its waveform anyway; the meter rode along.
     player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading) {
@@ -1916,6 +1920,23 @@ void MainComponent::editRhythm(int slot, usecases::rhythm::Edits edits)
                               },
                               std::make_shared<juce::String>(
                                   utf8(usecases::rhythm::describe(edits))) }));
+}
+
+// One job per change on the Start & Stop card, the twin of editRhythm: the
+// change rides as the job's note in the card's own words ("stop LOOP END").
+void MainComponent::editPlayStop(int slot, usecases::playstop::Edits edits)
+{
+    if (!CardPermissions::of(snapshot.family).playStop)
+        return;
+    const auto options = makeWriteOptions();
+    worker.enqueue(recorded("playstop", options,
+                            { "Start & Stop on slot " + juce::String(slot),
+                              slot,
+                              [slot, edits, options](const volume::fs::path& volumePath) {
+                                  commands::setPlayStop(volumePath, slot, edits, options);
+                              },
+                              std::make_shared<juce::String>(
+                                  utf8(usecases::playstop::describe(edits))) }));
 }
 
 void MainComponent::choosePushWav(int slot, bool slotOccupied)

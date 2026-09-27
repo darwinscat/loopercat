@@ -276,6 +276,7 @@ loopercat_core_test(loudness_tests)
 loopercat_core_test(normalize_tests)
 loopercat_core_test(usecase_count_in_tests)
 loopercat_core_test(usecase_rhythm_tests)
+loopercat_core_test(usecase_play_stop_tests)
 # The pedal's controls (SETUP > CONTROL) as a use case over the SYSTEM file.
 loopercat_core_test(usecase_controls_tests)
 # Parsing and decisions only — no syscalls, no Linux headers — so the
@@ -423,6 +424,7 @@ target_sources(LooperCat PRIVATE
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
     app/PlayerPane.cpp
+    app/PlayStopCard.cpp
     app/RhythmPane.cpp
     app/SlotInspector.cpp
     app/SlotTable.cpp
@@ -563,6 +565,25 @@ target_link_libraries(slot_table_harness PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME slot_table_harness COMMAND slot_table_harness)
+
+# The Start & Stop card, its three choices changed the way JUCE changes
+# them — app tier, same ctest.
+juce_add_console_app(play_stop_card_harness PRODUCT_NAME "play_stop_card_harness")
+target_sources(play_stop_card_harness PRIVATE tests/play_stop_card_harness.cpp app/PlayStopCard.cpp)
+target_compile_definitions(play_stop_card_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(play_stop_card_harness PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME play_stop_card_harness COMMAND play_stop_card_harness)
 
 # The Rhythm tab against what the card permits (CardPermissions.h) and what
 # the slot holds: the real RhythmPane, its switch pressed and its fields

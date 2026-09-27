@@ -41,6 +41,7 @@
 
 #include "../Error.hpp"
 #include "../Rc0.hpp"
+#include "Choice.hpp"
 #include "CountIn.hpp"
 
 #include <array>
@@ -53,11 +54,9 @@ namespace loopercat::usecases::rhythm {
 
 // --- the lists (RC-5 reference manual p. 10, in print order, from zero) ---
 
-// One entry of a list: the number the card stores, the name the screen shows.
-struct Choice {
-    long long number;
-    std::string_view name;
-};
+// One entry of a list: the number the card stores, the name the screen shows
+// (Choice.hpp, shared with every list-valued use case).
+using usecases::Choice;
 
 // PATTERN: 57 grooves in the manual's fourteen groups, then Blank. Anchors:
 // 0 is the factory value and the printed default (SimpleBeat1); 57 is Blank
@@ -123,12 +122,7 @@ namespace detail {
     inline std::string_view nameIn(std::span<const Choice> list, std::string_view what,
                                    long long number)
     {
-        for (const Choice& choice : list)
-            if (choice.number == number)
-                return choice.name;
-        throw Error("RHYTHM " + std::string(what) + " " + std::to_string(number)
-                    + " is not in the manual's list of " + std::to_string(list.size())
-                    + " (0.." + std::to_string(list.size() - 1) + ")");
+        return usecases::nameIn(list, "RHYTHM " + std::string(what), number);
     }
 
     inline long long rhythm(std::string_view slotBody, std::string_view tag)
