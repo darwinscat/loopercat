@@ -12,6 +12,7 @@
 
 #include <bit>
 #include <chrono>
+#include <initializer_list>
 #include <map>
 
 using namespace loopercat;
@@ -100,9 +101,16 @@ struct Fixture {
         commands::WriteOptions options {};
         options.opId = kind;
         const auto write = history::withHistory(rec, std::move(options));
-        rec->begin(kind, kind, card);
-        work(write);
-        rec->finish(kind, {});
+        // Restore runs in a button callback. An exception must become a test
+        // failure here, not escape through the native message dispatch loop.
+        try {
+            rec->begin(kind, kind, card);
+            work(write);
+            rec->finish(kind, {});
+        } catch (const std::exception& error) {
+            rec->finish(kind, error.what());
+            testkit::fail(kind + ": " + error.what(), __FILE__, __LINE__);
+        }
     }
 
     std::map<std::string, std::string> cardBytes() const
@@ -114,6 +122,17 @@ struct Fixture {
         return bytes;
     }
 };
+
+void checkTimeline(Fixture& fixture, std::initializer_list<std::string> kinds)
+{
+    const auto timeline = fixture.rec->store().cardTimeline();
+    CHECK_EQ(timeline.size(), kinds.size());
+    if (timeline.size() != kinds.size())
+        return;
+    std::size_t index = 0;
+    for (const auto& kind : kinds)
+        CHECK_EQ(timeline[index++].kind, kind);
+}
 
 void settle()
 {
@@ -140,7 +159,10 @@ int main()
         juce::PopupMenu menu;
         clearSlotAction::addToMenu(menu, hasTake);
         juce::PopupMenu::MenuItemIterator items(menu);
-        CHECK(items.next());
+        const bool found = items.next();
+        CHECK(found);
+        if (!found)
+            continue;
         CHECK_EQ(items.getItem().itemID, clearSlotAction::menuItemId);
         CHECK_EQ(items.getItem().text, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
         CHECK_EQ(items.getItem().isEnabled, hasTake);
@@ -160,7 +182,7 @@ int main()
         CHECK_EQ(asks, 0);
         CHECK_EQ(jobs, 0);
         CHECK(fixture.cardBytes() == before);
-        CHECK_EQ(fixture.rec->store().cardTimeline().size(), 1u);
+        checkTimeline(fixture, { "snapshot", "push" });
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
     }
 
@@ -171,7 +193,11 @@ int main()
         Fixture fixture;
         const auto before = fixture.cardBytes();
         const auto body = rc0::slotBody(commands::readMemory(fixture.card), 4);
-        const auto name = volume::listSlotWavs(fixture.card, 4).front();
+        const auto names = volume::listSlotWavs(fixture.card, 4);
+        CHECK_EQ(names.size(), 1u);
+        if (names.size() != 1u)
+            continue;
+        const auto name = names.front();
         const auto take = commands::readFileBytes(volume::wavDir(fixture.card, 4) / name);
         int jobs = 0;
         int asks = 0;
@@ -182,10 +208,18 @@ int main()
             CHECK_EQ(job.description, juce::String("Clear slot 4"));
             CHECK(job.before != nullptr);
             CHECK(job.after != nullptr);
+            CHECK(job.work != nullptr);
+            if (!job.before || !job.work || !job.after)
+                return;
             // Execute the app's job using the worker's lifecycle order.
-            job.before(fixture.card);
-            job.work(fixture.card);
-            job.after({});
+            try {
+                job.before(fixture.card);
+                job.work(fixture.card);
+                job.after({});
+            } catch (const std::exception& error) {
+                job.after(error.what());
+                testkit::fail(std::string("clear: ") + error.what(), __FILE__, __LINE__);
+            }
         }, [&](int slot, std::function<void(int)> callback) {
             ++asks;
             CHECK_EQ(slot, 4);
@@ -194,7 +228,7 @@ int main()
         CHECK_EQ(asks, 1);
         CHECK_EQ(jobs, 0);
         CHECK(fixture.cardBytes() == before);
-        CHECK_EQ(fixture.rec->store().cardTimeline().size(), 1u);
+        checkTimeline(fixture, { "snapshot", "push" });
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
         CHECK(decide != nullptr);
         if (decide == nullptr)
@@ -202,25 +236,36 @@ int main()
         settle();
         CHECK_EQ(jobs, 0);
         CHECK(fixture.cardBytes() == before);
-        CHECK_EQ(fixture.rec->store().cardTimeline().size(), 1u);
+        checkTimeline(fixture, { "snapshot", "push" });
         decide(response);
         settle();
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
         if (response != 1) {
             CHECK_EQ(jobs, 0);
             CHECK(fixture.cardBytes() == before); // includes both banks, WAVs and every card file
-            CHECK_EQ(fixture.rec->store().cardTimeline().size(), 1u);
+            checkTimeline(fixture, { "snapshot", "push" });
             CHECK(!fixture.rec->store().takeBytes(history::HistoryStore::contentHash(take)));
             continue;
         }
         CHECK_EQ(jobs, 1);
+        checkTimeline(fixture, { "snapshot", "push", "clear" });
         CHECK(volume::listSlotWavs(fixture.card, 4).empty());
         CHECK(rc0::slotBody(commands::readMemory(fixture.card), 4) == rc0::factorySlotBody(4));
         const auto rows = history::rows::forSlot(fixture.rec->store().slotTimeline(4));
-        CHECK_EQ(rows.size(), 2u);
-        CHECK_EQ(rows.back().line.action, std::string("Cleared"));
-        CHECK(rows.back().playable);
-        CHECK(rows.front().restorable);
+        CHECK_EQ(rows.size(), 3u);
+        if (rows.size() != 3u)
+            continue;
+        const auto& snapshot = rows[0];
+        const auto& pushed = rows[1];
+        const auto& cleared = rows[2];
+        CHECK_EQ(snapshot.line.action, std::string("Card first seen"));
+        CHECK(!snapshot.playable); // the slot was empty before the push
+        CHECK(snapshot.takeHash.empty());
+        CHECK(snapshot.restorable);
+        CHECK_EQ(pushed.line.action, std::string("Pushed"));
+        CHECK(pushed.restorable);
+        CHECK_EQ(cleared.line.action, std::string("Cleared"));
+        CHECK(cleared.playable);
 
         HistoryPane pane;
         std::vector<HistoryPane::Row> shown;
@@ -281,14 +326,16 @@ int main()
         int restores = 0;
         pane.onRestore = [&](std::int64_t op) {
             ++restores;
-            CHECK_EQ(op, rows.front().op);
+            CHECK_EQ(op, pushed.op);
+            if (op != pushed.op)
+                return;
             fixture.run("restore", [&](const auto& write) {
                 history::restoreOperation(fixture.rec->store(), op, fixture.card, write);
             });
         };
         for (auto* child : pane.getChildren())
             if (auto* list = dynamic_cast<juce::ListBox*>(child))
-                list->selectRow(0);
+                list->selectRow(1); // the pushed state, after the empty snapshot
         auto* restore = buttonNamed(pane, "Restore this state");
         CHECK(restore != nullptr && restore->isEnabled());
         if (restore != nullptr)
@@ -297,7 +344,10 @@ int main()
         CHECK_EQ(restores, 1);
         CHECK(rc0::slotBody(commands::readMemory(fixture.card), 4) == body);
         CHECK(volume::listSlotWavs(fixture.card, 4) == std::vector<std::string> { name });
-        CHECK(commands::readFileBytes(volume::wavDir(fixture.card, 4) / name) == take);
+        const auto restored = volume::wavDir(fixture.card, 4) / name;
+        CHECK(fs::is_regular_file(restored));
+        if (fs::is_regular_file(restored))
+            CHECK(commands::readFileBytes(restored) == take);
     }
     return testkit::summary("clear_confirmation_tests");
 }
