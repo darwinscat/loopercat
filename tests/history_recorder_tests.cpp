@@ -200,7 +200,7 @@ int main()
         CHECK_EQ(error, std::string());
         CHECK(volumeBytes(tmp.path / "backups") == beforeBackup);
         CHECK(volumeBytes(tmp.path / "trash") == beforeTrash);
-        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM ops"), 1);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM ops WHERE kind <> 'snapshot'"), 1);
         CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM blobs"), 1);
     }
 
@@ -229,12 +229,12 @@ int main()
                  1);
         // the take that landed: named and hashed, the hash of what the card holds
         const std::string onCard = commands::readFileBytes(volume::wavDir(volume, 4) / "take.wav");
-        sqlite::Statement after(db, "SELECT hash, size FROM slot_audio WHERE side = 'after' AND slot = 4");
+        sqlite::Statement after(db, "SELECT hash, size FROM slot_audio WHERE side = 'after' AND slot = 4 AND op = (SELECT seq FROM ops WHERE id = 'op-trim')");
         CHECK(after.step());
         CHECK(after.blob(0) == HistoryStore::contentHash(onCard));
         CHECK_EQ(after.integer(1), static_cast<std::int64_t>(onCard.size()));
         // the bodies, both sides, byte-exact
-        sqlite::Statement bodies(db, "SELECT before_body, after_body FROM slot_changes WHERE slot = 4");
+        sqlite::Statement bodies(db, "SELECT before_body, after_body FROM slot_changes WHERE slot = 4 AND op = (SELECT seq FROM ops WHERE id = 'op-trim')");
         CHECK(bodies.step());
         CHECK(bodies.blob(0) == bodyBefore);
         CHECK(bodies.blob(1) == rc0::slotBody(commands::readMemory(volume), 4));
@@ -242,7 +242,7 @@ int main()
         CHECK(!fs::exists(tmp.path / "backups"));
     }
 
-    // --- rename and swap: bodies only, no audio moved into the history ---
+    // --- rename and swap: bodies only; first sighting separately keeps the baseline ---
     {
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
@@ -263,7 +263,7 @@ int main()
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes sc JOIN ops o ON o.seq = sc.op "
                            "WHERE o.id = 'op-swap'"),
                  2);
-        CHECK_EQ(count(db, "SELECT count(*) FROM blobs"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM blobs"), 1);
         CHECK_EQ(count(db, "SELECT count(*) FROM ops WHERE status = 'done'"), 2);
         CHECK(!fs::exists(tmp.path / "trash"));
     }
@@ -469,8 +469,11 @@ int main()
         // row that cannot fetch bytes is honest, a guessed hash is not.
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
-        putWav(volume, 12, "012_1.WAV", 132300);
         auto rec = recorderAt(tmp.path / "history");
+        const auto first = rec->firstSeen(volume);
+        for (int slot = 1; slot <= 99; ++slot) rec->snapshotStep(*first, slot);
+        // The pedal records a new take after the original sighting.
+        putWav(volume, 12, "012_1.WAV", 132300);
         CHECK_EQ(run(*rec, "op-blind", "rename", volume, [&] {
                      commands::rename(volume, 12, "Stranger", options(rec, "op-blind"));
                  }),

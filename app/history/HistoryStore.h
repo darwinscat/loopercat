@@ -57,13 +57,15 @@ public:
     // --- where and when ---
     std::int64_t card(const std::string& markerId, const std::string& model,
                       const std::string& name, std::int64_t nowMs);
-    void selectCard(std::int64_t card) { selectedCard_ = card; }
+    void selectCard(std::optional<std::int64_t> card) { selectedCard_ = card; }
 
     // One baseline per marker. Resuming keeps the operation and committed slots.
     std::int64_t firstSeen(std::int64_t session, const std::string& opId, std::int64_t nowMs);
     struct SnapshotTake { int track; std::string name; std::string bytes; };
     void snapshotSlot(std::int64_t op, int slot, const std::string& body,
                       const std::vector<SnapshotTake>& takes, std::int64_t nowMs);
+    void snapshotFailed(std::int64_t op, int slot, const std::string& reason);
+    // Opening a session selects that card for timeline and cursor queries.
     std::int64_t openSession(std::int64_t card, std::int64_t nowMs);
     void closeSession(std::int64_t session, std::int64_t nowMs);
 
@@ -104,10 +106,12 @@ public:
         // side). False when the row offers the take it archived instead — a
         // clear or an undo that emptied the slot. That take is
         // not on the card, whatever the row's place in the timeline.
+        std::int64_t takeCount = 0;
+        std::int64_t takeBytes = 0;
         bool takeIsAfter = false;
     };
 
-    // Ordered by time, then by operation sequence.
+    // Selected card only; no selection returns no rows. Ordered by time, then sequence.
     std::vector<TimelineEntry> slotTimeline(int slot);
 
     // --- reads: what the tests look at today, and what #50 builds on ---
@@ -166,7 +170,7 @@ public:
 
     // Every blob whose bytes are kept, with what holds it: a pinned operation
     // naming it (or a pin on the blob), an operation still pending naming it,
-    // or one of the cursor's targets naming it as a 'before' — the audio that
+    // or any card's cursor targets naming it as a 'before' — the audio that
     // undo, or redo, would put back (the redo's bytes are what its undo row
     // archived). References count the rows naming the hash, both sides.
     std::vector<retention::Blob> keptBlobs(const UndoTargets& targets);
@@ -268,7 +272,9 @@ private:
         bool undo;
         bool inFlight;
     };
-    Holds holdsOn(const std::string& hash, const UndoTargets& targets);
+    std::vector<OpSummary> operationsFor(std::int64_t card);
+    std::vector<UndoTargets> retentionTargets(const UndoTargets& offered);
+    Holds holdsOn(const std::string& hash, const std::vector<UndoTargets>& targets);
 
     std::filesystem::path file_;
     sqlite::Db db_;

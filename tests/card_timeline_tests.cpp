@@ -258,11 +258,6 @@ int main()
         CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->hash == HistoryStore::contentHash(bytes));
         CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->kept);
         CHECK(entryFor(entries, push)->slots.size() == 1 && !entryFor(entries, push)->slots[0].archived);
-        // released since: still named, no longer kept
-        r.store.releaseBlobs({ HistoryStore::contentHash(bytes) }, {}, 9);
-        const auto after = r.store.cardTimeline();
-        CHECK(entryFor(after, clear)->slots[0].archived && !entryFor(after, clear)->slots[0].archived->kept);
-
         // the cursor's targets out of the real rows
         const auto t = r.store.offeredTargets();
         CHECK(t.undo == push);          // the undo row is transparent: the clear is undone, the push stands
@@ -272,6 +267,12 @@ int main()
         CHECK_EQ(ops.size(), 3u);
         CHECK(ops[2].reverts == clear);
         CHECK_EQ(ops[2].kind, std::string("undo"));
+        // Move past the offered redo before releasing its take.
+        r.store.finishOp(r.begin("rename"), OpStatus::done, "");
+        // released since: still named, no longer kept
+        r.store.releaseBlobs({ HistoryStore::contentHash(bytes) }, {}, 9);
+        const auto after = r.store.cardTimeline();
+        CHECK(entryFor(after, clear)->slots[0].archived && !entryFor(after, clear)->slots[0].archived->kept);
 
         CHECK_THROWS(r.store.setReverts(undone, undone), "itself");
         CHECK_THROWS(r.store.setReverts(424242, clear), "no operation");
@@ -359,6 +360,7 @@ int main()
         CHECK_THROWS(history::exportTake(r.store, hash, tmp.path / "nowhere" / "x.wav"), "");
         CHECK(!fs::exists(tmp.path / "nowhere" / "x.wav.part"));
 
+        r.store.finishOp(r.begin("rename"), OpStatus::done, "");
         r.store.releaseBlobs({ hash }, {}, 9);
         const fs::path gone = tmp.path / "exported" / "gone.wav";
         CHECK_THROWS(history::exportTake(r.store, hash, gone), "no longer kept");

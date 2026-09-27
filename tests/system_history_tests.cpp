@@ -221,7 +221,7 @@ int main()
         rec->finish("op-controls", "");
         sqlite::Db& db = rec->store().db();
         CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 1);
-        const auto rows = rec->store().systemChanges(1);
+        const auto rows = rec->store().systemChanges(rec->store().operations().back().op);
         CHECK_EQ(rows.size(), 1u);
         CHECK(rows.size() == 1 && rows.front().section == sysfile::kSectionCtl);
         CHECK(rows.size() == 1 && rows.front().before == sysfile::sectionText(original, sysfile::kSectionCtl));
@@ -229,7 +229,7 @@ int main()
         CHECK_EQ(sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2"), 22);
         // and the timeline reads it back as an operation on no slot
         const auto entries = rec->store().cardTimeline();
-        CHECK(entries.size() == 1 && entries.front().slots.empty() && entries.front().system.size() == 1);
+        CHECK(entries.size() == 2 && entries.back().slots.empty() && entries.back().system.size() == 1);
 
         // a write for an operation that never began: the history refuses
         // before the write, and the card stays as it was

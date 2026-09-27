@@ -138,7 +138,8 @@ CREATE TABLE system_changes(
 )sql",
 R"sql(
 -- Unidentified version 5 cards stay separate: a label cannot prove identity.
-ALTER TABLE cards ADD COLUMN marker_id TEXT;
+ALTER TABLE cards ADD COLUMN marker_id TEXT NOT NULL DEFAULT '';
+UPDATE cards SET marker_id = 'unidentified-v5:' || id;
 ALTER TABLE cards ADD COLUMN name TEXT;
 ALTER TABLE cards ADD COLUMN snapshot_op INTEGER REFERENCES ops(seq);
 CREATE UNIQUE INDEX cards_by_marker ON cards(marker_id);
@@ -146,10 +147,12 @@ CREATE TABLE slot_changes_v6(
     op INTEGER NOT NULL REFERENCES ops(seq),
     slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
     before_body BLOB,
-    after_body BLOB NOT NULL,
+    after_body BLOB,
+    snapshot_error TEXT,
+    CHECK (after_body IS NOT NULL OR snapshot_error IS NOT NULL),
     PRIMARY KEY (op, slot)
 ) STRICT;
-INSERT INTO slot_changes_v6 SELECT * FROM slot_changes;
+INSERT INTO slot_changes_v6(op, slot, before_body, after_body) SELECT * FROM slot_changes;
 DROP TABLE slot_changes;
 ALTER TABLE slot_changes_v6 RENAME TO slot_changes;
 CREATE INDEX slot_changes_by_slot ON slot_changes(slot, op);

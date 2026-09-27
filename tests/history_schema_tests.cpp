@@ -177,6 +177,8 @@ int main()
             HistoryStore fresh(tmp.path);
             auto& db = fresh.db();
             CHECK_EQ(schema::kVersion, 6);
+            CHECK_EQ(count(db, "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
+            CHECK_THROWS(db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id) VALUES ('RC-5', '', 0, 0, NULL)"), "NOT NULL");
             CHECK_EQ(schema::pragmaInteger(db, "user_version"), 6);
             CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 8);
             CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'legacy_files'"), 0);
@@ -223,7 +225,11 @@ int main()
         }
         HistoryStore migrated(tmp.path);
         CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 6);
-        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM cards WHERE marker_id IS NULL"), 1);
+        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM cards WHERE marker_id IS NULL"), 0);
+        CHECK_EQ(count(migrated.db(), "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
+        CHECK_THROWS(migrated.db().exec("UPDATE cards SET marker_id = NULL"), "NOT NULL");
+        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM cards WHERE marker_id = 'unidentified-v5:1'"), 1);
+        migrated.selectCard(1);
         CHECK_EQ(migrated.slotTimeline(3).size(), 1u);
         CHECK(migrated.slotTimeline(3).front().beforeBody == "before");
         CHECK(migrated.slotTimeline(3).front().afterBody == "after");
@@ -236,6 +242,24 @@ int main()
         CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 0);
         schema::migrate(migrated.db());
         CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM slot_changes"), 1);
+    }
+    {
+        TempDir freshDir, migratedDir;
+        {
+            auto db = sqlite::Db::open(migratedDir.path / "history.db");
+            db.exec("PRAGMA page_size = 16384");
+            db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+            db.exec(schema::kSteps[0]);
+            db.exec("PRAGMA user_version = 5");
+        }
+        HistoryStore fresh(freshDir.path), migrated(migratedDir.path);
+        const auto definition = [](HistoryStore& store) {
+            std::string out;
+            sqlite::Statement read(store.db(), "SELECT type || name || coalesce(sql, '') FROM sqlite_master ORDER BY name");
+            while (read.step()) out += read.text(0) + "\n";
+            return out;
+        };
+        CHECK_EQ(definition(fresh), definition(migrated));
     }
     {
         TempDir tmp;

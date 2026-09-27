@@ -159,16 +159,25 @@ void HistoryStore::snapshotSlot(std::int64_t op, int slot, const std::string& bo
                                "VALUES (?1, ?2, NULL, ?3)");
     row.bind(1, op).bind(2, slot).bindBlob(3, body).run();
     for (const auto& take : takes) {
-        keepBlob(contentHash(take.bytes), take.bytes, nowMs);
-        recordLanded(op, slot, take.track, take.name, take.bytes);
+        const auto hash = contentHash(take.bytes);
+        keepBlob(hash, take.bytes, nowMs);
+        recordPresentAudio(op, slot, take.track, take.name,
+                           static_cast<std::int64_t>(take.bytes.size()), hash);
     }
     tx.commit();
+}
+
+void HistoryStore::snapshotFailed(std::int64_t op, int slot, const std::string& reason)
+{
+    sqlite::Statement row(db_, "INSERT INTO slot_changes(op, slot, snapshot_error) VALUES (?1, ?2, ?3)");
+    row.bind(1, op).bind(2, slot).bindText(3, reason).run();
 }
 
 std::int64_t HistoryStore::openSession(std::int64_t card, std::int64_t nowMs)
 {
     sqlite::Statement add(db_, "INSERT INTO sessions(card, connected_at) VALUES (?1, ?2)");
     add.bind(1, card).bind(2, nowMs).run();
+    selectCard(card);
     return db_.lastInsertRowid();
 }
 
@@ -322,7 +331,7 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
                            "FROM ops o LEFT JOIN slot_changes c ON c.op = o.seq AND c.slot = ?1 "
                            "WHERE o.seq IN (SELECT op FROM slot_changes WHERE slot = ?1 "
                            "                UNION SELECT op FROM slot_audio WHERE slot = ?1) "
-                           "AND (?2 IS NULL OR o.session IN (SELECT id FROM sessions WHERE card = ?2)) "
+                           "AND o.session IN (SELECT id FROM sessions WHERE card = ?2) "
                            "ORDER BY o.at, o.seq");
     read.bind(1, slot);
     if (selectedCard_)
@@ -351,6 +360,18 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
 
 void HistoryStore::fillSlotFacts(TimelineEntry& row, int slot)
 {
+    sqlite::Statement failure(db_, "SELECT snapshot_error FROM slot_changes WHERE op = ?1 AND slot = ?2");
+    failure.bind(1, row.op).bind(2, slot);
+    if (failure.step() && !failure.isNull(0)) {
+        row.status = "failed";
+        row.note = failure.text(0);
+    }
+    sqlite::Statement totals(db_, "SELECT count(*), coalesce(sum(size), 0) FROM slot_audio "
+                                  "WHERE op = ?1 AND slot = ?2 AND side = 'after'");
+    totals.bind(1, row.op).bind(2, slot);
+    totals.step();
+    row.takeCount = totals.integer(0);
+    row.takeBytes = totals.integer(1);
     // Offer the state's take, or the one kept before the slot was emptied.
     sqlite::Statement take(db_, "SELECT name, hash, "
                                 "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash), side "
@@ -417,14 +438,16 @@ HistoryStore::Usage HistoryStore::usage()
 
 std::vector<HistoryStore::OpSummary> HistoryStore::operations()
 {
+    return selectedCard_ ? operationsFor(*selectedCard_) : std::vector<OpSummary> {};
+}
+
+std::vector<HistoryStore::OpSummary> HistoryStore::operationsFor(std::int64_t card)
+{
     std::vector<OpSummary> out;
     sqlite::Statement read(db_, "SELECT seq, kind, status, actor, reverts FROM ops "
-                                "WHERE (?1 IS NULL OR session IN (SELECT id FROM sessions WHERE card = ?1)) "
+                                "WHERE session IN (SELECT id FROM sessions WHERE card = ?1) "
                                 "ORDER BY at, seq");
-    if (selectedCard_)
-        read.bind(1, *selectedCard_);
-    else
-        read.bindNull(1);
+    read.bind(1, card);
     while (read.step()) {
         OpSummary op;
         op.op = read.integer(0);
@@ -453,7 +476,16 @@ void HistoryStore::setReverts(std::int64_t op, std::int64_t target)
         throw Error("no operation " + std::to_string(op));
 }
 
-HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, const UndoTargets& targets)
+std::vector<HistoryStore::UndoTargets> HistoryStore::retentionTargets(const UndoTargets& offered)
+{
+    std::vector<UndoTargets> targets { offered };
+    sqlite::Statement cards(db_, "SELECT id FROM cards");
+    while (cards.step())
+        targets.push_back(undo::cursor(operationsFor(cards.integer(0))));
+    return targets;
+}
+
+HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, const std::vector<UndoTargets>& targets)
 {
     sqlite::Statement read(db_,
         "SELECT "
@@ -464,21 +496,23 @@ HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, const UndoTar
         "          AND (a.op = ?2 OR a.op = ?3)), "
         "  EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
         "          WHERE a.hash = ?1 AND o.status = 'pending')");
-    read.bindBlob(1, hash);
-    if (targets.undo)
-        read.bind(2, *targets.undo);
-    else
-        read.bindNull(2);
-    if (targets.redo)
-        read.bind(3, *targets.redo);
-    else
-        read.bindNull(3);
-    read.step();
-    return Holds { read.integer(0) != 0, read.integer(1) != 0, read.integer(2) != 0 };
+    Holds holds {};
+    for (const auto& target : targets) {
+        read.bindBlob(1, hash);
+        if (target.undo) read.bind(2, *target.undo); else read.bindNull(2);
+        if (target.redo) read.bind(3, *target.redo); else read.bindNull(3);
+        read.step();
+        holds.pinned |= read.integer(0) != 0;
+        holds.undo |= read.integer(1) != 0;
+        holds.inFlight |= read.integer(2) != 0;
+        read.reset();
+    }
+    return holds;
 }
 
 std::vector<retention::Blob> HistoryStore::keptBlobs(const UndoTargets& targets)
 {
+    const auto allTargets = retentionTargets(targets);
     std::vector<retention::Blob> out;
     // Count both sides; label the take with the newest slot row naming it.
     sqlite::Statement read(db_, "SELECT m.hash, m.size, m.created, "
@@ -495,7 +529,7 @@ std::vector<retention::Blob> HistoryStore::keptBlobs(const UndoTargets& targets)
         blob.created = read.integer(2);
         blob.references = static_cast<int>(read.integer(3));
         blob.label = read.text(4);
-        const Holds holds = holdsOn(blob.hash, targets);
+        const Holds holds = holdsOn(blob.hash, allTargets);
         blob.pinned = holds.pinned;
         blob.undo = holds.undo;
         blob.inFlight = holds.inFlight;
@@ -516,6 +550,7 @@ std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
                                         const UndoTargets& targets, std::int64_t nowMs)
 {
     sqlite::Transaction tx(db_);
+    const auto allTargets = retentionTargets(targets);
     std::int64_t freed = 0;
     sqlite::Statement kept(db_, "SELECT m.size FROM blobs_meta m JOIN blobs b ON b.hash = m.hash "
                                 "WHERE m.hash = ?1");
@@ -527,7 +562,7 @@ std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
             throw Error("no bytes are kept for take " + hex(hash));
         const std::int64_t size = kept.integer(0);
         kept.reset();
-        const Holds holds = holdsOn(hash, targets);
+        const Holds holds = holdsOn(hash, allTargets);
         if (holds.pinned)
             throw Error("take " + hex(hash) + " is pinned");
         if (holds.undo)
@@ -565,7 +600,7 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
 {
     std::vector<CardEntry> entries;
     sqlite::Statement read(db_, "SELECT seq, at, kind, actor, status, note, pinned, session, reverts "
-                                "FROM ops WHERE (?1 IS NULL OR session IN (SELECT id FROM sessions WHERE card = ?1)) "
+                                "FROM ops WHERE session IN (SELECT id FROM sessions WHERE card = ?1) "
                                 "ORDER BY at, seq");
     if (selectedCard_)
         read.bind(1, *selectedCard_);

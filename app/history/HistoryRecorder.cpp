@@ -71,6 +71,7 @@ void HistoryRecorder::disconnect()
     }
     sessionVolume_.clear();
     sessionMarker_.clear();
+    if (store_) store_->selectCard(std::nullopt);
 }
 
 std::optional<HistoryRecorder::Snapshot> HistoryRecorder::firstSeen(const std::filesystem::path& volume)
@@ -90,14 +91,27 @@ int HistoryRecorder::snapshotStep(const Snapshot& snapshot, int slot)
         throw Error("the card changed before its first snapshot finished");
     auto slots = store().touchedSlots(snapshot.op);
     if (std::find(slots.begin(), slots.end(), slot) == slots.end()) {
-        const auto memory = commands::readMemory(snapshot.volume);
-        const auto& family = rc0::profileOf(memory);
-        std::vector<HistoryStore::SnapshotTake> takes;
-        for (int track = 1; track <= family.trackCount; ++track)
-            for (const auto& name : volume::listTrackWavs(snapshot.volume, family, slot, track))
-                takes.push_back({ track, name, commands::readFileBytes(
-                    volume::trackDir(snapshot.volume, family, slot, track) / name) });
-        store().snapshotSlot(snapshot.op, slot, rc0::slotBody(memory, slot), takes, clock_());
+        try {
+            const auto memory = commands::readMemory(snapshot.volume);
+            const auto& family = rc0::profileOf(memory);
+            std::vector<HistoryStore::SnapshotTake> takes;
+            for (int track = 1; track <= family.trackCount; ++track)
+                for (const auto& name : volume::listTrackWavs(snapshot.volume, family, slot, track)) {
+                    const auto file = volume::trackDir(snapshot.volume, family, slot, track) / name;
+                    const auto limit = sqlite3_limit(store().db().raw(), SQLITE_LIMIT_LENGTH, -1);
+                    // Leave room for SQLite's record header and hash. Refuse before allocating.
+                    if (std::filesystem::file_size(file) > static_cast<std::uintmax_t>(std::max(0, limit - 1024)))
+                        throw Error("take " + name + " exceeds the history store's size limit");
+                    takes.push_back({ track, name, commands::readFileBytes(file) });
+                }
+            store().snapshotSlot(snapshot.op, slot, rc0::slotBody(memory, slot), takes, clock_());
+        } catch (const std::exception& error) {
+            // A disconnected card resumes later. A bad slot is a durable outcome,
+            // so subsequent slots and connections are not blocked by the same take.
+            if (!std::filesystem::exists(volume::memoryPath(snapshot.volume, 1)))
+                throw;
+            store().snapshotFailed(snapshot.op, slot, error.what());
+        }
         slots.push_back(slot);
     }
     if (slots.size() == 99 && store().opStatus(snapshot.op) == "pending")
@@ -128,7 +142,8 @@ void HistoryRecorder::begin(const std::string& opId, const std::string& kind,
 {
     if (ops_.contains(opId))
         throw Error("operation " + opId + " has already begun");
-    const std::int64_t session = sessionFor(volume);
+    firstSeen(volume); // establish the baseline before a write can touch a newly minted card
+    const std::int64_t session = *session_;
     ops_[opId] = Operation { store().beginOp(session, opId, kind, clock_()), kind, volume };
 }
 

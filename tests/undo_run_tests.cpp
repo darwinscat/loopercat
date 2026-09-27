@@ -417,6 +417,8 @@ int main()
         CHECK(!b.rec->sessionOn(b.tmp.path / "another card").has_value());
         b.rec = std::make_shared<HistoryRecorder>(b.tmp.path / "history", tick); // the app again
         CHECK(!b.rec->sessionOn(b.volume).has_value()); // nothing written in this run yet
+        CHECK(b.rec->store().cardTimeline().empty());
+        b.rec->selectVolume(b.volume);
         const auto timeline = b.rec->store().cardTimeline();
         const undo::Plan plan = undo::plan(timeline, *undo::offer(b.rec->store()).undo);
         CHECK(!plan.crossesConnection); // the plan's proxy misses it: nothing newer on the card

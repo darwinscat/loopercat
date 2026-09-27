@@ -77,7 +77,8 @@ public:
         std::filesystem::path volume;
     };
     std::optional<Snapshot> firstSeen(const std::filesystem::path& volume);
-    // Returns the number of committed slots (99 completes the operation).
+    // Returns the number of attempted slots (99 completes the operation).
+    // Failed slots retain their reason and are not retried on reconnect.
     int snapshotStep(const Snapshot& snapshot, int slot);
     void interruptSnapshot(const Snapshot& snapshot, const std::string& reason);
     void disconnect();
