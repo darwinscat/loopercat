@@ -64,7 +64,7 @@ public:
     {
         // Tall enough that the format line lands past the chip's edge and is
         // clipped away, with the version line centred in what is left.
-        badge_.setBounds(0, 0, getWidth(), juce::roundToInt(getHeight() / 0.56f));
+        badge_.setBounds(0, 0, getWidth(), juce::roundToInt(static_cast<float>(getHeight()) / 0.56f));
     }
 
 private:
@@ -226,6 +226,8 @@ private:
         std::string takeName;  // the name it is exported under
         juce::String action;
         std::vector<int> slots;
+        std::vector<int> snapshotSlots;
+        bool isSnapshot = false;
         bool restorable = false;
     };
     std::vector<WindowEntry> windowEntries;
@@ -233,7 +235,7 @@ private:
     const WindowEntry* windowEntry(std::int64_t op) const;
     void playFromWindow(std::int64_t op);
     void exportFromWindow(std::int64_t op);
-    void restoreFromWindow(std::int64_t op);
+    void restoreFromWindow(std::int64_t op, std::optional<int> snapshotSlot = std::nullopt);
     void pinFromWindow(std::int64_t op, bool pinned);
     bool historyKeys(const juce::KeyPress& key); // Cmd-Z / Cmd-Shift-Z, from either window
 

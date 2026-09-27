@@ -1238,9 +1238,9 @@ void MainComponent::playArchivedTake(int slot, std::string hash, juce::String ti
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue({ "Play an archived take from slot " + juce::String(slot),
                      0,
-                     [rec = recorder, aud = audition, hash = std::move(hash), slot, title, safe,
+                     [rec = recorder, aud = audition, takeHash = std::move(hash), slot, title, safe,
                       alive = uiAlive](const volume::fs::path&) {
-                         const auto file = aud->materialize(rec->store(), hash);
+                         const auto file = aud->materialize(rec->store(), takeHash);
                          if (!file)
                              throw Error("that take is no longer kept in the history");
                          const std::string bytes = commands::readFileBytes(*file);
@@ -2795,7 +2795,7 @@ void MainComponent::feedHistoryWindow()
                              juce::String audio;
                              if (row.takes.size() == 1) {
                                  audio = juce::String(row.takes.front().audio);
-                             } else {
+                             } else if (row.kind != "snapshot") {
                                  for (const auto& take : row.takes)
                                      if (!take.audio.empty())
                                          audio << (audio.isEmpty() ? "" : juce::String::fromUTF8(" \xc2\xb7 "))
@@ -2806,7 +2806,7 @@ void MainComponent::feedHistoryWindow()
                                               juce::String(row.action), juce::String(row.detail),
                                               juce::String(row.state), audio,
                                               slots, row.playable(), row.restorable(), row.pinned,
-                                              row.op });
+                                              row.op, row.kind == "snapshot", row.restorableSlots() });
                              WindowEntry entry;
                              entry.op = row.op;
                              entry.takeHash = row.takeHash();
@@ -2820,15 +2820,17 @@ void MainComponent::feedHistoryWindow()
                                      entry.takeName = touched.facts.takeName;
                              entry.action = juce::String(row.action);
                              entry.slots = std::move(slots);
+                             entry.isSnapshot = row.kind == "snapshot";
+                             entry.snapshotSlots = row.restorableSlots();
                              entry.restorable = row.restorable();
                              entries.push_back(std::move(entry));
                          }
                          juce::MessageManager::callAsync(
-                             [safe, alive, rows = std::move(rows), entries = std::move(entries)]() mutable {
+                             [safe, alive, viewRows = std::move(rows), viewEntries = std::move(entries)]() mutable {
                                  if (!*alive || safe == nullptr)
                                      return;
-                                 safe->windowEntries = std::move(entries);
-                                 safe->historyView.show(std::move(rows));
+                                 safe->windowEntries = std::move(viewEntries);
+                                 safe->historyView.show(std::move(viewRows));
                                  ++safe->historyWindowFed;
                              });
                      },
@@ -2890,12 +2892,28 @@ void MainComponent::exportFromWindow(std::int64_t op)
 
 // "Restore this state": every slot the row touched, back to what that
 // operation left in it — one operation, recorded, undoable in turn.
-void MainComponent::restoreFromWindow(std::int64_t op)
+// A first-sighting snapshot restores only the slot the player chooses.
+void MainComponent::restoreFromWindow(std::int64_t op, std::optional<int> snapshotSlot)
 {
     const WindowEntry* entry = windowEntry(op);
     if (entry == nullptr || !entry->restorable || entry->slots.empty())
         return;
-    const std::vector<int> slots = entry->slots;
+    if (entry->isSnapshot) {
+        if (!snapshotSlot) snapshotSlot = historyView.filter();
+        if (!snapshotSlot) {
+            juce::PopupMenu menu;
+            for (const int slot : entry->snapshotSlots)
+                menu.addItem(slot, "Restore slot " + juce::String(slot));
+            juce::Component::SafePointer<MainComponent> safe(this);
+            menu.showMenuAsync(juce::PopupMenu::Options(), [safe, op](int slot) {
+                if (safe != nullptr && slot > 0) safe->restoreFromWindow(op, slot);
+            });
+            return;
+        }
+        if (std::find(entry->snapshotSlots.begin(), entry->snapshotSlots.end(), *snapshotSlot)
+            == entry->snapshotSlots.end()) return;
+    }
+    const std::vector<int> slots = entry->isSnapshot ? std::vector<int> { *snapshotSlot } : entry->slots;
     for (const int slot : slots)
         releasePlayerIfHolding(slot, slot); // a restore rewrites the slot's audio (issue #26)
     juce::String where;
@@ -2908,8 +2926,8 @@ void MainComponent::restoreFromWindow(std::int64_t op)
     const auto options = makeWriteOptions();
     worker.enqueue(recorded("restore", options,
                             { "Restore " + where + " to " + entry->action, slots.size() == 1 ? slots[0] : 0,
-                              [rec = recorder, op, options](const volume::fs::path& volumePath) {
-                                  history::restoreOperation(rec->store(), op, volumePath, options);
+                              [rec = recorder, op, options, snapshotSlot](const volume::fs::path& volumePath) {
+                                  history::restoreOperation(rec->store(), op, volumePath, options, snapshotSlot);
                               } }));
 }
 

@@ -5,6 +5,7 @@
 #include "../app/history/WriteOptionsFactory.h"
 #include "../app/history/SlotRows.h"
 #include "../app/history/UndoRun.h"
+#include "../app/history/CardRestore.h"
 #include "../app/PedalBook.h"
 
 #include <chrono>
@@ -149,7 +150,7 @@ static int runTests()
         CHECK_EQ(cardRows.size(), 1u);
         CHECK_EQ(cardRows.front().action, std::string("Card first seen"));
         CHECK_EQ(cardRows.front().takes.size(), 99u);
-        CHECK(cardRows.front().detail.find("slot 4: Original.wav") != std::string::npos);
+        CHECK_EQ(cardRows.front().detail, std::string("4 takes, ") + history::retention::bytesText(expectedBytes));
 
         const auto source = tmp.path / "Incoming.wav";
         commands::writeFileBytes(source, takes[99]);
@@ -159,12 +160,13 @@ static int runTests()
             });
             const auto timeline = store.slotTimeline(slot);
             CHECK(history::rows::forSlot(timeline).front().restorable);
-            commands::SlotState state { *timeline.front().afterBody, std::nullopt };
-            if (timeline.front().takeHash)
-                state.take = commands::Take { timeline.front().takeName,
-                                              store.takeBytes(*timeline.front().takeHash).value() };
+            const auto row = history::rows::forCard(store.cardTimeline()).front();
+            CHECK(row.restorable());
+            const auto eligible = row.restorableSlots();
+            CHECK(std::find(eligible.begin(), eligible.end(), slot) != eligible.end());
+            CHECK(std::find(eligible.begin(), eligible.end(), 99) == eligible.end());
             write(rec, card, "restore", [&](const auto& options) {
-                commands::restore(card, slot, state, options);
+                history::restoreOperation(store, snapshot->op, card, options, slot);
             });
             CHECK_EQ(rc0::slotBody(commands::readMemory(card), slot), rc0::slotBody(before, slot));
             if (slot == 4) {
@@ -503,6 +505,7 @@ static int runTests()
         CHECK(!failed.afterBody);
         CHECK(history::rows::forSlot({failed}).front().line.detail.find("size limit") != std::string::npos);
         CHECK(!history::rows::forSlot({failed}).front().restorable);
+        CHECK(history::rows::forCard(rec->store().cardTimeline()).front().state.find("slot 2 failed: take Original.wav exceeds") != std::string::npos);
         CHECK(rec->store().slotTimeline(3).front().takeHash == HistoryStore::contentHash(good));
         CHECK_EQ(rec->store().opStatus(baseline.op), std::string("done"));
         rec->disconnect();

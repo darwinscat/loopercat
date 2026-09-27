@@ -20,7 +20,8 @@
 //
 // A row of the window is an operation, and an operation may have touched two
 // slots (a swap), so this is the slot tab's restore once per slot, in one
-// operation of its own. The row must be restorable as a whole — the window
+// operation of its own. First-sighting snapshots restore one explicitly chosen
+// slot; other rows must be restorable as a whole — the window
 // offers the button only then, and this refuses by the same rule, read from
 // the store as it is now, before anything is written.
 //==============================================================================
@@ -28,7 +29,7 @@ namespace loopercat::history
 {
 
 inline void restoreOperation(HistoryStore& store, std::int64_t op, const std::filesystem::path& volume,
-                             const commands::WriteOptions& options)
+                             const commands::WriteOptions& options, std::optional<int> snapshotSlot = std::nullopt)
 {
     const std::vector<HistoryStore::CardEntry> timeline = store.cardTimeline();
     const HistoryStore::CardEntry* entry = nullptr;
@@ -41,10 +42,18 @@ inline void restoreOperation(HistoryStore& store, std::int64_t op, const std::fi
     if (row.empty() || !row.front().restorable())
         throw Error("that row recorded no state that can go back as a whole");
 
+    if (entry->kind == "snapshot") {
+        const auto slots = row.front().restorableSlots();
+        if (!snapshotSlot || std::find(slots.begin(), slots.end(), *snapshotSlot) == slots.end())
+            throw Error("choose a restorable slot from the card's first snapshot");
+    }
+
     // Everything read before the first write: a take no longer kept for the
     // second slot must not leave the first one restored.
     std::vector<std::pair<int, commands::SlotState>> states;
     for (const HistoryStore::CardEntry::Slot& touched : entry->slots) {
+        if (entry->kind == "snapshot" && touched.slot != *snapshotSlot)
+            continue;
         if (!touched.facts.afterBody)
             throw Error("that row recorded no state for slot " + std::to_string(touched.slot));
         commands::SlotState state;
