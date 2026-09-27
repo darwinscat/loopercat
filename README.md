@@ -100,8 +100,11 @@ cmake --build build --target LooperCat
 ctest --test-dir build
 ```
 
-JUCE, felitronics-core and felitronics-appkit are fetched automatically; the
-app lands in `build/LooperCat_artefacts/`.
+JUCE, felitronics-core, felitronics-toml and felitronics-appkit are fetched automatically; the
+app lands in `build/LooperCat_artefacts/`. The family libraries use local sibling
+checkouts when present. Set `-DLOOPERCAT_FELITRONICS_CORE_DIR=`,
+`-DLOOPERCAT_TOML_DIR=` and `-DLOOPERCAT_APPKIT_DIR=` to force their pinned releases.
+The card marker uses felitronics-toml v0.2.0.
 
 On Linux the app needs libudev (the device backend) plus JUCE's own X11,
 FreeType and ALSA development packages:

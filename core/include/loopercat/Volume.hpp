@@ -160,8 +160,8 @@ inline bool isJunkName(std::string_view name)
 // onto FAT volumes even for xattr-free files (fresh files get
 // com.apple.provenance) — and the RC-5 chokes on them at boot. The root
 // level exists for the card marker (CardMarker.hpp): a write to
-// /loopercat-card.json leaves a /._loopercat-card.json beside it, measured
-// on both RC-5s and the RC-500 on 2026-09-24.
+// /loopercat.toml leaves a /._loopercat.toml beside it. Root marker
+// sidecars were measured on both RC-5s and the RC-500 on 2026-09-24.
 //
 // The root is not descended into. The directories a host OS keeps there
 // (.Spotlight-V100, .fseventsd, System Volume Information) are not ours to

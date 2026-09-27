@@ -2704,7 +2704,7 @@ int main()
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
         commands::writeFileBytes(volume / ".DS_Store", "finder");
-        commands::writeFileBytes(volume / "._loopercat-card.json", "sidecar");
+        commands::writeFileBytes(volume / "._loopercat.toml", "sidecar");
         CHECK(commands::doctor(volume).empty()); // root litter: swept, never reported
 
         commands::writeFileBytes(volume / "ROLAND" / "DATA" / "._MEMORY1.RC0", "sidecar");
@@ -2721,7 +2721,7 @@ int main()
         const auto swept = volume::sweepJunk(volume);
         CHECK_EQ(swept.removed.size(), static_cast<std::size_t>(3));
         CHECK(!fs::exists(volume / ".DS_Store"));
-        CHECK(!fs::exists(volume / "._loopercat-card.json"));
+        CHECK(!fs::exists(volume / "._loopercat.toml"));
         CHECK(commands::doctor(volume).empty());
     }
 

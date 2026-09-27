@@ -154,16 +154,16 @@ int main()
     }
 
     // --- junk at the volume ROOT: the marker's sidecar (measured 2026-09-24:
-    // macOS plants ._loopercat-card.json beside every write of
-    // /loopercat-card.json), swept one level deep, without entering the
+    // macOS plants ._loopercat.toml beside every write of
+    // /loopercat.toml), swept one level deep, without entering the
     // directories a host OS keeps there ---
 
     {
         TempDir tmp;
         const fs::path pedal = tmp.path / "PEDAL";
         touch(pedal / "ROLAND" / "DATA" / "MEMORY1.RC0");
-        touch(pedal / "loopercat-card.json");
-        touch(pedal / "._loopercat-card.json");
+        touch(pedal / "loopercat.toml");
+        touch(pedal / "._loopercat.toml");
         touch(pedal / ".DS_Store");
         touch(pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav");
         touch(pedal / ".Spotlight-V100" / "._store");             // macOS's, not ours
@@ -175,7 +175,7 @@ int main()
 
         const auto junk = volume::findJunk(pedal);
         CHECK_EQ(junk.size(), 3u);
-        CHECK(std::find(junk.begin(), junk.end(), pedal / "._loopercat-card.json") != junk.end());
+        CHECK(std::find(junk.begin(), junk.end(), pedal / "._loopercat.toml") != junk.end());
         CHECK(std::find(junk.begin(), junk.end(), pedal / ".DS_Store") != junk.end());
         CHECK(std::find(junk.begin(), junk.end(), pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav")
               != junk.end());
@@ -191,16 +191,16 @@ int main()
                         pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav")
               != hazards.end());
         CHECK(std::find(hazards.begin(), hazards.end(), pedal / ".DS_Store") == hazards.end());
-        CHECK(std::find(hazards.begin(), hazards.end(), pedal / "._loopercat-card.json")
+        CHECK(std::find(hazards.begin(), hazards.end(), pedal / "._loopercat.toml")
               == hazards.end());
 
         const auto swept = volume::sweepJunk(pedal);
         CHECK_EQ(swept.removed.size(), 3u);
         CHECK(swept.failed.empty());
-        CHECK(!fs::exists(pedal / "._loopercat-card.json"));
+        CHECK(!fs::exists(pedal / "._loopercat.toml"));
         CHECK(!fs::exists(pedal / ".DS_Store"));
         CHECK(!fs::exists(pedal / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav"));
-        CHECK(fs::exists(pedal / "loopercat-card.json"));
+        CHECK(fs::exists(pedal / "loopercat.toml"));
         CHECK(fs::exists(pedal / ".Spotlight-V100" / "._store"));
         CHECK(fs::exists(pedal / ".fseventsd" / "._log"));
         CHECK(fs::exists(pedal / "System Volume Information" / "._sys"));

@@ -114,6 +114,29 @@ target_link_libraries(loopercat_core INTERFACE felitronics::analysis)
 loopercat_dependency_stamp(LOOPERCAT_DEP_FCORE "${LOOPERCAT_FELITRONICS_CORE_DIR}" "${LOOPERCAT_FELITRONICS_CORE_TAG}")
 
 # ----------------------------------------------------------------------------
+# The card marker uses the family's deterministic TOML reader and writer.
+# Like felitronics-core, a sibling checkout wins; an empty DIR forces the pin.
+# This dependency belongs to the core, including builds without the app/tests.
+# ----------------------------------------------------------------------------
+set(LOOPERCAT_TOML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../felitronics-toml" CACHE PATH
+    "Local felitronics-toml checkout (used if present); else the pinned release is fetched")
+set(LOOPERCAT_TOML_TAG "v0.2.0" CACHE STRING
+    "felitronics-toml git tag to fetch when no local checkout is present")
+if(LOOPERCAT_TOML_DIR AND EXISTS "${LOOPERCAT_TOML_DIR}/CMakeLists.txt")
+    message(STATUS "felitronics-toml: local checkout — ${LOOPERCAT_TOML_DIR}")
+    FetchContent_Declare(felitronics_toml SOURCE_DIR "${LOOPERCAT_TOML_DIR}")
+else()
+    message(STATUS "felitronics-toml: fetching ${LOOPERCAT_TOML_TAG} from GitHub")
+    FetchContent_Declare(felitronics_toml
+        GIT_REPOSITORY https://github.com/darwinscat/felitronics-toml.git
+        GIT_TAG        ${LOOPERCAT_TOML_TAG}
+        GIT_SHALLOW    TRUE)
+endif()
+FetchContent_MakeAvailable(felitronics_toml)
+target_link_libraries(loopercat_core INTERFACE felitronics::toml)
+loopercat_dependency_stamp(LOOPERCAT_DEP_TOML "${LOOPERCAT_TOML_DIR}" "${LOOPERCAT_TOML_TAG}")
+
+# ----------------------------------------------------------------------------
 # minimp3 (fetched, pinned, CC0-1.0) — the APP-tier MP3 decoder behind
 # app/Mp3AudioFormat (issue #52), so it lives OUTSIDE the tests guard: a
 # release-shaped build (app only, tests off) compiles Mp3AudioFormat.cpp too
@@ -248,7 +271,7 @@ loopercat_core_test(bank_pair_tests)
 loopercat_core_test(wav_tests)
 loopercat_core_test(volume_tests)
 # The card marker: LooperCat's own identity for a card (issues #98, #99),
-# its strict flat-JSON reader, and the root-level junk sweep it relies on.
+# its strict TOML reader, and the root-level junk sweep it relies on.
 loopercat_core_test(card_marker_tests)
 loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
@@ -484,6 +507,9 @@ target_compile_definitions(LooperCat PRIVATE
     LOOPERCAT_DEP_FCORE_VERSION="${LOOPERCAT_DEP_FCORE_VERSION}"
     LOOPERCAT_DEP_FCORE_STATE="${LOOPERCAT_DEP_FCORE_STATE}"
     LOOPERCAT_DEP_FCORE_COMMIT="${LOOPERCAT_DEP_FCORE_COMMIT}"
+    LOOPERCAT_DEP_TOML_VERSION="${LOOPERCAT_DEP_TOML_VERSION}"
+    LOOPERCAT_DEP_TOML_STATE="${LOOPERCAT_DEP_TOML_STATE}"
+    LOOPERCAT_DEP_TOML_COMMIT="${LOOPERCAT_DEP_TOML_COMMIT}"
     LOOPERCAT_DEP_APPKIT_VERSION="${LOOPERCAT_DEP_APPKIT_VERSION}"
     LOOPERCAT_DEP_APPKIT_STATE="${LOOPERCAT_DEP_APPKIT_STATE}"
     LOOPERCAT_DEP_APPKIT_COMMIT="${LOOPERCAT_DEP_APPKIT_COMMIT}"
