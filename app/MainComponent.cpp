@@ -3,6 +3,7 @@
 
 #include "MainComponent.h"
 
+#include "ClearSlotAction.h"
 #include "ConnectGate.h"
 
 #include "history/WriteOptionsFactory.h"
@@ -1891,7 +1892,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     else
         menu.addItem(10, "Check loudness", occupied);
     menu.addSeparator();
-    menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
+    clearSlotAction::addToMenu(menu, occupied);
 
     // Nothing a user relies on may simply vanish: the first time this menu
     // opens without its settings, it says where they went.
@@ -1909,7 +1910,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             switch (choice) {
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
-            case 5: clearSlot(slot, name); break;
+            case clearSlotAction::menuItemId: clearSlot(slot); break;
             case 6: downmixSlot(slot, name, wav::Placement::BothOutputs); break;
             case 7: downmixSlot(slot, name, wav::Placement::OutputAOnly); break;
             case 8: downmixSlot(slot, name, wav::Placement::OutputBOnly); break;
@@ -2516,28 +2517,16 @@ void MainComponent::pullSlot(int slot)
                              });
 }
 
-void MainComponent::clearSlot(int slot, const juce::String& name)
+void MainComponent::clearSlot(int slot)
 {
-    const juce::String label = name.isEmpty() ? juce::String(slot)
-                                              : juce::String(slot) + " (" + name + ")";
-    auto* dialog = new juce::AlertWindow(
-        "Clear slot " + label + "?",
-        juce::String::fromUTF8("The slot returns to factory state. The take is kept in the history."),
-        juce::MessageBoxIconType::WarningIcon);
-    dialog->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
-    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-    dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, slot](int choice) {
-        if (choice != 1)
-            return;
-        const auto options = makeWriteOptions();
-        releasePlayerIfHolding(slot, slot); // the clear moves or deletes its WAV (issue #26)
-        worker.enqueue(recorded(
-            "clear", options,
-            { juce::String("Clear slot ") + juce::String(slot), slot,
-              [slot, options](const volume::fs::path& volumePath) {
-                  commands::clear(volumePath, { slot }, { .write = options });
-              } }));
-    }), true);
+    const auto* row = slotRowFor(slot);
+    clearSlotAction::request(slot, row != nullptr && row->info.hasAudio, recorder,
+        [safe = juce::Component::SafePointer<MainComponent>(this), slot](PedalWorker::Job job) {
+            if (safe == nullptr)
+                return;
+            safe->releasePlayerIfHolding(slot, slot); // the clear deletes its WAV (issue #26)
+            safe->worker.enqueue(std::move(job));
+        });
 }
 
 void MainComponent::openSettings()

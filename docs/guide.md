@@ -246,9 +246,12 @@ edge.
 
 ## Clear
 
-Right-click → **Clear slot…**, then confirm **Clear**. The slot returns to
-factory state and the take is kept in the history on this computer. Use
-**Undo** to put it back.
+Right-click → **Clear slot…** to see **Clear slot N?** and “Its history is
+kept — you can restore it from the History tab.” Choose **Clear** (Return)
+to empty the slot and return it to factory state, or **Cancel** (Escape) to
+leave it unchanged. The take stays in the history on this computer: Play on
+the **Cleared** row plays it, and **Restore this state** on its earlier row
+in the **History** tab puts it back.
 
 ## Maintenance menu
 
