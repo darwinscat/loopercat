@@ -26,7 +26,8 @@
 //
 // The file is TOML, parsed and written by felitronics-toml. The identity is
 // minted once; rename changes only the name in the parsed document, keeping
-// unknown entries and their order. Comments are dropped by the canonical writer.
+// unknown values. The canonical writer can reorder dotted keys and inline tables
+// and drops comments.
 // Writes are staged, verified, renamed over the marker, and verified again.
 //
 //   [loopercat_card]
@@ -141,9 +142,12 @@ namespace detail {
         if (name.size() > kMaxNameBytes)
             throw Error("a pedal name is at most " + std::to_string(kMaxNameBytes)
                         + " bytes of UTF-8; this one is " + std::to_string(name.size()));
-        for (const char ch : name) {
-            const auto u = static_cast<unsigned char>(ch);
-            if (u < 0x20 || u == 0x7F)
+        for (std::size_t i = 0; i < name.size(); ++i) {
+            const auto u = static_cast<unsigned char>(name[i]);
+            const bool c1 = u == 0xC2 && i + 1 < name.size()
+                         && static_cast<unsigned char>(name[i + 1]) >= 0x80
+                         && static_cast<unsigned char>(name[i + 1]) <= 0x9F;
+            if (u < 0x20 || u == 0x7F || c1)
                 throw Error("a pedal name cannot contain control characters");
         }
         if (!validUtf8(name))
@@ -288,6 +292,33 @@ namespace detail {
             fail("unsupported format \"" + std::to_string(*format) + "\"", value.position);
     }
 
+    inline bool canonicalUuid(std::string_view id)
+    {
+        if (id.size() != 36) return false;
+        for (std::size_t i = 0; i < id.size(); ++i) {
+            if (i == 8 || i == 13 || i == 18 || i == 23) {
+                if (id[i] != '-') return false;
+            } else if (!((id[i] >= '0' && id[i] <= '9') || (id[i] >= 'a' && id[i] <= 'f'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    inline bool canonicalCreated(std::string_view created)
+    {
+        constexpr std::string_view shape = "0000-00-00T00:00:00Z";
+        if (created.size() != shape.size()) return false;
+        for (std::size_t i = 0; i < shape.size(); ++i) {
+            if (shape[i] == '0') {
+                if (created[i] < '0' || created[i] > '9') return false;
+            } else if (created[i] != shape[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     inline Card cardOf(const toml::Table& doc)
     {
         const auto& table = cardTable(doc);
@@ -297,6 +328,10 @@ namespace detail {
         for (const auto key : { kIdKey, kModelKey })
             if (requireString(table, key).empty())
                 fail("the \"" + std::string(key) + "\" field is empty", requireField(table, key).position);
+        if (!canonicalUuid(card.id))
+            fail("the \"id\" field must be a canonical lowercase UUID", requireField(table, kIdKey).position);
+        if (!canonicalCreated(card.created))
+            fail("the \"created\" field must be YYYY-MM-DDTHH:MM:SSZ", requireField(table, kCreatedKey).position);
         // TOML decodes escaped controls. Validate the decoded name, on every read.
         try {
             assertName(card.name);
@@ -421,7 +456,8 @@ inline Written mint(const fs::path& volume, std::string_view name)
 }
 
 // Change the name and nothing else: id, created, model, and every field this
-// build does not know, stay exactly as they were — in their order.
+// build does not know, keep their values. The canonical writer may reorder
+// dotted keys and inline tables.
 inline Written rename(const fs::path& volume, std::string_view newName)
 {
     detail::assertName(newName);

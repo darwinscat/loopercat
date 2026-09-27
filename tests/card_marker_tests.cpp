@@ -194,8 +194,50 @@ int main()
         refuse(replace(kKittyFile, "RC-5 Kitty", ""), "a pedal name cannot be empty", "4:8");
         refuse(replace(kKittyFile, "RC-5 Kitty", std::string(65, 'a')),
                "a pedal name is at most 64 bytes of UTF-8; this one is 65", "4:8");
-        for (const auto escape : { "\\u0007", "\\t", "\\n", "\\u007f" })
+        for (const auto escape : { "\\u0007", "\\u001f", "\\t", "\\n", "\\u007f", "\\u0080", "\\u009f" })
             refuse(replace(kKittyFile, "RC-5 Kitty", escape), "a pedal name cannot contain control characters", "4:8");
+    }
+
+    // --- identity fields have canonical spelling; escaped controls are decoded ---
+    {
+        TempDir tmp;
+        for (const auto value : { "\\n", " ", "x", "11111111-2222-4333-8444-555555555555 ",
+                                  "AAAAAAAA-2222-4333-8444-555555555555",
+                                  "11111111_2222-4333-8444-555555555555" }) {
+            put(marker::markerPath(tmp.path),
+                replace(kKittyFile, "11111111-2222-4333-8444-555555555555", value));
+            CHECK_THROWS(marker::read(tmp.path), "canonical lowercase UUID");
+            CHECK_THROWS(marker::mint(tmp.path, "new"), "canonical lowercase UUID");
+            CHECK_THROWS(marker::rename(tmp.path, "new"), "canonical lowercase UUID");
+        }
+        for (const auto value : { "\\n", " ", "x", "2026-09-24T21:34:33Z ",
+                                  "2026-09-24t21:34:33z", "202x-09-24T21:34:33Z", "" }) {
+            put(marker::markerPath(tmp.path), replace(kKittyFile, "2026-09-24T21:34:33Z", value));
+            CHECK_THROWS(marker::read(tmp.path), "must be YYYY-MM-DDTHH:MM:SSZ");
+            CHECK_THROWS(marker::mint(tmp.path, "new"), "must be YYYY-MM-DDTHH:MM:SSZ");
+            CHECK_THROWS(marker::rename(tmp.path, "new"), "must be YYYY-MM-DDTHH:MM:SSZ");
+        }
+        put(marker::markerPath(tmp.path),
+            replace(kKittyFile, "11111111-2222-4333-8444-555555555555",
+                    "abcdef01-2345-6789-abcd-ef0123456789"));
+        CHECK_EQ(marker::read(tmp.path)->id, "abcdef01-2345-6789-abcd-ef0123456789");
+    }
+    // Both sides of every control boundary, through parsing and public writes.
+    for (const auto& name : { std::string("\x1f"), std::string("\x7f"),
+                              std::string("\xc2\x80"), std::string("\xc2\x9f") }) {
+        TempDir tmp;
+        makeCard(tmp.path);
+        CHECK_THROWS(marker::mint(tmp.path, name), "control characters");
+        put(marker::markerPath(tmp.path), kKittyFile);
+        CHECK_THROWS(marker::rename(tmp.path, name), "control characters");
+        CHECK_EQ(slurp(marker::markerPath(tmp.path)), kKittyFile);
+    }
+    for (const auto& name : { std::string(" "), std::string("~"), std::string("\xc2\xa0") }) {
+        TempDir tmp;
+        makeCard(tmp.path);
+        CHECK_EQ(marker::mint(tmp.path, name).card.name, name);
+        CHECK_EQ(marker::read(tmp.path)->name, name);
+        CHECK_EQ(marker::rename(tmp.path, name).card.name, name);
     }
 
     // --- the file's shape on disk ---
@@ -512,7 +554,7 @@ int main()
     {
         TempDir tmp;
         makeCard(tmp.path);
-        const auto legacy = tmp.path / "loopercat-card." "json";
+        const auto legacy = tmp.path / "loopercat-card.json";
         const std::string oldBytes = "{\"loopercat_card\":1,\"id\":\"old\"}\n";
         put(legacy, oldBytes);
         CHECK(!marker::read(tmp.path));

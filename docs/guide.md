@@ -321,6 +321,5 @@ followed by a sweep of host sidecars.
 
 A malformed, foreign or newer marker is refused with its reason and source
 position; the corner keeps the folder or volume name. Markers over 64 KiB are
-refused. The former JSON format is ignored and left untouched; it is not
-migrated. The TOML subset accepts double-quoted strings, but rejects
+refused. The TOML subset accepts double-quoted strings, but rejects
 single-quoted strings and unquoted dates.
