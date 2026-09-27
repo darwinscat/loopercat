@@ -131,6 +131,37 @@ int main()
 {
     juce::ScopedJuceInitialiser_GUI runtime;
 
+    // Inspect the same item the slot context menu adds, including its enabled state.
+    for (const bool hasTake : { false, true }) {
+        juce::PopupMenu menu;
+        clearSlotAction::addToMenu(menu, hasTake);
+        juce::PopupMenu::MenuItemIterator items(menu);
+        CHECK(items.next());
+        CHECK_EQ(items.getItem().itemID, clearSlotAction::menuItemId);
+        CHECK_EQ(items.getItem().text, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
+        CHECK_EQ(items.getItem().isEnabled, hasTake);
+        CHECK(!items.next());
+    }
+
+    // Even a direct request for an empty slot must not ask or enqueue a job.
+    {
+        Fixture fixture;
+        const auto before = fixture.cardBytes();
+        CHECK(volume::listSlotWavs(fixture.card, 5).empty());
+        int jobs = 0;
+        clearSlotAction::request(5, false, fixture.rec, [&](PedalWorker::Job) { ++jobs; });
+        settle();
+        CHECK_EQ(jobs, 0);
+        CHECK(fixture.cardBytes() == before);
+        CHECK_EQ(fixture.rec->store().cardTimeline().size(), 1u);
+        auto* dialog = juce::Component::getCurrentlyModalComponent();
+        CHECK(dialog == nullptr);
+        if (dialog != nullptr) {
+            dialog->exitModalState(0);
+            settle();
+        }
+    }
+
     // Both mouse and keyboard travel through the actual modal callback.
     for (const int response : { 0, 1, 2, 3 }) {
         Fixture fixture;
@@ -139,7 +170,7 @@ int main()
         const auto name = volume::listSlotWavs(fixture.card, 4).front();
         const auto take = commands::readFileBytes(volume::wavDir(fixture.card, 4) / name);
         int jobs = 0;
-        clearSlotAction::request(4, fixture.rec, [&](PedalWorker::Job job) {
+        clearSlotAction::request(4, true, fixture.rec, [&](PedalWorker::Job job) {
             ++jobs;
             CHECK_EQ(job.slot, 4);
             CHECK_EQ(job.description, juce::String("Clear slot 4"));

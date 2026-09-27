@@ -1833,7 +1833,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     else
         menu.addItem(10, "Check loudness", occupied);
     menu.addSeparator();
-    menu.addItem(5, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"));
+    clearSlotAction::addToMenu(menu, occupied);
 
     // Nothing a user relies on may simply vanish: the first time this menu
     // opens without its settings, it says where they went.
@@ -1851,7 +1851,7 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
             switch (choice) {
             case 3: choosePushWav(slot, occupied); break;
             case 4: pullSlot(slot); break;
-            case 5: clearSlot(slot); break;
+            case clearSlotAction::menuItemId: clearSlot(slot); break;
             case 6: downmixSlot(slot, name, wav::Placement::BothOutputs); break;
             case 7: downmixSlot(slot, name, wav::Placement::OutputAOnly); break;
             case 8: downmixSlot(slot, name, wav::Placement::OutputBOnly); break;
@@ -2460,7 +2460,8 @@ void MainComponent::pullSlot(int slot)
 
 void MainComponent::clearSlot(int slot)
 {
-    clearSlotAction::request(slot, recorder,
+    const auto* row = slotRowFor(slot);
+    clearSlotAction::request(slot, row != nullptr && row->info.hasAudio, recorder,
         [safe = juce::Component::SafePointer<MainComponent>(this), slot](PedalWorker::Job job) {
             if (safe == nullptr)
                 return;

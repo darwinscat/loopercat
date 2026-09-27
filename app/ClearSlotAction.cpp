@@ -33,9 +33,17 @@ void showClearSlotConfirmation(int slot, std::function<void()> clear)
 
 } // namespace
 
-void request(int slot, std::shared_ptr<history::HistoryRecorder> recorder,
+void addToMenu(juce::PopupMenu& menu, bool hasTake)
+{
+    menu.addItem(menuItemId, juce::String::fromUTF8("Clear slot\xe2\x80\xa6"), hasTake);
+}
+
+void request(int slot, bool hasTake, std::shared_ptr<history::HistoryRecorder> recorder,
              std::function<void(PedalWorker::Job)> enqueue)
 {
+    if (!hasTake)
+        return;
+
     showClearSlotConfirmation(slot, [slot, rec = std::move(recorder),
                                      submit = std::move(enqueue)] {
         const auto options = history::makeWriteOptions(rec);
