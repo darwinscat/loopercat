@@ -374,7 +374,8 @@ int main()
         const fs::path elsewhere = b.tmp.path / "elsewhere";
         commands::trim(b.volume, 5, 0, 44100 * 2,
                        { { .opId = "outside",
-                           .archive = testkit::fileArchive(elsewhere, "outside") } });
+                           .archive = testkit::fileArchive(elsewhere, "outside"),
+                           .journal = testkit::noOpJournal() } });
         const CardState moved = cardState(b.volume);
         const std::string changed = b.press(false);
         CHECK(changed.find("holds another take") != std::string::npos);

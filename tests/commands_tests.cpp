@@ -4,7 +4,7 @@
 // The mutation commands against a real scratch volume, attacking the safety
 // discipline from its theory:
 //
-//   - every write backs up first, writes BOTH memory files with their own
+//   - every write records changes first, writes BOTH memory files with their own
 //     trailers, verifies by re-read, sweeps AppleDouble junk
 //   - a failed push leaves the volume byte-identical (validate-then-write,
 //     the full config document included — a field-broken slot pushes nothing)
@@ -224,7 +224,7 @@ std::map<std::string, std::string> volumeBytes(const fs::path& volume)
 commands::WriteOptions writeOpts(const fs::path& root, std::string opId = opid::make("op"))
 {
     commands::Archive archive = testkit::fileArchive(root / "archive", opId);
-    return { .opId = std::move(opId), .archive = std::move(archive) };
+    return { .opId = std::move(opId), .archive = std::move(archive), .journal = testkit::noOpJournal() };
 }
 
 // The same options with the archive taken away — what every refusal is about.
@@ -259,7 +259,7 @@ commands::SlotState recordOnPedal(const fs::path& volume, int slot, const std::s
     body = rc0::setField(body, "WavStat", 1);
     body = rc0::setField(body, "WavLen", frames);
     commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, slot, body),
-                              {});
+                              testkit::unrecordedWrite());
     return { rc0::slotBody(commands::readMemory(volume), slot),
              commands::Take { name, commands::readFileBytes(volume::wavDir(volume, slot) / name) } };
 }
@@ -383,6 +383,95 @@ std::string slotChangesOnCard(const std::string& before, const std::string& afte
 
 int main()
 {
+    // A missing journal refuses before any byte on the card changes.
+    {
+        TempDir tmp;
+        const auto volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV", { .tag = 3, .bits = 32, .frames = 132300 });
+        const auto before = volumeBytes(volume);
+        CHECK_THROWS(commands::rename(volume, 3, "X", {}), "bodiesChanging journal");
+        CHECK(volumeBytes(volume) == before);
+        CHECK_THROWS(commands::writeMemoryPair(volume, commands::readMemory(volume), {}),
+                     "bodiesChanging journal");
+        CHECK(volumeBytes(volume) == before);
+        CHECK_THROWS(commands::swap(volume, 3, 7, {}), "bodiesChanging journal");
+        CHECK(volumeBytes(volume) == before);
+        auto noJournal = writeOpts(tmp.path);
+        noJournal.journal = {};
+        CHECK_THROWS(commands::clear(volume, { 3 }, { .write = noJournal }),
+                     "bodiesChanging journal");
+        CHECK(volumeBytes(volume) == before);
+        CHECK_THROWS(commands::trim(volume, 3, 0, 2205, { .write = noJournal }),
+                     "bodiesChanging journal");
+        CHECK(volumeBytes(volume) == before);
+        const auto source = tmp.path / "incoming.wav";
+        commands::writeFileBytes(source, commands::readFileBytes(volume::wavDir(volume, 3) / "003_1.WAV"));
+        CHECK_THROWS(commands::push(volume, source, 8, {}), "bodiesChanging journal");
+        CHECK(volumeBytes(volume) == before);
+        CHECK_THROWS(commands::restore(volume, 3, { rc0::factorySlotBody(3), std::nullopt }, noJournal),
+                     "bodiesChanging journal");
+        CHECK(volumeBytes(volume) == before);
+    }
+
+    // Swap announces the complete plan once, while both audio and bodies are intact.
+    for (const bool refuse : { false, true }) {
+        TempDir tmp;
+        const auto volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV");
+        putWav(volume, 7, "007_1.WAV", { .tag = 3, .bits = 32, .frames = 8820 });
+        commands::rename(volume, 3, "Before", testkit::unrecordedWrite());
+        const auto before = volumeBytes(volume);
+        auto write = writeOpts(tmp.path);
+        int calls = 0;
+        write.journal.bodiesChanging = [&](const auto& changes) {
+            ++calls;
+            CHECK(volumeBytes(volume) == before);
+            CHECK_EQ(changes.size(), 2u);
+            if (refuse)
+                throw Error("history full");
+        };
+        if (refuse) {
+            CHECK_THROWS(commands::swap(volume, 3, 7, write), "history full");
+            CHECK(volumeBytes(volume) == before);
+        } else {
+            commands::swap(volume, 3, 7, write);
+            CHECK(volumeBytes(volume) != before);
+        }
+        CHECK_EQ(calls, 1);
+    }
+
+    // A later archive failure must leave every selected slot intact.
+    {
+        TempDir tmp;
+        const auto volume = makePedal(tmp.path);
+        for (const int slot : { 5, 6 }) {
+            putWav(volume, slot, "first.wav");
+            putWav(volume, slot, "second.wav");
+        }
+        commands::rename(volume, 5, "Keep", testkit::unrecordedWrite());
+        const auto before = volumeBytes(volume);
+        auto write = writeOpts(tmp.path);
+        int archived = 0;
+        write.archive = [&](int slot, const std::string&, std::string_view) {
+            CHECK(volumeBytes(volume) == before);
+            ++archived;
+            if (slot == 6)
+                throw Error("store full");
+        };
+        CHECK_THROWS(commands::clear(volume, { 5, 6 }, { .write = write }), "store full");
+        CHECK_EQ(archived, 3);
+        CHECK(volumeBytes(volume) == before);
+        archived = 0;
+        write.archive = [&](int, const std::string&, std::string_view) {
+            CHECK(volumeBytes(volume) == before);
+            ++archived;
+        };
+        commands::clear(volume, { 5, 6 }, { .write = write });
+        CHECK_EQ(archived, 4);
+        CHECK(volume::listSlotWavs(volume, 5).empty());
+        CHECK(volume::listSlotWavs(volume, 6).empty());
+    }
+
     // --- the archive comes BEFORE the card changes ---
     //
     // Theory: a take is handed to the archive while it is still in its slot,
@@ -409,6 +498,7 @@ int main()
                                      fs::exists(onCard) ? commands::readFileBytes(onCard)
                                                         : std::string("<gone>") });
                 },
+                .journal = testkit::noOpJournal(),
             };
         };
         const auto takeOf = [](const fs::path& volume, int slot, const std::string& name) {
@@ -509,6 +599,7 @@ int main()
             .archive = [](int, const std::string&, std::string_view) {
                 throw Error("the archive is full");
             },
+            .journal = testkit::noOpJournal(),
         };
         CHECK_THROWS(commands::push(volume, source, 11, { .force = true, .write = failing }),
                      "the archive is full");
@@ -603,7 +694,7 @@ int main()
         };
         CHECK_THROWS(commands::rename(volume, 7, "Never", options), "the history is unavailable");
         CHECK(volumeBytes(volume) == before);
-        // swap moved its audio before the pair write; the refusal moves it back
+        // The same journal refusal leaves a swap's audio in its original slot.
         putWav(volume, 3, "003_1.WAV");
         const auto withAudio = volumeBytes(volume);
         CHECK_THROWS(commands::swap(volume, 3, 7, options), "the history is unavailable");
@@ -705,7 +796,7 @@ int main()
         CHECK(result.sweepFailed.empty());
         CHECK(volume::findJunk(volume).empty());
 
-        commands::writeMemoryPair(volume, renamed, {});
+        commands::writeMemoryPair(volume, renamed, testkit::unrecordedWrite());
     }
 
     // --- writeMemoryPair continues the pedal's generation count ---
@@ -721,7 +812,7 @@ int main()
         commands::writeFileBytes(volume::memoryPath(volume, 2),
                                  rc0::setTailGeneration(text, 0x39));
 
-        commands::writeMemoryPair(volume, text, {});
+        commands::writeMemoryPair(volume, text, testkit::unrecordedWrite());
         const auto m1 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 1)));
         const auto m2 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 2)));
         CHECK_EQ(static_cast<int>(m1.value()), 0x3b); // past the pedal's 0x3a...
@@ -729,7 +820,7 @@ int main()
 
         // One unreadable bank cannot rewind the count either.
         fs::remove(volume::memoryPath(volume, 2));
-        commands::writeMemoryPair(volume, text, {});
+        commands::writeMemoryPair(volume, text, testkit::unrecordedWrite());
         const auto healed1 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 1)));
         const auto healed2 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 2)));
         CHECK_EQ(static_cast<int>(healed1.value()), 0x3c);
@@ -751,7 +842,7 @@ int main()
         commands::writeFileBytes(volume::memoryPath(volume, 2),
                                  rc0::setTailGeneration(text, 0xfeu));
 
-        commands::writeMemoryPair(volume, text, {});
+        commands::writeMemoryPair(volume, text, testkit::unrecordedWrite());
         const auto m1 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 1)));
         const auto m2 = rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, 2)));
         CHECK_EQ(m1.value(), 0x100u);
@@ -825,7 +916,7 @@ int main()
         commands::writeFileBytes(volume::memoryPath(volume, 2),
                                  rc0::setTailGeneration(text, 0x3e65736eu));
 
-        commands::rename(volume, 2, "Field Test", {});
+        commands::rename(volume, 2, "Field Test", testkit::unrecordedWrite());
         const std::string m1 = commands::readFileBytes(volume::memoryPath(volume, 1));
         CHECK_EQ(rc0::decodeName(rc0::slotBody(m1, 2)), "Field Test  ");
         CHECK_EQ(rc0::tailMarker(m1).value(), 0x3e657370u); // count continued, not rewound
@@ -850,13 +941,12 @@ int main()
             body = rc0::setField(body, "WavLen", 44100LL * 60);
             body = rc0::setField(body, "MeasLen", 30);
             body = rc0::setField(body, "Measure", 30 + params::kMeasureFieldOffset);
-            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 5, body),
-                                      {});
+            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 5, body), testkit::unrecordedWrite());
         }
 
         // 112.0 BPM over 60 s = 112 beats = 28 bars of 4/4; Measure carries
         // the hardware-verified +7 offset.
-        commands::setTempo(volume, 5, 1120, {});
+        commands::setTempo(volume, 5, 1120, testkit::unrecordedWrite());
         const std::string after = commands::readMemory(volume);
         const std::string body = rc0::slotBody(after, 5);
         CHECK_EQ(rc0::field(body, "Tempo"), 1120);
@@ -867,7 +957,7 @@ int main()
 
         // A slot without indexed audio gets the tempo but keeps its measure
         // fields untouched — there is no duration to derive bars from.
-        commands::setTempo(volume, 6, 905, {});
+        commands::setTempo(volume, 6, 905, testkit::unrecordedWrite());
         const std::string empty = rc0::slotBody(commands::readMemory(volume), 6);
         CHECK_EQ(rc0::field(empty, "Tempo"), 905);
         CHECK_EQ(rc0::field(empty, "RecTmp"), 905);
@@ -879,8 +969,8 @@ int main()
         CHECK_EQ(untouched, rc0::slotBody(commands::readMemory(volume, 2), 7));
 
         // The pedal's range is a hard wall, not a clamp.
-        CHECK_THROWS(commands::setTempo(volume, 5, 399, {}), "40.0-300.0");
-        CHECK_THROWS(commands::setTempo(volume, 5, 3001, {}), "40.0-300.0");
+        CHECK_THROWS(commands::setTempo(volume, 5, 399, testkit::unrecordedWrite()), "40.0-300.0");
+        CHECK_THROWS(commands::setTempo(volume, 5, 3001, testkit::unrecordedWrite()), "40.0-300.0");
     }
 
     // --- rename: the byte-invariant holds on disk ---
@@ -1184,8 +1274,8 @@ int main()
         // TRUE tempo set — 112.0 BPM, which is not what the import formula
         // derives for this length. That difference is the whole point.
         recordOnPedal(volume, 5, "005_1.WAV", 2646000);
-        commands::rename(volume, 5, "Good Take", {});
-        commands::setTempo(volume, 5, 1120, {});
+        commands::rename(volume, 5, "Good Take", testkit::unrecordedWrite());
+        commands::setTempo(volume, 5, 1120, testkit::unrecordedWrite());
         const commands::SlotState good {
             rc0::slotBody(commands::readMemory(volume), 5),
             commands::Take { "005_1.WAV",
@@ -1198,7 +1288,7 @@ int main()
         // present moves on elsewhere too.
         commands::clear(volume, { 5 }, { .write = writeOpts(tmp.path, "clear-5") });
         recordOnPedal(volume, 5, "005_1.WAV", 4410);
-        commands::rename(volume, 6, "Meanwhile", {});
+        commands::rename(volume, 6, "Meanwhile", testkit::unrecordedWrite());
         const std::string present = commands::readMemory(volume);
         const std::string newerTake =
             commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV");
@@ -1361,7 +1451,7 @@ int main()
         // The present moves on: another take, another name.
         commands::clear(volume, { 7 }, { .write = writeOpts(tmp.path) });
         recordOnPedal(volume, 7, "take.wav", 8820);
-        commands::rename(volume, 7, "Later", {});
+        commands::rename(volume, 7, "Later", testkit::unrecordedWrite());
         const std::string present = commands::readMemory(volume);
 
         std::vector<commands::SlotChange> heard;
@@ -1460,14 +1550,12 @@ int main()
             std::string body = rc0::slotBody(text, 5);
             body = rc0::setField(body, "WavStat", 1);
             body = rc0::setField(body, "WavLen", 2646000);
-            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 5, body),
-                                      {});
+            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 5, body), testkit::unrecordedWrite());
         }
-        commands::setTempo(volume, 5, 1120, {}); // the TRUE 112.0 BPM
+        commands::setTempo(volume, 5, 1120, testkit::unrecordedWrite()); // the TRUE 112.0 BPM
 
         commands::trim(volume, 5, 0, 1323000,
-                       { .write = { .opId = "qa4",
-                                    .archive = testkit::fileArchive(tmp.path / "archive", "qa4") } });
+                       { .write = writeOpts(tmp.path, "qa4") });
 
         // 30 s at the KEPT 112.0 BPM = 56 beats = 14 bars. The hardware QA
         // run caught trim re-running the import formula here (16 bars at
@@ -1505,7 +1593,7 @@ int main()
             const std::string text = commands::readMemory(volume);
             const std::string broken = rc0::setField(rc0::slotBody(text, 4), "Tempo", 9999);
             commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 4, broken),
-                                      {});
+                                      testkit::unrecordedWrite());
         }
         const auto corrupted = volumeBytes(volume);
         CHECK_THROWS(commands::trim(volume, 4, 0, 1323000, options), "broken config");
@@ -1534,7 +1622,7 @@ int main()
             seven = rc0::setField(seven, "WavLen", 8820);
             seven = rc0::setName(seven, "Part B");
             text = rc0::replaceSlotBody(text, 7, seven);
-            commands::writeMemoryPair(volume, text, {});
+            commands::writeMemoryPair(volume, text, testkit::unrecordedWrite());
         }
         const std::string before = commands::readMemory(volume);
         const std::string wav3 = commands::readFileBytes(volume::wavDir(volume, 3) / "003_1.WAV");
@@ -1582,8 +1670,7 @@ int main()
             std::string body = rc0::slotBody(text, 12);
             body = rc0::setField(body, "WavStat", 1);
             body = rc0::setField(body, "WavLen", 4410);
-            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 12, body),
-                                      {});
+            commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, 12, body), testkit::unrecordedWrite());
         }
         const std::string before = commands::readMemory(volume);
 
@@ -1645,7 +1732,7 @@ int main()
         // the rollback must leave the volume byte-identical.
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
                         fs::perm_options::replace);
-        CHECK_THROWS(commands::swap(volume, 3, 7, {}), "cannot write");
+        CHECK_THROWS(commands::swap(volume, 3, 7, testkit::unrecordedWrite()), "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
         CHECK(volumeBytes(volume) == before);
@@ -1655,7 +1742,7 @@ int main()
         // doctor reports the divergence.
         fs::permissions(volume::memoryPath(volume, 2), fs::perms::owner_read,
                         fs::perm_options::replace);
-        CHECK_THROWS(commands::swap(volume, 3, 7, {}), "cannot write");
+        CHECK_THROWS(commands::swap(volume, 3, 7, testkit::unrecordedWrite()), "cannot write");
         fs::permissions(volume::memoryPath(volume, 2), fs::perms::owner_all,
                         fs::perm_options::replace);
         CHECK_EQ(volume::listSlotWavs(volume, 3).front(), "003_1.WAV");
@@ -1686,7 +1773,7 @@ int main()
                         fs::perm_options::replace);
 
         const std::string before = commands::readMemory(volume);
-        const auto result = commands::swap(volume, 3, 7, {});
+        const auto result = commands::swap(volume, 3, 7, testkit::unrecordedWrite());
         fs::permissions(lockedDir, fs::perms::owner_all, fs::perm_options::replace);
 
         // The write SUCCEEDED and stays: config and audio both swapped. The
@@ -1728,9 +1815,7 @@ int main()
                         fs::perm_options::replace);
         CHECK_THROWS(commands::push(volume, source, 9,
                                     { .force = true,
-                                      .write = { .opId = "fi-push",
-                                                 .archive = testkit::fileArchive(
-                                                     tmp.path / "archive", "fi-push") } }),
+                                      .write = writeOpts(tmp.path, "fi-push") }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -1755,9 +1840,7 @@ int main()
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
                         fs::perm_options::replace);
         CHECK_THROWS(commands::trim(volume, 4, 0, 661500,
-                                    { .write = { .opId = "fi-trim",
-                                                 .archive = testkit::fileArchive(
-                                                     tmp.path / "archive", "fi-trim") } }),
+                                    { .write = writeOpts(tmp.path, "fi-trim") }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -1779,9 +1862,7 @@ int main()
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
                         fs::perm_options::replace);
         CHECK_THROWS(commands::clear(volume, { 6 },
-                                     { .write = { .opId = "fi-clear",
-                                                  .archive = testkit::fileArchive(
-                                                      tmp.path / "archive", "fi-clear") } }),
+                                     { .write = writeOpts(tmp.path, "fi-clear") }),
                      "cannot write");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -2438,7 +2519,7 @@ int main()
             for (const int fileNo : { 1, 2 })
                 commands::writeFileBytes(volume::systemPath(volume, fileNo), settings);
             CHECK(commands::readSystem(volume) == settings); // read, as the memories are
-            CHECK_THROWS(commands::writeSystemPair(volume, settings, {}),
+            CHECK_THROWS(commands::writeSystemPair(volume, settings, testkit::unrecordedWrite()),
                          "no write on an \"RC-500\" card");
         }
         const auto beforeWithSettings = volumeBytes(volume);
@@ -2468,7 +2549,7 @@ int main()
             "restore" + refused);
         CHECK_THROWS(commands::swap(volume, 1, 2, write), "swap" + refused);
         // The backstop under them all, asked directly.
-        CHECK_THROWS(commands::writeMemoryPair(volume, text, {}),
+        CHECK_THROWS(commands::writeMemoryPair(volume, text, testkit::unrecordedWrite()),
                      "no write on an \"RC-500\" card");
 
         // The doctor reads the card like the browser does and refuses nothing

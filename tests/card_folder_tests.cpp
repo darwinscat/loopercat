@@ -105,7 +105,7 @@ commands::WriteOptions writeOpts(const fs::path& root, std::string opId = opid::
 {
     commands::Archive archive = testkit::fileArchive(root / "archive", opId);
     return { .opId = std::move(opId),
-             .archive = std::move(archive) };
+             .archive = std::move(archive), .journal = testkit::noOpJournal() };
 }
 
 } // namespace

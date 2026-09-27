@@ -19,6 +19,7 @@
 // is; the settings pair may not, because we do not.
 
 #include "support.hpp"
+#include "archive_support.hpp"
 
 #include <loopercat/Commands.hpp>
 #include <loopercat/SystemFile.hpp>
@@ -79,6 +80,7 @@ commands::WriteOptions options(const std::string& opId)
 {
     commands::WriteOptions o;
     o.opId = opId;
+    o.journal = testkit::noOpJournal();
     return o;
 }
 
@@ -93,6 +95,17 @@ std::string withCtl2(const std::string& system, long long value)
 
 int main()
 {
+    {
+        TempDir tmp;
+        const auto volume = makeCard(tmp.path);
+        const auto first = commands::readFileBytes(volume::systemPath(volume, 1));
+        const auto second = commands::readFileBytes(volume::systemPath(volume, 2));
+        CHECK_THROWS(commands::writeSystemPair(volume, withCtl2(commands::readSystem(volume), 25), {}),
+                     "systemChanging journal");
+        CHECK(commands::readFileBytes(volume::systemPath(volume, 1)) == first);
+        CHECK(commands::readFileBytes(volume::systemPath(volume, 2)) == second);
+    }
+
     const std::string system = systemFixture();
 
     // --- reading: the counter decides, for both kinds ---

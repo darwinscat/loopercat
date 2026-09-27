@@ -228,11 +228,10 @@ using SectionChange = sysfile::SectionChange;
 // before IT changes: a take goes to the archive before its file does, and
 // the bodies are reported before the memory pair is written — until then
 // the old bodies are still on the card, whatever happened to the audio. Both
-// are observers, nothing in the write depends on them, except that a throw
-// from either stops the command where it stands: a history that cannot keep
-// up must not be outrun.
+// must be supplied for writes; a throw stops the command where it stands:
+// a history that cannot keep up must not be outrun.
 struct Journal {
-    // Just before the memory pair is written. Empty when the write only
+    // Required before a memory pair write. The changes are empty when it only
     // restamps the pair — downmix and normalize change audio alone.
     std::function<void(const std::vector<SlotChange>&)> bodiesChanging;
     // After a take has landed on the card, with its bytes: the post-state's
@@ -253,6 +252,13 @@ struct WriteOptions {
     Journal journal;
 };
 
+// Check before any card mutation, including audio that precedes a pair write.
+inline void requireMemoryJournal(const WriteOptions& options)
+{
+    if (!options.journal.bodiesChanging)
+        throw Error("a memory write needs a bodiesChanging journal");
+}
+
 // The one entry point every command uses, so the refusal reads the same
 // wherever a take is about to go.
 inline void archiveTake(const WriteOptions& options, const char* command, int slot,
@@ -261,6 +267,7 @@ inline void archiveTake(const WriteOptions& options, const char* command, int sl
     if (!options.archive)
         throw Error(std::string(command) + " on slot " + std::to_string(slot)
                     + " needs an archive — a take is never destroyed without one");
+    requireMemoryJournal(options);
     options.archive(slot, fileName, bytes);
 }
 
@@ -343,6 +350,20 @@ namespace detail {
         }
     }
 
+    // Called only after the journal has accepted the planned changes.
+    inline WriteResult writeMemoryPairRecorded(const fs::path& volume, std::string_view text)
+    {
+        WriteResult result;
+        // one below the factory pair: a fresh volume lands on 0x38/0x39
+        const std::uint32_t base = detail::highestGeneration(volume, volume::Bank::memory)
+                                      .value_or(rc0::tailMarkerFor(1) - 1);
+        detail::writePairStamped(volume, volume::Bank::memory, text, base);
+        volume::SweepResult sweep = volume::sweepJunk(volume);
+        result.swept = std::move(sweep.removed);
+        result.sweepFailed = std::move(sweep.failed);
+        return result;
+    }
+
 } // namespace detail
 
 inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text,
@@ -354,17 +375,9 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
     // Described before anything is written: a write the history could not
     // describe is refused with the volume as it was.
     const std::vector<SlotChange> changes = slotChanges(readMemory(volume), text);
-    WriteResult result;
-    if (options.journal.bodiesChanging)
-        options.journal.bodiesChanging(changes);
-    // one below the factory pair: a fresh volume lands on 0x38/0x39
-    const std::uint32_t base = detail::highestGeneration(volume, volume::Bank::memory)
-                                  .value_or(rc0::tailMarkerFor(1) - 1);
-    detail::writePairStamped(volume, volume::Bank::memory, text, base);
-    volume::SweepResult sweep = volume::sweepJunk(volume);
-    result.swept = std::move(sweep.removed);
-    result.sweepFailed = std::move(sweep.failed);
-    return result;
+    requireMemoryJournal(options);
+    options.journal.bodiesChanging(changes);
+    return detail::writeMemoryPairRecorded(volume, text);
 }
 
 // The settings pair, under the same discipline: validate, record changes,
@@ -397,8 +410,9 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
         throw Error("refusing to write settings: neither SYSTEM bank on " + volume.string()
                     + " can be read, so there is no write generation to continue from");
     WriteResult result;
-    if (options.journal.systemChanging)
-        options.journal.systemChanging(changes);
+    if (!options.journal.systemChanging)
+        throw Error("a settings write needs a systemChanging journal");
+    options.journal.systemChanging(changes);
     detail::writePairStamped(volume, volume::Bank::system, text, *base);
     volume::SweepResult sweep = volume::sweepJunk(volume);
     result.swept = std::move(sweep.removed);
@@ -621,6 +635,7 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     // All checks passed — the writes begin. The replaced audio's safety net
     // comes first: hand it to the archive, remove it from the slot only after
     // the archive has it.
+    requireMemoryJournal(options.write);
     const fs::path dir = volume::wavDir(volume, slot);
     std::error_code ec;
     fs::create_directories(dir, ec);
@@ -1059,12 +1074,19 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
         plans.push_back({ slot, std::move(body), volume::listSlotWavs(volume, slot) });
     }
 
+    requireMemoryJournal(options.write);
     ClearResult result;
     for (const auto& plan : plans) {
         for (const auto& file : plan.files) {
             const fs::path src = volume::wavDir(volume, plan.slot) / file;
             archiveTake(options.write, "clear", plan.slot, file, readFileBytes(src));
             result.archived.push_back(file);
+        }
+    }
+    // Every selected take is safe before any selected slot loses a file.
+    for (const auto& plan : plans) {
+        for (const auto& file : plan.files) {
+            const fs::path src = volume::wavDir(volume, plan.slot) / file;
             std::error_code ec;
             if (!fs::remove(src, ec) || ec)
                 throw Error("cannot remove " + src.string());
@@ -1194,6 +1216,7 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
 
     // All checks passed — the writes begin. The archive first: whatever the
     // slot holds is handed over whole, and leaves the card only after that.
+    requireMemoryJournal(options);
     RestoreResult result { {}, frames, {} };
     std::error_code ec;
     for (const auto& old : existing) {
@@ -1271,7 +1294,7 @@ inline void swapSlotAudio(const fs::path& volume, int slotA, int slotB)
 // RHYTHM setting, and the audio all trade places — so "collect the parts of
 // one song into consecutive slots" is a few drags. The <mem id> wrappers stay
 // put: ids number document POSITIONS, only bodies travel. Discipline order:
-// move the audio, then record and write the memory pair. A failed config
+// record the bodies, move the audio, then write the memory pair. A failed config
 // write moves the audio back, so a failed swap leaves the volume as it was.
 inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
                         const WriteOptions& options)
@@ -1285,9 +1308,12 @@ inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
     const std::string swapped =
         rc0::replaceSlotBody(rc0::replaceSlotBody(text, slotA, bodyB), slotB, bodyA);
 
+    requireMemoryJournal(options);
+    const auto changes = slotChanges(text, swapped);
+    options.journal.bodiesChanging(changes);
     swapSlotAudio(volume, slotA, slotB);
     try {
-        return writeMemoryPair(volume, swapped, options);
+        return detail::writeMemoryPairRecorded(volume, swapped);
     } catch (const Error& writeError) {
         try {
             swapSlotAudio(volume, slotA, slotB); // its own inverse: audio back home

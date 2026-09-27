@@ -6,6 +6,16 @@
 
 namespace testkit {
 
+inline loopercat::commands::Journal noOpJournal()
+{
+    return { .bodiesChanging = [](const auto&) {}, .systemChanging = [](const auto&) {} };
+}
+
+inline loopercat::commands::WriteOptions unrecordedWrite()
+{
+    return { .journal = noOpJournal() };
+}
+
 // A test double for the core's archive callback. Production uses HistoryRecorder.
 inline loopercat::commands::Archive fileArchive(const std::filesystem::path& root,
                                                 const std::string& opId)
