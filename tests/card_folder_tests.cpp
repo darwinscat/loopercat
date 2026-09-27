@@ -321,7 +321,7 @@ int main()
         const fs::path noisy = tmp.path / "Noisy";
         cardfolder::create(noisy, profile::kRc5);
         commands::writeFileBytes(noisy / "README.txt", "my loops");
-        commands::writeFileBytes(noisy / "loopercat-card.json", "{}");
+        commands::writeFileBytes(noisy / "loopercat.toml", "[loopercat_card]\nformat = 1\n");
         commands::writeFileBytes(noisy / ".DS_Store", "");
         CHECK(volume::looksLikePedal(noisy));
         cardfolder::assertCardFolder(noisy);
@@ -337,7 +337,7 @@ int main()
         CHECK_EQ(sweptNoisy.removed.size(), static_cast<std::size_t>(1));
         CHECK(!fs::exists(noisy / ".DS_Store"));
         CHECK(fs::exists(noisy / "README.txt"));
-        CHECK(fs::exists(noisy / "loopercat-card.json"));
+        CHECK(fs::exists(noisy / "loopercat.toml"));
         CHECK(commands::doctor(noisy).empty());
 
         // A real card's memory file in a folder reads as that card.

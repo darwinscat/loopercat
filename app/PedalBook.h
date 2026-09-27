@@ -17,7 +17,7 @@
 // the name written on that card.
 //
 // Why a book at all: a pedal's name lives on its card, in the marker
-// (CardMarker.hpp), and the card is readable only once the pedal is in
+// loopercat.toml (CardMarker.hpp), readable only once the pedal is in
 // storage mode — which is the very thing Connect is about to ask for. So
 // the app keeps what it learned at the last connection, keyed by the one
 // per-pedal signal that exists before a card is mounted: the OS's endpoint

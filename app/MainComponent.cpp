@@ -167,6 +167,11 @@ namespace
                                      .ownerRepo = "darwinscat/felitronics-core",
                                      .commit = LOOPERCAT_DEP_FCORE_COMMIT,
                                      .state = LOOPERCAT_DEP_FCORE_STATE },
+                                   { .label = "felitronics-toml",
+                                     .version = LOOPERCAT_DEP_TOML_VERSION,
+                                     .ownerRepo = "darwinscat/felitronics-toml",
+                                     .commit = LOOPERCAT_DEP_TOML_COMMIT,
+                                     .state = LOOPERCAT_DEP_TOML_STATE },
                                    { .label = "felitronics-appkit",
                                      .version = LOOPERCAT_DEP_APPKIT_VERSION,
                                      .ownerRepo = "darwinscat/felitronics-appkit",
@@ -1339,8 +1344,8 @@ void MainComponent::updateToolbar()
 }
 
 // The card's identity, from the card itself (issues #98, #99). The marker at
-// the volume root carries the id the history knows the card by and the
-// name the player gave the pedal; a card without one gets one here, named
+// the volume root, loopercat.toml, carries the history id and the name the
+// player gave the pedal; a card without one gets one here, named
 // after its model until the player renames it. On the worker, like every
 // touch of the card: minting is a write, and it sweeps the sidecar macOS
 // plants beside it. Quiet on success — the corner is the report — and a
