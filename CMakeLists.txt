@@ -828,6 +828,24 @@ target_link_libraries(retention_store_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME retention_store_tests COMMAND retention_store_tests)
 
+# Slot-history deletion against real files, without native windows.
+juce_add_console_app(forget_slot_tests PRODUCT_NAME "forget_slot_tests")
+target_sources(forget_slot_tests PRIVATE tests/forget_slot_tests.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(forget_slot_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(forget_slot_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME forget_slot_tests COMMAND forget_slot_tests)
+
 # The whole card's timeline out of a real store, and a take exported to a
 # file (issue #73).
 juce_add_console_app(card_timeline_tests PRODUCT_NAME "card_timeline_tests")

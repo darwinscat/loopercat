@@ -98,6 +98,24 @@ void write(const std::shared_ptr<HistoryRecorder>& rec, const fs::path& card,
 
 static int runTests()
 {
+    {
+        Scratch tmp;
+        const auto volumePath = cardAt(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        auto snapshot = newSighting(*rec, volumePath);
+        rec->snapshotStep(snapshot, 4);
+        rec->interruptSnapshot(snapshot, "disconnected");
+        const auto cardId = *rec->store().selectedCard();
+        rec->store().forgetSlot(cardId, 4, 2000);
+        rec->disconnect();
+        snapshot = newSighting(*rec, volumePath);
+        complete(*rec, snapshot);
+        CHECK(rec->store().slotTimeline(4).empty());
+        CHECK_EQ(rec->store().touchedSlots(snapshot.op).size(), 98u);
+        CHECK_EQ(rec->store().snapshotSlots(snapshot.op).size(), 99u);
+        CHECK(!rec->firstSeen(volumePath));
+    }
+
     // All 99 slots, empty and occupied, have one baseline with exact bodies
     // and bytes. Restore uses the same state and core command as the slot tab.
     {

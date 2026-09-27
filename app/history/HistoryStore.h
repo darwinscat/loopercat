@@ -58,6 +58,8 @@ public:
     std::int64_t card(const std::string& markerId, const std::string& model,
                       const std::string& name, std::int64_t nowMs);
     void selectCard(std::optional<std::int64_t> card) { selectedCard_ = card; }
+    std::optional<std::int64_t> selectedCard() const { return selectedCard_; }
+    std::vector<int> snapshotSlots(std::int64_t op);
 
     // One baseline per marker. Resuming keeps the operation and committed slots.
     std::int64_t firstSeen(std::int64_t session, const std::string& opId, std::int64_t nowMs);
@@ -130,7 +132,8 @@ public:
 
     // --- Undo and Redo over the timeline (Undo.h): the store's side ---
 
-    // The ops row alone, in timeline order: what the undo cursor reads.
+    // Ops after the card's last forgotten state, in timeline order: what
+    // the undo cursor reads. Older rows remain visible in cardTimeline().
     struct OpSummary {
         std::int64_t op = 0;
         std::string kind;
@@ -186,6 +189,25 @@ public:
     // (see keptBlobs). Returns the bytes freed.
     std::int64_t releaseBlobs(const std::vector<std::string>& hashes, const UndoTargets& targets,
                               std::int64_t nowMs);
+
+    struct ForgetPlan {
+        std::int64_t rowsRemoved = 0; // timeline entries, one per operation
+        std::int64_t takesFreed = 0;  // distinct kept blobs losing their last reference
+        std::int64_t bytesFreed = 0;
+        std::vector<std::int64_t> operations;
+        std::vector<std::int64_t> pinned;
+        std::vector<std::int64_t> undoTargets;
+        std::vector<std::string> hashes;
+        bool inFlight = false;
+        bool hasHolds() const { return !pinned.empty() || !undoTargets.empty(); }
+        bool operator==(const ForgetPlan&) const = default;
+    };
+    ForgetPlan planForgetSlot(std::int64_t card, int slot);
+    // Replans under the write lock. An optional displayed plan prevents a
+    // delayed confirmation from deleting a different set of entries or takes.
+    // Vacuum is separate: the worker returns free pages in short slices.
+    ForgetPlan forgetSlot(std::int64_t card, int slot, std::int64_t nowMs,
+                          bool confirmHolds = false, const ForgetPlan* expected = nullptr);
 
     // Hands up to `pages` free pages back to the system and returns how many
     // remain. Its own short transaction, a slice at a time, so a worker can
@@ -277,6 +299,8 @@ private:
     std::vector<OpSummary> operationsFor(std::int64_t card);
     std::vector<UndoTargets> retentionTargets(const UndoTargets& offered);
     Holds holdsOn(const std::string& hash, const std::vector<UndoTargets>& targets);
+
+    void releaseBytes(const std::string& hash, std::int64_t nowMs);
 
     std::filesystem::path file_;
     sqlite::Db db_;

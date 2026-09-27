@@ -176,11 +176,11 @@ int main()
         {
             HistoryStore fresh(tmp.path);
             auto& db = fresh.db();
-            CHECK_EQ(schema::kVersion, 6);
+            CHECK_EQ(schema::kVersion, 7);
             CHECK_EQ(count(db, "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
             CHECK_THROWS(db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id) VALUES ('RC-5', '', 0, 0, NULL)"), "NOT NULL");
-            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 6);
-            CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 8);
+            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 7);
+            CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 9);
             CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'legacy_files'"), 0);
             const auto session = fresh.openSession(fresh.card("test-RC-5", "RC-5", "Card", 1000), 1000);
             const auto op = fresh.beginOp(session, "first", "clear", 1000);
@@ -196,7 +196,7 @@ int main()
             CHECK_THROWS(db.exec("INSERT INTO system_changes VALUES (1, 'CTL', 'c', 'd')"), "UNIQUE");
         }
         HistoryStore reopened(tmp.path);
-        CHECK_EQ(schema::pragmaInteger(reopened.db(), "user_version"), 6);
+        CHECK_EQ(schema::pragmaInteger(reopened.db(), "user_version"), 7);
         CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM ops WHERE pinned = 1"), 1);
         CHECK(reopened.takeBytes(HistoryStore::contentHash("take bytes")) == "take bytes");
         CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM system_changes"), 1);
@@ -224,7 +224,7 @@ int main()
             db.exec("INSERT INTO slot_changes VALUES (1, 3, x'6265666f7265', x'6166746572')");
         }
         HistoryStore migrated(tmp.path);
-        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 6);
+        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 7);
         CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM cards WHERE marker_id IS NULL"), 0);
         CHECK_EQ(count(migrated.db(), "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
         CHECK_THROWS(migrated.db().exec("UPDATE cards SET marker_id = NULL"), "NOT NULL");
@@ -242,6 +242,29 @@ int main()
         CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 0);
         schema::migrate(migrated.db());
         CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM slot_changes"), 1);
+    }
+    {
+        // A real v6 file upgrades without losing its baseline or Undo target.
+        TempDir tmp;
+        {
+            auto db = sqlite::Db::open(tmp.path / "history.db");
+            db.exec("PRAGMA page_size = 16384");
+            db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+            db.exec(schema::kSteps[0]); db.exec(schema::kSteps[1]);
+            db.exec("PRAGMA user_version = 6");
+            db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id) VALUES ('RC-5', 'A', 1, 1, 'v6')");
+            db.exec("INSERT INTO sessions(card, connected_at) VALUES (1, 1)");
+            db.exec("INSERT INTO ops(id, session, kind, actor, status, at) VALUES ('v6', 1, 'rename', 'app', 'done', 2)");
+            db.exec("INSERT INTO slot_changes(op, slot, before_body, after_body) VALUES (1, 4, x'61', x'62')");
+        }
+        HistoryStore migrated(tmp.path);
+        migrated.selectCard(1);
+        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 7);
+        CHECK_EQ(count(migrated.db(), "SELECT undo_floor FROM cards"), 0);
+        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM forgotten_slots"), 0);
+        CHECK(migrated.offeredTargets().undo == 1);
+        CHECK_EQ(migrated.slotTimeline(4).size(), 1u);
+        CHECK_EQ(migrated.planForgetSlot(1, 4).rowsRemoved, 1);
     }
     {
         TempDir freshDir, migratedDir;
@@ -265,7 +288,7 @@ int main()
         TempDir tmp;
         {
             HistoryStore fresh(tmp.path);
-            fresh.db().exec("PRAGMA user_version = 7");
+            fresh.db().exec("PRAGMA user_version = 8");
         }
         const auto before = commands::readFileBytes(tmp.path / "history.db");
         CHECK_THROWS(HistoryStore(tmp.path), "newer LooperCat");

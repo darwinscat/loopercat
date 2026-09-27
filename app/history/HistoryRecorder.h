@@ -50,6 +50,8 @@ public:
 
     void begin(const std::string& opId, const std::string& kind,
                const std::filesystem::path& volume);
+    // Maintenance is journaled against the captured card without resolving a volume.
+    void beginMaintenance(const std::string& opId, std::int64_t card);
     void keepAudio(const std::string& opId, int slot, const std::string& fileName,
                    std::string_view bytes);
     void bodies(const std::string& opId, const std::vector<commands::SlotChange>& changes);

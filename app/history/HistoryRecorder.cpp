@@ -78,8 +78,10 @@ std::optional<HistoryRecorder::Snapshot> HistoryRecorder::firstSeen(const std::f
 {
     const auto session = sessionFor(volume);
     const auto op = store().firstSeen(session, opid::make("first-seen"), clock_());
-    if (store().opStatus(op) == "done")
+    if (store().opStatus(op) == "done") {
+        snapshot_.reset();
         return std::nullopt;
+    }
     snapshot_ = Snapshot { op, sessionMarker_, volume };
     return snapshot_;
 }
@@ -89,7 +91,7 @@ int HistoryRecorder::snapshotStep(const Snapshot& snapshot, int slot)
     const auto identity = marker::read(snapshot.volume);
     if (!identity || identity->id != snapshot.markerId)
         throw Error("the card changed before its first snapshot finished");
-    auto slots = store().touchedSlots(snapshot.op);
+    auto slots = store().snapshotSlots(snapshot.op);
     if (std::find(slots.begin(), slots.end(), slot) == slots.end()) {
         try {
             const auto memory = commands::readMemory(snapshot.volume);
@@ -121,7 +123,10 @@ int HistoryRecorder::snapshotStep(const Snapshot& snapshot, int slot)
 
 void HistoryRecorder::interruptSnapshot(const Snapshot& snapshot, const std::string& reason)
 {
-    if (store().opStatus(snapshot.op) == "pending")
+    // An interrupted baseline can have been forgotten since its last step.
+    sqlite::Statement row(store().db(), "SELECT status FROM ops WHERE seq = ?1");
+    row.bind(1, snapshot.op);
+    if (row.step() && row.text(0) == "pending")
         store().finishOp(snapshot.op, OpStatus::interrupted, reason);
 }
 
@@ -145,6 +150,16 @@ void HistoryRecorder::begin(const std::string& opId, const std::string& kind,
     firstSeen(volume); // establish the baseline before a write can touch a newly minted card
     const std::int64_t session = *session_;
     ops_[opId] = Operation { store().beginOp(session, opId, kind, clock_()), kind, volume };
+}
+
+void HistoryRecorder::beginMaintenance(const std::string& opId, std::int64_t card)
+{
+    if (ops_.contains(opId)) throw Error("operation already begun");
+    sqlite::Statement session(store().db(), "SELECT id FROM sessions WHERE card = ?1 ORDER BY id DESC LIMIT 1");
+    session.bind(1, card);
+    if (!session.step()) throw Error("no history session for this card");
+    const auto row = store().beginOp(session.integer(0), opId, "forget-history", clock_());
+    ops_[opId] = Operation { row, "forget-history", {} };
 }
 
 std::int64_t HistoryRecorder::opRow(const std::string& opId) const
@@ -219,7 +234,7 @@ void HistoryRecorder::finish(const std::string& opId, const std::string& error,
     // Only a finished operation leaves a card whose slots are worth writing
     // down: after a failed one the card is where the failure left it, and the
     // connect-time check is what tells the history about that.
-    if (error.empty())
+    if (error.empty() && op.kind != "forget-history")
         recordWhatSlotsHold(op);
     store().finishOp(op.row, error.empty() ? OpStatus::done : OpStatus::failed,
                      error.empty() ? note : error);
