@@ -730,6 +730,28 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
+# Undo and Redo carried out on a card (#73): real core commands on a synthetic
+# pedal, recorded through history::withHistory, undone and redone through the
+# two halves the app's job runs — the card compared byte for byte.
+juce_add_console_app(undo_run_tests PRODUCT_NAME "undo_run_tests")
+target_sources(undo_run_tests PRIVATE tests/undo_run_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(undo_run_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json"
+    LOOPERCAT_RC5_SYSTEM="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/rc5-system.RC0")
+target_link_libraries(undo_run_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME undo_run_tests COMMAND undo_run_tests)
+
 # The retention policy (issue #74): a pure decision, no SQLite and no JUCE,
 # so it is built like a core suite — under the strict flags — even though
 # the header lives with the history.

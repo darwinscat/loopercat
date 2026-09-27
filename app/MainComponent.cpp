@@ -433,7 +433,14 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
                 && !pedalBusy;
         },
-        .cleanJunkEnabled = [this] { return CardPermissions::of(snapshot.family).anyWrite(); } });
+        .cleanJunkEnabled = [this] { return CardPermissions::of(snapshot.family).anyWrite(); },
+        .undo = [this] { pressUndo(false); },
+        .redo = [this] { pressUndo(true); },
+        .undoText = [this] { return undoMenuText(false); },
+        .redoText = [this] { return undoMenuText(true); },
+        .undoEnabled = [this] { return undoEnabled(false); },
+        .redoEnabled = [this] { return undoEnabled(true); },
+        .openHistory = [this] { openHistoryWindow(); } });
 
     showEmptyToggle.setColour(juce::ToggleButton::textColourId, kStatusText);
     showEmptyToggle.setColour(juce::ToggleButton::tickColourId,
@@ -562,16 +569,26 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         pedalBusy = busy;
         inspector.setBusy(busy);
         rhythmPane.setBusy(busy);
+        historyView.setBusy(busy);
         updateStatusText();
         updateToolbar();
-        if (!busy)
+        if (!busy) {
             restoreListening(); // the job's own rescan applied while busy — see restoreListening
+            // A job may have written a row: what Undo offers and what the
+            // History window shows are read again, off the worker.
+            refreshUndoOffer();
+            if (historyHost != nullptr && historyHost->isVisible())
+                feedHistoryWindow();
+        }
     };
     worker.onJobResult = [this](juce::String description, juce::String error, int batch,
                                 int slot) {
         // Credited by the id the worker hands back — never by parsing text.
         const bool inBatch = batchId != 0 && batch == batchId;
         const bool inCheck = checkId != 0 && batch == checkId;
+        if (historyEditPending && description == historyEditDescription)
+            settleHistoryEdit(error.isEmpty() ? description + juce::String::fromUTF8(" \xe2\x80\x94 done")
+                                              : description + ": " + error);
         if (error.isNotEmpty()) {
             banners.showError(banners::Source::job, description + ": " + error);
             if (description.startsWith("Check slot") && slot > 0) {
@@ -607,7 +624,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                                    || description.startsWith("Normalize")
                                    || description.startsWith("Set tempo")
                                    || description.startsWith("Clear")
-                                   || description.startsWith("Swap"))
+                                   || description.startsWith("Swap")
+                                   || description.startsWith("Restore")
+                                   || description.startsWith("Undo")
+                                   || description.startsWith("Redo"))
                                // A normalize that found nothing to change wrote
                                // nothing — its note says so, and the toast must
                                // not send anyone to Disconnect for it. Only for
@@ -627,9 +647,15 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                                || description.startsWith("Downmix")
                                || (description.startsWith("Normalize") && wroteToPedal)
                                || description.startsWith("Clear")
-                               || description.startsWith("Swap");
+                               || description.startsWith("Swap")
+                               || description.startsWith("Restore")
+                               || description.startsWith("Undo")
+                               || description.startsWith("Redo");
         if (changedAudio) {
-            if (description.startsWith("Swap")) {
+            // A restore, an undo or a redo may move takes between slots (a
+            // swap put back) or touch several: every reading goes, as for a swap.
+            if (description.startsWith("Swap") || description.startsWith("Restore")
+                || description.startsWith("Undo") || description.startsWith("Redo")) {
                 table.clearAllLoudness();
                 player.clearLoudness();
             } else if (slot > 0) {
@@ -697,6 +723,23 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(history);
     history.onPlay = [this](std::int64_t op) { playFromHistory(op); };
     history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
+    // The History window (#73): the view knows nothing of the store; its
+    // four callbacks come back here, and every one of them ends in a re-read.
+    historyView.onPlay = [this](std::int64_t op) { playFromWindow(op); };
+    historyView.onExportTake = [this](std::int64_t op) { exportFromWindow(op); };
+    historyView.onRestore = [this](std::int64_t op) { restoreFromWindow(op); };
+    historyView.onPin = [this](std::int64_t op, bool pinned) { pinFromWindow(op, pinned); };
+    // The speed bump in the app: a dialog, the confirming button first.
+    askFirst = [](const juce::String& title, const juce::String& message, const juce::String& confirm,
+                  std::function<void(bool)> answer) {
+        juce::AlertWindow::showAsync(juce::MessageBoxOptions()
+                                         .withIconType(juce::MessageBoxIconType::WarningIcon)
+                                         .withTitle(title)
+                                         .withMessage(message)
+                                         .withButton(confirm)
+                                         .withButton("Cancel"),
+                                     [answer](int button) { answer(button == 1); });
+    };
     addChildComponent(player); // likewise
     addChildComponent(toast);  // fades in over everything on job success
     addChildComponent(batchOverlay); // over even that: the batch takeover (issue #61)
@@ -719,6 +762,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     setSize(920, 680);
 
     worker.start();
+    refreshUndoOffer(); // the Edit menu names its targets from the first open
     startTimer(kMidiPollIntervalMs); // presence poll — cheap device-list scan, message thread
 }
 
@@ -1182,12 +1226,18 @@ void MainComponent::playFromHistory(std::int64_t op)
     if (found == historyEntries.end() || found->takeHash.empty())
         return;
     const int slot = selectedSlot;
-    const juce::String title = juce::String(slot) + juce::String::fromUTF8(" \xc2\xb7 ")
-        + juce::String(found->line.action) + juce::String::fromUTF8(" \xc2\xb7 from the history");
+    playArchivedTake(slot, found->takeHash,
+                     juce::String(slot) + juce::String::fromUTF8(" \xc2\xb7 ")
+                         + juce::String(found->line.action)
+                         + juce::String::fromUTF8(" \xc2\xb7 from the history"));
+}
+
+void MainComponent::playArchivedTake(int slot, std::string hash, juce::String title)
+{
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue({ "Play an archived take from slot " + juce::String(slot),
                      0,
-                     [rec = recorder, aud = audition, hash = found->takeHash, slot, title, safe,
+                     [rec = recorder, aud = audition, hash = std::move(hash), slot, title, safe,
                       alive = uiAlive](const volume::fs::path&) {
                          const auto file = aud->materialize(rec->store(), hash);
                          if (!file)
@@ -1598,9 +1648,12 @@ void MainComponent::updateStatusText()
 void MainComponent::applySnapshot(const PedalSnapshot& latest)
 {
     const lifecycle::State previousState = snapshot.state;
-    if (latest.volume != snapshot.volume)
+    const bool anotherVolume = latest.volume != snapshot.volume;
+    if (anotherVolume)
         table.clearAllLoudness(); // another card is another set of files; readings do not travel
     snapshot = latest;
+    if (anotherVolume)
+        refreshUndoOffer(); // what Undo offers is read for the card in front of it
     // "Mounted" means honestly connected — a ghost lists slots too, but they
     // are page-cache fiction and nothing may play from or write to them.
     const bool mounted = snapshot.state == lifecycle::State::connected && snapshot.error.empty();
@@ -2654,6 +2707,8 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     // to prevent (issue #61).
     if (batchOverlay.isVisible())
         return true;
+    if (historyKeys(key))
+        return true;
     // Standard list ergonomics: select every row — the way to point a check
     // (or a batch) at the whole setlist without a dedicated button.
     if (key == juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0) && table.isVisible()) {
@@ -2717,6 +2772,362 @@ void MainComponent::resized()
     area.removeFromBottom(8);
     table.setBounds(area.reduced(12, 0));
     hint.setBounds(area);
+}
+
+// --- the History window and Undo / Redo (#73) ---
+
+void MainComponent::openHistoryWindow()
+{
+    if (historyHost == nullptr)
+        historyHost = std::make_unique<HistoryWindowHost>(
+            historyView, [this](const juce::KeyPress& key) { return historyKeys(key); });
+    historyHost->setVisible(true);
+    historyHost->toFront(true);
+    feedHistoryWindow();
+}
+
+// The whole card's timeline, read on the worker like the slot's tab — no
+// card needed — and turned into the window's rows there. The owner keeps what
+// the buttons need (the take to play, the slots a restore touches); the view
+// keeps the sentences. Every call re-reads the store: a pin the window showed
+// optimistically is confirmed or taken back here.
+void MainComponent::feedHistoryWindow()
+{
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue({ "Read the card's history",
+                     0,
+                     [rec = recorder, safe, alive = uiAlive](const volume::fs::path&) {
+                         const auto timeline = rec->store().cardTimeline();
+                         const auto cardRows = history::rows::forCard(timeline);
+                         std::vector<HistoryWindow::Row> rows;
+                         std::vector<WindowEntry> entries;
+                         const auto today = juce::Time::getCurrentTime();
+                         for (std::size_t i = 0; i < cardRows.size() && i < timeline.size(); ++i) {
+                             const auto& row = cardRows[i];
+                             const juce::Time when(row.at);
+                             const bool sameDay = when.getDayOfYear() == today.getDayOfYear()
+                                 && when.getYear() == today.getYear();
+                             juce::String audio;
+                             if (row.takes.size() == 1) {
+                                 audio = juce::String(row.takes.front().audio);
+                             } else {
+                                 for (const auto& take : row.takes)
+                                     if (!take.audio.empty())
+                                         audio << (audio.isEmpty() ? "" : juce::String::fromUTF8(" \xc2\xb7 "))
+                                               << "slot " << take.slot << ": " << juce::String(take.audio);
+                             }
+                             std::vector<int> slots = row.slots();
+                             rows.push_back({ when.formatted(sameDay ? "%H:%M" : "%d %b %H:%M"),
+                                              juce::String(row.action), juce::String(row.detail),
+                                              juce::String(row.state), audio, juce::String(row.hint),
+                                              slots, row.playable(), row.restorable(), row.pinned,
+                                              row.op });
+                             WindowEntry entry;
+                             entry.op = row.op;
+                             entry.takeHash = row.takeHash();
+                             for (const auto& take : row.takes)
+                                 if (take.playable) {
+                                     entry.slot = take.slot;
+                                     break;
+                                 }
+                             for (const auto& touched : timeline[i].slots)
+                                 if (touched.slot == entry.slot)
+                                     entry.takeName = touched.facts.takeName;
+                             entry.action = juce::String(row.action);
+                             entry.slots = std::move(slots);
+                             entry.restorable = row.restorable();
+                             entries.push_back(std::move(entry));
+                         }
+                         juce::MessageManager::callAsync(
+                             [safe, alive, rows = std::move(rows), entries = std::move(entries)]() mutable {
+                                 if (!*alive || safe == nullptr)
+                                     return;
+                                 safe->windowEntries = std::move(entries);
+                                 safe->historyView.show(std::move(rows));
+                                 ++safe->historyWindowFed;
+                             });
+                     },
+                     nullptr,
+                     0,
+                     true,     // background: reading the history locks nothing
+                     true,     // quiet: only a failure is worth saying
+                     false }); // and it needs no card
+}
+
+const MainComponent::WindowEntry* MainComponent::windowEntry(std::int64_t op) const
+{
+    for (const auto& entry : windowEntries)
+        if (entry.op == op)
+            return &entry;
+    return nullptr;
+}
+
+void MainComponent::playFromWindow(std::int64_t op)
+{
+    const WindowEntry* entry = windowEntry(op);
+    if (entry == nullptr || entry->takeHash.empty())
+        return;
+    playArchivedTake(entry->slot, entry->takeHash,
+                     juce::String(entry->slot) + juce::String::fromUTF8(" \xc2\xb7 ") + entry->action
+                         + juce::String::fromUTF8(" \xc2\xb7 from the history"));
+}
+
+// "Export take…": the bytes the history keeps, written where the player
+// chose. The chooser has asked about a file already there; the export writes
+// beside it and renames, so a name that exists is a file that is complete.
+void MainComponent::exportFromWindow(std::int64_t op)
+{
+    const WindowEntry* entry = windowEntry(op);
+    if (entry == nullptr || entry->takeHash.empty())
+        return;
+    const juce::String name = entry->takeName.empty() ? juce::String("take.wav")
+                                                       : juce::String(entry->takeName);
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Export take", juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile(name),
+        "*.wav");
+    juce::Component::SafePointer<MainComponent> safe(this);
+    fileChooser->launchAsync(
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+            | juce::FileBrowserComponent::warnAboutOverwriting,
+        [safe, hash = entry->takeHash](const juce::FileChooser& chooser) {
+            const juce::File file = chooser.getResult();
+            if (safe == nullptr || file == juce::File())
+                return;
+            safe->worker.enqueue({ "Export take to " + file.getFileName(),
+                                   0,
+                                   [rec = safe->recorder, hash, path = file.getFullPathName().toStdString()](
+                                       const volume::fs::path&) {
+                                       history::exportTake(rec->store(), hash, path);
+                                   },
+                                   nullptr, 0, false, false, false });
+        });
+}
+
+// "Restore this state": every slot the row touched, back to what that
+// operation left in it — one operation, recorded, undoable in turn.
+void MainComponent::restoreFromWindow(std::int64_t op)
+{
+    const WindowEntry* entry = windowEntry(op);
+    if (entry == nullptr || !entry->restorable || entry->slots.empty())
+        return;
+    const std::vector<int> slots = entry->slots;
+    for (const int slot : slots)
+        releasePlayerIfHolding(slot, slot); // a restore rewrites the slot's audio (issue #26)
+    juce::String where;
+    if (slots.size() == 1)
+        where = "slot " + juce::String(slots[0]);
+    else if (slots.size() == 2)
+        where = "slots " + juce::String(slots[0]) + " and " + juce::String(slots[1]);
+    else
+        where = juce::String(static_cast<int>(slots.size())) + " slots";
+    const auto options = makeWriteOptions();
+    worker.enqueue(recorded("restore", options,
+                            { "Restore " + where + " to " + entry->action, slots.size() == 1 ? slots[0] : 0,
+                              [rec = recorder, op, options](const volume::fs::path& volumePath) {
+                                  history::restoreOperation(rec->store(), op, volumePath, options);
+                              } }));
+}
+
+// A pin is the store's to keep: the window showed it at once, and the rows
+// read after the write say whether it held — refused or not.
+void MainComponent::pinFromWindow(std::int64_t op, bool pinned)
+{
+    juce::Component::SafePointer<MainComponent> safe(this);
+    PedalWorker::Job job { pinned ? "Pin a history row" : "Unpin a history row", 0,
+                           [rec = recorder, op, pinned](const volume::fs::path&) {
+                               rec->store().pinOp(op, pinned);
+                           },
+                           nullptr, 0, true, false, false };
+    job.after = [safe, alive = uiAlive](const std::string&) {
+        juce::MessageManager::callAsync([safe, alive] {
+            if (*alive && safe != nullptr)
+                safe->feedHistoryWindow();
+        });
+    };
+    worker.enqueue(std::move(job));
+}
+
+bool MainComponent::historyKeys(const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        pressUndo(true);
+        return true;
+    }
+    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)) {
+        pressUndo(false);
+        return true;
+    }
+    return false;
+}
+
+// Undo writes to the card like any operation: a card honestly connected, in
+// a model this app writes to, and no job of the player's running.
+bool MainComponent::cardTakesEdits() const
+{
+    return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
+        && CardPermissions::of(snapshot.family).anyWrite() && !pedalBusy;
+}
+
+void MainComponent::refreshUndoOffer()
+{
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue({ "Read what Undo would put back",
+                     0,
+                     [rec = recorder, safe, alive = uiAlive](const volume::fs::path&) {
+                         const history::undo::Offer offer = history::undo::offer(rec->store());
+                         juce::MessageManager::callAsync([safe, alive, offer] {
+                             if (!*alive || safe == nullptr)
+                                 return;
+                             safe->undoOffer = offer;
+                             ++safe->undoOfferReads;
+                             if (safe->appMenu != nullptr)
+                                 safe->appMenu->menuItemsChanged();
+                         });
+                     },
+                     nullptr, 0, true, true, false });
+}
+
+juce::String MainComponent::undoMenuText(bool redo) const
+{
+    return juce::String(history::undo::menuText(redo, undoOffer));
+}
+
+bool MainComponent::undoEnabled(bool redo) const
+{
+    return (redo ? undoOffer.redo : undoOffer.undo).has_value() && cardTakesEdits()
+        && !historyEditPending; // one press at a time
+}
+
+// The press: planned on the worker against the store as it is, handed back
+// with its words, its refusal or its reasons to ask first.
+void MainComponent::pressUndo(bool redo)
+{
+    if (!undoEnabled(redo))
+        return;
+    historyEditPending = true;
+    const std::int64_t target = *(redo ? undoOffer.redo : undoOffer.undo);
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue({ redo ? "Plan the redo" : "Plan the undo",
+                     0,
+                     [rec = recorder, redo, target, volume = snapshot.volume, safe,
+                      alive = uiAlive](const volume::fs::path&) {
+                         history::HistoryStore& store = rec->store();
+                         const auto timeline = store.cardTimeline();
+                         const history::undo::Offer offer = history::undo::offerFrom(store.offeredTargets(), timeline);
+                         HistoryEdit edit;
+                         edit.redo = redo;
+                         edit.target = target;
+                         edit.words = juce::String(history::undo::menuText(redo, offer));
+                         const auto offered = redo ? offer.redo : offer.undo;
+                         const history::undo::Plan plan = history::undo::plan(timeline, target);
+                         if (!offered || *offered != target)
+                             edit.refusal = "the history moved on since the press";
+                         else if (!plan.possible())
+                             edit.refusal = juce::String(plan.reason);
+                         if (plan.swapBack) {
+                             edit.slots.push_back(plan.swapBack->first);
+                             edit.slots.push_back(plan.swapBack->second);
+                         }
+                         for (const auto& step : plan.steps)
+                             edit.slots.push_back(step.slot);
+                         // Across a connection means: from another session than the
+                         // one this run records in — none yet counts as another.
+                         const history::undo::Bump bump = history::undo::bumpFor(
+                             plan, timeline, rec->sessionOn(volume::fs::path(volume)));
+                         edit.crossings = bump.keys;
+                         edit.reasons = bump.reasons;
+                         juce::MessageManager::callAsync([safe, alive, edit] {
+                             if (*alive && safe != nullptr)
+                                 safe->proposeHistoryEdit(edit);
+                         });
+                     },
+                     nullptr, 0, true, true, false,
+                     nullptr,
+                     [safe, alive = uiAlive](const std::string& error) {
+                         // A plan that could not be read at all: the press is over.
+                         if (!error.empty())
+                             juce::MessageManager::callAsync([safe, alive, error] {
+                                 if (*alive && safe != nullptr)
+                                     safe->settleHistoryEdit(juce::String::fromUTF8(error.c_str()));
+                             });
+                     } });
+}
+
+// Alisa's rule for the speed bump: crossing a connection, a change made on the
+// pedal, or a later change still in effect is allowed, and warned about the
+// first time; the same crossing is not asked about again in this session.
+void MainComponent::proposeHistoryEdit(HistoryEdit edit)
+{
+    const juce::String verb = edit.redo ? "Redo" : "Undo";
+    if (edit.refusal.isNotEmpty()) {
+        toast.show(verb + juce::String::fromUTF8(" \xe2\x80\x94 ") + edit.refusal);
+        settleHistoryEdit(verb + ": " + edit.refusal);
+        return;
+    }
+    const bool askedBefore = std::all_of(edit.crossings.begin(), edit.crossings.end(),
+                                         [this](const std::string& key) {
+                                             return acknowledgedCrossings.count(key) > 0;
+                                         });
+    if (askedBefore) {
+        runHistoryEdit(std::move(edit));
+        return;
+    }
+    juce::String message;
+    for (const auto& reason : edit.reasons)
+        message << juce::String(reason) << "\n";
+    message << "\n" << verb
+            << " is recorded like any other change and can be undone in turn. LooperCat asks about"
+               " this once.";
+    juce::Component::SafePointer<MainComponent> safe(this);
+    askFirst(edit.words + "?", message, verb + " anyway", [safe, edit](bool yes) {
+        if (safe == nullptr)
+            return;
+        if (!yes) {
+            safe->settleHistoryEdit((edit.redo ? "Redo" : "Undo") + juce::String(": cancelled"));
+            return;
+        }
+        for (const auto& key : edit.crossings)
+            safe->acknowledgedCrossings.insert(key);
+        safe->runHistoryEdit(edit);
+    });
+}
+
+// One recorded operation: opened and checked in the job's `before` (a press
+// the history has moved past begins nothing), carried out in `work` through
+// the core's primitives, closed in `after` with the words of what it undid.
+void MainComponent::runHistoryEdit(HistoryEdit edit)
+{
+    if (!cardTakesEdits()) { // the dialog stood open while the pedal went away or got busy
+        settleHistoryEdit((edit.redo ? "Redo" : "Undo") + juce::String(": the pedal is not ready"));
+        return;
+    }
+    for (const int slot : edit.slots)
+        releasePlayerIfHolding(slot, slot);
+    const auto options = makeWriteOptions();
+    auto checked = std::make_shared<history::undo::Checked>();
+    historyEditDescription = edit.words;
+    PedalWorker::Job job { edit.words, edit.slots.size() == 1 ? edit.slots[0] : 0,
+                           [rec = recorder, checked, options](const volume::fs::path& volumePath) {
+                               history::undo::apply(rec->store(), checked->plan, volumePath, options);
+                           } };
+    job.before = [rec = recorder, id = options.opId, redo = edit.redo, target = edit.target,
+                  checked](const volume::fs::path& volumePath) {
+        *checked = history::undo::beginPress(*rec, id, redo, target, volumePath);
+    };
+    job.after = [rec = recorder, id = options.opId, checked](const std::string& error) {
+        rec->finish(id, error, checked->note);
+    };
+    worker.enqueue(std::move(job));
+}
+
+void MainComponent::settleHistoryEdit(juce::String outcome)
+{
+    historyEditPending = false;
+    historyEditDescription.clear();
+    historyEditOutcome = std::move(outcome);
+    ++historyEditsDone;
+    if (appMenu != nullptr)
+        appMenu->menuItemsChanged();
 }
 
 } // namespace loopercat

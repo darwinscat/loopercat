@@ -10,7 +10,9 @@
 
 //==============================================================================
 // loopercat::AppMenu — the native macOS menu bar. About lives in the app menu
-// (the platform-standard home), Maintenance carries the service actions
+// (the platform-standard home), Edit carries Undo and Redo over the history
+// (#73) — each item names what it would put back, "Undo trim of slot 14" —
+// Window opens the card's whole history, Maintenance carries the service actions
 // (config backup, junk sweep) that would otherwise crowd the toolbar — the
 // toolbar keeps only the primary Connect / Disconnect story — and Help holds
 // "Feed the Cat", the family tip jar. Windows/Linux have no menu bar; there
@@ -31,6 +33,18 @@ public:
         std::function<void()> feedTheCat;         // Help → the family tip jar, in the browser
         std::function<bool()> maintenanceEnabled; // pedal connected and idle
         std::function<bool()> cleanJunkEnabled;   // and the card is one this app writes to
+        // Edit → Undo / Redo (#73): the words are read when the menu opens,
+        // from what the history offers right now; greyed out while the
+        // pedal is busy or away, or with nothing to put back.
+        std::function<void()> undo;
+        std::function<void()> redo;
+        std::function<juce::String()> undoText;
+        std::function<juce::String()> redoText;
+        std::function<bool()> undoEnabled;
+        std::function<bool()> redoEnabled;
+        // Window → History: the whole card's timeline. The store is on this
+        // computer, so like the import it needs no pedal.
+        std::function<void()> openHistory;
     };
 
     explicit AppMenu(Actions actions) : actions_(std::move(actions))
@@ -53,12 +67,26 @@ public:
 #endif
     }
 
-    juce::StringArray getMenuBarNames() override { return { "Maintenance", "Help" }; }
+    juce::StringArray getMenuBarNames() override { return { "Edit", "Maintenance", "Window", "Help" }; }
 
     juce::PopupMenu getMenuForIndex(int, const juce::String& name) override
     {
         juce::PopupMenu menu;
-        if (name == "Maintenance") {
+        if (name == "Edit") {
+            const auto item = [](int id, const std::function<juce::String()>& text,
+                                 const std::function<bool()>& enabled, const char* keys) {
+                juce::PopupMenu::Item entry(text ? text() : juce::String());
+                entry.itemID = id;
+                entry.isEnabled = enabled && enabled();
+                entry.shortcutKeyDescription = juce::String::fromUTF8(keys);
+                return entry;
+            };
+            menu.addItem(item(kUndo, actions_.undoText, actions_.undoEnabled, "\xe2\x8c\x98Z"));
+            menu.addItem(item(kRedo, actions_.redoText, actions_.redoEnabled,
+                              "\xe2\x87\xa7\xe2\x8c\x98Z"));
+        } else if (name == "Window") {
+            menu.addItem(kOpenHistory, "History", true);
+        } else if (name == "Maintenance") {
             const bool enabled = actions_.maintenanceEnabled && actions_.maintenanceEnabled();
             menu.addItem(kBackup, "Backup configs", enabled);
             // The sweep writes to the card: a card of a model this app only
@@ -83,10 +111,16 @@ public:
             actions_.importLegacy();
         else if (itemId == kFeedTheCat && actions_.feedTheCat)
             actions_.feedTheCat();
+        else if (itemId == kUndo && actions_.undo)
+            actions_.undo();
+        else if (itemId == kRedo && actions_.redo)
+            actions_.redo();
+        else if (itemId == kOpenHistory && actions_.openHistory)
+            actions_.openHistory();
     }
 
 private:
-    enum { kBackup = 1, kCleanJunk, kImportLegacy, kFeedTheCat };
+    enum { kBackup = 1, kCleanJunk, kImportLegacy, kFeedTheCat, kUndo, kRedo, kOpenHistory };
 
     const Actions actions_;
 

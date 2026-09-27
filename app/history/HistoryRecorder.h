@@ -72,6 +72,18 @@ public:
 
     HistoryStore& store();
 
+    // The connection an operation on this volume would be recorded in right
+    // now: the session this run opened for it — or none, when nothing has
+    // been written in this run yet, or the last write went to another volume
+    // and the next one opens a session of its own. Undo reads it (#73): a
+    // target from any other session lies across a connection.
+    std::optional<std::int64_t> sessionOn(const std::filesystem::path& volume) const
+    {
+        if (session_ && sessionVolume_ == volume)
+            return session_;
+        return std::nullopt;
+    }
+
 private:
     // An operation in flight: its row, what kind it is (a swap moves audio
     // between two slots without writing a byte) and the volume it runs on.

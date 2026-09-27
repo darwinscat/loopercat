@@ -302,6 +302,40 @@ int main()
         CHECK(plan.possible());
         CHECK(plan.swapBack == std::make_pair(12, 43));
         CHECK(plan.steps.empty());
+
+        // The undo of that swap moved the folders too, and so does every
+        // undo or redo on top of it: each goes back by swapping, never by
+        // putting a slot's old body beside the other slot's take.
+        Card undone = card(9, "undo");
+        undone.reverts = 8;
+        undone.slots = { slot(12, shorter, loaded), slot(43, loaded, shorter) };
+        Card redone = card(10, "redo");
+        redone.reverts = 9;
+        redone.slots = { slot(12, loaded, shorter), slot(43, shorter, loaded) };
+        for (const std::int64_t target : { 9, 10 }) {
+            const auto back = undo::plan({ swap, undone, redone }, target);
+            CHECK(back.possible());
+            CHECK(back.swapBack == std::make_pair(12, 43));
+            CHECK(back.steps.empty());
+        }
+        // an undo of something else on the same two slots is no swap
+        Card clearTwo = card(11, "clear");
+        clearTwo.slots = { slot(12, loaded, empty, TakeRef { "a.wav", std::string(32, '\x33'), true }, "a.wav"),
+                           slot(43, loaded, empty, TakeRef { "b.wav", std::string(32, '\x44'), true }, "b.wav") };
+        Card undoClear = card(12, "undo");
+        undoClear.reverts = 11;
+        undoClear.slots = { slot(12, empty, loaded), slot(43, empty, loaded) };
+        const auto notSwap = undo::plan({ clearTwo, undoClear }, 12);
+        CHECK(!notSwap.swapBack);
+        CHECK(notSwap.steps.size() == 2);
+        // reverts that loop never pass for a swap, and never hang
+        Card loopA = card(13, "undo");
+        loopA.reverts = 14;
+        loopA.slots = { slot(12, loaded, shorter), slot(43, shorter, loaded) };
+        Card loopB = card(14, "redo");
+        loopB.reverts = 13;
+        loopB.slots = loopA.slots;
+        CHECK(!undo::plan({ loopA, loopB }, 13).swapBack);
     }
 
     // --- refusals by name ---
