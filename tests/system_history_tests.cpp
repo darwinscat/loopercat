@@ -213,7 +213,7 @@ int main()
         CHECK(sysfile::field(original, sysfile::kSectionCtl, "Ctl2") != 22);
 
         // the app's wiring: the hook lands in the history under the operation
-        auto options = history::withHistory(rec, { .opId = "op-controls", .skipBackup = true }, nullptr);
+        auto options = history::withHistory(rec, { .opId = "op-controls" });
         rec->begin("op-controls", "controls", volume);
         commands::writeSystemPair(volume, edited, options);
         rec->finish("op-controls", "");
@@ -231,14 +231,14 @@ int main()
 
         // a write for an operation that never began: the history refuses
         // before the write, and the card stays as it was
-        auto ghost = history::withHistory(rec, { .opId = "op-ghost", .skipBackup = true }, nullptr);
+        auto ghost = history::withHistory(rec, { .opId = "op-ghost" });
         const std::string another = sysfile::setField(edited, sysfile::kSectionCtl, "Ctl2", 33);
         CHECK_THROWS(commands::writeSystemPair(volume, another, ghost), "without having begun");
         CHECK_EQ(sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2"), 22);
         CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 1);
 
         // a write that changes nothing records nothing, and still writes
-        auto quiet = history::withHistory(rec, { .opId = "op-quiet", .skipBackup = true }, nullptr);
+        auto quiet = history::withHistory(rec, { .opId = "op-quiet" });
         rec->begin("op-quiet", "controls", volume);
         commands::writeSystemPair(volume, edited, quiet);
         rec->finish("op-quiet", "");

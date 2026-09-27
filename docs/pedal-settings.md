@@ -96,7 +96,7 @@ out of scope for the memory editor.
 ## What belongs in LooperCat
 
 **Tier 1 — obvious wins, all verified-mechanics writes** (same
-transaction/backup/generation discipline as every mutation; one hardware
+transaction/history/generation discipline as every mutation; one hardware
 checkpoint per enum to pin the value maps):
 
 - Playback shaping: **Reverse**, **Play level**, **Start/Stop modes** — "how

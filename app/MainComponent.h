@@ -191,14 +191,12 @@ private:
     void savePedalBook();
     void trace(const juce::String& line); // one step of a connection into operations.log
 
-    void runBackup();
     void runCleanJunk();
-    void runLegacyImport();
     void restoreListening(); // the selected occupied slot is the one in the player
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
-    // write options (backup root + a fresh operation id, under the app data dir).
+    // write options (history hooks and a fresh operation id).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
     void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
     void updateInspector();                 // push the selected row into the panel

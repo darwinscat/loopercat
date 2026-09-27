@@ -9,7 +9,7 @@
 //   - every mutation leaves one op row that tells the truth about its outcome
 //   - a replaced take is in the history byte-exact — even when the command
 //     then failed, because that is exactly when it is needed
-//   - the history keeps a take BEFORE the trash folder does, and before the
+//   - the history keeps a take before the
 //     card changes
 //   - a history that cannot open, or a hook for an op that never began, stops
 //     the command with the card untouched
@@ -17,7 +17,8 @@
 
 #include "support.hpp"
 
-#include "../app/history/HistoryRecorder.h"
+#include "../app/history/WriteOptionsFactory.h"
+#include "../app/OperationsLog.h"
 
 #include <loopercat/Commands.hpp>
 
@@ -117,17 +118,92 @@ std::shared_ptr<HistoryRecorder> recorderAt(const fs::path& dir)
     return std::make_shared<HistoryRecorder>(dir, "RC-5", tick);
 }
 
-commands::WriteOptions options(const std::shared_ptr<HistoryRecorder>& rec, const std::string& opId,
-                               const fs::path& trash)
+commands::WriteOptions options(const std::shared_ptr<HistoryRecorder>& rec, const std::string& opId)
 {
-    return history::withHistory(rec, { .opId = opId, .skipBackup = true },
-                                commands::trashFolder(trash, opId));
+    return history::withHistory(rec, { .opId = opId });
 }
 
 } // namespace
 
 int main()
 {
+    // Every write uses the app's history wiring. The data home stays free of
+    // extra directories while the store records exactly what the card held.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const auto dataHome = tmp.path / "app-data";
+        auto rec = recorderAt(dataHome / "history");
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM ops"), 0);
+        putWav(volume, 4, "take.wav", 132300);
+        const fs::path incoming = tmp.path / "incoming.wav";
+        const auto wav = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 176400 });
+        commands::writeFileBytes(incoming,
+            std::string_view(reinterpret_cast<const char*>(wav.data()), wav.size()));
+        for (const std::string kind : { "push", "trim", "rename", "clear" }) {
+            const std::string beforeBody = rc0::slotBody(commands::readMemory(volume), 4);
+            const auto files = volume::listSlotWavs(volume, 4);
+            CHECK_EQ(files.size(), 1u);
+            const auto beforeTake = commands::readFileBytes(volume::wavDir(volume, 4) / files.front());
+            const auto write = history::makeWriteOptions(rec);
+            CHECK_EQ(run(*rec, write.opId, kind, volume, [&] {
+                if (kind == "push")
+                    commands::push(volume, incoming, 4, { .force = true, .write = write });
+                else if (kind == "trim")
+                    commands::trim(volume, 4, 0, 88200, { .write = write });
+                else if (kind == "rename")
+                    commands::rename(volume, 4, "New name", write);
+                else
+                    commands::clear(volume, { 4 }, { .write = write });
+            }), std::string());
+            oplog::append(juce::File(dataHome.string()), juce::String(kind));
+            CHECK(fs::exists(dataHome / "operations.log"));
+            for (const auto& entry : fs::directory_iterator(dataHome))
+                CHECK(entry.path().filename() == "history"
+                      || entry.path().filename() == "operations.log");
+            for (const auto& entry : fs::directory_iterator(dataHome / "history"))
+                CHECK(entry.path().filename() == "history.db");
+            sqlite::Statement bodies(rec->store().db(),
+                "SELECT before_body, after_body FROM slot_changes c JOIN ops o ON o.seq = c.op "
+                "WHERE o.id = ?1 AND c.slot = 4");
+            bodies.bindText(1, write.opId);
+            CHECK(bodies.step());
+            CHECK(bodies.blob(0) == beforeBody);
+            CHECK(bodies.blob(1) == rc0::slotBody(commands::readMemory(volume), 4));
+            if (kind != "rename")
+                CHECK(rec->store().takeBytes(HistoryStore::contentHash(beforeTake)) == beforeTake);
+        }
+        CHECK(volume::listSlotWavs(volume, 4).empty());
+        CHECK(rc0::slotBody(commands::readMemory(volume), 4) == rc0::factorySlotBody(4));
+    }
+
+    // Existing folders are inert: even unreadable contents do not block a
+    // write, and no file in them is changed, imported or removed.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "take.wav", 132300);
+        for (const auto* name : { "backups", "trash" }) {
+            fs::create_directories(tmp.path / name / "old");
+            commands::writeFileBytes(tmp.path / name / "old" / "untouched", "old bytes");
+        }
+        const auto beforeBackup = volumeBytes(tmp.path / "backups");
+        const auto beforeTrash = volumeBytes(tmp.path / "trash");
+        fs::permissions(tmp.path / "backups", fs::perms::none);
+        fs::permissions(tmp.path / "trash", fs::perms::none);
+        auto rec = recorderAt(tmp.path / "history");
+        const auto error = run(*rec, "clear", "clear", volume, [&] {
+            commands::clear(volume, { 4 }, { .write = options(rec, "clear") });
+        });
+        fs::permissions(tmp.path / "backups", fs::perms::owner_all);
+        fs::permissions(tmp.path / "trash", fs::perms::owner_all);
+        CHECK_EQ(error, std::string());
+        CHECK(volumeBytes(tmp.path / "backups") == beforeBackup);
+        CHECK(volumeBytes(tmp.path / "trash") == beforeTrash);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM ops"), 1);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM blobs"), 1);
+    }
+
     // --- trim: the take kept, the landed take named, both bodies, op done ---
     {
         TempDir tmp;
@@ -139,7 +215,7 @@ int main()
 
         const std::string error = run(*rec, "op-trim", "trim", volume, [&] {
             commands::trim(volume, 4, 0, 66150,
-                           { .write = options(rec, "op-trim", tmp.path / "trash") });
+                           { .write = options(rec, "op-trim") });
         });
         CHECK_EQ(error, std::string());
 
@@ -162,8 +238,8 @@ int main()
         CHECK(bodies.step());
         CHECK(bodies.blob(0) == bodyBefore);
         CHECK(bodies.blob(1) == rc0::slotBody(commands::readMemory(volume), 4));
-        // and the transitional folder has it too
-        CHECK(commands::readFileBytes(tmp.path / "trash" / "op-trim" / "004_1" / "take.wav") == original);
+        CHECK(!fs::exists(tmp.path / "trash"));
+        CHECK(!fs::exists(tmp.path / "backups"));
     }
 
     // --- rename and swap: bodies only, no audio moved into the history ---
@@ -173,11 +249,11 @@ int main()
         putWav(volume, 3, "003_1.WAV", 132300);
         auto rec = recorderAt(tmp.path / "history");
         CHECK_EQ(run(*rec, "op-rename", "rename", volume, [&] {
-                     commands::rename(volume, 3, "Intro", options(rec, "op-rename", tmp.path / "trash"));
+                     commands::rename(volume, 3, "Intro", options(rec, "op-rename"));
                  }),
                  std::string());
         CHECK_EQ(run(*rec, "op-swap", "swap", volume, [&] {
-                     commands::swap(volume, 3, 7, options(rec, "op-swap", tmp.path / "trash"));
+                     commands::swap(volume, 3, 7, options(rec, "op-swap"));
                  }),
                  std::string());
         sqlite::Db& db = rec->store().db();
@@ -199,7 +275,7 @@ int main()
         putWav(volume, 4, "take.wav", 132300);
         auto rec = recorderAt(tmp.path / "history");
         const std::string error = run(*rec, "op-bad", "trim", volume, [&] {
-            commands::trim(volume, 4, 500, 100, { .write = options(rec, "op-bad", tmp.path / "trash") });
+            commands::trim(volume, 4, 500, 100, { .write = options(rec, "op-bad") });
         });
         CHECK(error.find("bad frame range") != std::string::npos);
         sqlite::Db& db = rec->store().db();
@@ -218,32 +294,13 @@ int main()
         auto rec = recorderAt(tmp.path / "history");
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read, fs::perm_options::replace);
         const std::string error = run(*rec, "op-half", "clear", volume, [&] {
-            commands::clear(volume, { 6 }, { .write = options(rec, "op-half", tmp.path / "trash") });
+            commands::clear(volume, { 6 }, { .write = options(rec, "op-half") });
         });
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all, fs::perm_options::replace);
         CHECK(!error.empty());
         sqlite::Db& db = rec->store().db();
         CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-half'"), std::string("failed"));
         CHECK(rec->store().takeBytes(HistoryStore::contentHash(original)) == original);
-    }
-
-    // --- the history keeps the take before the folder does ---
-    {
-        // The folder refuses (a file squats on its directory). The history must
-        // already hold the take by then, and the card must not have changed.
-        TempDir tmp;
-        const fs::path volume = makePedal(tmp.path);
-        putWav(volume, 4, "take.wav", 132300);
-        const std::string original = commands::readFileBytes(volume::wavDir(volume, 4) / "take.wav");
-        commands::writeFileBytes(tmp.path / "trash", "not a directory");
-        const auto before = volumeBytes(volume);
-        auto rec = recorderAt(tmp.path / "history");
-        const std::string error = run(*rec, "op-order", "trim", volume, [&] {
-            commands::trim(volume, 4, 0, 66150, { .write = options(rec, "op-order", tmp.path / "trash") });
-        });
-        CHECK(!error.empty());
-        CHECK(rec->store().takeBytes(HistoryStore::contentHash(original)) == original);
-        CHECK(volumeBytes(volume) == before);
     }
 
     // --- a history that cannot open stops every command, card untouched ---
@@ -273,7 +330,10 @@ int main()
         const auto before = volumeBytes(volume);
         auto rec = recorderAt(tmp.path / "history");
         CHECK_THROWS(commands::trim(volume, 4, 0, 66150,
-                                    { .write = options(rec, "op-unbegun", tmp.path / "trash") }),
+                                    { .write = options(rec, "op-unbegun") }),
+                     "without having begun");
+        CHECK(volumeBytes(volume) == before);
+        CHECK_THROWS(commands::clear(volume, { 4 }, { .write = options(rec, "op-unbegun") }),
                      "without having begun");
         CHECK(volumeBytes(volume) == before);
         CHECK_THROWS(([&] {
@@ -281,6 +341,25 @@ int main()
                          rec->begin("op-twice", "rename", volume);
                      }()),
                      "already begun");
+    }
+
+    // One operation cannot archive the same slot twice: preserve both takes.
+    {
+        TempDir tmp;
+        const auto volume = makePedal(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        putWav(volume, 5, "005_1.WAV", 4410);
+        const auto first = commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV");
+        const auto write = history::makeWriteOptions(rec);
+        rec->begin(write.opId, "clear", volume);
+        commands::clear(volume, { 5 }, { .write = write });
+        putWav(volume, 5, "005_1.WAV", 8820);
+        const auto beforeSecond = volumeBytes(volume);
+        CHECK_THROWS(commands::clear(volume, { 5 }, { .write = write }), "UNIQUE");
+        CHECK(volumeBytes(volume) == beforeSecond);
+        CHECK(rec->store().takeBytes(HistoryStore::contentHash(first)) == first);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM slot_audio WHERE side = 'before'"), 1);
+        rec->finish(write.opId, "duplicate clear refused");
     }
 
     // --- sessions follow the volume ---
@@ -296,7 +375,7 @@ int main()
         for (const Step& step : { Step { "op-1", a }, Step { "op-2", a }, Step { "op-3", b } })
             CHECK_EQ(run(*rec, step.id, "rename", step.volume, [&] {
                          commands::rename(step.volume, 1, step.id,
-                                          options(rec, step.id, tmp.path / "trash"));
+                                          options(rec, step.id));
                      }),
                      std::string());
         sqlite::Db& db = rec->store().db();
@@ -342,7 +421,7 @@ int main()
                                  std::string_view(reinterpret_cast<const char*>(sourceBytes.data()),
                                                   sourceBytes.size()));
         CHECK_EQ(run(*rec, "op-push", "push", volume, [&] {
-                     commands::push(volume, source, 3, { .write = options(rec, "op-push", tmp.path / "trash") });
+                     commands::push(volume, source, 3, { .write = options(rec, "op-push") });
                  }),
                  std::string());
         sqlite::Db& db = rec->store().db();
@@ -352,7 +431,7 @@ int main()
 
         // rename: the take did not move, and the row says so with its hash
         CHECK_EQ(run(*rec, "op-rename", "rename", volume, [&] {
-                     commands::rename(volume, 3, "Kept", options(rec, "op-rename", tmp.path / "trash"));
+                     commands::rename(volume, 3, "Kept", options(rec, "op-rename"));
                  }),
                  std::string());
         CHECK_EQ(text(db, "SELECT hex(hash) FROM slot_audio a JOIN ops o ON o.seq = a.op "
@@ -364,7 +443,7 @@ int main()
 
         // swap: slot 7 took the take, slot 3 holds nothing — each said in its own rows
         CHECK_EQ(run(*rec, "op-swap", "swap", volume, [&] {
-                     commands::swap(volume, 3, 7, options(rec, "op-swap", tmp.path / "trash"));
+                     commands::swap(volume, 3, 7, options(rec, "op-swap"));
                  }),
                  std::string());
         CHECK_EQ(text(db, "SELECT hex(hash) FROM slot_audio a JOIN ops o ON o.seq = a.op "
@@ -376,7 +455,7 @@ int main()
 
         // clear: the slot holds nothing afterwards, and no after-row claims it does
         CHECK_EQ(run(*rec, "op-clear", "clear", volume, [&] {
-                     commands::clear(volume, { 7 }, { .write = options(rec, "op-clear", tmp.path / "trash") });
+                     commands::clear(volume, { 7 }, { .write = options(rec, "op-clear") });
                  }),
                  std::string());
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
@@ -393,7 +472,7 @@ int main()
         putWav(volume, 12, "012_1.WAV", 132300);
         auto rec = recorderAt(tmp.path / "history");
         CHECK_EQ(run(*rec, "op-blind", "rename", volume, [&] {
-                     commands::rename(volume, 12, "Stranger", options(rec, "op-blind", tmp.path / "trash"));
+                     commands::rename(volume, 12, "Stranger", options(rec, "op-blind"));
                  }),
                  std::string());
         sqlite::Db& db = rec->store().db();
@@ -419,7 +498,7 @@ int main()
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_read,
                         fs::perm_options::replace);
         const std::string error = run(*rec, "op-failed", "rename", volume, [&] {
-            commands::rename(volume, 4, "Never", options(rec, "op-failed", tmp.path / "trash"));
+            commands::rename(volume, 4, "Never", options(rec, "op-failed"));
         });
         fs::permissions(volume::memoryPath(volume, 1), fs::perms::owner_all,
                         fs::perm_options::replace);
@@ -473,8 +552,8 @@ int main()
     // --- the wiring refuses to be built without what it needs ---
     {
         TempDir tmp;
-        CHECK_THROWS(history::withHistory(nullptr, { .opId = "x" }, nullptr), "without a recorder");
-        CHECK_THROWS(history::withHistory(recorderAt(tmp.path), {}, nullptr), "without an id");
+        CHECK_THROWS(history::withHistory(nullptr, { .opId = "x" }), "without a recorder");
+        CHECK_THROWS(history::withHistory(recorderAt(tmp.path), {}), "without an id");
         CHECK_THROWS(HistoryRecorder(tmp.path, "RC-5", nullptr), "needs a clock");
     }
 

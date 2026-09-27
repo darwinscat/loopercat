@@ -8,7 +8,7 @@ order between milestones mostly is not.
 
 Working today, all hardware-checkpointed: slot browser with live refresh,
 playback with waveform + markers, the full mutation set (rename, one-shot,
-tempo+bars, push/pull, trim with gapless preview, clear, drag-to-swap), config backups,
+tempo+bars, push/pull, trim with gapless preview, clear, drag-to-swap), history,
 junk hygiene, device-truth lifecycle (ghost detection, auto-cleanup,
 auto-mount), **Connect/Disconnect driving the pedal over cracked sysex**, the
 write-generation discipline, native menu bar, About. Format knowledge that
@@ -92,7 +92,7 @@ after the flip.
   cache lies). Mitigated by the lifecycle machine + #21; documented in M2.
   A macOS update can shift this ground — the known-issues doc keeps us honest.
 - **Single hardware sample**: everything is verified against one RC-5 on one
-  firmware. Beta feedback is the real matrix; the doctor + backups keep
+  firmware. Beta feedback is the real matrix; the doctor + history keep
   early users safe.
 - **Sysex writes on shared registers**: the storage-mode register is
   understood; anything from the future RQ1 sweep ships read-only first.

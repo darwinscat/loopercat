@@ -46,7 +46,7 @@ int main()
         CHECK_EQ(ids.size(), static_cast<std::size_t>(10000));
     }
 
-    // The label leads: backups/ stays sorted by time in any file manager.
+    // The label leads, keeping the operation id readable.
     {
         const std::string label = "2026-09-01T21-35-46";
         const std::string id = make(label);

@@ -37,15 +37,13 @@
 namespace loopercat::history::retention
 {
 
-// The limit's default: 5 GB (Alisa, 2026-09-24). It was 2 GB until the
-// folders from before the store were imported on a real machine and put
-// 1.7 GB in on day one.
+// The default history storage limit: 5 GB.
 inline constexpr std::int64_t kDefaultLimit = std::int64_t { 5 } << 30;
 
 // One blob whose bytes the store keeps, as the store reports it.
 struct Blob {
     std::string hash;
-    std::string label;        // for a person: "slot 14 take.wav", or a legacy file's path
+    std::string label;        // for a person: "slot 14 take.wav"
     std::int64_t size = 0;
     std::int64_t created = 0; // when the bytes were first kept, ms since the epoch
     int references = 0;       // rows naming the hash, both sides
@@ -182,7 +180,7 @@ inline std::string describe(const Plan& plan)
 
 // --- how many weeks the room lasts, at the rate the history has grown ---
 
-// One take or document the store kept, when and how big — released since or
+// One take the store kept, when and how big — released since or
 // not: the bytes were written then, and the rate is about writing.
 struct Write {
     std::int64_t at = 0;

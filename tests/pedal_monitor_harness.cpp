@@ -23,6 +23,7 @@
 // change, because the scratch volume lives on a real disk.
 
 #include "support.hpp"
+#include "archive_support.hpp"
 
 #include "../app/PedalWorker.h"
 
@@ -163,8 +164,7 @@ int main()
     // change — no wait for the next poll.
     monitor.enqueue({ "Rename slot 7", 7,
                       [](const volume::fs::path& volumePath) {
-                          commands::rename(volumePath, 7, "Via Worker",
-                                           { .skipBackup = true });
+                          commands::rename(volumePath, 7, "Via Worker", testkit::unrecordedWrite());
                       } });
     CHECK(pumpUntil([&] { return !jobResults.empty(); }, 5000));
     if (!jobResults.empty()) {
@@ -182,8 +182,7 @@ int main()
     // 5. A failing mutation surfaces its typed error and changes nothing.
     monitor.enqueue({ "Rename slot 7 badly", 7,
                       [](const volume::fs::path& volumePath) {
-                          commands::rename(volumePath, 7, "ThirteenChars",
-                                           { .skipBackup = true });
+                          commands::rename(volumePath, 7, "ThirteenChars", testkit::unrecordedWrite());
                       } });
     CHECK(pumpUntil([&] { return jobResults.size() >= 2; }, 5000));
     if (jobResults.size() >= 2)
@@ -229,8 +228,7 @@ int main()
 
         ghostWorker.enqueue({ "Rename slot 7 into the void", 7,
                               [](const volume::fs::path& volumePath) {
-                                  commands::rename(volumePath, 7, "Phantom",
-                                                   { .skipBackup = true });
+                                  commands::rename(volumePath, 7, "Phantom", testkit::unrecordedWrite());
                               } });
         CHECK(pumpUntil([&] { return !ghostResults.empty(); }, 5000));
         if (!ghostResults.empty())

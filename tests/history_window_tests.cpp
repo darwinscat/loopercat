@@ -16,6 +16,7 @@
 #include "support.hpp"
 
 #include "../app/HistoryWindow.h"
+#include "../app/AppMenu.h"
 
 #include <cstdint>
 #include <string>
@@ -53,6 +54,34 @@ std::vector<HistoryWindow::Row> timeline()
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
+
+    // Maintenance exposes only the card sweep, and keeps its write gate.
+    {
+        bool connected = true;
+        bool writable = true;
+        int cleaned = 0;
+        AppMenu menu({ .cleanJunk = [&] { ++cleaned; },
+                       .maintenanceEnabled = [&] { return connected; },
+                       .cleanJunkEnabled = [&] { return writable; } });
+        const auto maintenance = menu.getMenuForIndex(1, "Maintenance");
+        CHECK_EQ(maintenance.getNumItems(), 1);
+        juce::PopupMenu::MenuItemIterator items(maintenance);
+        while (items.next()) {
+            const auto& item = items.getItem();
+            CHECK_EQ(item.text, juce::String("Clean junk from the pedal"));
+            CHECK(item.isEnabled);
+            menu.menuItemSelected(item.itemID, 1);
+        }
+        CHECK_EQ(cleaned, 1);
+        for (const bool cardWritable : { true, false }) {
+            writable = cardWritable;
+            connected = !cardWritable;
+            const auto disabled = menu.getMenuForIndex(1, "Maintenance");
+            juce::PopupMenu::MenuItemIterator disabledItems(disabled);
+            while (disabledItems.next())
+                CHECK(!disabledItems.getItem().isEnabled);
+        }
+    }
 
     // --- empty: says so, offers nothing ---
     {
@@ -194,18 +223,6 @@ int main()
         CHECK_EQ(window.pinButtonText(), juce::String("Unpin"));
     }
 
-    // --- a row's hint is its tooltip, and only its ---
-    {
-        HistoryWindow window;
-        auto rows = timeline();
-        rows[0].hint = "trash/2026-08-01T17-55-07";
-        window.show(rows);
-        CHECK_EQ(window.hintAt(0), juce::String("trash/2026-08-01T17-55-07"));
-        CHECK_EQ(window.hintAt(1), juce::String());
-        CHECK_EQ(window.hintAt(99), juce::String());
-        window.setFilter(7); // the hinted row is not visible now
-        CHECK_EQ(window.hintAt(0), juce::String());
-    }
 
     // --- busy: nothing is offered, and nothing goes out ---
     {

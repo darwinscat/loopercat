@@ -28,8 +28,8 @@
 // card, as one operation of kind 'undo' or 'redo' that names its target
 // (ops.reverts) before the first byte is written. Everything the run does
 // goes through the core's own primitives — restore for a slot, swap for a
-// swap, the settings pair for a section — so every write is backed up,
-// journalled into the history and verified exactly as any other operation's,
+// swap, the settings pair for a section — so every write is recorded in the
+// history and verified exactly as any other operation's,
 // and the undo can be undone in turn.
 //
 // The press and the run are apart in time: the plan the dialog showed was

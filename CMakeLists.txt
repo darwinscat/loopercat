@@ -214,7 +214,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         # GCC's -Wextra still fires -Wmissing-field-initializers on C++20
         # DESIGNATED initializers, where omitting a member is the whole point
         # and the standard value-initializes it. The suites use them heavily
-        # ({ .trashRoot = ..., .write = ... }), so GCC 13 rejected the core
+        # ({ .dest = ..., .write = ... }), so GCC 13 rejected the core
         # tier outright with 56 -Werror hits while Clang and MSVC saw nothing.
         # Suppressed for GNU only: the aggregate case Clang does warn about
         # stays covered by the macOS and Windows lanes.
@@ -442,7 +442,6 @@ target_sources(LooperCat PRIVATE
     app/HistoryStoragePanel.cpp
     app/history/HistoryRecorder.cpp
     app/history/HistoryStore.cpp
-    app/history/LegacyImport.cpp
     app/history/TakeAudition.cpp
     app/MainComponent.cpp
     app/Mp3AudioFormat.cpp
@@ -906,26 +905,6 @@ target_link_libraries(history_schema_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_schema_tests COMMAND history_schema_tests)
-
-# The legacy import: the backups/ and trash/ folders from before the store,
-# recorded once, byte-exact, with nothing invented and nothing touched.
-juce_add_console_app(legacy_import_tests PRODUCT_NAME "legacy_import_tests")
-target_sources(legacy_import_tests PRIVATE tests/legacy_import_tests.cpp
-    app/history/HistoryStore.cpp
-    app/history/LegacyImport.cpp)
-target_compile_definitions(legacy_import_tests PRIVATE
-    JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
-    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
-target_link_libraries(legacy_import_tests PRIVATE
-    loopercat::core
-    loopercat_sqlite3
-    nlohmann_json::nlohmann_json
-    juce::juce_core
-    juce::juce_cryptography
-    juce::juce_recommended_config_flags
-    juce::juce_recommended_warning_flags)
-add_test(NAME legacy_import_tests COMMAND legacy_import_tests)
 
 # An archived take as a file (issue #50): byte-exact, one file per hash, no
 # file without bytes, swept when the object goes or the next run starts.

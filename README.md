@@ -18,7 +18,7 @@ Built on the RC-5 file-format knowledge of
 [rc5cat](https://github.com/AliceLafox/rc5cat).
 
 > **Beta.** Everything below is verified against real hardware, and every write
-> runs behind automatic backups — but treat v0.x like the beta it is.
+> records changes in the history — but treat v0.x like the beta it is.
 
 ## What it does
 
@@ -39,8 +39,8 @@ Built on the RC-5 file-format knowledge of
 - **Move audio.** Push a WAV, MP3, AIFF, FLAC or Ogg into an empty slot or
   replace an occupied one (converted to the pedal's canonical float32 format;
   MP3s are decoded gapless, so the downbeat lands on frame one; the old loop
-  goes to the app's trash first), pull any loop out as a standard WAV.
-- **Stay safe.** Config backups before every mutation, write-generation counters
+  is kept in the history first), pull any loop out as a standard WAV.
+- **Stay safe.** History records every mutation, write-generation counters
   matching the pedal's own discipline, junk-file hygiene (macOS AppleDouble
   droppings), a doctor that checks card consistency — and honest ghost detection
   with automatic cleanup when the pedal leaves without saying goodbye.
@@ -72,7 +72,7 @@ The official BOSS TONE STUDIO for RC exists and works with the RC-5, and it
 does one thing well: it uploads a WAV — and flips the pedal into STORAGE mode
 over USB-MIDI (the SysEx trick our Connect button honestly learned by watching
 it). Everything else on this page — slot names, tempo repair, listening,
-trimming, backups, the card doctor — it simply does not do. If you came here
+trimming, history, the card doctor — it simply does not do. If you came here
 looking for a BOSS TONE STUDIO alternative for the RC-5: yes, this is that.
 
 ## Install

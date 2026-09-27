@@ -31,8 +31,7 @@
 // live to undone and is itself transparent; a finished 'redo' row moves the
 // operation its target had undone back to live. A row that never finished
 // is neither, and one that was cut off may have changed the card, so it
-// closes the way back like a step forward. A legacy row has no state to come
-// back from and is never a target. Cmd-Z targets the newest live operation;
+// closes the way back like a step forward. Cmd-Z targets the newest live operation;
 // Cmd-Shift-Z targets the newest undo row still standing — reverting it is
 // the redo.
 //
@@ -66,7 +65,7 @@ inline Targets cursor(const std::vector<Entry>& entries)
             undone.clear(); // the card may have changed: no way back past here
             continue;
         }
-        if (e.status != "done" || e.actor == "legacy")
+        if (e.status != "done")
             continue;
         if (e.kind == "undo") {
             if (!e.reverts)
@@ -104,7 +103,7 @@ enum class Refusal {
     none,
     noSuchOperation,
     notFinished,
-    nothingToPutBack, // a legacy row, or an operation that touched no slot
+    nothingToPutBack, // an operation that changed no slot or setting
     stateNotRecorded, // an audio-changing operation whose take before it is unknown
     takeNotKept       // the take the slot held before is no longer in the store
 };
@@ -180,8 +179,6 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
     const HistoryStore::CardEntry& entry = timeline[index];
     if (entry.status != "done")
         return refuse(Refusal::notFinished, "that operation did not finish");
-    if (entry.actor == "legacy")
-        return refuse(Refusal::nothingToPutBack, "a row from before the history has no state to go back to");
     if (entry.slots.empty() && entry.system.empty())
         return refuse(Refusal::nothingToPutBack, "that operation changed no slot and no setting");
 

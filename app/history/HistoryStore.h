@@ -88,21 +88,18 @@ public:
         std::optional<std::string> beforeBody;
         std::optional<std::string> afterBody;
         std::optional<int> swappedWith; // the slot a swap exchanged with
-        // The take this row's state holds. A legacy row has no state of its
-        // own, so it offers the take it archived instead — that is the only
-        // take it knows about.
+        // The state's take, or the archived take when the slot was emptied.
         std::string takeName;
         std::optional<std::string> takeHash;
         bool takeKept = false; // the bytes are in the store: it can be played
         // The take is the one the operation left in the slot (its 'after'
         // side). False when the row offers the take it archived instead — a
-        // clear, an undo that emptied the slot, a legacy row: that take is
+        // clear or an undo that emptied the slot. That take is
         // not on the card, whatever the row's place in the timeline.
         bool takeIsAfter = false;
     };
 
-    // Ordered by time, not by insertion: rows imported from the folders that
-    // predate the store are written last and belong first (#72).
+    // Ordered by time, then by operation sequence.
     std::vector<TimelineEntry> slotTimeline(int slot);
 
     // --- reads: what the tests look at today, and what #50 builds on ---
@@ -118,34 +115,6 @@ public:
                                               std::int64_t size);
 
     sqlite::Db& db() { return db_; }
-
-    // --- legacy folders (LegacyImport.h): the store's side of the import ---
-
-    // Which op an id names, if any: its row and who made it. The import tells
-    // a folder the app already recorded from one it must adopt by this.
-    struct OpIdentity {
-        std::int64_t seq;
-        std::string actor;
-    };
-    std::optional<OpIdentity> findOp(const std::string& opId);
-
-    // An operation that ran before the history existed. Recorded by 'legacy',
-    // kind 'legacy', done: the folder is there, which is all such an op can
-    // say about itself. `note` names the folders it was read from.
-    std::int64_t recordLegacyOp(std::int64_t session, const std::string& opId, std::int64_t atMs,
-                                const std::string& note);
-
-    // One file out of a legacy folder, in one transaction: its bytes kept once
-    // (the content-addressed rule keepAudio follows), for a take the
-    // slot_audio row naming it as the slot's 'before', and the legacy_files
-    // row that says this path is done. `path` is the file's path under the
-    // data home, '/'-separated; a path already recorded is refused by the
-    // ledger's key. Returns whether the bytes were new to the store.
-    bool keepLegacyTake(std::int64_t op, const std::string& path, int slot, int track,
-                        const std::string& name, std::string_view bytes, std::int64_t nowMs);
-    bool keepLegacyDocument(std::int64_t op, const std::string& path, std::string_view bytes,
-                            std::int64_t nowMs);
-    bool legacyFileImported(const std::string& path);
 
     // --- Undo and Redo over the timeline (Undo.h): the store's side ---
 
@@ -180,7 +149,7 @@ public:
     // — what remains of the file after the takes and the pages already free.
     struct Usage {
         std::int64_t fileBytes;     // the file as it is on disk
-        std::int64_t audioBytes;    // takes and documents whose bytes are kept, each once
+        std::int64_t audioBytes;    // takes whose bytes are kept, each once
         std::int64_t otherBytes;    // rows, bodies, indexes
         std::int64_t freeBytes;     // pages the file holds but no longer uses: vacuum() returns them
         std::int64_t diskAvailable; // on the volume the file is on
@@ -210,21 +179,20 @@ public:
     // auto_vacuum=INCREMENTAL for exactly this.
     std::int64_t vacuum(int pages);
 
-    // Every take and document ever kept — when and how big, released since or
+    // Every take ever kept — when and how big, released since or
     // not — for the rate the history grows at (retention::forecast).
     std::vector<retention::Write> writes();
 
     // --- the whole card's timeline (the History window, #73) ---
 
-    // One entry per operation, ordered by time — a row imported from the
-    // folders that predate the store is written last and belongs first —
+    // One entry per operation, ordered by time,
     // with every slot the operation touched carrying the same facts
     // slotTimeline gives that slot: one story, two views. `newest` says the
     // operation is the last FINISHED one on that slot, so its state is the
     // one the slot is in — a failed or interrupted write may never have
     // reached the card, so it is not where the slot is, and its state can be
     // offered back like any other. An operation that touched no slot (it
-    // failed before the card, or kept only documents) is an entry with no
+    // failed before the card, or changed only settings) is an entry with no
     // slots.
     // What an operation did to one section of the pedal's own settings
     // (SYSTEM*.RC0, issue #73): the section's text — <CTL>...</CTL> — as the
@@ -269,7 +237,7 @@ public:
     std::vector<CardEntry> cardTimeline();
 
 
-    // --- the pedal's own settings in the history (system_changes, v4) ---
+    // --- the pedal's own settings in the history (system_changes) ---
 
     // One row per operation and section, checked on the way in: a section
     // the file has, both texts that very section (its own tags around a
@@ -286,8 +254,6 @@ private:
     // kept once; a hash already known costs nothing; one released earlier
     // (#74) gets its bytes back. Returns whether the bytes were written.
     bool keepBlob(const std::string& hash, std::string_view bytes, std::int64_t nowMs);
-    bool recordLegacyFile(std::int64_t op, const std::string& path, const char* kind,
-                          std::string_view bytes, std::int64_t nowMs, const std::string& hash);
     // What holds one kept blob, for keptBlobs and for releaseBlobs' refusal.
     struct Holds {
         bool pinned;

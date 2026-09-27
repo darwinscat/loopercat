@@ -5,7 +5,7 @@
 // over the same rule and the same words as the slot's rows. The theory: a
 // row is one operation; a swap is one row with two slots; a button is a
 // promise the row can keep. The cases are the shapes a real store produces:
-// a take whose bytes are gone, a legacy row with audio but no state, a
+// a take whose bytes are gone, an audio-only row, a
 // failed operation, an operation that touched nothing.
 
 #include "support.hpp"
@@ -133,44 +133,6 @@ int main()
         CHECK_EQ(made.front().takeHash(), std::string());
     }
 
-    // --- a row from the folders that predate the store: something to hear, nothing to go back to ---
-    {
-        Card legacy = op(500, 100, "legacy", "legacy");
-        legacy.note = "trash/2026-09-01T21-35-46";
-        Card::Slot slot = touched(legacy, 5, false);
-        slot.facts.takeName = "005_1.WAV";
-        slot.facts.takeHash = std::string(32, '\x44');
-        slot.facts.takeKept = true;
-        legacy.slots = { slot };
-
-        const auto made = rows::forCard({ legacy });
-        CHECK_EQ(made.front().action, std::string("Before the history"));
-        CHECK_EQ(made.front().detail, std::string("a take was replaced (from the old folders)"));
-        CHECK_EQ(made.front().hint, std::string("trash/2026-09-01T21-35-46"));
-        CHECK(made.front().playable());
-        CHECK(!made.front().restorable());
-        CHECK_EQ(made.front().state, std::string());
-        // even as the last row on its slot it is not where the slot is
-        Card last = legacy;
-        last.slots[0].newest = true;
-        const auto asNewest = rows::forCard({ last });
-        CHECK_EQ(asNewest.front().takes.front().audio, std::string("take kept"));
-        CHECK(asNewest.front().playable());
-    }
-
-    // --- a legacy row that kept only documents: a row with no slots, its own name ---
-    {
-        Card legacy = op(501, 200, "legacy", "legacy");
-        legacy.note = "backups/2026-07-22T17-36-55";
-        const auto made = rows::forCard({ legacy });
-        CHECK_EQ(made.front().action, std::string("Before the history"));
-        CHECK_EQ(made.front().detail, std::string("a backup was taken (from the old folders)"));
-        CHECK_EQ(made.front().hint, std::string("backups/2026-07-22T17-36-55"));
-        CHECK(made.front().slots().empty());
-        CHECK(!made.front().playable());
-        CHECK(!made.front().restorable());
-    }
-
     // --- the operation's own status and origin are said, plainly ---
     {
         Card failed = op(7, 7000, "trim", "app", "failed");
@@ -192,7 +154,6 @@ int main()
         odd.note = "far";
         CHECK_EQ(rows::forCard({ odd }).front().action, std::string("teleport"));
         CHECK_EQ(rows::forCard({ odd }).front().detail, std::string("far"));
-        CHECK_EQ(rows::forCard({ odd }).front().hint, std::string());
     }
 
     // --- Restore needs every recorded state to go back; Play needs one kept take ---

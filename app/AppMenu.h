@@ -13,7 +13,7 @@
 // (the platform-standard home), Edit carries Undo and Redo over the history
 // (#73) — each item names what it would put back, "Undo trim of slot 14" —
 // Window opens the card's whole history, Maintenance carries the service actions
-// (config backup, junk sweep) that would otherwise crowd the toolbar — the
+// (junk sweep) that would otherwise crowd the toolbar — the
 // toolbar keeps only the primary Connect / Disconnect story — and Help holds
 // "Feed the Cat", the family tip jar. Windows/Linux have no menu bar; there
 // the tip jar lives in the version badge's About popover.
@@ -25,11 +25,7 @@ class AppMenu final : public juce::MenuBarModel
 public:
     struct Actions {
         std::function<void()> about;
-        std::function<void()> backup;
         std::function<void()> cleanJunk;
-        // The folders from before the history (#72): the store is on this
-        // computer, so the item needs no pedal and is never greyed out.
-        std::function<void()> importLegacy;
         std::function<void()> feedTheCat;         // Help → the family tip jar, in the browser
         std::function<bool()> maintenanceEnabled; // pedal connected and idle
         std::function<bool()> cleanJunkEnabled;   // and the card is one this app writes to
@@ -43,7 +39,7 @@ public:
         std::function<bool()> undoEnabled;
         std::function<bool()> redoEnabled;
         // Window → History: the whole card's timeline. The store is on this
-        // computer, so like the import it needs no pedal.
+        // computer, so it needs no pedal.
         std::function<void()> openHistory;
     };
 
@@ -88,13 +84,10 @@ public:
             menu.addItem(kOpenHistory, "History", true);
         } else if (name == "Maintenance") {
             const bool enabled = actions_.maintenanceEnabled && actions_.maintenanceEnabled();
-            menu.addItem(kBackup, "Backup configs", enabled);
             // The sweep writes to the card: a card of a model this app only
             // reads keeps its junk, and the item says so by staying grey.
             menu.addItem(kCleanJunk, "Clean junk from the pedal",
                          enabled && actions_.cleanJunkEnabled && actions_.cleanJunkEnabled());
-            menu.addSeparator();
-            menu.addItem(kImportLegacy, "Import the folders from before the history", true);
         } else if (name == "Help") {
             menu.addItem(kFeedTheCat, "Feed the Cat");
         }
@@ -103,12 +96,8 @@ public:
 
     void menuItemSelected(int itemId, int) override
     {
-        if (itemId == kBackup && actions_.backup)
-            actions_.backup();
-        else if (itemId == kCleanJunk && actions_.cleanJunk)
+        if (itemId == kCleanJunk && actions_.cleanJunk)
             actions_.cleanJunk();
-        else if (itemId == kImportLegacy && actions_.importLegacy)
-            actions_.importLegacy();
         else if (itemId == kFeedTheCat && actions_.feedTheCat)
             actions_.feedTheCat();
         else if (itemId == kUndo && actions_.undo)
@@ -120,7 +109,7 @@ public:
     }
 
 private:
-    enum { kBackup = 1, kCleanJunk, kImportLegacy, kFeedTheCat, kUndo, kRedo, kOpenHistory };
+    enum { kCleanJunk = 1, kFeedTheCat, kUndo, kRedo, kOpenHistory };
 
     const Actions actions_;
 

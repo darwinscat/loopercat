@@ -60,7 +60,7 @@ inline constexpr double kPeakCeilingDb = -1.0;
 
 // A track already within this much of the target is left alone: rewriting
 // every sample for a fraction of an LU nobody can hear would spend bytes,
-// a trash copy and a pedal write generation on nothing. Shared policy of the
+// an archive copy and a pedal write generation on nothing. Shared policy of the
 // import path and the on-card normalize command.
 inline constexpr double kAlreadyAtTargetLu = 0.2;
 

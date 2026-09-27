@@ -28,16 +28,12 @@
 //                audio, never "we did not look". A hash is absent only when
 //                the bytes are strange to the store — a take the pedal
 //                recorded while the app was away — and is never guessed.
-//                Legacy rows (actor = 'legacy') promise none of this
 //   blobs_meta   what the store keeps, and what is pinned or released
 //   blobs        the bytes, by content hash — never without their blobs_meta
 //                row, which the foreign key enforces
-//   legacy_files (version 2) the files the legacy import took out of the
-//                backups/ and trash/ folders, by path: the import's ledger,
-//                so a folder is recorded once however often it is offered
-//   ops.pinned   (version 3) a pinned operation holds every take its rows
+//   ops.pinned   a pinned operation holds every take its rows
 //                name against release (#74)
-//   system_changes (version 4) what an operation did to the pedal's own
+//   system_changes what an operation did to the pedal's own
 //                settings, per section — before and after, so it can be
 //                undone like a slot change
 //
@@ -63,16 +59,12 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 4;
+inline constexpr std::int64_t kVersion = 5;
 
-// The schema as the sequence of its versions: step N takes a store at version
-// N to version N+1. A fresh store runs every step in order, so a store created
-// today and one migrated from version 1 hold the same tables by construction —
-// there is no separate "current schema" for the upgrades to drift from. A
-// step, once released, is never edited: stores in the field sit at some
-// version, and the only way forward for them is the next step.
+// Version 5 is the first supported store. Future steps append to this array;
+// kSteps[N] creates version kBaseVersion + N in the same transaction.
+inline constexpr std::int64_t kBaseVersion = 5;
 inline constexpr const char* kSteps[] = {
-// 0 -> 1: the timeline and the bytes.
 R"sql(
 CREATE TABLE cards(
     id          INTEGER PRIMARY KEY,
@@ -95,11 +87,12 @@ CREATE TABLE ops(
     id      TEXT    NOT NULL UNIQUE,
     session INTEGER NOT NULL REFERENCES sessions(id),
     kind    TEXT    NOT NULL,
-    actor   TEXT    NOT NULL CHECK (actor IN ('app', 'pedal', 'legacy')),
+    actor   TEXT    NOT NULL CHECK (actor IN ('app', 'pedal')),
     status  TEXT    NOT NULL CHECK (status IN ('pending', 'done', 'failed', 'interrupted')),
     at      INTEGER NOT NULL,
     reverts INTEGER REFERENCES ops(seq),
-    note    TEXT
+    note    TEXT,
+    pinned  INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))
 ) STRICT;
 
 CREATE TABLE slot_changes(
@@ -136,38 +129,6 @@ CREATE TABLE blobs(
     hash  BLOB PRIMARY KEY REFERENCES blobs_meta(hash),
     bytes BLOB NOT NULL
 ) STRICT;
-)sql",
-
-// 1 -> 2: the legacy import's ledger (LegacyImport.h). `path` is the file's
-// path under the data home, '/'-separated; `op` the legacy op it was recorded
-// under; `kind` what the file was — a take out of trash/ or a document out of
-// backups/; `hash` the bytes it put through the store, so the folder's fate
-// (#74) can be decided by comparing, never by trusting.
-R"sql(
-CREATE TABLE legacy_files(
-    path     TEXT    PRIMARY KEY,
-    op       INTEGER NOT NULL REFERENCES ops(seq),
-    kind     TEXT    NOT NULL CHECK (kind IN ('take', 'document')),
-    hash     BLOB    NOT NULL REFERENCES blobs_meta(hash),
-    imported INTEGER NOT NULL
-) STRICT;
-CREATE INDEX legacy_files_by_op ON legacy_files(op);
-)sql",
-
-// 2 -> 3: a pin on an operation (issue #73's "pin a row"): while a row naming
-// a take is pinned, freeing space (#74) never releases its bytes. Added as a
-// column with a default, so every row that exists is unpinned, as it was.
-R"sql(
-ALTER TABLE ops ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));
-)sql",
-
-// 3 -> 4: the pedal's own settings (SYSTEM*.RC0) in the history — one row
-// per operation and section, the section's text as the card held it before
-// the write and as the write left it. The section, not the whole file: the
-// pedal restamps the file's trailer on its own, and a diff of whole files
-// would be noise. Small text in the row, not a blob: nothing here holds
-// bytes, and freeing space never looks at it.
-R"sql(
 CREATE TABLE system_changes(
     op      INTEGER NOT NULL REFERENCES ops(seq),
     section TEXT    NOT NULL CHECK (section IN ('SETUP', 'MIDI', 'CTL')),
@@ -178,8 +139,8 @@ CREATE TABLE system_changes(
 )sql",
 };
 
-static_assert(sizeof(kSteps) / sizeof(kSteps[0]) == kVersion,
-              "one step per version: kSteps[N] takes a store from version N to N + 1");
+static_assert(sizeof(kSteps) / sizeof(kSteps[0]) == kVersion - kBaseVersion + 1,
+              "one step per supported version");
 
 inline std::int64_t pragmaInteger(sqlite::Db& db, const std::string& pragma)
 {
@@ -197,23 +158,36 @@ inline std::string pragmaText(sqlite::Db& db, const std::string& pragma)
     return read.text(0);
 }
 
+inline void requireSupportedVersion(sqlite::Db& db)
+{
+    const std::int64_t found = pragmaInteger(db, "main.user_version");
+    if (found < 0)
+        throw Error("the history has an invalid negative store version " + std::to_string(found));
+    if (found > kVersion)
+        throw Error("the history was written by a newer LooperCat (store version "
+                    + std::to_string(found) + ", this one reads up to "
+                    + std::to_string(kVersion) + ")");
+    if (found > 0 && found < kBaseVersion)
+        throw Error("This is a preview store. Delete "
+                    + std::string(sqlite3_db_filename(db.raw(), "main"))
+                    + " to start a new history.");
+}
+
 // Brings a freshly opened store to version kVersion, or refuses. Idempotent:
 // an up-to-date store is left exactly as it is. The steps from the version
 // found to kVersion run in one transaction with the version stamp, so a store
 // is at a version it fully has, or untouched — never between two.
 inline void migrate(sqlite::Db& db)
 {
+    requireSupportedVersion(db);
     const std::int64_t found = pragmaInteger(db, "main.user_version");
-    if (found > kVersion)
-        throw Error("the history was written by a newer LooperCat (store version "
-                    + std::to_string(found) + ", this one reads up to "
-                    + std::to_string(kVersion) + ")");
     if (found == kVersion)
         return;
 
     sqlite::Transaction tx(db);
-    for (std::int64_t version = found; version < kVersion; ++version)
-        db.exec(kSteps[version]);
+    for (std::int64_t version = found == 0 ? kBaseVersion : found + 1;
+         version <= kVersion; ++version)
+        db.exec(kSteps[version - kBaseVersion]);
     db.exec("PRAGMA main.user_version = " + std::to_string(kVersion));
     tx.commit();
 }

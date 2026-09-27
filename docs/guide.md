@@ -142,8 +142,8 @@ not for settings.
 
 Select a region in the waveform with the markers and the player previews the
 cut **gaplessly** — you hear the loop exactly as it will land on the pedal.
-**Trim** commits, **Reset** drops the markers. The original WAV moves to the
-app's trash folder first — that is your undo.
+**Trim** commits, **Reset** drops the markers. The original WAV is kept in the
+history — that is your undo.
 
 ## Downmix to mono, and choosing an output jack
 
@@ -163,7 +163,7 @@ A few things worth knowing:
 
 - Changing your mind is free. A loop already sitting on OUTPUT A can be moved
   to OUTPUT B, or spread back across both, without losing any level.
-- The stereo original moves to the app's trash first, exactly like a replace —
+- The stereo original is kept in the history, exactly like a replace —
   that is your undo. Folding is not reversible inside the slot itself: once
   left and right are one signal, they stop being separable.
 - Nothing else about the loop changes — same length, same tempo, same bar
@@ -188,7 +188,7 @@ Three ways to use it:
   target*. Off by default: off means files the pedal accepts are written
   byte-exact, as always. On, every pushed file lands at the target.
 - **One slot** — right-click a loaded slot → **Normalize to -18 LUFS…**. The
-  original WAV moves to the app's trash first — that is your undo.
+  original WAV is kept in the history — that is your undo.
 - **Several slots** — Cmd/Ctrl-click or Shift-click rows to select them,
   right-click the selection → **Normalize N slots…**. Each loop gets its own
   gain; loops already at the target are left untouched. While the batch runs,
@@ -234,7 +234,7 @@ A few things worth knowing:
   a file on the pedal: WAV, MP3, AIFF, FLAC or Ogg. Whatever goes in is
   converted to the pedal's canonical format on the way in (MP3s decode
   gapless — no encoder-delay silence before the downbeat, no gap at the loop
-  seam); when replacing, the old loop goes to the app's trash first.
+  seam); when replacing, the old loop is kept in the history.
 - **Pull to folder…** — copy a loop off the pedal as a standard WAV.
 
 ## Swap
@@ -246,22 +246,21 @@ edge.
 
 ## Clear
 
-Right-click → **Clear slot…**, then choose: **Move to trash** (default — the
-WAV is kept in the app's trash folder on this computer, your undo) or delete
-outright.
+Right-click → **Clear slot…**, then confirm **Clear**. The slot returns to
+factory state and the take is kept in the history on this computer. Use
+**Undo** to put it back.
 
 ## Maintenance menu
 
-- **Backup configs** — snapshot the pedal's configuration files to the app's
-  data folder, on demand. Mutations also back up what they touch, every time.
 - **Clean junk** — sweep the desktop droppings (macOS AppleDouble `._*` files and
   friends) off the card. The app also sweeps automatically after its own
   writes; this button is for cards that lived a life before LooperCat.
 
 ## The safety model
 
-- **Backups before writes.** Every mutation backs up the slot's configuration
-  first; trim, clear and replace move the original audio to the app's trash.
+- **History before writes.** History starts empty and records changes as you
+  edit the card. Each changed slot body is recorded before the write; trim,
+  clear and replace keep the original audio in the history.
 - **Write-generation discipline.** The pedal counts writes inside each memory
   file; LooperCat continues the pedal's own count, so the pedal never meets
   numbers from the future.

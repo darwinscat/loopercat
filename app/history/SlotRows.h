@@ -41,9 +41,7 @@ struct Row {
 // A row can be restored when it recorded a state (a body), that state's take
 // can be produced (none to produce, or bytes in the store), and it is not
 // the newest row — the state the slot is already in is not somewhere to go
-// back to. A legacy row has no body at all — the folders it was read from
-// never recorded one — so it offers its take to listen to and nothing to
-// return to.
+// back to.
 // One row from what one operation recorded about one slot. `newest` is
 // whether that operation is the last one on the slot — the rule above — and
 // it is the caller's to say, because a slot's own timeline and the whole
@@ -54,9 +52,9 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
 
     // Only a take the operation LEFT in the slot can be the one on the card.
     // A row whose take is the one it archived — a clear, an undo that emptied
-    // the slot, a row from before the history — does not say what the slot
-    // holds now, even as the newest row: its take is kept, or lost.
-    const bool onCard = newest && entry.actor != "legacy" && entry.takeIsAfter;
+    // the slot — does not say what the slot holds now, even as the newest
+    // row: its take is kept, or lost.
+    const bool onCard = newest && entry.takeIsAfter;
     story::Take take = story::Take::none;
     if (hasTake)
         take = onCard          ? story::Take::onCard
@@ -118,7 +116,6 @@ struct CardRow {
     std::string action;
     std::string detail;
     std::string state;
-    std::string hint;        // for a tooltip: a legacy row's folders
     std::vector<Take> takes; // one per touched slot, ascending
 
     std::vector<int> slots() const
@@ -179,7 +176,6 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             if (row.action.empty()) {
                 row.action = slotRow.line.action;
                 row.detail = slotRow.line.detail;
-                row.hint = slotRow.line.hint;
             }
             row.takes.push_back({ touched.slot, slotRow.line.audio, slotRow.playable,
                                   slotRow.restorable, slotRow.takeHash });
@@ -205,13 +201,11 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
         }
         if (row.action.empty()) {
             // Nothing recorded about any slot: the words story::tell has for
-            // the operation itself — a row from before the history that kept
-            // only documents, or a kind this build has no words for.
+            // the operation itself, including a kind this build has no words for.
             const story::Line bare = story::tell({ .kind = entry.kind, .take = story::Take::none,
                                                    .note = entry.note });
             row.action = bare.action;
             row.detail = bare.detail.empty() ? entry.note : bare.detail; // a failed op's reason
-            row.hint = bare.hint;
         }
         out.push_back(std::move(row));
     }

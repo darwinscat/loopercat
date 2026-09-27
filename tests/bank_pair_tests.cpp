@@ -19,6 +19,7 @@
 // is; the settings pair may not, because we do not.
 
 #include "support.hpp"
+#include "archive_support.hpp"
 
 #include <loopercat/Commands.hpp>
 #include <loopercat/SystemFile.hpp>
@@ -75,11 +76,11 @@ fs::path makeCard(const fs::path& root)
     return volume;
 }
 
-commands::WriteOptions options(const fs::path& backupRoot, const std::string& opId)
+commands::WriteOptions options(const std::string& opId)
 {
     commands::WriteOptions o;
-    o.backupRoot = backupRoot;
     o.opId = opId;
+    o.journal = testkit::noOpJournal();
     return o;
 }
 
@@ -94,6 +95,17 @@ std::string withCtl2(const std::string& system, long long value)
 
 int main()
 {
+    {
+        TempDir tmp;
+        const auto volume = makeCard(tmp.path);
+        const auto first = commands::readFileBytes(volume::systemPath(volume, 1));
+        const auto second = commands::readFileBytes(volume::systemPath(volume, 2));
+        CHECK_THROWS(commands::writeSystemPair(volume, withCtl2(commands::readSystem(volume), 25), {}),
+                     "systemChanging journal");
+        CHECK(commands::readFileBytes(volume::systemPath(volume, 1)) == first);
+        CHECK(commands::readFileBytes(volume::systemPath(volume, 2)) == second);
+    }
+
     const std::string system = systemFixture();
 
     // --- reading: the counter decides, for both kinds ---
@@ -159,8 +171,7 @@ int main()
         const long long memoryNumber = sysfile::currentMemory(before);
         const std::string edited = withCtl2(before, 25);
 
-        const commands::WriteResult result =
-            commands::writeSystemPair(volume, edited, options(tmp.path / "backups", "op-1"));
+        commands::writeSystemPair(volume, edited, options("op-1"));
 
         // Both banks carry the edit, one generation apart, past the highest
         // counter the card had (101 and 102 from makeCard).
@@ -176,14 +187,6 @@ int main()
             CHECK_EQ(sysfile::currentMemory(written), memoryNumber);
         }
 
-        // The card was backed up before the write, memories included.
-        CHECK(result.backedUp.has_value());
-        CHECK(fs::exists(result.backedUp->dest / "SYSTEM1.RC0"));
-        CHECK(fs::exists(result.backedUp->dest / "MEMORY1.RC0"));
-        CHECK_EQ(sysfile::field(commands::readFileBytes(result.backedUp->dest / "SYSTEM1.RC0"),
-                                sysfile::kSectionCtl, "Ctl2"),
-                 sysfile::field(before, sysfile::kSectionCtl, "Ctl2"));
-
         // The memories are untouched by a settings write.
         CHECK(commands::readMemory(volume) == rc0::setTailMarker(testkit::syntheticMemoryText(), 2)
               || commands::readMemory(volume)
@@ -197,7 +200,7 @@ int main()
 
         // A memory document is not a settings file.
         CHECK_THROWS(commands::writeSystemPair(volume, testkit::syntheticMemoryText(),
-                                              options(tmp.path / "backups", "op-2")),
+                                              options("op-2")),
                      "memory file");
 
         // Neither bank readable: refused, and said precisely. The write reads
@@ -208,7 +211,7 @@ int main()
         for (const int fileNo : { 1, 2 })
             fs::remove(volume::systemPath(volume, fileNo));
         CHECK_THROWS(commands::writeSystemPair(volume, withCtl2(system, 25),
-                                              options(tmp.path / "backups", "op-3")),
+                                              options("op-3")),
                      "cannot read");
         for (const int fileNo : { 1, 2 })
             CHECK(!fs::exists(volume::systemPath(volume, fileNo))); // nothing was created
@@ -222,7 +225,7 @@ int main()
             commands::writeFileBytes(volume::systemPath(volume, fileNo), trailerless);
         sysfile::assertSystemFile(trailerless); // it is a settings file; only its tail is odd
         CHECK_THROWS(commands::writeSystemPair(volume, withCtl2(system, 25),
-                                              options(tmp.path / "backups", "op-4")),
+                                              options("op-4")),
                      "no write generation to continue from");
     }
 
@@ -234,7 +237,7 @@ int main()
         commands::writeFileBytes(volume / "ROLAND" / "DATA" / "._SYSTEM1.RC0", "sidecar");
         const commands::WriteResult result = commands::writeSystemPair(
             volume, withCtl2(commands::readSystem(volume), 30),
-            options(tmp.path / "backups", "op-5"));
+            options("op-5"));
         CHECK_EQ(result.swept.size(), static_cast<std::size_t>(1));
         CHECK(!fs::exists(volume / "ROLAND" / "DATA" / "._SYSTEM1.RC0"));
     }
@@ -251,7 +254,7 @@ int main()
         const std::string trailerless = rc0::splitFile(memory).document + "\n\x01\x02";
         for (const int fileNo : { 1, 2 })
             commands::writeFileBytes(volume::memoryPath(volume, fileNo), trailerless);
-        commands::writeMemoryPair(volume, memory, options(tmp.path / "backups", "op-6"));
+        commands::writeMemoryPair(volume, memory, options("op-6"));
         for (const int fileNo : { 1, 2 })
             CHECK_EQ(*rc0::tailMarker(commands::readFileBytes(volume::memoryPath(volume, fileNo))),
                      rc0::tailMarkerFor(fileNo));
@@ -285,7 +288,7 @@ int main()
 
         // One control edited: one section, named, with its bytes either side.
         std::vector<commands::SectionChange> seen;
-        commands::WriteOptions opts = options(tmp.path / "backups", "op-journal-1");
+        commands::WriteOptions opts = options("op-journal-1");
         opts.journal.systemChanging = [&seen](const std::vector<commands::SectionChange>& c) {
             seen = c;
         };
@@ -303,7 +306,7 @@ int main()
         // Two sections edited: two entries, in the file's order, SETUP first.
         const std::string twice = sysfile::setField(
             withCtl2(commands::readSystem(volume), 26), sysfile::kSectionSetup, "Contrast", 7);
-        commands::WriteOptions opts2 = options(tmp.path / "backups", "op-journal-2");
+        commands::WriteOptions opts2 = options("op-journal-2");
         opts2.journal.systemChanging = [&seen](const std::vector<commands::SectionChange>& c) {
             seen = c;
         };
@@ -315,7 +318,7 @@ int main()
         }
 
         // Writing the same document back changes no section, and says so.
-        commands::WriteOptions opts3 = options(tmp.path / "backups", "op-journal-3");
+        commands::WriteOptions opts3 = options("op-journal-3");
         opts3.journal.systemChanging = [&seen](const std::vector<commands::SectionChange>& c) {
             seen = c;
         };
@@ -332,7 +335,7 @@ int main()
         for (const int fileNo : { 1, 2 })
             bankBytes[fileNo - 1] = commands::readFileBytes(volume::systemPath(volume, fileNo));
 
-        commands::WriteOptions opts = options(tmp.path / "backups", "op-journal-4");
+        commands::WriteOptions opts = options("op-journal-4");
         opts.journal.systemChanging = [](const std::vector<commands::SectionChange>&) {
             throw Error("history is full");
         };
@@ -351,7 +354,7 @@ int main()
         const fs::path volume = makeCard(tmp.path);
         const std::string before = commands::readSystem(volume);
         long long onCardWhenCalled = -1;
-        commands::WriteOptions opts = options(tmp.path / "backups", "op-journal-5");
+        commands::WriteOptions opts = options("op-journal-5");
         opts.journal.systemChanging = [&](const std::vector<commands::SectionChange>&) {
             onCardWhenCalled =
                 sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2");

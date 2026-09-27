@@ -12,10 +12,8 @@
 //==============================================================================
 // loopercat::opid — the identity of one mutation.
 //
-// The id names the operation's backup and trash directories, so two operations
-// must never share one. The identity used to be the wall clock at one-second
-// resolution: a bulk normalize of slots 32, 33 and 34 left a single backup
-// directory for the three operations and two pre-states were lost (issue #72).
+// The id identifies an operation in the history. Two operations must never
+// share one, even when a batch starts them within the same second.
 //
 // The label a caller passes in is a readable prefix and nothing more — the core
 // compares ids, it never parses them. Uniqueness lives in the tail: a tag drawn
