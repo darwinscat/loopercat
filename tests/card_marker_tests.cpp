@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Darwin's Cat. Part of Looper Cat — see LICENSE.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// The card marker, tested from what the file IS — the six-field format in
+// The card marker, tested from what the file IS — the TOML table in
 // CardMarker.hpp and the facts measured on the pedals (2026-09-24) — not
 // from how the module is written. The rules that matter most, and that the
 // mutation checks in the PR broke on purpose:
@@ -70,16 +70,22 @@ fs::path makeCard(const fs::path& root, std::string_view family = "RC-5")
     return root;
 }
 
-// The bytes the first markers were written in (2026-09-24), ids replaced by
-// a synthetic one: the shape this module must read and reproduce.
-const std::string kKittyFile = "{\n"
-                               "  \"loopercat_card\": 1,\n"
-                               "  \"id\": \"11111111-2222-4333-8444-555555555555\",\n"
-                               "  \"name\": \"RC-5 Kitty\",\n"
-                               "  \"model\": \"RC-5\",\n"
-                               "  \"created\": \"2026-09-24T21:34:33Z\",\n"
-                               "  \"by\": \"LooperCat\"\n"
-                               "}\n";
+// A canonical marker with a synthetic id. The file contract is independent
+// of the parser/writer implementation.
+const std::string kKittyFile = R"([loopercat_card]
+format = 1
+id = "11111111-2222-4333-8444-555555555555"
+name = "RC-5 Kitty"
+model = "RC-5"
+created = "2026-09-24T21:34:33Z"
+by = "LooperCat"
+)";
+
+std::string replace(std::string text, std::string_view from, std::string_view to)
+{
+    text.replace(text.find(from), from.size(), to);
+    return text;
+}
 
 bool isHexLower(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }
 
@@ -121,7 +127,7 @@ int main()
         CHECK(!marker::read(tmp.path).has_value());
     }
 
-    // --- reading the file as it was written on the pedals ---
+    // --- reading canonical TOML ---
 
     {
         TempDir tmp;
@@ -134,99 +140,62 @@ int main()
             CHECK_EQ(card->model, "RC-5");
             CHECK_EQ(card->created, "2026-09-24T21:34:33Z");
         }
-        // The parser and the writer agree on that exact shape: a round trip
-        // reproduces the file byte for byte.
-        CHECK_EQ(marker::json::serialize(marker::json::parse(kKittyFile)), kKittyFile);
-        // A Windows editor's BOM is not a value.
-        put(marker::markerPath(tmp.path), "\xEF\xBB\xBF" + kKittyFile);
-        CHECK_EQ(marker::read(tmp.path)->name, "RC-5 Kitty");
-        // Whitespace is free, as JSON says.
-        put(marker::markerPath(tmp.path),
-            "{\"loopercat_card\":1,\"id\":\"x\",\"name\":\"n\",\"model\":\"RC-5\",\"created\":\"c\"}");
-        CHECK_EQ(marker::read(tmp.path)->id, "x");
-        // The "by" field is a courtesy, not a requirement: another writer may omit it.
+        const auto parsed = felitronics::toml::parse(kKittyFile);
+        CHECK(std::holds_alternative<felitronics::toml::Table>(parsed));
+        CHECK_EQ(felitronics::toml::write(std::get<felitronics::toml::Table>(parsed)), kKittyFile);
+        // Escapes are decoded before the name's byte limit and control rule.
+        put(marker::markerPath(tmp.path), replace(kKittyFile, "RC-5 Kitty", "caf\\u00e9 \\U0001F431"));
+        CHECK_EQ(marker::read(tmp.path)->name, std::string("caf\xc3\xa9 \xf0\x9f\x90\xb1"));
+        // The courtesy writer field is optional, as before.
+        put(marker::markerPath(tmp.path), replace(kKittyFile, "by = \"LooperCat\"\n", ""));
         CHECK_EQ(marker::read(tmp.path)->model, "RC-5");
     }
 
-    // --- a name in any script: escapes decode, raw UTF-8 passes through ---
+    // --- every refusal names the file, reason and source position ---
 
     {
         TempDir tmp;
-        // "caf\u00e9 \ud83d\udc31" — an accent and a surrogate pair (U+1F431).
-        put(marker::markerPath(tmp.path),
-            "{\"loopercat_card\":1,\"id\":\"x\",\"name\":\"caf\\u00e9 \\ud83d\\udc31\","
-            "\"model\":\"RC-5\",\"created\":\"c\"}");
-        CHECK_EQ(marker::read(tmp.path)->name, std::string("caf\xc3\xa9 \xf0\x9f\x90\xb1"));
-        put(marker::markerPath(tmp.path),
-            "{\"loopercat_card\":1,\"id\":\"x\",\"name\":\"K\xc3\xa4tzchen \\\"Kitty\\\" \\\\ \\/ \\t\","
-            "\"model\":\"RC-5\",\"created\":\"c\"}");
-        CHECK_EQ(marker::read(tmp.path)->name, std::string("K\xc3\xa4tzchen \"Kitty\" \\ / \t"));
-    }
-
-    // --- not ours, or not readable by this build: refused, with the reason ---
-
-    {
-        TempDir tmp;
-        const auto refuse = [&](std::string_view bytes, const char* reason) {
+        const auto refuse = [&](std::string_view bytes, std::string_view reason, std::string_view position) {
             put(marker::markerPath(tmp.path), bytes);
-            CHECK_THROWS(marker::read(tmp.path), reason);
+            const std::string expected = "loopercat.toml: " + std::string(reason) + " at " + std::string(position);
+            CHECK_THROWS(marker::read(tmp.path), expected);
+            // Neither mint nor rename may repair or overwrite an unreadable marker.
+            CHECK_THROWS(marker::mint(tmp.path, "new"), expected);
+            CHECK_THROWS(marker::rename(tmp.path, "new"), expected);
+            CHECK_EQ(slurp(marker::markerPath(tmp.path)), bytes);
         };
-        refuse("{\"foo\": 1}", "not a LooperCat card marker");
-        refuse("{}", "not a LooperCat card marker");
-        refuse("", "a card marker is a JSON object");
-        refuse("[]", "a card marker is a JSON object");
-        refuse("null", "a card marker is a JSON object");
-        refuse("{\"loopercat_card\": 2, \"id\": \"x\", \"name\": \"n\", \"model\": \"RC-5\", \"created\": \"c\"}",
-               "newer LooperCat (format 2)");
-        refuse("{\"loopercat_card\": 10, \"id\": \"x\"}", "newer LooperCat (format 10)");
-        refuse("{\"loopercat_card\": \"1\", \"id\": \"x\"}", "is not a number");
-        refuse("{\"loopercat_card\": 1.5, \"id\": \"x\"}", "unsupported format \"1.5\"");
-        refuse("{\"loopercat_card\": 0, \"id\": \"x\"}", "unsupported format \"0\"");
-        refuse("{\"loopercat_card\": -1, \"id\": \"x\"}", "unsupported format \"-1\"");
-        refuse("{\"loopercat_card\": 1}", "no \"id\" field");
-        refuse("{\"loopercat_card\": 1, \"id\": 7}", "\"id\" is not a string");
-        refuse("{\"loopercat_card\": 1, \"id\": \"\", \"name\": \"n\", \"model\": \"RC-5\", \"created\": \"c\"}",
-               "\"id\" field is empty");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\"}", "no \"name\" field");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\", \"name\": \"n\"}", "no \"model\" field");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\", \"name\": \"n\", \"model\": \"\", \"created\": \"c\"}",
-               "\"model\" field is empty");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\", \"name\": \"n\", \"model\": \"RC-5\"}",
-               "no \"created\" field");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\", \"name\": null, \"model\": \"RC-5\", \"created\": \"c\"}",
-               "\"name\" is not a string");
-    }
-
-    // --- broken JSON: every break is named ---
-
-    {
-        TempDir tmp;
-        const auto refuse = [&](std::string_view bytes, const char* reason) {
-            put(marker::markerPath(tmp.path), bytes);
-            CHECK_THROWS(marker::read(tmp.path), reason);
-        };
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\"", "unterminated object");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x", "unterminated string");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\"} x", "trailing bytes");
-        refuse("{\"loopercat_card\": 1, \"id\": \"x\"}}", "trailing bytes");
-        refuse("{\"loopercat_card\": 1, \"id\": {\"a\": 1}}", "nested values");
-        refuse("{\"loopercat_card\": 1, \"id\": [1]}", "nested values");
-        refuse("{\"loopercat_card\": 1, \"id\": \"a\", \"id\": \"b\"}", "duplicate field \"id\"");
-        refuse("{\"loopercat_card\": 1, \"id\": \"\\x\"}", "unknown escape");
-        refuse("{\"loopercat_card\": 1, \"id\": \"a\nb\"}", "control character");
-        refuse("{\"loopercat_card\": 1, \"id\": \"\\ud83d\"}", "high surrogate without its low half");
-        refuse("{\"loopercat_card\": 1, \"id\": \"\\ud83d\\u0041\"}", "followed by a non-surrogate");
-        refuse("{\"loopercat_card\": 1, \"id\": \"\\udc31\"}", "low surrogate on its own");
-        refuse("{\"loopercat_card\": 1, \"id\": \"\\u12\"}", "bad hex digit");
-        refuse("{\"loopercat_card\": 01}", "leading zero");
-        refuse("{\"loopercat_card\": 1.}", "digits after '.'");
-        refuse("{\"loopercat_card\": 1e}", "digits in the exponent");
-        refuse("{\"loopercat_card\": tru}", "unexpected token");
-        refuse("{loopercat_card: 1}", "expected a string");
-        refuse("{\"loopercat_card\" 1}", "':' after a field name");
-        refuse("{\"loopercat_card\": 1 \"id\": \"x\"}", "expected ',' or '}'");
-        refuse("{\"loopercat_card\": }", "unexpected token");
-        refuse("{\"loopercat_card\": 1,}", "expected a string");
+        refuse("[loopercat_card]\nname = 'Kitty'\n", "UnsupportedValue", "2:8");
+        refuse("[loopercat_card]\ncreated = 2026-09-24T21:34:33Z\n", "InvalidNumber", "2:11");
+        refuse("[loopercat_card]\nid = \"a\"\nid = \"b\"\n", "DuplicateKey", "3:1");
+        refuse("garbage", "ExpectedEquals", "1:8");
+        refuse("{\"loopercat_card\": 1}", "ExpectedKey", "1:1");
+        refuse("", "not a LooperCat card marker (no [loopercat_card] table)", "1:1");
+        refuse("[another]\nformat = 1\n", "not a LooperCat card marker (no [loopercat_card] table)", "1:1");
+        refuse("loopercat_card = 1\n", "not a LooperCat card marker (no [loopercat_card] table)", "1:18");
+        refuse(replace(kKittyFile, "format = 1", "format = 2"),
+               "written by a newer LooperCat (format 2); this build reads format 1", "2:10");
+        refuse(replace(kKittyFile, "format = 1", "format = 10"),
+               "written by a newer LooperCat (format 10); this build reads format 1", "2:10");
+        refuse(replace(kKittyFile, "format = 1", "format = \"1\""), "\"format\" is not an integer", "2:10");
+        refuse(replace(kKittyFile, "format = 1", "format = 1.0"), "\"format\" is not an integer", "2:10");
+        refuse(replace(kKittyFile, "format = 1\n", ""), "no \"format\" field", "1:1");
+        refuse(replace(kKittyFile, "format = 1", "format = 0"), "unsupported format \"0\"", "2:10");
+        refuse(replace(kKittyFile, "format = 1", "format = -1"), "unsupported format \"-1\"", "2:10");
+        refuse("[loopercat_card]\nformat = 1\n", "no \"id\" field", "1:1");
+        refuse(replace(kKittyFile, "\"11111111-2222-4333-8444-555555555555\"", "7"), "\"id\" is not a string", "3:6");
+        refuse(replace(kKittyFile, "11111111-2222-4333-8444-555555555555", ""), "the \"id\" field is empty", "3:6");
+        refuse(replace(kKittyFile, "name = \"RC-5 Kitty\"\n", ""), "no \"name\" field", "1:1");
+        refuse(replace(kKittyFile, "\"RC-5 Kitty\"", "true"), "\"name\" is not a string", "4:8");
+        refuse(replace(kKittyFile, "model = \"RC-5\"\n", ""), "no \"model\" field", "1:1");
+        refuse(replace(kKittyFile, "model = \"RC-5\"", "model = 5"), "\"model\" is not a string", "5:9");
+        refuse(replace(kKittyFile, "model = \"RC-5\"", "model = \"\""), "the \"model\" field is empty", "5:9");
+        refuse(replace(kKittyFile, "created = \"2026-09-24T21:34:33Z\"\n", ""), "no \"created\" field", "1:1");
+        refuse(replace(kKittyFile, "\"2026-09-24T21:34:33Z\"", "9"), "\"created\" is not a string", "6:11");
+        refuse(replace(kKittyFile, "RC-5 Kitty", ""), "a pedal name cannot be empty", "4:8");
+        refuse(replace(kKittyFile, "RC-5 Kitty", std::string(65, 'a')),
+               "a pedal name is at most 64 bytes of UTF-8; this one is 65", "4:8");
+        for (const auto escape : { "\\u0007", "\\t", "\\n", "\\u007f" })
+            refuse(replace(kKittyFile, "RC-5 Kitty", escape), "a pedal name cannot contain control characters", "4:8");
     }
 
     // --- the file's shape on disk ---
@@ -235,10 +204,35 @@ int main()
         TempDir tmp;
         fs::create_directories(marker::markerPath(tmp.path));
         CHECK_THROWS(marker::read(tmp.path), "is a directory");
+        CHECK_THROWS(marker::mint(tmp.path, "RC-5"), "is a directory");
         fs::remove_all(marker::markerPath(tmp.path));
         put(marker::markerPath(tmp.path), std::string(64 * 1024 + 1, ' '));
         CHECK_THROWS(marker::read(tmp.path), "too large to be a card marker");
+        CHECK_THROWS(marker::mint(tmp.path, "RC-5"), "too large to be a card marker");
+        const auto atLimit = kKittyFile + "#" + std::string(64 * 1024 - kKittyFile.size() - 1, ' ');
+        put(marker::markerPath(tmp.path), atLimit);
+        CHECK_EQ(marker::read(tmp.path)->name, "RC-5 Kitty");
     }
+
+#if !defined(_WIN32)
+    // Permission bits are not a portable Windows fault seam. These tests run
+    // unprivileged on POSIX, like the command suites' write-failure tests.
+    {
+        TempDir tmp;
+        const auto file = marker::markerPath(tmp.path);
+        put(file, kKittyFile);
+        fs::permissions(file, fs::perms::none);
+        CHECK_THROWS(marker::read(tmp.path), "cannot read");
+        CHECK_THROWS(marker::mint(tmp.path, "RC-5"), "cannot read");
+        fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write);
+        CHECK_EQ(slurp(file), kKittyFile);
+        fs::remove(file);
+        fs::create_symlink(tmp.path / "missing", file);
+        CHECK_THROWS(marker::mint(tmp.path, "RC-5"), "cannot read");
+        CHECK(fs::is_symlink(file));
+        CHECK(!fs::exists(tmp.path / "missing"));
+    }
+#endif
 
     // --- minting: an id, the name, the model the card itself declares ---
 
@@ -252,10 +246,13 @@ int main()
         CHECK(looksLikeIsoUtc(written.card.created));
         CHECK(written.sweep.failed.empty());
 
-        // On disk, in exactly the shape the first markers had.
-        const std::string expected = "{\n  \"loopercat_card\": 1,\n  \"id\": \"" + written.card.id
-                                   + "\",\n  \"name\": \"RC-5 Kitty\",\n  \"model\": \"RC-5\",\n  \"created\": \""
-                                   + written.card.created + "\",\n  \"by\": \"LooperCat\"\n}\n";
+        // Canonical bytes, in the documented field order.
+        const std::string expected = "[loopercat_card]\nformat = 1\nid = \"" + written.card.id
+                                   + "\"\nname = \"RC-5 Kitty\"\nmodel = \"RC-5\"\ncreated = \""
+                                   + written.card.created + "\"\nby = \"LooperCat\"\n";
+        const auto parsed = felitronics::toml::parse(slurp(marker::markerPath(tmp.path)));
+        CHECK(std::holds_alternative<felitronics::toml::Table>(parsed));
+        CHECK_EQ(felitronics::toml::write(std::get<felitronics::toml::Table>(parsed)), expected);
         CHECK_EQ(slurp(marker::markerPath(tmp.path)), expected);
 
         // And read() sees the same card.
@@ -320,19 +317,6 @@ int main()
         CHECK(marker::mint(a.path, "one").card.id != marker::mint(b.path, "two").card.id);
     }
 
-    // --- a broken marker is never overwritten ---
-
-    {
-        TempDir tmp;
-        makeCard(tmp.path);
-        put(marker::markerPath(tmp.path), "{\"loopercat_card\": 1, \"id\": \"x\"");
-        CHECK_THROWS(marker::mint(tmp.path, "RC-5 Kitty"), "unterminated object");
-        CHECK_EQ(slurp(marker::markerPath(tmp.path)), "{\"loopercat_card\": 1, \"id\": \"x\"");
-        put(marker::markerPath(tmp.path), "{\"something\": \"else\"}");
-        CHECK_THROWS(marker::mint(tmp.path, "RC-5 Kitty"), "not a LooperCat card marker");
-        CHECK_EQ(slurp(marker::markerPath(tmp.path)), "{\"something\": \"else\"}");
-    }
-
     // --- what a name may be ---
 
     {
@@ -367,7 +351,7 @@ int main()
     {
         TempDir tmp;
         makeCard(tmp.path);
-        put(tmp.path / "._loopercat-card.json", "sidecar"); // what macOS plants beside the write
+        put(tmp.path / "._loopercat.toml", "sidecar"); // what macOS plants beside the write
         put(tmp.path / ".DS_Store", "finder");
         put(tmp.path / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav", "sidecar");
         put(tmp.path / ".Spotlight-V100" / "._store", "not ours");
@@ -381,17 +365,17 @@ int main()
         CHECK(fs::exists(tmp.path / "notes.md"));
         CHECK(!fs::exists(tmp.path / "._README.txt"));
         CHECK(written.sweep.failed.empty());
-        CHECK(!fs::exists(tmp.path / "._loopercat-card.json"));
+        CHECK(!fs::exists(tmp.path / "._loopercat.toml"));
         CHECK(!fs::exists(tmp.path / ".DS_Store"));
         CHECK(!fs::exists(tmp.path / "ROLAND" / "WAVE" / "001_1" / "._01 - Loop.wav"));
         CHECK(fs::exists(tmp.path / ".Spotlight-V100" / "._store"));
         CHECK(fs::exists(tmp.path / "System Volume Information" / "._sys"));
         CHECK(fs::exists(marker::markerPath(tmp.path)));
 
-        put(tmp.path / "._loopercat-card.json", "sidecar again");
+        put(tmp.path / "._loopercat.toml", "sidecar again");
         const auto renamed = marker::rename(tmp.path, "RC-5 Drummer");
         CHECK_EQ(renamed.sweep.removed.size(), 1u);
-        CHECK(!fs::exists(tmp.path / "._loopercat-card.json"));
+        CHECK(!fs::exists(tmp.path / "._loopercat.toml"));
     }
 
     // --- rename: the name, and nothing else ---
@@ -417,18 +401,11 @@ int main()
         // Fields this build has never heard of — a later format's, another
         // tool's — survive, in their order, with their values.
         TempDir tmp;
-        const std::string foreign = "{\n"
-                                    "  \"loopercat_card\": 1,\n"
-                                    "  \"id\": \"11111111-2222-4333-8444-555555555555\",\n"
-                                    "  \"colour\": \"orange\",\n"
-                                    "  \"name\": \"RC-5 Kitty\",\n"
-                                    "  \"model\": \"RC-5\",\n"
-                                    "  \"created\": \"2026-09-24T21:34:33Z\",\n"
-                                    "  \"lives\": 9,\n"
-                                    "  \"asleep\": true,\n"
-                                    "  \"collar\": null,\n"
-                                    "  \"by\": \"LooperCat\"\n"
-                                    "}\n";
+        const std::string foreign = replace(kKittyFile, "name =", "color = \"violet\"\nname =")
+                                  + "lives = 9\nasleep = true\ngain = -1.250\n"
+                                    "tags = [\"cat\", \"pedal\"]\n"
+                                    "\n[loopercat_card.extra]\nkeep = true\n"
+                                    "\n[another]\nvalue = \"untouched\"\n";
         put(marker::markerPath(tmp.path), foreign);
         marker::rename(tmp.path, "RC-5 Drummer");
         std::string expected = foreign;
@@ -456,10 +433,9 @@ int main()
         CHECK_THROWS(marker::rename(tmp.path, "a\rb"), "control characters");
         CHECK_EQ(slurp(marker::markerPath(tmp.path)), before);
         // A marker without a name field is not renamed into one: strict, both ways.
-        put(marker::markerPath(tmp.path), "{\"loopercat_card\": 1, \"id\": \"x\", \"model\": \"RC-5\", \"created\": \"c\"}");
+        put(marker::markerPath(tmp.path), replace(kKittyFile, "name = \"RC-5 Kitty\"\n", ""));
         CHECK_THROWS(marker::rename(tmp.path, "RC-5 Drummer"), "no \"name\" field");
-        // Nor is a foreign or newer file.
-        put(marker::markerPath(tmp.path), "{\"loopercat_card\": 2, \"id\": \"x\", \"name\": \"n\", \"model\": \"RC-5\", \"created\": \"c\"}");
+        put(marker::markerPath(tmp.path), replace(kKittyFile, "format = 1", "format = 2"));
         CHECK_THROWS(marker::rename(tmp.path, "RC-5 Drummer"), "newer LooperCat");
     }
 
@@ -470,9 +446,9 @@ int main()
         // pollutes: the next write overwrites it, and the rename consumes it.
         TempDir tmp;
         makeCard(tmp.path);
-        put(tmp.path / "loopercat-card.json.part", "{\"torn");
+        put(tmp.path / "loopercat.toml.part", "[loopercat_card]\nname = \"torn");
         const auto written = marker::mint(tmp.path, "RC-5 Kitty");
-        CHECK(!fs::exists(tmp.path / "loopercat-card.json.part"));
+        CHECK(!fs::exists(tmp.path / "loopercat.toml.part"));
         CHECK_EQ(marker::read(tmp.path)->id, written.card.id);
     }
     {
@@ -480,13 +456,13 @@ int main()
         // marker is touched — a card keeps its id, a rename keeps everything.
         TempDir tmp;
         makeCard(tmp.path);
-        fs::create_directories(tmp.path / "loopercat-card.json.part");
+        fs::create_directories(tmp.path / "loopercat.toml.part");
         CHECK_THROWS(marker::mint(tmp.path, "RC-5 Kitty"), "cannot write");
         CHECK(!fs::exists(marker::markerPath(tmp.path)));
-        fs::remove_all(tmp.path / "loopercat-card.json.part");
+        fs::remove_all(tmp.path / "loopercat.toml.part");
         marker::mint(tmp.path, "RC-5 Kitty");
         const std::string before = slurp(marker::markerPath(tmp.path));
-        fs::create_directories(tmp.path / "loopercat-card.json.part");
+        fs::create_directories(tmp.path / "loopercat.toml.part");
         CHECK_THROWS(marker::rename(tmp.path, "RC-5 Drummer"), "cannot write");
         CHECK_EQ(slurp(marker::markerPath(tmp.path)), before);
         CHECK_EQ(marker::read(tmp.path)->name, "RC-5 Kitty");
@@ -496,12 +472,12 @@ int main()
         TempDir tmp;
         makeCard(tmp.path);
         marker::mint(tmp.path, "RC-5 Kitty");
-        put(tmp.path / "._loopercat-card.json.part", "sidecar");
-        put(tmp.path / "._loopercat-card.json", "sidecar");
+        put(tmp.path / "._loopercat.toml.part", "sidecar");
+        put(tmp.path / "._loopercat.toml", "sidecar");
         const auto renamed = marker::rename(tmp.path, "RC-5 Drummer");
         CHECK_EQ(renamed.sweep.removed.size(), 2u);
-        CHECK(!fs::exists(tmp.path / "._loopercat-card.json.part"));
-        CHECK(!fs::exists(tmp.path / "._loopercat-card.json"));
+        CHECK(!fs::exists(tmp.path / "._loopercat.toml.part"));
+        CHECK(!fs::exists(tmp.path / "._loopercat.toml"));
     }
 
     // --- no volume is not "no marker" ---
@@ -518,11 +494,59 @@ int main()
         CHECK_THROWS(marker::read(gone), "no volume at");
     }
 
-    // --- the writer's escaping ---
+    // --- comments and blank lines are discarded; values and order survive ---
 
-    CHECK_EQ(marker::json::quote("a\"b\\c\n\x01"), "\"a\\\"b\\\\c\\n\\u0001\"");
-    CHECK_EQ(marker::json::quote("caf\xc3\xa9"), "\"caf\xc3\xa9\"");
-    CHECK_EQ(marker::json::serialize({}), "{\n}\n");
+    {
+        TempDir tmp;
+        const auto edited = "# My pedal\n\n" + replace(kKittyFile, "format = 1", "format = 1 # current")
+                          + "\n# Keep the color\ncolor = \"violet\"\n";
+        put(marker::markerPath(tmp.path), edited);
+        CHECK_EQ(marker::read(tmp.path)->name, "RC-5 Kitty");
+        marker::rename(tmp.path, "Drummer");
+        CHECK_EQ(slurp(marker::markerPath(tmp.path)),
+                 replace(kKittyFile, "RC-5 Kitty", "Drummer") + "color = \"violet\"\n");
+    }
+
+    // --- the obsolete JSON marker is a stranger, never read or removed ---
+
+    {
+        TempDir tmp;
+        makeCard(tmp.path);
+        const auto legacy = tmp.path / "loopercat-card." "json";
+        const std::string oldBytes = "{\"loopercat_card\":1,\"id\":\"old\"}\n";
+        put(legacy, oldBytes);
+        CHECK(!marker::read(tmp.path));
+        CHECK_EQ(marker::mint(tmp.path, "RC-5").card.name, "RC-5");
+        CHECK(fs::exists(tmp.path / "loopercat.toml"));
+        CHECK_EQ(slurp(legacy), oldBytes);
+    }
+
+    // --- read-back faults: equal parsed values are not equal bytes ---
+
+    for (const bool stagedFault : { true, false }) {
+        for (const bool missing : { true, false }) {
+            TempDir tmp;
+            put(marker::markerPath(tmp.path), kKittyFile);
+            put(tmp.path / "._loopercat.toml", "sidecar");
+            const auto doc = std::get<felitronics::toml::Table>(felitronics::toml::parse(
+                replace(kKittyFile, "RC-5 Kitty", "Drummer")));
+            const auto faultyRead = [&](const fs::path& path) -> std::optional<std::string> {
+                const bool isPart = path.extension() == ".part";
+                if (isPart == stagedFault) {
+                    if (missing)
+                        return std::nullopt;
+                    // Valid TOML with identical fields, but the bytes did not stick.
+                    return slurp(path) + "# unexpected bytes\n";
+                }
+                return slurp(path);
+            };
+            CHECK_THROWS(marker::detail::writeAndVerify(tmp.path, doc, faultyRead),
+                         "read back differently from what was written");
+            CHECK(fs::exists(tmp.path / "._loopercat.toml")); // never sweep after failure
+            CHECK_EQ(slurp(marker::markerPath(tmp.path)),
+                     stagedFault ? kKittyFile : replace(kKittyFile, "RC-5 Kitty", "Drummer"));
+        }
+    }
 
     return testkit::summary("card_marker");
 }
