@@ -514,12 +514,18 @@ std::vector<retention::Blob> HistoryStore::keptBlobs(const UndoTargets& targets)
 {
     const auto allTargets = retentionTargets(targets);
     std::vector<retention::Blob> out;
-    // Count both sides; label the take with the newest slot row naming it.
+    // Count both sides. Prefer the newest non-snapshot row for the label;
+    // a snapshot shared with a later operation takes that operation's age.
     sqlite::Statement read(db_, "SELECT m.hash, m.size, m.created, "
                                 "  (SELECT count(*) FROM slot_audio a WHERE a.hash = m.hash), "
                                 "  coalesce((SELECT 'slot ' || a.slot || ' ' || a.name FROM slot_audio a "
-                                "            WHERE a.hash = m.hash ORDER BY a.op DESC LIMIT 1), "
-                                "           '') "
+                                "            JOIN ops o ON o.seq = a.op WHERE a.hash = m.hash "
+                                "            ORDER BY (o.kind = 'snapshot'), a.op DESC LIMIT 1), ''), "
+                                "  EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                "          WHERE a.hash = m.hash AND o.kind = 'snapshot'), "
+                                "  (SELECT o.at FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                "   WHERE a.hash = m.hash AND o.kind <> 'snapshot' "
+                                "   ORDER BY a.op DESC LIMIT 1) "
                                 "FROM blobs_meta m JOIN blobs b ON b.hash = m.hash "
                                 "ORDER BY m.created, m.size DESC, m.hash");
     while (read.step()) {
@@ -529,6 +535,11 @@ std::vector<retention::Blob> HistoryStore::keptBlobs(const UndoTargets& targets)
         blob.created = read.integer(2);
         blob.references = static_cast<int>(read.integer(3));
         blob.label = read.text(4);
+        blob.snapshotOnly = read.integer(5) != 0 && read.isNull(6);
+        if (read.integer(5) != 0 && !read.isNull(6))
+            blob.created = read.integer(6);
+        if (blob.snapshotOnly)
+            blob.label = "Card first seen — " + blob.label;
         const Holds holds = holdsOn(blob.hash, allTargets);
         blob.pinned = holds.pinned;
         blob.undo = holds.undo;

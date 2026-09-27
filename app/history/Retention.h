@@ -32,7 +32,8 @@
 // row — the input is one entry per blob.
 //
 // Age is not a measure of a take's worth, so nothing here expires. Age only
-// orders what the person is offered: the oldest unheld take first.
+// orders what the person is offered: other unheld takes oldest first, then
+// takes named only by first-seen snapshots, oldest first. Snapshots are not pins.
 //==============================================================================
 namespace loopercat::history::retention
 {
@@ -45,11 +46,12 @@ struct Blob {
     std::string hash;
     std::string label;        // for a person: "slot 14 take.wav"
     std::int64_t size = 0;
-    std::int64_t created = 0; // when the bytes were first kept, ms since the epoch
+    std::int64_t created = 0; // release age, ms since epoch; shared snapshots use the later row
     int references = 0;       // rows naming the hash, both sides
     bool pinned = false;      // a pinned operation names it, or the blob is pinned
     bool undo = false;        // the offered undo would put it back
     bool inFlight = false;    // an operation still pending names it
+    bool snapshotOnly = false; // named by snapshot rows and no other rows
 
     bool held() const { return pinned || undo || inFlight; }
 };
@@ -59,7 +61,7 @@ struct Plan {
     std::int64_t kept = 0;       // kept now, each blob once
     std::int64_t held = 0;       // of those, bytes no release may touch
     std::int64_t freed = 0;      // what `release` gives back
-    std::vector<Blob> release;   // oldest first; enough to reach the target, or all there is
+    std::vector<Blob> release;   // other takes then snapshot-only takes, oldest first in each
     std::vector<Blob> holds;     // what stays held, oldest first
 
     std::int64_t after() const { return kept - freed; }
@@ -68,8 +70,9 @@ struct Plan {
     bool reachesTarget() const { return after() <= target; }
 };
 
-// Oldest unheld blobs first, until the kept bytes fit the target. With the
-// target at 0 that is everything unheld. Passing the limit is only reported —
+// Other unheld blobs before snapshot-only blobs, oldest first in each group,
+// until the kept bytes fit the target. With the target at 0 that is everything
+// unheld. Passing the limit is only reported —
 // nothing is released by a plan; the store releases what a person confirmed.
 inline Plan plan(std::vector<Blob> blobs, std::int64_t target)
 {
@@ -93,6 +96,9 @@ inline Plan plan(std::vector<Blob> blobs, std::int64_t target)
             out.holds.push_back(blob);
         }
     }
+    std::stable_partition(blobs.begin(), blobs.end(), [](const Blob& blob) {
+        return !blob.snapshotOnly;
+    });
     for (const Blob& blob : blobs) {
         if (out.after() <= target)
             break; // within the target, from the start or by now: nothing more goes
@@ -139,10 +145,15 @@ inline std::string describe(const Plan& plan)
         return "The history keeps " + bytesText(plan.kept) + ", within the limit of "
                + bytesText(plan.target) + "; nothing needs to go.";
     std::string text;
-    if (plan.freed > 0)
-        text = "Freeing " + takes(plan.release.size()) + " gives back " + bytesText(plan.freed)
+    if (plan.freed > 0) {
+        text = "Freeing " + takes(plan.release.size());
+        const auto snapshots = static_cast<std::size_t>(std::count_if(
+            plan.release.begin(), plan.release.end(), [](const Blob& blob) { return blob.snapshotOnly; }));
+        if (snapshots > 0)
+            text += ", including " + takes(snapshots) + " from when the card was first seen,";
+        text += " gives back " + bytesText(plan.freed)
                + ", leaving " + bytesText(plan.after());
-    else
+    } else
         text = "Nothing can be freed";
     if (plan.reachesTarget())
         return text + ".";

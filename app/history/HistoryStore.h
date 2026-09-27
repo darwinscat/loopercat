@@ -173,6 +173,8 @@ public:
     // or any card's cursor targets naming it as a 'before' — the audio that
     // undo, or redo, would put back (the redo's bytes are what its undo row
     // archived). References count the rows naming the hash, both sides.
+    // Snapshot-only takes are marked for release last. A snapshot shared
+    // with another operation uses the newest non-snapshot row's date and label.
     std::vector<retention::Blob> keptBlobs(const UndoTargets& targets);
 
     void pinOp(std::int64_t op, bool pinned);

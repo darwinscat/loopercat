@@ -44,6 +44,7 @@ Blob blob(const std::string& hash, std::int64_t size, std::int64_t created, int 
 Blob pinned(Blob b) { b.pinned = true; return b; }
 Blob undo(Blob b) { b.undo = true; return b; }
 Blob inFlight(Blob b) { b.inFlight = true; return b; }
+Blob snapshot(Blob b) { b.snapshotOnly = true; return b; }
 
 std::vector<std::string> hashes(const std::vector<Blob>& blobs)
 {
@@ -181,6 +182,52 @@ int main()
         CHECK(!all.reachesTarget());
         // the input is not the output's order: a plan sorts its own copy
         CHECK_EQ(blobs.front().hash, std::string("newest"));
+    }
+
+    // --- first-seen takes are offered last, only when the target needs them ---
+    {
+        const std::vector<Blob> blobs = {
+            snapshot(blob("snapshot-new", 2 * MB, 20)),
+            blob("later-new", 2 * MB, 400),
+            snapshot(blob("snapshot-old", 2 * MB, 10)),
+            blob("later-old", 2 * MB, 300),
+        };
+        const Plan enough = retention::plan(blobs, 4 * MB);
+        CHECK(hashes(enough.release) == (std::vector<std::string> { "later-old", "later-new" }));
+        CHECK(enough.reachesTarget());
+        CHECK_EQ(enough.held, 0); // first seen is a preference, never a pin
+        CHECK(!contains(retention::describe(enough), "first seen"));
+
+        const Plan one = retention::plan(blobs, 2 * MB);
+        CHECK(hashes(one.release) == (std::vector<std::string> {
+            "later-old", "later-new", "snapshot-old" }));
+        CHECK_EQ(retention::describe(one), std::string("Freeing 3 takes, including 1 take from when "
+            "the card was first seen, gives back 6 MB, leaving 2 MB."));
+
+        const Plan all = retention::plan(blobs, 0);
+        CHECK(hashes(all.release) == (std::vector<std::string> {
+            "later-old", "later-new", "snapshot-old", "snapshot-new" }));
+        CHECK_EQ(all.after(), 0);
+        CHECK_EQ(retention::describe(all), std::string("Freeing 4 takes, including 2 takes from when "
+            "the card was first seen, gives back 8 MB, leaving 0 bytes."));
+        CHECK(hashes(blobs) == (std::vector<std::string> {
+            "snapshot-new", "later-new", "snapshot-old", "later-old" }));
+
+        const Plan only = retention::plan({ snapshot(blob("original", MB, 1)) }, 0);
+        CHECK_EQ(only.release.size(), 1u);
+        CHECK(only.reachesTarget());
+        CHECK(contains(retention::describe(only), "including 1 take from when the card was first seen"));
+
+        const Plan held = retention::plan({ pinned(snapshot(blob("pin", MB, 1))),
+            undo(snapshot(blob("undo", MB, 2))), inFlight(snapshot(blob("pending", MB, 3))),
+            snapshot(blob("free", MB, 4)) }, 0);
+        CHECK(hashes(held.release) == (std::vector<std::string> { "free" }));
+        CHECK_EQ(held.held, 3 * MB);
+        CHECK(!held.reachesTarget());
+        CHECK(contains(retention::describe(held), "including 1 take from when the card was first seen"));
+        CHECK(contains(retention::describe(held), "is pinned"));
+        CHECK(contains(retention::describe(held), "is needed by undo"));
+        CHECK(contains(retention::describe(held), "still running"));
     }
 
     // --- passing the limit is only reported ---

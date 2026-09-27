@@ -227,6 +227,65 @@ int main()
         (void) opC;
     }
 
+    // --- first seen is last; a shared push take belongs at the push's age ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const auto original = take(1000, 1);
+        const auto originalNew = take(1000, 2);
+        const auto shared = take(1000, 3);
+        const auto later = take(1000, 4);
+        const auto hOriginal = HistoryStore::contentHash(original);
+        const auto hOriginalNew = HistoryStore::contentHash(originalNew);
+        const auto hShared = HistoryStore::contentHash(shared);
+        const auto hLater = HistoryStore::contentHash(later);
+        const auto sighting = r.store.firstSeen(r.session, "sighting", r.now());
+        r.store.snapshotSlot(sighting, 1, "body", { { 1, "original.wav", original } }, r.now());
+        r.store.snapshotSlot(sighting, 2, "body", { { 1, "newer.wav", originalNew } }, r.now());
+        r.store.snapshotSlot(sighting, 3, "body", { { 1, "shared.wav", shared } }, r.now());
+        r.store.finishOp(sighting, OpStatus::done, "");
+        r.replaced(4, later);
+        const auto pushedAt = r.now();
+        const auto push = r.store.beginOp(r.session, "push", "push", pushedAt);
+        r.store.recordLanded(push, 27, 1, "pushed.wav", shared); // 'after' is a reference too
+        r.store.finishOp(push, OpStatus::done, "");
+        r.renamed(9); // no take is needed by undo
+
+        const auto blobs = r.store.keptBlobs(r.store.offeredTargets());
+        CHECK_EQ(blobs.size(), 4u);
+        const auto* sharedBlob = find(blobs, hShared);
+        CHECK(sharedBlob != nullptr);
+        if (sharedBlob) {
+            CHECK(!sharedBlob->snapshotOnly);
+            CHECK_EQ(sharedBlob->created, pushedAt);
+            CHECK_EQ(sharedBlob->references, 2);
+            CHECK_EQ(sharedBlob->label, std::string("slot 27 pushed.wav"));
+        }
+        const auto* originalBlob = find(blobs, hOriginal);
+        CHECK(originalBlob != nullptr);
+        if (originalBlob) {
+            CHECK(originalBlob->snapshotOnly);
+            CHECK(!originalBlob->held());
+            CHECK_EQ(originalBlob->label, std::string("Card first seen — slot 1 original.wav"));
+        }
+        const auto hashes = [](const retention::Plan& plan) {
+            std::vector<std::string> out;
+            for (const auto& b : plan.release) out.push_back(b.hash);
+            return out;
+        };
+        const auto enough = retention::plan(blobs, 2000);
+        CHECK(hashes(enough) == (std::vector<std::string> { hLater, hShared }));
+        CHECK(retention::describe(enough).find("first seen") == std::string::npos);
+        const auto one = retention::plan(blobs, 1000);
+        CHECK(hashes(one) == (std::vector<std::string> { hLater, hShared, hOriginal }));
+        const auto all = retention::plan(blobs, 0);
+        CHECK(hashes(all) == (std::vector<std::string> { hLater, hShared, hOriginal, hOriginalNew }));
+        CHECK_EQ(all.kept, 4000); // the snapshot and push share one copy
+        CHECK_EQ(r.store.releaseBlobs(hashes(all), r.store.offeredTargets(), r.now()), 4000);
+        CHECK_EQ(r.store.usage().audioBytes, 0);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM slot_audio"), 5);
+    }
+
     // --- releasing frees the bytes and nothing else ---
     {
         TempDir tmp;
