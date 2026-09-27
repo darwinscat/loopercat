@@ -72,12 +72,14 @@ int main()
         a.facts.swappedWith = 43;
         a.facts.takeName = "a.wav";
         a.facts.takeHash = std::string(32, '\x11');
+        a.facts.takeIsAfter = true;
         Card::Slot b = touched(swap, 43, true);
         b.facts.beforeBody = shorter;
         b.facts.afterBody = loaded;
         b.facts.swappedWith = 12;
         b.facts.takeName = "b.wav";
         b.facts.takeHash = std::string(32, '\x22');
+        b.facts.takeIsAfter = true;
         swap.slots = { a, b };
 
         const auto made = rows::forCard({ swap });

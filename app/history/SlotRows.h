@@ -52,10 +52,11 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
 {
     const bool hasTake = entry.takeHash.has_value() || !entry.takeName.empty();
 
-    // A row from before the history holds the take the slot had BEFORE the
-    // operation it stands for, so even as the newest row it does not say
-    // what the slot holds now: its take is kept, or lost, never "on card".
-    const bool onCard = newest && entry.actor != "legacy";
+    // Only a take the operation LEFT in the slot can be the one on the card.
+    // A row whose take is the one it archived — a clear, an undo that emptied
+    // the slot, a row from before the history — does not say what the slot
+    // holds now, even as the newest row: its take is kept, or lost.
+    const bool onCard = newest && entry.actor != "legacy" && entry.takeIsAfter;
     story::Take take = story::Take::none;
     if (hasTake)
         take = onCard          ? story::Take::onCard

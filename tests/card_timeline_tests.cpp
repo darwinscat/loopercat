@@ -299,6 +299,28 @@ int main()
         CHECK(entries.size() == 2 && entries[0].op == earlier && entries[1].op == later);
     }
 
+    // --- which side a row's take came from, out of the real rows ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string bytes = take(3000, 7);
+        const auto push = r.begin("push");
+        r.store.recordBodies(push, { { 4, "b4-0", "b4-1" } });
+        r.store.recordLanded(push, 4, 1, "b.wav", bytes); // the take it left
+        r.store.finishOp(push, OpStatus::done, "");
+        const auto clear = r.begin("clear");
+        r.store.keepAudio(clear, 4, 1, "b.wav", bytes, ++r.clock); // the take it archived
+        r.store.recordBodies(clear, { { 4, "b4-1", "b4-0" } });
+        r.store.finishOp(clear, OpStatus::done, "");
+        const auto rows = r.store.slotTimeline(4);
+        CHECK_EQ(rows.size(), 2u);
+        CHECK(rows.size() == 2 && rows[0].takeIsAfter);
+        CHECK(rows.size() == 2 && !rows[1].takeIsAfter);
+        CHECK(rows.size() == 2 && rows[1].takeKept); // archived, and kept
+        const auto entries = r.store.cardTimeline();
+        CHECK(entries.size() == 2 && !entryFor(entries, clear)->slots.front().facts.takeIsAfter);
+    }
+
     // --- pins ride along ---
     {
         TempDir tmp;

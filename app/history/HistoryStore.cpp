@@ -304,7 +304,7 @@ void HistoryStore::fillSlotFacts(TimelineEntry& row, int slot)
     // The take the row offers: the state's own, or — for a row that has
     // no state, which is what a legacy import leaves — the one it kept.
     sqlite::Statement take(db_, "SELECT name, hash, "
-                                "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
+                                "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash), side "
                                 "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
                                 "ORDER BY CASE side WHEN 'after' THEN 0 ELSE 1 END LIMIT 1");
     take.bind(1, row.op).bind(2, slot);
@@ -313,6 +313,7 @@ void HistoryStore::fillSlotFacts(TimelineEntry& row, int slot)
         if (!take.isNull(1))
             row.takeHash = take.blob(1);
         row.takeKept = row.takeHash && take.integer(2) > 0;
+        row.takeIsAfter = take.text(3) == "after";
     }
     if (row.kind == "swap") {
         sqlite::Statement other(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
