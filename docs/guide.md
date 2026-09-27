@@ -316,8 +316,16 @@ Renaming the pedal changes only `name`. Names must be 1–64 UTF-8 bytes and
 contain no control characters, including escaped ones. The identity, creation
 time and unknown entries survive. The canonical TOML writer removes comments
 and normalizes spacing; `created` stays a quoted string. Each write is staged
-through `loopercat.toml.part`, read back before and after replacement, and
-followed by a sweep of host sidecars.
+through `loopercat.toml.part`, flushed to storage, read back before and after
+publication, and followed by a sweep of host sidecars. The directory is
+flushed where the operating system supports it. Minting never replaces a
+marker that appears during the write.
+
+If the marker is missing after an interrupted write, a valid
+`loopercat.toml.part` is recovered with its existing identity. An invalid
+staging file blocks minting and is named in the error. Neither marker path
+may be a symlink. Ids must be lowercase UUIDs; creation times must use the
+`YYYY-MM-DDTHH:MM:SSZ` spelling.
 
 A malformed, foreign or newer marker is refused with its reason and source
 position; the corner keeps the folder or volume name. Markers over 64 KiB are

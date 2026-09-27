@@ -9,7 +9,7 @@
 //   - a card's id is minted ONCE: a second mint is refused and the file is
 //     left byte for byte as it was;
 //   - a rename changes the name and nothing else — id, created, model, and
-//     fields this build has never heard of all survive, in their order;
+//     fields this build has never heard of all keep their values;
 //   - the model is read from the card's own MEMORY1.RC0 root element, never
 //     guessed: a card that does not say gets no marker;
 //   - a file that is not ours, or is broken, is refused with the reason —
@@ -484,14 +484,39 @@ int main()
     // --- the marker is never half-written: staged, verified, renamed over ---
 
     {
-        // A leftover .part from an interrupted attempt neither blocks nor
-        // pollutes: the next write overwrites it, and the rename consumes it.
+        // Recovery must preserve the previous identity and exact bytes.
         TempDir tmp;
         makeCard(tmp.path);
-        put(tmp.path / "loopercat.toml.part", "[loopercat_card]\nname = \"torn");
-        const auto written = marker::mint(tmp.path, "RC-5 Kitty");
-        CHECK(!fs::exists(tmp.path / "loopercat.toml.part"));
-        CHECK_EQ(marker::read(tmp.path)->id, written.card.id);
+        const auto part = tmp.path / "loopercat.toml.part";
+        put(part, kKittyFile);
+        put(tmp.path / "._loopercat.toml.part", "sidecar");
+        put(tmp.path / "._loopercat.toml", "sidecar");
+        const auto recovered = marker::read(tmp.path);
+        CHECK(recovered.has_value());
+        if (recovered)
+            CHECK_EQ(recovered->id, "11111111-2222-4333-8444-555555555555");
+        CHECK_EQ(slurp(marker::markerPath(tmp.path)), kKittyFile);
+        CHECK(!fs::exists(part));
+        CHECK(!fs::exists(tmp.path / "._loopercat.toml.part"));
+        CHECK(!fs::exists(tmp.path / "._loopercat.toml"));
+        CHECK_THROWS(marker::mint(tmp.path, "new"), "already carries a marker");
+        fs::rename(marker::markerPath(tmp.path), part);
+        CHECK_THROWS(marker::mint(tmp.path, "new"), "already carries a marker");
+        CHECK_EQ(slurp(marker::markerPath(tmp.path)), kKittyFile);
+    }
+    {
+        TempDir tmp;
+        makeCard(tmp.path);
+        const auto part = tmp.path / "loopercat.toml.part";
+        for (const auto& bad : { std::string("[loopercat_card]\\nname = \"torn"),
+                                 std::string(""), replace(kKittyFile, "format = 1", "format = 2"),
+                                 replace(kKittyFile, "11111111-2222-4333-8444-555555555555", "x") }) {
+            put(part, bad);
+            CHECK_THROWS(marker::read(tmp.path), "loopercat.toml.part");
+            CHECK_THROWS(marker::mint(tmp.path, "new"), "loopercat.toml.part");
+            CHECK_EQ(slurp(part), bad);
+            CHECK(!fs::exists(marker::markerPath(tmp.path)));
+        }
     }
     {
         // Something in the way of the staging name: the write fails BEFORE the
@@ -499,7 +524,7 @@ int main()
         TempDir tmp;
         makeCard(tmp.path);
         fs::create_directories(tmp.path / "loopercat.toml.part");
-        CHECK_THROWS(marker::mint(tmp.path, "RC-5 Kitty"), "cannot write");
+        CHECK_THROWS(marker::mint(tmp.path, "RC-5 Kitty"), "loopercat.toml.part");
         CHECK(!fs::exists(marker::markerPath(tmp.path)));
         fs::remove_all(tmp.path / "loopercat.toml.part");
         marker::mint(tmp.path, "RC-5 Kitty");
@@ -582,12 +607,138 @@ int main()
                 }
                 return slurp(path);
             };
-            CHECK_THROWS(marker::detail::writeAndVerify(tmp.path, doc, faultyRead),
+            CHECK_THROWS(marker::detail::writeAndVerify(tmp.path, doc, faultyRead, false),
                          "read back differently from what was written");
             CHECK(fs::exists(tmp.path / "._loopercat.toml")); // never sweep after failure
             CHECK_EQ(slurp(marker::markerPath(tmp.path)),
                      stagedFault ? kKittyFile : replace(kKittyFile, "RC-5 Kitty", "Drummer"));
         }
+    }
+
+    // A marker arriving after mint's check must win the publication race.
+    {
+        TempDir tmp;
+        const auto file = marker::markerPath(tmp.path);
+        const auto candidate = marker::detail::parse(replace(kKittyFile, "RC-5 Kitty", "new"));
+        const auto race = [&](const fs::path& path) {
+            if (path.extension() == ".part")
+                put(file, kKittyFile);
+            return marker::detail::readIfPresent(path);
+        };
+        CHECK_THROWS(marker::detail::writeAndVerify(tmp.path, candidate, race), "cannot publish");
+        CHECK_EQ(slurp(file), kKittyFile);
+        CHECK_EQ(marker::read(tmp.path)->name, "RC-5 Kitty");
+    }
+#if !defined(_WIN32)
+    // Exercise the exclusive fallback even when the native rename is available.
+    {
+        TempDir tmp;
+        const auto file = marker::markerPath(tmp.path);
+        const auto part = tmp.path / "loopercat.toml.part";
+        put(part, kKittyFile);
+        put(file, "winner");
+        CHECK_EQ(marker::detail::linkExclusive(part, file), -1);
+        CHECK_EQ(slurp(file), "winner");
+        CHECK_EQ(slurp(part), kKittyFile);
+        fs::remove(file);
+        CHECK_EQ(marker::detail::linkExclusive(part, file), 0);
+        CHECK(!fs::exists(part));
+        CHECK_EQ(slurp(file), kKittyFile);
+    }
+    // Symlinks must never redirect reads, staging writes, or replacement.
+    for (const bool staging : { false, true }) {
+        for (const bool dangling : { false, true }) {
+            TempDir tmp;
+            makeCard(tmp.path);
+            const auto target = tmp.path / "elsewhere";
+            const auto file = marker::markerPath(tmp.path);
+            const auto path = staging ? tmp.path / "loopercat.toml.part" : file;
+            if (!dangling) put(target, kKittyFile);
+            fs::create_symlink(target, path);
+            CHECK_THROWS(marker::read(tmp.path), "symlink");
+            CHECK_THROWS(marker::mint(tmp.path, "new"), "symlink");
+            if (staging) put(file, kKittyFile);
+            CHECK_THROWS(marker::rename(tmp.path, "new"), "symlink");
+            CHECK(fs::is_symlink(path));
+            if (dangling) CHECK(!fs::exists(target));
+            else CHECK_EQ(slurp(target), kKittyFile);
+            if (staging) CHECK_EQ(slurp(file), kKittyFile);
+        }
+    }
+#endif
+    // A flush failure stops the operation before read-back or sweeping.
+    for (const bool directoryFailure : { false, true }) {
+        TempDir tmp;
+        put(tmp.path / "._loopercat.toml", "sidecar");
+        const auto file = marker::markerPath(tmp.path);
+        int reads = 0;
+        const auto reader = [&](const fs::path& path) {
+            ++reads;
+            return marker::detail::readIfPresent(path);
+        };
+        const auto failSync = [&](const fs::path& path, bool directory) {
+            if (directory == directoryFailure)
+                throw Error("injected flush failure: " + path.string());
+            marker::detail::syncPath(path, directory);
+        };
+        CHECK_THROWS(marker::detail::writeAndVerify(tmp.path, marker::detail::parse(kKittyFile),
+                                                    reader, true, failSync), "injected flush failure");
+        CHECK_EQ(reads, directoryFailure ? 1 : 0);
+        CHECK_EQ(fs::exists(file), directoryFailure);
+        CHECK(fs::exists(tmp.path / "._loopercat.toml"));
+    }
+    {
+        TempDir tmp;
+        std::vector<std::string> events;
+        const auto sync = [&](const fs::path& path, bool directory) {
+            marker::detail::syncPath(path, directory);
+            events.push_back(directory ? "flush directory" : "flush part");
+        };
+        const auto reader = [&](const fs::path& path) {
+            events.push_back(path.extension() == ".part" ? "read part" : "read marker");
+            return marker::detail::readIfPresent(path);
+        };
+        marker::detail::writeAndVerify(tmp.path, marker::detail::parse(kKittyFile), reader, true, sync);
+        CHECK((events == std::vector<std::string> {
+            "flush part", "read part", "flush directory", "read marker" }));
+        CHECK_THROWS(marker::detail::syncPath(tmp.path / "missing", false), "cannot flush");
+    }
+    // Inject real stream failures, including a buffer that throws during read.
+    {
+        struct BrokenRead final : std::streambuf {
+            int_type underflow() override { throw std::ios_base::failure("device read error"); }
+        } buffer;
+        std::istream in(&buffer);
+        CHECK_THROWS(marker::detail::readStream(in, "loopercat.toml"), "cannot read loopercat.toml");
+        std::istringstream partial(kKittyFile);
+        partial.setstate(std::ios::failbit);
+        CHECK_THROWS(marker::detail::readStream(partial, "loopercat.toml"), "cannot read loopercat.toml");
+        std::istringstream eof(kKittyFile);
+        CHECK_EQ(marker::detail::readStream(eof, "loopercat.toml"), kKittyFile);
+        std::istringstream badEof("");
+        badEof.setstate(std::ios::badbit | std::ios::eofbit);
+        CHECK_THROWS(marker::detail::readStream(badEof, "loopercat.toml"), "cannot read loopercat.toml");
+        struct BrokenWrite final : std::streambuf {
+            int_type overflow(int_type) override { return traits_type::eof(); }
+        } sink;
+        std::ostream out(&sink);
+        CHECK_THROWS(marker::detail::writeStream(out, kKittyFile, "loopercat.toml.part"),
+                     "cannot write loopercat.toml.part");
+    }
+    // Dotted keys/inline tables may be reordered, but their values survive.
+    {
+        TempDir tmp;
+        put(marker::markerPath(tmp.path), kKittyFile + "extra.color = \"violet\"\n"
+            "settings = { gain = 2, enabled = true }\n");
+        marker::rename(tmp.path, "Drummer");
+        const auto doc = marker::detail::parse(slurp(marker::markerPath(tmp.path)));
+        const auto& card = marker::detail::cardTable(doc);
+        const auto& extra = std::get<felitronics::toml::Table>(card.find("extra")->data);
+        const auto& settings = std::get<felitronics::toml::Table>(card.find("settings")->data);
+        CHECK_EQ(std::get<std::string>(extra.find("color")->data), "violet");
+        CHECK_EQ(std::get<std::int64_t>(settings.find("gain")->data), 2);
+        CHECK(std::get<bool>(settings.find("enabled")->data));
+        CHECK_EQ(marker::read(tmp.path)->name, "Drummer");
     }
 
     return testkit::summary("card_marker");

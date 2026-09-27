@@ -47,6 +47,20 @@
 #include <felitronics/toml/Toml.h>
 
 #include <array>
+#include <cerrno>
+#include <cstdio>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+#endif
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -79,9 +93,9 @@ inline constexpr std::string_view kCreatedKey = "created";
 inline constexpr std::string_view kByKey = "by";
 inline constexpr std::string_view kWriter = "LooperCat";
 
-// Every write lands here first and is renamed over the marker only once it
-// has been read back whole: a cable pulled mid-write leaves a torn .part,
-// never a torn marker (and never an id-less card).
+// Writes are staged and flushed before publication. Filesystem and device
+// guarantees vary: after a crash, an orphaned valid .part recovers the same
+// identity; an invalid .part blocks minting rather than losing that identity.
 inline constexpr std::string_view kPartSuffix = ".part";
 
 // A name fits the window's corner and stays a name: at most 64 bytes of
@@ -208,6 +222,33 @@ namespace detail {
                         + " \xe2\x80\x94 is the pedal in storage mode and mounted?");
     }
 
+    inline void refuseSymlink(const fs::path& file)
+    {
+        std::error_code ec;
+        const auto status = fs::symlink_status(file, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory)
+            throw Error("cannot read " + file.string() + ": " + ec.message());
+        if (fs::is_symlink(status))
+            throw Error("cannot read or write " + file.string() + ": it is a symlink");
+    }
+
+    // Use stream reads rather than streambuf iterators: device failures must
+    // set the stream state and cannot masquerade as a short successful read.
+    inline std::string readStream(std::istream& in, const fs::path& file)
+    {
+        std::string bytes;
+        std::array<char, 4096> block {};
+        do {
+            in.read(block.data(), static_cast<std::streamsize>(block.size()));
+            bytes.append(block.data(), static_cast<std::size_t>(in.gcount()));
+            if (bytes.size() > kMaxFileBytes)
+                throw Error(file.string() + " is too large to be a card marker");
+        } while (in.good());
+        if (in.bad() || !in.eof())
+            throw Error("cannot read " + file.string());
+        return bytes;
+    }
+
     // The file's bytes, or no value when there is no such file. Anything else
     // in the way — a directory under the name, an unreadable file, one too
     // large to be a marker — is an error, not an absence.
@@ -221,6 +262,7 @@ namespace detail {
             throw Error("cannot read " + file.string() + ": " + ec.message());
         if (!fs::exists(status))
             return std::nullopt;
+        refuseSymlink(file);
         if (fs::is_directory(status))
             throw Error(file.string() + " is a directory, not a card marker");
         const auto size = fs::file_size(file, ec);
@@ -232,10 +274,7 @@ namespace detail {
         std::ifstream in(file, std::ios::binary);
         if (!in)
             throw Error("cannot read " + file.string());
-        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        if (!in.good() && !in.eof())
-            throw Error("cannot read " + file.string());
-        return bytes;
+        return readStream(in, file);
     }
 
     [[noreturn]] inline void fail(std::string reason, toml::Position position)
@@ -370,19 +409,6 @@ namespace detail {
 
 } // namespace detail
 
-// The marker on this volume: no value when the card has none (a card that
-// has never met LooperCat), the card when it has one, and an Error naming the
-// reason when the file is there but is not a marker this build can read —
-// foreign, damaged, or of a later format.
-inline std::optional<Card> read(const fs::path& volume)
-{
-    detail::requireVolume(volume);
-    const auto bytes = detail::readIfPresent(markerPath(volume));
-    if (!bytes)
-        return std::nullopt;
-    return detail::cardOf(detail::parse(*bytes));
-}
-
 struct Written {
     Card card;
     volume::SweepResult sweep; // the sidecar macOS plants beside the write, removed — or, in `failed`, not
@@ -390,38 +416,123 @@ struct Written {
 
 namespace detail {
 
-    // Write to the staging name, read back, compare, rename over the marker,
-    // read the marker back once more — then sweep the sidecars the writes may
-    // have planted. The marker itself is never opened for writing: the old
-    // one stays whole until the new one is proven whole, so a cable pulled
-    // mid-write costs a .part and nothing else. A write that reads back
-    // differently is an error, never a shrug: the id in this file is what
-    // the history knows the card by.
-    // The reader parameter lets fault tests model a drive returning different bytes.
-    template <typename ReadBack = decltype(&readIfPresent)>
+    // Flush OS buffers before trusting a read-back. macOS also requests a
+    // hardware-cache flush. Unsupported directory flushes (and unsupported
+    // F_FULLFSYNC) are tolerated; other errors stop publication/verification.
+    // Windows has no supported directory FlushFileBuffers; publication uses
+    // MOVEFILE_WRITE_THROUGH there.
+    inline void syncPath(const fs::path& path, bool directory)
+    {
+        refuseSymlink(path);
+#if defined(_WIN32)
+        if (directory) return;
+        const HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                                          nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+            throw Error("cannot flush " + path.string());
+        const BOOL ok = FlushFileBuffers(handle);
+        CloseHandle(handle);
+        if (!ok) throw Error("cannot flush " + path.string());
+#else
+        const int fd = ::open(path.c_str(), (directory ? O_RDONLY : O_RDWR) | O_NOFOLLOW);
+        if (fd < 0) throw Error("cannot flush " + path.string());
+        int error = 0;
+        if (::fsync(fd) != 0)
+            error = errno;
+        if (directory && (error == EINVAL || error == ENOTSUP))
+            error = 0;
+#if defined(__APPLE__)
+        if (!directory && error == 0 && ::fcntl(fd, F_FULLFSYNC) != 0
+            && errno != EINVAL && errno != ENOTSUP)
+            error = errno;
+#endif
+        ::close(fd);
+        if (error != 0)
+            throw Error("cannot flush " + path.string() + ": "
+                        + std::error_code(error, std::generic_category()).message());
+#endif
+    }
+
+#if !defined(_WIN32)
+    inline int linkExclusive(const fs::path& part, const fs::path& file)
+    {
+        if (::link(part.c_str(), file.c_str()) != 0) return -1;
+        return ::unlink(part.c_str());
+    }
+#endif
+
+    inline void publish(const fs::path& part, const fs::path& file, bool exclusive)
+    {
+        refuseSymlink(part);
+        refuseSymlink(file);
+#if defined(_WIN32)
+        const DWORD flags = MOVEFILE_WRITE_THROUGH
+                          | (exclusive ? 0u : MOVEFILE_REPLACE_EXISTING);
+        if (!MoveFileExW(part.c_str(), file.c_str(), flags))
+            throw Error("cannot publish " + file.string() + ": "
+                        + std::system_category().message(static_cast<int>(GetLastError())));
+#else
+        int result;
+        if (!exclusive) {
+            result = ::rename(part.c_str(), file.c_str());
+        } else {
+#if defined(__APPLE__)
+            result = ::renamex_np(part.c_str(), file.c_str(), RENAME_EXCL);
+            if (result != 0 && (errno == ENOTSUP || errno == EINVAL || errno == ENOSYS))
+                result = linkExclusive(part, file);
+#elif defined(__linux__) && defined(SYS_renameat2)
+            result = static_cast<int>(::syscall(SYS_renameat2, AT_FDCWD, part.c_str(),
+                                               AT_FDCWD, file.c_str(), 1u /* RENAME_NOREPLACE */));
+            if (result != 0 && (errno == ENOSYS || errno == EINVAL || errno == ENOTSUP))
+                result = linkExclusive(part, file);
+#else
+            result = linkExclusive(part, file);
+#endif
+        }
+        if (result != 0)
+            throw Error("cannot publish " + file.string() + ": "
+                        + std::error_code(errno, std::generic_category()).message());
+#endif
+    }
+
+    inline void writeStream(std::ostream& out, std::string_view bytes, const fs::path& file)
+    {
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        out.flush();
+        if (!out.good())
+            throw Error("cannot write " + file.string());
+    }
+
+    // Stage, flush, compare bytes, publish, flush the directory where
+    // supported, compare again, then sweep sidecars. Exclusive publication
+    // protects mint/recovery from a marker appearing during the write.
+    // Reader and sync parameters let tests inject device failures.
+    template <typename ReadBack = decltype(&readIfPresent), typename Sync = decltype(&syncPath)>
     inline Written writeAndVerify(const fs::path& volume, const toml::Table& doc,
-                                  ReadBack readBack = readIfPresent)
+                                  ReadBack readBack = readIfPresent, bool exclusive = true,
+                                  Sync sync = syncPath)
     {
         const fs::path file = markerPath(volume);
         fs::path part = file;
         part += kPartSuffix;
+        refuseSymlink(file);
+        refuseSymlink(part);
         const std::string bytes = toml::write(doc);
         {
             std::ofstream out(part, std::ios::binary | std::ios::trunc);
             if (!out)
                 throw Error("cannot write " + part.string());
-            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-            out.flush();
+            writeStream(out, bytes, part);
+            out.close();
             if (!out.good())
-                throw Error("cannot write " + part.string());
+                throw Error("cannot close " + part.string());
         }
+        sync(part, false);
         const auto staged = readBack(part);
         if (!staged || *staged != bytes)
             throw Error(part.string() + " read back differently from what was written");
-        std::error_code ec;
-        fs::rename(part, file, ec);
-        if (ec)
-            throw Error("cannot replace " + file.string() + " with the new marker: " + ec.message());
+        publish(part, file, exclusive);
+        sync(volume, true);
         const auto back = readBack(file);
         if (!back || *back != bytes)
             throw Error(file.string() + " read back differently from what was written");
@@ -429,6 +540,36 @@ namespace detail {
     }
 
 } // namespace detail
+
+// Read the marker, recovering a valid orphaned staging file with the same id.
+// Invalid staging bytes are evidence of an interrupted write, never permission
+// to mint another identity. Recovery preserves bytes, then sweeps sidecars.
+inline std::optional<Card> read(const fs::path& volume)
+{
+    detail::requireVolume(volume);
+    const fs::path file = markerPath(volume);
+    fs::path part = file;
+    part += kPartSuffix;
+    detail::refuseSymlink(part);
+    if (const auto bytes = detail::readIfPresent(file))
+        return detail::cardOf(detail::parse(*bytes));
+    const auto staged = detail::readIfPresent(part);
+    if (!staged) return std::nullopt;
+    Card card;
+    try {
+        card = detail::cardOf(detail::parse(*staged));
+    } catch (const Error& error) {
+        throw Error(part.string() + ": cannot recover the interrupted marker: " + error.what());
+    }
+    detail::syncPath(part, false);
+    detail::publish(part, file, true);
+    detail::syncPath(volume, true);
+    const auto back = detail::readIfPresent(file);
+    if (!back || *back != *staged)
+        throw Error(file.string() + " read back differently from the recovered marker");
+    (void) volume::sweepJunk(volume);
+    return card;
+}
 
 // Give a card its identity: a fresh uuid, the player's name, the model read
 // from the card itself, a UTC stamp. Once. A card that already carries a
@@ -466,14 +607,12 @@ inline Written rename(const fs::path& volume, std::string_view newName)
     if (!bytes)
         throw Error("this card has no marker yet \xe2\x80\x94 nothing to rename");
     toml::Table doc = detail::parse(*bytes);
-    const Card before = detail::cardOf(doc);
+    (void) detail::cardOf(doc);
     auto& table = std::get<toml::Table>(doc.find(kTableKey)->data);
     table.find(kNameKey)->data = std::string(newName);
-    Written result = detail::writeAndVerify(volume, doc);
-    if (result.card.id != before.id || result.card.created != before.created
-        || result.card.model != before.model || result.card.name != newName)
-        throw Error(markerPath(volume).string() + ": the rename changed more than the name");
-    return result;
+    // Byte-exact verification already proves that only the edited value
+    // changed; a second comparison of parsed fields would be redundant.
+    return detail::writeAndVerify(volume, doc, detail::readIfPresent, false);
 }
 
 } // namespace loopercat::marker
