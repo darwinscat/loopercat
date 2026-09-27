@@ -19,7 +19,7 @@ the platform for and does not distribute at all.
 | **DiskArbitration**, **IOKit** | linked on macOS | Apple system frameworks | Volume liveness, unmount and eject. Part of the operating system. |
 
 First-party and listed only so nobody has to wonder: **felitronics-core** (`felitronics::analysis`,
-pinned `v0.23.0`), **felitronics-appkit** (pinned `v0.18.0`) and the Darwin's Cat mark
+pinned `v0.23.0`), **felitronics-appkit** (pinned `v0.21.1`) and the Darwin's Cat mark
 `catlogo.svg`, also embedded in `LooperCatAssets`. All three are ours, AGPL-3.0-or-later, no
 third-party licence involved.
 
