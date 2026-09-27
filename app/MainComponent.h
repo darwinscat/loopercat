@@ -262,7 +262,7 @@ private:
     void releasePlayerIfHolding(int slotA, int slotB);
     void choosePushWav(int slot, bool slotOccupied);
     void pullSlot(int slot);
-    void clearSlot(int slot, const juce::String& name);
+    void clearSlot(int slot);
     void downmixSlot(int slot, const juce::String& name, wav::Placement placement);
     void normalizeSlot(int slot, const juce::String& name);
     void enqueueNormalize(int slot, double target, int batch = 0,
