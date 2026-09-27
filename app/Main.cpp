@@ -291,8 +291,15 @@ private:
     {
         MainComponent content(explicitVolume, dataOverride);
         content.refreshNow();
+        if (!content.volumePath().empty()
+            && (!waitFor([&content] { return content.firstSeenReady(); }, 120000)
+                || !content.firstSeenError().empty())) {
+            std::cerr << "the card's first snapshot did not finish: " << content.firstSeenError() << std::endl;
+            return 2;
+        }
+        const int feeds = content.historyWindowFeeds();
         content.feedHistoryWindow();
-        if (!waitFor([&content] { return content.historyWindowFeeds() > 0 && content.undoOfferRead(); },
+        if (!waitFor([&content, feeds] { return content.historyWindowFeeds() > feeds && content.undoOfferRead(); },
                      15000)) {
             std::cerr << "the History window was never fed\n";
             return 2;
@@ -590,6 +597,16 @@ private:
             std::cout << "pedal name: " << content.pedalName()
                       << (content.cardNameReady() ? "" : " (not settled)") << std::endl;
         }
+        if (!content.volumePath().empty()) {
+            if (!waitFor([&content] { return content.firstSeenReady(); }, 120000)) {
+                std::cerr << "the card's first snapshot did not finish in time\n";
+                return 2;
+            }
+            if (!content.firstSeenError().empty()) {
+                std::cerr << content.firstSeenError() << std::endl;
+                return 2;
+            }
+        }
         if (wantsHistory) {
             // The tab reads its rows on the worker, so the render has to wait
             // for them the way it waits for a waveform — an empty slot has no
@@ -598,6 +615,8 @@ private:
             while (!content.historyReady() && juce::Time::getMillisecondCounterHiRes() < deadline)
                 juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
         }
+        if (wantsHistory)
+            std::cout << content.historyText();
         return writePng(content, path);
     }
 

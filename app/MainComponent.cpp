@@ -1358,7 +1358,7 @@ void MainComponent::readCardName()
     PedalWorker::Job job {
         "Read the card's name",
         0,
-        [safe, alive = uiAlive](const volume::fs::path& volumePath) {
+        [safe, rec = recorder, generation = cardGeneration, alive = uiAlive](const volume::fs::path& volumePath) {
             std::optional<marker::Card> found = marker::read(volumePath);
             bool minted = false;
             std::string sweepNote;
@@ -1371,9 +1371,20 @@ void MainComponent::readCardName()
                 if (!written.sweep.failed.empty())
                     sweepNote = "a sidecar would not delete: " + written.sweep.failed.front().string();
             }
-            juce::MessageManager::callAsync([safe, alive, c = *found, minted, sweepNote] {
-                if (*alive && safe != nullptr)
+            juce::MessageManager::callAsync([safe, alive, generation, c = *found, minted, sweepNote] {
+                if (*alive && safe != nullptr && generation == safe->cardGeneration)
                     safe->cardNamed(c, minted, sweepNote);
+            });
+            const auto baseline = rec->firstSeen(volumePath);
+            juce::MessageManager::callAsync([safe, alive, generation, baseline] {
+                if (!*alive || safe == nullptr || generation != safe->cardGeneration) return;
+                safe->firstSeenSettled = !baseline;
+                if (baseline) {
+                    safe->firstSeenRun = std::make_shared<history::FirstSeenRun>(*baseline);
+                    safe->snapshotNext(safe->firstSeenRun, 1);
+                }
+                safe->updateHistory();
+                safe->feedHistoryWindow();
             });
         },
         nullptr,
@@ -1383,15 +1394,38 @@ void MainComponent::readCardName()
         true   // the card is the point
     };
     // Whatever happened, the seam must not wait forever.
-    job.after = [safe, alive = uiAlive](const std::string& error) {
-        if (error.empty())
-            return;
-        juce::MessageManager::callAsync([safe, alive] {
-            if (*alive && safe != nullptr)
+    job.after = [safe, generation = cardGeneration, alive = uiAlive](const std::string& error) {
+        if (error.empty()) return;
+        juce::MessageManager::callAsync([safe, alive, generation, error] {
+            if (*alive && safe != nullptr && generation == safe->cardGeneration) {
                 safe->cardNameSettled = true;
+                safe->firstSeenSettled = true;
+                safe->firstSeenProblem = error;
+            }
         });
     };
     worker.enqueue(std::move(job));
+}
+
+void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& run, int slot)
+{
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue(history::firstSeenJob(recorder, run, slot,
+        [safe, run, slot, alive = uiAlive](int count, const std::string& error) {
+            juce::MessageManager::callAsync([safe, run, slot, count, error, alive] {
+                if (!*alive || safe == nullptr || run->cancelled) return;
+                safe->firstSeenCount = count;
+                safe->firstSeenProblem = error;
+                safe->firstSeenSettled = !error.empty() || count == 99;
+                safe->updateStatusText();
+                if (safe->firstSeenSettled) {
+                    safe->updateHistory();
+                    safe->feedHistoryWindow();
+                } else {
+                    safe->snapshotNext(run, slot + 1);
+                }
+            });
+        }));
 }
 
 void MainComponent::cardNamed(marker::Card named, bool minted, std::string sweepNote)
@@ -1441,8 +1475,9 @@ void MainComponent::renamePedal()
         juce::Component::SafePointer<MainComponent> again(self);
         self->worker.enqueue({ "Rename the pedal to \xe2\x80\x9c" + utf8(newName) + "\xe2\x80\x9d",
                                0,
-                               [newName, again, alive = self->uiAlive](const volume::fs::path& volumePath) {
+                               [newName, again, rec = self->recorder, alive = self->uiAlive](const volume::fs::path& volumePath) {
                                    const marker::Written written = marker::rename(volumePath, newName);
+                                   rec->selectVolume(volumePath); // update the stored name under the same id
                                    juce::MessageManager::callAsync([again, alive, c = written.card] {
                                        if (*alive && again != nullptr)
                                            again->cardNamed(c, false, {});
@@ -1568,6 +1603,12 @@ void MainComponent::updateStatusText()
     }
     // A memory holds a loop when any of its tracks does — on the RC-5 that
     // is its one track, as ever.
+    if (firstSeenRun && !firstSeenRun->cancelled && !firstSeenSettled) {
+        status.setText("Saving card first seen: " + juce::String(firstSeenCount) + " of 99 slots",
+                       juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, kStatusText);
+        return;
+    }
     int loaded = 0;
     for (const auto& row : snapshot.slots)
         for (const auto& track : row.info.tracks)
@@ -1652,10 +1693,23 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     // been read; until then, the volume's label. One read per mount: the
     // volume path changing is what makes it a new card.
     if (!mounted) {
+        if (!cardNameVolume.empty()) {
+            ++cardGeneration;
+            if (firstSeenRun) firstSeenRun->cancelled = true;
+            worker.enqueue({ "Close the card's history session", 0,
+                             [rec = recorder](const volume::fs::path&) { rec->disconnect(); },
+                             nullptr, 0, false, true, false });
+        }
+        firstSeenSettled = false;
         card.reset();
         cardNameVolume.clear();
         cardNameSettled = false;
     } else if (snapshot.volume != cardNameVolume) {
+        ++cardGeneration;
+        if (firstSeenRun) firstSeenRun->cancelled = true;
+        firstSeenSettled = false;
+        firstSeenProblem.clear();
+        firstSeenCount = 0;
         card.reset();
         cardNameVolume = snapshot.volume;
         cardNameSettled = false;

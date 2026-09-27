@@ -54,7 +54,7 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     // A row whose take is the one it archived — a clear, an undo that emptied
     // the slot — does not say what the slot holds now, even as the newest
     // row: its take is kept, or lost.
-    const bool onCard = newest && entry.takeIsAfter;
+    const bool onCard = newest && entry.takeIsAfter && entry.kind != "snapshot";
     story::Take take = story::Take::none;
     if (hasTake)
         take = onCard          ? story::Take::onCard
@@ -179,6 +179,14 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             }
             row.takes.push_back({ touched.slot, slotRow.line.audio, slotRow.playable,
                                   slotRow.restorable, slotRow.takeHash });
+        }
+        if (entry.kind == "snapshot") {
+            row.detail.clear();
+            for (const auto& touched : entry.slots)
+                if (!touched.facts.takeName.empty())
+                    row.detail += (row.detail.empty() ? "" : "; ")
+                        + std::string("slot ") + std::to_string(touched.slot) + ": "
+                        + touched.facts.takeName;
         }
         if (entry.kind == "swap" && entry.slots.size() == 2) {
             row.action = "Swapped slots " + std::to_string(entry.slots[0].slot) + " and "

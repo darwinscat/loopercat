@@ -29,6 +29,7 @@
 #include "history/SlotRows.h"
 #include "history/TakeAudition.h"
 #include "history/HistoryRecorder.h"
+#include "history/FirstSeenJob.h"
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
 #include "history/TakeExport.h"
@@ -91,6 +92,15 @@ public:
     // The card's own name (issue #99): read from its marker once the volume
     // is up, minted when it has none. For the --snapshot seam: whether that
     // has settled, and what the corner says.
+    bool firstSeenReady() const { return firstSeenSettled; }
+    std::string firstSeenError() const { return firstSeenProblem; }
+    std::string historyText() const
+    {
+        std::string text;
+        for (const auto& row : historyEntries)
+            text += row.line.action + " | " + row.line.detail + " | " + row.line.audio + "\n";
+        return text;
+    }
     bool cardNameReady() const { return cardNameSettled; }
     std::string pedalName() const { return pedalLight.label().toStdString(); }
     void showAbout(); // the menu About and --about: opens the version badge's popover
@@ -186,6 +196,7 @@ private:
     // none — and the name lands in the corner and in the pedal book under
     // the endpoint Connect chose. A click on the name renames the card.
     void readCardName();
+    void snapshotNext(const std::shared_ptr<history::FirstSeenRun>& run, int slot);
     void cardNamed(marker::Card card, bool minted, std::string sweepNote);
     void renamePedal();
     void savePedalBook();
@@ -353,6 +364,11 @@ private:
     pedalbook::Book pedalBook;          // endpoint -> the card it carried, and its name (settings)
     std::optional<marker::Card> card;   // the mounted card's marker, once read
     std::string cardNameVolume;         // the volume the marker was read for (one read per mount)
+    std::shared_ptr<history::FirstSeenRun> firstSeenRun;
+    bool firstSeenSettled = false;
+    std::string firstSeenProblem;
+    int firstSeenCount = 0;
+    int cardGeneration = 0;
     bool cardNameSettled = false;       // read, minted, or given up — for the seam
     juce::String lastConnectSendError; // last enter-storage send result — the honest give-up
     std::int64_t connectHoldUntilMs = 0; // Connect held while the pedal re-boots its MIDI face
