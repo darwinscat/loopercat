@@ -387,12 +387,20 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                 // Keep the pane's state: the completion path reload()s the
                 // trimmed bytes into the same slot view.
                 player.releaseFile();
+                auto note = std::make_shared<juce::String>();
                 worker.enqueue(recorded(
                     "trim", options,
                     { "Trim slot " + juce::String(slot), slot,
-                      [slot, inFrame, outFrame, options](const volume::fs::path& volumePath) {
-                          commands::trim(volumePath, slot, inFrame, outFrame, { .write = options });
-                      } }));
+                      [slot, inFrame, outFrame, options, note](const volume::fs::path& volumePath) {
+                          const auto trimmed =
+                              commands::trim(volumePath, slot, inFrame, outFrame, { .write = options });
+                          // A trim that replaced a note-value length with a bar
+                          // count says so (issue #92) — toast and row alike.
+                          if (trimmed.noteLengthReplaced)
+                              *note = juce::String(history::story::kNoteLengthReplaced.data(),
+                                                   history::story::kNoteLengthReplaced.size());
+                      },
+                      note }));
             });
     };
 
@@ -1141,7 +1149,8 @@ void MainComponent::updateHistory()
                                  == juce::Time::getCurrentTime().getDayOfYear();
                              rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
                                               row.line.action, row.line.detail, row.line.audio,
-                                              row.playable, row.restorable, row.op });
+                                              row.playable, row.restorable, row.op,
+                                              juce::String::fromUTF8(row.line.hint.c_str()) });
                          }
                          juce::MessageManager::callAsync(
                              [safe, rows, loaded = std::move(entries), slot, alive]() mutable {
@@ -1965,11 +1974,12 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                                                     { .normalizeTargetLufs = normalizeTarget });
                              if (ok.failed())
                                  throw Error(ok.getErrorMessage().toStdString());
+                             commands::PushResult pushed;
                              try {
-                                 commands::push(volumePath,
-                                                prepared.file.getFullPathName().toStdString(),
-                                                slot,
-                                                { .force = force, .write = options });
+                                 pushed = commands::push(volumePath,
+                                                         prepared.file.getFullPathName().toStdString(),
+                                                         slot,
+                                                         { .force = force, .write = options });
                              } catch (...) {
                                  if (prepared.converted)
                                      prepared.file.deleteFile();
@@ -1983,6 +1993,17 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                                                "push " + juce::File(source).getFileName()
                                                    + " to slot " + juce::String(slot) + ": "
                                                    + *note);
+                             }
+                             // The slot's length was a note value and this take
+                             // replaced it with a bar count (issue #92): said out
+                             // loud, in the toast and in the row, never in silence.
+                             if (pushed.noteLengthReplaced) {
+                                 const juce::String fact(history::story::kNoteLengthReplaced.data(),
+                                                         history::story::kNoteLengthReplaced.size());
+                                 *note << (note->isEmpty() ? "" : "; ") << fact;
+                                 oplog::append(logDir,
+                                               "push " + juce::File(source).getFileName()
+                                                   + " to slot " + juce::String(slot) + ": " + fact);
                              }
                          },
                          note }));

@@ -249,5 +249,36 @@ int main()
         CHECK_EQ(odd.hint, std::string());
     }
 
+    // --- a push or a trim that replaced a note-value length says so, after its numbers ---
+    {
+        CHECK_EQ(std::string(story::kNoteLengthReplaced), std::string("note length replaced by bars"));
+        const std::string longer = rc0::setSectionField(rc0::factorySlotBody(40), rc0::kSectionTrack1, "WavLen", 54352);
+        const std::string shorter = rc0::setSectionField(rc0::factorySlotBody(40), rc0::kSectionTrack1, "WavLen", 27176);
+        const auto trimLine = story::tell({ .kind = "trim", .beforeBody = longer, .afterBody = shorter,
+                                           .take = story::Take::onCard,
+                                           .note = std::string(story::kNoteLengthReplaced) });
+        CHECK_EQ(trimLine.action, std::string("Trimmed"));
+        CHECK_EQ(trimLine.detail, std::string("0:01 -> 0:00 - note length replaced by bars"));
+        const auto plain = story::tell({ .kind = "trim", .beforeBody = longer, .afterBody = shorter,
+                                         .take = story::Take::onCard });
+        CHECK_EQ(plain.detail, std::string("0:01 -> 0:00"));
+        // a push carries the fact behind a normalize line, or alone, or not at all
+        const auto pushLine = story::tell({ .kind = "push", .beforeBody = longer, .afterBody = shorter,
+                                          .takeName = "take.wav", .take = story::Take::onCard,
+                                          .note = "normalized -3.2 dB; " + std::string(story::kNoteLengthReplaced) });
+        CHECK(pushLine.detail.find("take.wav") == 0);
+        CHECK(pushLine.detail.find(" - note length replaced by bars") == pushLine.detail.size() - std::string(" - note length replaced by bars").size());
+        const auto alone = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
+                                         .note = std::string(story::kNoteLengthReplaced) });
+        CHECK_EQ(alone.detail, std::string("take.wav - note length replaced by bars"));
+        const auto quiet = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
+                                         .note = "normalized -3.2 dB" });
+        CHECK_EQ(quiet.detail, std::string("take.wav"));
+        // the fact belongs to push and trim: a rename's note is a rename's note
+        const auto other = story::tell({ .kind = "rename", .take = story::Take::none,
+                                         .note = std::string(story::kNoteLengthReplaced) });
+        CHECK(other.detail.find("note length") == std::string::npos);
+    }
+
     return testkit::summary("slot_story_tests");
 }
