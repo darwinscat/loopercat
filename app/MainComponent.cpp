@@ -3,7 +3,7 @@
 
 #include "MainComponent.h"
 
-#include "ClearSlotConfirmation.h"
+#include "ClearSlotAction.h"
 #include "ConnectGate.h"
 
 #include "history/WriteOptionsFactory.h"
@@ -2460,16 +2460,13 @@ void MainComponent::pullSlot(int slot)
 
 void MainComponent::clearSlot(int slot)
 {
-    showClearSlotConfirmation(slot, [this, slot] {
-        const auto options = makeWriteOptions();
-        releasePlayerIfHolding(slot, slot); // the clear deletes its WAV (issue #26)
-        worker.enqueue(recorded(
-            "clear", options,
-            { juce::String("Clear slot ") + juce::String(slot), slot,
-              [slot, options](const volume::fs::path& volumePath) {
-                  commands::clear(volumePath, { slot }, { .write = options });
-              } }));
-    });
+    clearSlotAction::request(slot, recorder,
+        [safe = juce::Component::SafePointer<MainComponent>(this), slot](PedalWorker::Job job) {
+            if (safe == nullptr)
+                return;
+            safe->releasePlayerIfHolding(slot, slot); // the clear deletes its WAV (issue #26)
+            safe->worker.enqueue(std::move(job));
+        });
 }
 
 void MainComponent::openSettings()

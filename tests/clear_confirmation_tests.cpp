@@ -3,7 +3,7 @@
 
 #include "support.hpp"
 
-#include "../app/ClearSlotConfirmation.h"
+#include "../app/ClearSlotAction.h"
 #include "../app/AudioEngine.h"
 #include "../app/HistoryPane.h"
 #include "../app/history/CardRestore.h"
@@ -139,12 +139,20 @@ int main()
         const auto name = volume::listSlotWavs(fixture.card, 4).front();
         const auto take = commands::readFileBytes(volume::wavDir(fixture.card, 4) / name);
         int jobs = 0;
-        showClearSlotConfirmation(4, [&] {
+        clearSlotAction::request(4, fixture.rec, [&](PedalWorker::Job job) {
             ++jobs;
-            fixture.run("clear", [&](const auto& write) {
-                commands::clear(fixture.card, { 4 }, { .write = write });
-            });
+            CHECK_EQ(job.slot, 4);
+            CHECK_EQ(job.description, juce::String("Clear slot 4"));
+            CHECK(job.before != nullptr);
+            CHECK(job.after != nullptr);
+            // Execute the app's job using the worker's lifecycle order.
+            job.before(fixture.card);
+            job.work(fixture.card);
+            job.after({});
         });
+        CHECK_EQ(jobs, 0);
+        CHECK(fixture.cardBytes() == before);
+        CHECK_EQ(fixture.rec->store().cardTimeline().size(), 1u);
         auto* dialog = dynamic_cast<juce::AlertWindow*>(juce::Component::getCurrentlyModalComponent());
         CHECK(dialog != nullptr);
         if (dialog == nullptr)

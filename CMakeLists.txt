@@ -413,6 +413,7 @@ juce_add_gui_app(LooperCat
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>")
 
 target_sources(LooperCat PRIVATE
+    app/ClearSlotAction.cpp
     app/HistoryPane.cpp
     app/HistoryWindow.cpp
     app/Main.cpp
@@ -729,9 +730,10 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
-# Drive the Clear dialog, then Play and Restore on real history and card bytes.
+# Drive the app Clear action, then Play and Restore on real history and card bytes.
 juce_add_console_app(clear_confirmation_tests PRODUCT_NAME "clear_confirmation_tests")
 target_sources(clear_confirmation_tests PRIVATE tests/clear_confirmation_tests.cpp
+    app/ClearSlotAction.cpp
     app/HistoryPane.cpp
     app/history/HistoryRecorder.cpp
     app/history/HistoryStore.cpp
