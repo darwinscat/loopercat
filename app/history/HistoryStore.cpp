@@ -69,6 +69,7 @@ HistoryStore::HistoryStore(const std::filesystem::path& dir)
       }())
 {
     sqlite3_busy_timeout(db_.raw(), 5000);
+    schema::requireSupportedVersion(db_); // refuse before any persistent pragma changes
     // Both take effect only on a file that has no tables yet, which is the
     // whole point: they are set before migrate() creates the first one.
     db_.exec("PRAGMA page_size = 16384");
