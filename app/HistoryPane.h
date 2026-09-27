@@ -35,7 +35,6 @@ public:
         bool playable = false;   // its take's bytes are in the store
         bool restorable = false; // its state can go back onto the card
         std::int64_t op = 0;
-        juce::String hint;       // the row's tooltip, when it has one: a legacy row's folders
     };
 
     HistoryPane();
@@ -58,7 +57,6 @@ private:
     void paintListBoxItem(int row, juce::Graphics&, int width, int height, bool selected) override;
     void selectedRowsChanged(int lastRowSelected) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override;
-    juce::String getTooltipForRow(int row) override;
 
     const Row* selected() const;
     void updateOffers();

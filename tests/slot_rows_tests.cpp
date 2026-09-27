@@ -7,10 +7,9 @@
 // about, and whether those bytes still exist, is the difference between a
 // button that works and a button that lies.
 //
-// The cases below are the shapes a real store produces, including the two
-// that only appear after a while: a take whose bytes were never kept (the
-// slot was cleared with "Delete permanently" later), and a row imported from
-// the folders that predate the store, which has audio but no state.
+// The cases below are the shapes a real store produces, including a take
+// whose bytes were released and a row that archived audio without changing
+// the slot body.
 
 #include "support.hpp"
 
@@ -115,72 +114,6 @@ int main()
         CHECK_EQ(made.back().line.audio, std::string("nothing left in the slot"));
         CHECK(!made.back().restorable); // the newest row IS where the slot is
         CHECK(!made.back().playable);
-    }
-
-    // --- a row from the folders that predate the store ---
-    {
-        // the import records the take it found and no state at all: there is
-        // something to listen to, and nothing to go back to
-        Entry legacy = op(1, "legacy");
-        legacy.actor = "legacy";
-        legacy.note = "trash/2026-09-01T21-35-46";
-        legacy.takeName = "005_1.WAV";
-        legacy.takeHash = std::string(32, '\x44');
-        legacy.takeKept = true;
-        Entry later = op(2, "rename");
-        later.beforeBody = empty;
-        later.afterBody = bodyWith(0, "Named");
-
-        const auto made = rows::forSlot({ legacy, later });
-        CHECK_EQ(made.front().line.action, std::string("Before the history"));
-        CHECK_EQ(made.front().line.detail, std::string("a take was replaced (from the old folders)"));
-        CHECK_EQ(made.front().line.hint, std::string("trash/2026-09-01T21-35-46")); // the folder, for a tooltip
-        CHECK(made.front().playable);
-        CHECK(!made.front().restorable);
-        CHECK_EQ(made.front().takeHash, std::string(32, '\x44'));
-    }
-
-    // --- the newest row from before the history is not where the slot is ---
-    {
-        // what Alisa's slot 14 showed after the import: four legacy rows and
-        // nothing after them. The last holds the take the slot had BEFORE that
-        // old operation — kept and listenable, and no word about the slot now.
-        Entry older = op(1, "legacy");
-        older.actor = "legacy";
-        older.note = "trash/2026-08-01T17-55-07";
-        older.takeName = "014_1.WAV";
-        older.takeHash = std::string(32, '\x55');
-        older.takeKept = true;
-        Entry newest = op(2, "legacy");
-        newest.actor = "legacy";
-        newest.note = "trash/2026-09-01T23-34-45";
-        newest.takeName = "014_1.WAV";
-        newest.takeHash = std::string(32, '\x66');
-        newest.takeKept = true;
-
-        const auto made = rows::forSlot({ older, newest });
-        CHECK_EQ(made.back().line.audio, std::string("take kept")); // not "in the slot now"
-        CHECK(made.back().playable);
-        CHECK(!made.back().restorable);
-        CHECK_EQ(made.back().takeHash, std::string(32, '\x66'));
-        CHECK_EQ(made.back().line.action, std::string("Before the history"));
-        CHECK_EQ(made.back().line.hint, std::string("trash/2026-09-01T23-34-45"));
-        // one whose bytes are gone says so, still not "in the slot now"
-        newest.takeKept = false;
-        CHECK_EQ(rows::forSlot({ older, newest }).back().line.audio, std::string("take no longer kept"));
-        // a row from before the history stands for a past operation: even a
-        // take recorded on its 'after' side is not what the slot holds now
-        newest.takeKept = true;
-        newest.takeIsAfter = true;
-        CHECK_EQ(rows::forSlot({ older, newest }).back().line.audio, std::string("take kept"));
-        // the app's own newest row still is where the slot is
-        Entry pushed = op(3, "push");
-        pushed.beforeBody = empty;
-        pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = std::string(32, '\x77');
-        pushed.takeIsAfter = true;
-        CHECK_EQ(rows::forSlot({ older, pushed }).back().line.audio, std::string("in the slot now"));
     }
 
     // --- a newest row whose take is the one it archived is not where the slot is ---

@@ -12,7 +12,7 @@
 // persistence (see UpdateCheck.h); app preferences join it when they exist.
 //
 // `dataOverride` (the --data CLI seam) moves the whole home — settings,
-// history, trash, backups — to another directory, so a verification run on a
+// history, operations.log — to another directory, so a verification run on a
 // synthetic pedal never writes into the player's own data. Empty = the
 // platform location, which is the only one a normal launch ever uses.
 //==============================================================================
@@ -36,8 +36,7 @@ public:
 
     juce::PropertiesFile* file() { return properties.getUserSettings(); }
 
-    // The app's data home (…/Darwin's Cat/LooperCat) — backups and the
-    // clear-command trash live under it.
+    // The app's data home (…/Darwin's Cat/LooperCat): settings, history and log.
     juce::File dataDir()
     {
         auto* settings = file();

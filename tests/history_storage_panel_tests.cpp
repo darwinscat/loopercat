@@ -121,7 +121,7 @@ int main()
         std::vector<retention::Blob> blobs = {
             blob("c", "slot 3 take.wav", 400 * MB, 3000),
             blob("a", "slot 1 take.wav", 400 * MB, 1000),
-            blob("b", "backups/2026-07-22T17-36-55/MEMORY1.RC0", 400 * MB, 2000),
+            blob("b", "slot 27 take.wav", 400 * MB, 2000),
             blob("d", "slot 4 take.wav", 400 * MB, 4000),
         };
         blobs[3].undo = true;

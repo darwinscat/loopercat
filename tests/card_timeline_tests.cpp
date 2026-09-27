@@ -185,23 +185,21 @@ int main()
         }
     }
 
-    // --- a legacy row is written last and belongs first ---
+    // --- timeline order follows the clock even when it moves backwards ---
     {
         TempDir tmp;
         Ready r(tmp.path);
         const auto live = r.begin("rename");
         r.store.recordBodies(live, { { 5, "before", "after" } });
         r.store.finishOp(live, OpStatus::done, "");
-        const auto legacySession = r.store.openSession(r.store.card("unknown", "legacy folders", 1), 1);
-        const auto old = r.store.recordLegacyOp(legacySession, "2026-09-01T21-35-46", 500,
-                                                "trash/2026-09-01T21-35-46");
-        r.store.keepLegacyTake(old, "trash/2026-09-01T21-35-46/005_1/005_1.WAV", 5, 1, "005_1.WAV",
-                               take(2000, 9), 600);
+        const auto old = r.store.beginOp(r.session, "clock-went-back", "clear", 500);
+        r.store.keepAudio(old, 5, 1, "005_1.WAV", take(2000, 9), 600);
+        r.store.finishOp(old, OpStatus::done, "");
         CHECK(old > live); // written after
         const auto entries = r.store.cardTimeline();
         CHECK_EQ(entries.size(), 2u);
         CHECK_EQ(entries.front().op, old); // read first
-        CHECK_EQ(entries.front().actor, std::string("legacy"));
+        CHECK_EQ(entries.front().actor, std::string("app"));
         CHECK(entries.front().slots.size() == 1 && entries.front().slots[0].slot == 5);
         CHECK(entries.front().slots.size() == 1 && entries.front().slots[0].facts.takeKept);
         CHECK(entries.front().slots.size() == 1 && !entries.front().slots[0].newest);

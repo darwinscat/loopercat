@@ -352,10 +352,6 @@ int main()
 
     // --- a slot's timeline: in the order a player reads it ---
     //
-    // Rows imported from the folders that predate the store are written last
-    // and belong first: their operations really happened before the ones the
-    // app recorded, and a timeline sorted by insertion would put a take from
-    // September above one from last year.
     {
         TempDir tmp;
         Ready r(tmp.path);
@@ -371,17 +367,16 @@ int main()
                                    HistoryStore::contentHash(fresh));
         r.store.finishOp(live, OpStatus::done, "trimmed");
 
-        // ...and what the import found afterwards, from a year before
-        const auto legacy = r.store.recordLegacyOp(r.session, "2025-05-01T10-00-00", 1000,
-                                                   "trash/2025-05-01T10-00-00");
-        r.store.keepLegacyTake(legacy, "trash/2025-05-01T10-00-00/005_1/005_1.WAV", 5, 1,
-                               "005_1.WAV", take(15000, 43), 1000);
+        // A later operation after the system clock moved backwards.
+        const auto cleared = r.store.beginOp(r.session, "op-clear", "clear", 1000);
+        r.store.keepAudio(cleared, 5, 1, "005_1.WAV", take(15000, 43), 1000);
+        r.store.finishOp(cleared, OpStatus::done, "");
 
         const auto rows = r.store.slotTimeline(5);
         CHECK_EQ(rows.size(), 2u);
         if (rows.size() == 2u) {
-            CHECK_EQ(rows[0].kind, std::string("legacy")); // older by the clock, later by seq
-            CHECK_EQ(rows[0].actor, std::string("legacy"));
+            CHECK_EQ(rows[0].kind, std::string("clear")); // older by the clock, later by seq
+            CHECK_EQ(rows[0].actor, std::string("app"));
             CHECK(rows[0].op > rows[1].op); // exactly the trap: insertion order would lie
             CHECK_EQ(rows[1].kind, std::string("trim"));
             CHECK_EQ(rows[1].note, std::string("trimmed"));
@@ -390,7 +385,7 @@ int main()
             // the live row offers the take its state holds...
             CHECK(rows[1].takeHash == HistoryStore::contentHash(fresh));
             CHECK(!rows[1].takeKept); // ...whose bytes are on the card, not in the store
-            // ...and the legacy row offers the one it kept, which can be played
+            // ...and the clear row offers the one it kept, which can be played
             CHECK(rows[0].takeHash == HistoryStore::contentHash(take(15000, 43)));
             CHECK(rows[0].takeKept);
         }

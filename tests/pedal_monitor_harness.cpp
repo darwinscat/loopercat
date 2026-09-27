@@ -164,7 +164,7 @@ int main()
     monitor.enqueue({ "Rename slot 7", 7,
                       [](const volume::fs::path& volumePath) {
                           commands::rename(volumePath, 7, "Via Worker",
-                                           { .skipBackup = true });
+                                           {});
                       } });
     CHECK(pumpUntil([&] { return !jobResults.empty(); }, 5000));
     if (!jobResults.empty()) {
@@ -183,7 +183,7 @@ int main()
     monitor.enqueue({ "Rename slot 7 badly", 7,
                       [](const volume::fs::path& volumePath) {
                           commands::rename(volumePath, 7, "ThirteenChars",
-                                           { .skipBackup = true });
+                                           {});
                       } });
     CHECK(pumpUntil([&] { return jobResults.size() >= 2; }, 5000));
     if (jobResults.size() >= 2)
@@ -230,7 +230,7 @@ int main()
         ghostWorker.enqueue({ "Rename slot 7 into the void", 7,
                               [](const volume::fs::path& volumePath) {
                                   commands::rename(volumePath, 7, "Phantom",
-                                                   { .skipBackup = true });
+                                                   {});
                               } });
         CHECK(pumpUntil([&] { return !ghostResults.empty(); }, 5000));
         if (!ghostResults.empty())

@@ -22,6 +22,7 @@
 //   - "Restore this state" of the window puts every slot of a row back
 
 #include "support.hpp"
+#include "archive_support.hpp"
 
 #include "../app/history/CardRestore.h"
 #include "../app/history/HistoryRecorder.h"
@@ -139,14 +140,10 @@ struct Bench {
     std::shared_ptr<HistoryRecorder> rec =
         std::make_shared<HistoryRecorder>(tmp.path / "history", "RC-5", tick);
     int ops = 0;
-    int archivedToTrash = 0; // every take an operation handed on, after the history kept it
 
     commands::WriteOptions options(const std::string& opId)
     {
-        return history::withHistory(rec, { .opId = opId, .skipBackup = true },
-                                    [this](int, const std::string&, std::string_view) {
-                                        ++archivedToTrash;
-                                    });
+        return history::withHistory(rec, { .opId = opId });
     }
 
     // One recorded operation, the way the worker wraps a job.
@@ -268,11 +265,17 @@ int main()
         b.op("rename", [&](const commands::WriteOptions& o) { commands::rename(b.volume, 5, "Kitty", o); });
         const CardState renamed = cardState(b.volume);
 
-        const int archivedBefore = b.archivedToTrash;
+        const auto archivedTakes = [&] {
+            sqlite::Statement read(b.rec->store().db(),
+                                   "SELECT count(*) FROM slot_audio WHERE side = 'before'");
+            read.step();
+            return read.integer(0);
+        };
+        const auto archivedBefore = archivedTakes();
         CHECK_EQ(undo::menuText(false, undo::offer(b.rec->store())), std::string("Undo rename of slot 5"));
         CHECK_EQ(b.press(false), std::string());
         CHECK_SAME(cardState(b.volume), trimmed);
-        CHECK_EQ(b.archivedToTrash, archivedBefore); // the take was neither archived nor rewritten
+        CHECK_EQ(archivedTakes(), archivedBefore); // the take was neither archived nor rewritten
 
         // The next press targets the trim; the rename and the undo row lie
         // after it on slot 5, and neither is still in effect.
@@ -370,8 +373,8 @@ int main()
         // tool): the rename's body would describe a take that is gone.
         const fs::path elsewhere = b.tmp.path / "elsewhere";
         commands::trim(b.volume, 5, 0, 44100 * 2,
-                       { { .opId = "outside", .skipBackup = true,
-                           .archive = commands::trashFolder(elsewhere, "outside") } });
+                       { { .opId = "outside",
+                           .archive = testkit::fileArchive(elsewhere, "outside") } });
         const CardState moved = cardState(b.volume);
         const std::string changed = b.press(false);
         CHECK(changed.find("holds another take") != std::string::npos);

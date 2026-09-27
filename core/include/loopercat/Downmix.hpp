@@ -214,7 +214,7 @@ inline Bytes downmixedToMono(BytesView data, Placement placement)
 //
 // SAMPLES, not the whole file: canonicalising a header is not what a player
 // means by "this changed my loop", and a fold that only rewrote chunk
-// boundaries would still spend a trash copy and a pedal write generation. So
+// boundaries would still spend a archive copy and a pedal write generation. So
 // the comparison walks frames from wherever each file's audio begins, exactly
 // as isDualMono does.
 inline bool foldWouldChangeNothing(BytesView data, Placement placement)

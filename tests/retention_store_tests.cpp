@@ -5,7 +5,7 @@
 // promises:
 //
 //   - what the history costs is read from the file, each take counted once
-//   - the undo on offer is the newest finished operation that is not legacy
+//   - the undo on offer is the newest finished operation
 //   - a take is held while any row naming it is pinned, in flight, or the
 //     undo's 'before'; a shared take is released only when the last lets go
 //   - releasing frees the bytes and nothing else: every row keeps naming the
@@ -150,7 +150,7 @@ int main()
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 3);
     }
 
-    // --- the undo on offer: the newest finished operation that is not legacy ---
+    // --- the undo on offer: the newest finished operation ---
     {
         TempDir tmp;
         Ready r(tmp.path);
@@ -164,10 +164,6 @@ int main()
         const auto inFlight = r.pending(4, take(1000, 4));
         CHECK(r.store.offeredTargets().undo == third);
         r.store.finishOp(inFlight, OpStatus::done, "");
-        CHECK(r.store.offeredTargets().undo == inFlight);
-        // a legacy op is newer in the timeline's numbering, and offers no undo
-        const auto legacySession = r.store.openSession(r.store.card("unknown", "legacy folders", 1), 1);
-        r.store.recordLegacyOp(legacySession, "2026-09-01T21-35-46", 500, "trash/2026-09-01T21-35-46");
         CHECK(r.store.offeredTargets().undo == inFlight);
     }
 
@@ -229,25 +225,6 @@ int main()
         r.store.finishOp(opD, OpStatus::done, "");
         CHECK(!find(r.store.keptBlobs({}), HistoryStore::contentHash(live))->inFlight);
         (void) opC;
-    }
-
-    // --- a legacy document is a kept blob too, held by a pin on its op ---
-    {
-        TempDir tmp;
-        HistoryStore store(tmp.path);
-        const auto session = store.openSession(store.card("unknown", "legacy folders", 1), 1);
-        const auto op = store.recordLegacyOp(session, "2026-09-01T21-35-46", 500, "backups/x");
-        store.keepLegacyDocument(op, "backups/2026-09-01T21-35-46/MEMORY1.RC0", "document", 600);
-        auto blobs = store.keptBlobs({});
-        CHECK_EQ(blobs.size(), 1u);
-        CHECK_EQ(blobs.front().references, 1);
-        CHECK(!blobs.front().held());
-        store.pinOp(op, true);
-        CHECK(store.keptBlobs({}).front().pinned);
-        CHECK_THROWS(store.releaseBlobs({ blobs.front().hash }, {}, 700), "pinned");
-        store.pinOp(op, false);
-        CHECK_EQ(store.releaseBlobs({ blobs.front().hash }, {}, 700), 8);
-        CHECK_EQ(count(store.db(), "SELECT count(*) FROM legacy_files"), 1); // the ledger row stays
     }
 
     // --- releasing frees the bytes and nothing else ---
@@ -489,7 +466,7 @@ int main()
         CHECK_EQ(r.store.writes().size(), 2u); // released bytes were still written then
     }
 
-    // --- a kept blob's label: the newest slot row naming it, else the legacy path ---
+    // --- a kept blob's label: the newest slot row naming it ---
     {
         TempDir tmp;
         Ready r(tmp.path);
@@ -500,15 +477,6 @@ int main()
         r.replaced(27, bytes); // a newer row names the same take from slot 27
         CHECK_EQ(r.store.keptBlobs({}).front().label, std::string("slot 27 take.wav"));
 
-        const auto session = r.store.openSession(r.store.card("unknown", "legacy folders", 1), 1);
-        const auto op = r.store.recordLegacyOp(session, "2026-09-01T21-35-46", 500, "backups/x");
-        r.store.keepLegacyDocument(op, "backups/2026-09-01T21-35-46/MEMORY1.RC0", "document", 600);
-        blobs = r.store.keptBlobs({});
-        CHECK_EQ(blobs.size(), 2u);
-        const auto* document = find(blobs, HistoryStore::contentHash("document"));
-        CHECK(document != nullptr);
-        CHECK(document && document->label == "backups/2026-09-01T21-35-46/MEMORY1.RC0");
-        CHECK_EQ(find(blobs, HistoryStore::contentHash(bytes))->label, std::string("slot 27 take.wav"));
     }
 
     return testkit::summary("retention_store_tests");

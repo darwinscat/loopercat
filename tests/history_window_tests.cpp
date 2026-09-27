@@ -194,18 +194,6 @@ int main()
         CHECK_EQ(window.pinButtonText(), juce::String("Unpin"));
     }
 
-    // --- a row's hint is its tooltip, and only its ---
-    {
-        HistoryWindow window;
-        auto rows = timeline();
-        rows[0].hint = "trash/2026-08-01T17-55-07";
-        window.show(rows);
-        CHECK_EQ(window.hintAt(0), juce::String("trash/2026-08-01T17-55-07"));
-        CHECK_EQ(window.hintAt(1), juce::String());
-        CHECK_EQ(window.hintAt(99), juce::String());
-        window.setFilter(7); // the hinted row is not visible now
-        CHECK_EQ(window.hintAt(0), juce::String());
-    }
 
     // --- busy: nothing is offered, and nothing goes out ---
     {

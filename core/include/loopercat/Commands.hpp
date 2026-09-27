@@ -3,13 +3,11 @@
 //
 // Command implementations. Orchestration only — the invariants live in
 // rc0/params/wav/volume. Every mutation follows the same discipline:
-// back up, edit MEMORY1's content, write it to BOTH memory files with their
+// record changes, write the edited content to BOTH memory files with their
 // own trailer markers, verify by re-reading, sweep AppleDouble junk.
 //
-// The core stays clock- and home-directory-free: callers supply the backup
-// root, the operation id and the archive a replaced take goes to (the app
-// derives them from its settings location and its history store, and mints
-// one id per operation; tests pin all three).
+// The core stays clock- and home-directory-free: callers supply the archive
+// and journal. The app wires both to its history store.
 //
 // Behavior source: rc5cat lib/commands.js, byte-for-byte where it matters.
 
@@ -110,20 +108,6 @@ inline void copyContent(const fs::path& src, const fs::path& dst)
     writeFileBytes(dst, readFileBytes(src));
 }
 
-// The archive never overwrites itself. Operation ids name its directories, and
-// two operations that share one would otherwise replace each other's
-// pre-state in silence: the identity used to be a wall clock at one-second
-// resolution, and a bulk normalize of slots 32, 33 and 34 left ONE backup
-// directory for the three operations. Minting a unique id is the caller's job;
-// making a reused one loud is this one's.
-inline void requireFreshArchivePath(const fs::path& dest)
-{
-    std::error_code ec;
-    if (fs::exists(dest, ec))
-        throw Error("the archive already holds " + dest.string()
-                    + " — two operations are running under one id");
-}
-
 // --- reading ---
 
 // Validating a bank is the one thing that differs between the two kinds: a
@@ -219,37 +203,6 @@ inline std::string readSystem(const fs::path& volume)
 
 // --- the write discipline ---
 
-struct BackupResult {
-    fs::path dest;
-    std::vector<std::string> copied;
-};
-
-// Copy every non-junk file from ROLAND/DATA into <backupRoot>/<opId>/.
-inline BackupResult backup(const fs::path& volume, const fs::path& backupRoot,
-                           const std::string& opId)
-{
-    if (backupRoot.empty() || opId.empty())
-        throw Error("backup requires a destination root and an operation id");
-    BackupResult result;
-    result.dest = backupRoot / opId;
-    std::error_code ec;
-    fs::create_directories(result.dest, ec);
-    if (ec)
-        throw Error("cannot create backup directory " + result.dest.string());
-    for (fs::directory_iterator it(volume::dataDir(volume), ec), end; !ec && it != end;
-         it.increment(ec)) {
-        const std::string name = it->path().filename().string();
-        if (volume::isJunkName(name) || it->is_directory())
-            continue;
-        requireFreshArchivePath(result.dest / name);
-        copyContent(it->path(), result.dest / name);
-        result.copied.push_back(name);
-    }
-    if (result.copied.empty())
-        throw Error("backup copied nothing from " + volume::dataDir(volume).string());
-    return result;
-}
-
 // Where a command puts a take it is about to replace or remove. It is called
 // BEFORE the file on the card changes, with the whole take, and the card
 // changes only after it returns: an archive that throws aborts the command
@@ -292,39 +245,13 @@ struct Journal {
 };
 
 struct WriteOptions {
-    fs::path backupRoot;    // where pre-write backups land; empty ONLY with skipBackup
-    // The identity of this operation, and the name of its backup directory.
-    // It must be unique per operation — a wall clock is not, and reusing one
-    // costs a pre-state (see requireFreshArchivePath). Any readability inside
-    // it is decoration: the core only compares it.
-    std::string opId;
-    bool skipBackup = false;
+    std::string opId; // identity used by the caller's history recorder
     // REQUIRED by every command that replaces or removes audio (push over an
     // occupied slot, trim, downmix, normalize, clear): a take is never
     // destroyed without having been handed here first.
     Archive archive;
     Journal journal;
 };
-
-// The archive as it has always looked on disk: <root>/<opId>/<NNN_1>/<file>.
-// It stays through the move to the history store (#72): until the History tab
-// (#50) opens the database, this folder is the only door a player has to a
-// take the app replaced.
-inline Archive trashFolder(const fs::path& root, const std::string& opId)
-{
-    if (root.empty() || opId.empty())
-        throw Error("the trash folder needs a root and an operation id");
-    return [operationDir = root / opId](int slot, const std::string& fileName,
-                                        std::string_view bytes) {
-        const fs::path dir = operationDir / volume::slotDirName(slot);
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        if (ec)
-            throw Error("cannot create " + dir.string());
-        requireFreshArchivePath(dir / fileName);
-        writeFileBytes(dir / fileName, bytes);
-    };
-}
 
 // The one entry point every command uses, so the refusal reads the same
 // wherever a take is about to go.
@@ -338,7 +265,6 @@ inline void archiveTake(const WriteOptions& options, const char* command, int sl
 }
 
 struct WriteResult {
-    std::optional<BackupResult> backedUp;
     std::vector<fs::path> swept;
     std::vector<fs::path> sweepFailed; // junk still on the volume — a warning, the write succeeded
 };
@@ -367,7 +293,7 @@ inline std::vector<SlotChange> slotChanges(std::string_view current, std::string
     return changes;
 }
 
-// The mutation tail shared by every command: back up, write the SAME document
+// The mutation tail shared by every command: record changes, write the SAME document
 // to both memory files, verify each byte-for-byte by re-reading, sweep junk.
 // The sweep is best-effort and runs after the pair write has succeeded: a
 // locked sidecar lands in sweepFailed, it never turns the completed write
@@ -429,8 +355,6 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
     // describe is refused with the volume as it was.
     const std::vector<SlotChange> changes = slotChanges(readMemory(volume), text);
     WriteResult result;
-    if (!options.skipBackup)
-        result.backedUp = backup(volume, options.backupRoot, options.opId);
     if (options.journal.bodiesChanging)
         options.journal.bodiesChanging(changes);
     // one below the factory pair: a fresh volume lands on 0x38/0x39
@@ -443,7 +367,7 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
     return result;
 }
 
-// The settings pair, under the same discipline: validate, back the card up,
+// The settings pair, under the same discipline: validate, record changes,
 // stamp both banks past the highest generation on the volume, verify each by
 // re-reading, sweep the sidecars macOS leaves behind.
 //
@@ -458,12 +382,6 @@ inline WriteResult writeMemoryPair(const fs::path& volume, std::string_view text
 // field unit, 0x21e on another), and inventing a starting point would hand
 // the pedal a settings file claiming to be older than the one it wrote. So a
 // volume whose settings banks cannot be read is refused rather than healed.
-// And there is no journal hook yet: #72's journal speaks in slots, and what a
-// settings change should record belongs with the feature that first makes one.
-//
-// Nothing in the app calls this yet. Writing a settings file to hardware is
-// unproven — the pedal has to still boot afterwards — and that experiment
-// belongs to the feature that needs it, with a backup at hand.
 inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text,
                                    const WriteOptions& options)
 {
@@ -479,8 +397,6 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
         throw Error("refusing to write settings: neither SYSTEM bank on " + volume.string()
                     + " can be read, so there is no write generation to continue from");
     WriteResult result;
-    if (!options.skipBackup)
-        result.backedUp = backup(volume, options.backupRoot, options.opId);
     if (options.journal.systemChanging)
         options.journal.systemChanging(changes);
     detail::writePairStamped(volume, volume::Bank::system, text, *base);
@@ -524,7 +440,7 @@ inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& sl
 // Play Count-In (#34) across a set of slots. The field surgery lives in
 // usecases::countin, which owns the rules about what the feature may touch
 // (the count always; the rhythm's State/Pattern only while it is otherwise
-// silent). This is the transaction around it: one read, one backup, one
+// silent). This is the transaction around it: one read, one recorded
 // pair-write. Everything else in the RHYTHM block (kit, beat, level, ...) is
 // left untouched either way.
 inline WriteResult setCountIn(const fs::path& volume, const std::vector<int>& slots, bool on,
@@ -541,7 +457,7 @@ inline WriteResult setCountIn(const fs::path& volume, const std::vector<int>& sl
 // owns. The rules — what "on" and "off" do next to a count-in, the manual's
 // lists and ranges, BEAT locked once a take is recorded — live in
 // usecases::rhythm; this is the transaction around them, the same one as
-// setCountIn's: one gated read, one backup, one pair-write.
+// setCountIn's: one gated read, one recorded pair-write.
 inline WriteResult setRhythm(const fs::path& volume, int slot,
                              const usecases::rhythm::Edits& edits, const WriteOptions& options)
 {
@@ -553,7 +469,7 @@ inline WriteResult setRhythm(const fs::path& volume, int slot,
 
 // Start & Stop (#22): one slot, any subset of START, STOP, FADE TIME. The
 // lists and the ownership live in usecases::playstop; this is the same
-// transaction as setRhythm's: one gated read, one backup, one pair-write.
+// transaction as setRhythm's: one gated read, one recorded pair-write.
 inline WriteResult setPlayStop(const fs::path& volume, int slot,
                                const usecases::playstop::Edits& edits, const WriteOptions& options)
 {
@@ -852,7 +768,7 @@ struct TrimResult {
 
 // Cut a slot's loop down to [startFrame, endFrame): the slice is rewritten in
 // canonical form under the same on-pedal filename, and the ORIGINAL file
-// moves to the trash root first — trim is the one command that rewrites
+// goes to the archive first — trim is the one command that rewrites
 // audio, so the pre-trim take is always recoverable. The slot's tempo is
 // PRESERVED: trim changes length, not speed, so only the length fields and
 // the bar count that follows from the kept tempo are rewritten (hardware QA
@@ -928,8 +844,8 @@ struct DownmixResult {
 
 // Fold a slot's loop to mono in place (issue #43) and put the result where
 // `placement` says — both jacks, OUTPUT A alone or OUTPUT B alone — under the
-// same on-pedal filename, with the ORIGINAL stereo file moved to the trash
-// root first. This is the second command that rewrites audio, and it is as
+// same on-pedal filename, with the ORIGINAL stereo file kept in the archive
+// first. This is the second command that rewrites audio, and it is as
 // recoverable as the first.
 //
 // The config document is rewritten UNCHANGED, on purpose. Folding moves no
@@ -940,7 +856,7 @@ struct DownmixResult {
 // write generation forward for a memory whose audio just changed.
 //
 // A fold that would not change a single byte is refused rather than performed:
-// it would spend a trash copy and a pedal write generation on nothing, so
+// it would spend an archive copy and a pedal write generation on nothing, so
 // saying so is more use than doing it. Note this is per placement — a loop
 // already folded across both jacks is a no-op for BothOutputs and a real
 // rewrite for OUTPUT B alone.
@@ -1006,10 +922,10 @@ struct NormalizeResult {
 // Level a slot's loop to the target loudness in place (issue #53): measure
 // per BS.1770 straight from the card's bytes, bake one constant gain into the
 // samples under the same on-pedal filename, with the ORIGINAL moved to the
-// trash root first — the third command that rewrites audio, as recoverable as
+// archive first — the third command that rewrites audio, as recoverable as
 // the other two. A gain moves no frame, so like the fold this rewrites the
 // config document unchanged (the pair write is the shared mutation tail:
-// backup, sidecar sweep, write generation).
+// journal, sidecar sweep, write generation).
 //
 // Two outcomes deliberately write NOTHING and say so instead of erroring —
 // they are answers, not failures, and a bulk apply must be able to walk over
@@ -1040,7 +956,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
             options.progress(v);
     };
     // Phase weights are pragmatic, not measured: on a USB card the three
-    // file passes (read, trash copy, write-back) own the wall clock, in RAM
+    // file passes (read, archive copy, write-back) own the wall clock, in RAM
     // the two DSP passes do — these segments keep the bar in honest motion
     // through every phase either way. Past 0.96 is the flush and the pair.
     const auto segment = [&report](double from, double to) {
@@ -1107,24 +1023,21 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
 
 struct ClearOptions {
     bool keepName = false;
-    bool trash = true;      // false: "Delete permanently" — the take is removed unkept
-    WriteOptions write;     // write.archive REQUIRED unless trash=false
+    WriteOptions write;     // write.archive REQUIRED
 };
 
 struct ClearResult {
     std::vector<std::string> archived; // file names handed to the archive
-    std::vector<fs::path> deleted;     // trash=false: removed without a copy
     WriteResult written;
 };
 
 // Clear slots back to factory state (what MEMORY CLEAR on the device does).
-// The wav is never deleted outright unless the player said so: it goes to the
-// archive first — the only command that removes audio, so it gets a net.
+// Every take goes to the archive before it is removed from the card.
 inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
                          const ClearOptions& options)
 {
-    if (options.trash && !options.write.archive)
-        throw Error("clear needs an archive (or trash=false)");
+    if (!options.write.archive)
+        throw Error("clear needs an archive");
     std::string text = readMemoryFor(volume, profile::Operation::clear);
 
     struct Plan {
@@ -1150,12 +1063,8 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
     for (const auto& plan : plans) {
         for (const auto& file : plan.files) {
             const fs::path src = volume::wavDir(volume, plan.slot) / file;
-            if (options.trash) {
-                archiveTake(options.write, "clear", plan.slot, file, readFileBytes(src));
-                result.archived.push_back(file);
-            } else {
-                result.deleted.push_back(src);
-            }
+            archiveTake(options.write, "clear", plan.slot, file, readFileBytes(src));
+            result.archived.push_back(file);
             std::error_code ec;
             if (!fs::remove(src, ec) || ec)
                 throw Error("cannot remove " + src.string());
@@ -1362,9 +1271,8 @@ inline void swapSlotAudio(const fs::path& volume, int slotA, int slotB)
 // RHYTHM setting, and the audio all trade places — so "collect the parts of
 // one song into consecutive slots" is a few drags. The <mem id> wrappers stay
 // put: ids number document POSITIONS, only bodies travel. Discipline order:
-// backup first (nothing has moved yet if it fails), then the audio, then the
-// memory pair; a failed config write moves the audio back, so a failed swap
-// leaves the volume as it was.
+// move the audio, then record and write the memory pair. A failed config
+// write moves the audio back, so a failed swap leaves the volume as it was.
 inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
                         const WriteOptions& options)
 {
@@ -1377,24 +1285,16 @@ inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
     const std::string swapped =
         rc0::replaceSlotBody(rc0::replaceSlotBody(text, slotA, bodyB), slotB, bodyA);
 
-    std::optional<BackupResult> backedUp;
-    if (!options.skipBackup)
-        backedUp = backup(volume, options.backupRoot, options.opId);
-    WriteOptions afterBackup = options;
-    afterBackup.skipBackup = true; // taken above, before anything moved
-
     swapSlotAudio(volume, slotA, slotB);
     try {
-        WriteResult result = writeMemoryPair(volume, swapped, afterBackup);
-        result.backedUp = std::move(backedUp);
-        return result;
+        return writeMemoryPair(volume, swapped, options);
     } catch (const Error& writeError) {
         try {
             swapSlotAudio(volume, slotA, slotB); // its own inverse: audio back home
         } catch (const Error& undoError) {
             throw Error(std::string(writeError.what())
                         + "; undoing the audio move then failed: " + undoError.what()
-                        + " — restore from the backup");
+                        + " — inspect the card before continuing");
         }
         throw;
     }
@@ -1473,7 +1373,7 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                                  "MEMORY write generations " + hexGeneration(generations[1]) + " / "
                                      + hexGeneration(generations[2])
                                      + " are more than one step apart \xe2\x80\x94 unexpected "
-                                       "state, consider a Backup before writing" });
+                                       "state, copy the card before writing" });
     }
 
     if (texts.contains(1) && texts.contains(2)

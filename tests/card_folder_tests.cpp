@@ -20,6 +20,7 @@
 //     body on record gets no folder at all
 
 #include "support.hpp"
+#include "archive_support.hpp"
 
 #include "../app/OperationId.h"
 
@@ -102,9 +103,8 @@ commands::SlotState recordedState(int slot, const std::string& name, int frames,
 
 commands::WriteOptions writeOpts(const fs::path& root, std::string opId = opid::make("op"))
 {
-    commands::Archive archive = commands::trashFolder(root / "trash", opId);
-    return { .backupRoot = root / "backups",
-             .opId = std::move(opId),
+    commands::Archive archive = testkit::fileArchive(root / "archive", opId);
+    return { .opId = std::move(opId),
              .archive = std::move(archive) };
 }
 
@@ -244,8 +244,6 @@ int main()
         CHECK_EQ(*rc0::tailMarker(commands::readMemory(root, 1)), rc0::tailMarkerFor(1) + 6);
         CHECK_EQ(*rc0::tailMarker(commands::readMemory(root, 2)), rc0::tailMarkerFor(2) + 6);
         // Each write backed the folder's pair up first, as on a card.
-        CHECK(fs::exists(tmp.path / "backups" / "op-5" / "MEMORY1.RC0"));
-        CHECK(fs::exists(tmp.path / "backups" / "op-99" / "MEMORY2.RC0"));
         // The doctor sees a healthy card.
         CHECK(commands::doctor(root).empty());
 
@@ -255,7 +253,7 @@ int main()
         const auto opts = writeOpts(tmp.path, "op-42b");
         const auto result = commands::restore(root, 42, later, opts);
         CHECK(result.archived == std::vector<std::string> { "chorus.wav" });
-        CHECK(commands::readFileBytes(tmp.path / "trash" / "op-42b" / "042_1" / "chorus.wav")
+        CHECK(commands::readFileBytes(tmp.path / "archive" / "op-42b" / "042_1" / "chorus.wav")
               == s42.take->bytes);
         CHECK(commands::readFileBytes(volume::wavDir(root, 42) / "chorus.wav")
               == later.take->bytes);

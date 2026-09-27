@@ -148,18 +148,16 @@ void HistoryRecorder::finish(const std::string& opId, const std::string& error,
 }
 
 commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recorder,
-                                   commands::WriteOptions options, commands::Archive alsoKeep)
+                                   commands::WriteOptions options)
 {
     if (recorder == nullptr)
         throw Error("an operation cannot be recorded without a recorder");
     if (options.opId.empty())
         throw Error("an operation cannot be recorded without an id");
     const std::string opId = options.opId;
-    options.archive = [recorder, opId, thenKeep = std::move(alsoKeep)](
+    options.archive = [recorder, opId](
                           int slot, const std::string& fileName, std::string_view bytes) {
         recorder->keepAudio(opId, slot, fileName, bytes);
-        if (thenKeep)
-            thenKeep(slot, fileName, bytes);
     };
     options.journal.bodiesChanging = [recorder, opId](const std::vector<commands::SlotChange>& changes) {
         recorder->bodies(opId, changes);

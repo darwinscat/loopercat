@@ -8,7 +8,7 @@
 //     back, and Cmd-Shift-Z targets the undo row that stands
 //   - a step forward after an undo closes the way back; a redo reopens
 //     nothing but what its undo took
-//   - a legacy row, a failed row, a row still running are never targets; a
+//   - a failed row, a row still running are never targets; a
 //     row cut off closes the way back like a step forward
 //   - the plan puts back exactly what the rows say was there: the body
 //     recorded, the take archived; a body-only change leaves the file
@@ -122,8 +122,7 @@ int main()
 
     // --- rows that are not targets ---
     {
-        const auto t = undo::cursor({ op(1, "push"), op(2, "trim", "failed"), op(3, "clear", "pending"),
-                                      op(500, "legacy", "done", "legacy") });
+        const auto t = undo::cursor({ op(1, "push"), op(2, "trim", "failed"), op(3, "clear", "pending") });
         CHECK(t.undo == 1);
         CHECK(!t.redo);
         // an operation cut off may have changed the card: no way back past it
@@ -344,13 +343,8 @@ int main()
         Card failed = card(2, "trim", 1, "failed");
         failed.slots = { slot(1, loaded, shorter) };
         CHECK(undo::plan({ failed }, 2).refusal == undo::Refusal::notFinished);
-        Card legacy = card(500, "legacy", 1, "done", "legacy");
-        legacy.slots = { slot(5, std::nullopt, std::nullopt, TakeRef { "005_1.WAV", std::string(32, '\x44'), true }, "005_1.WAV") };
-        const auto l = undo::plan({ legacy }, 500);
-        CHECK(l.refusal == undo::Refusal::nothingToPutBack);
-        CHECK(l.reason.find("before the history") != std::string::npos);
         CHECK(undo::plan({ card(3, "clear") }, 3).refusal == undo::Refusal::nothingToPutBack);
-        for (const auto& p : { undo::plan({ card(1, "push") }, 99), undo::plan({ failed }, 2), l })
+        for (const auto& p : { undo::plan({ card(1, "push") }, 99), undo::plan({ failed }, 2) })
             CHECK(!p.reason.empty());
     }
 

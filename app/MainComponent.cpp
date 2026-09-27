@@ -9,7 +9,6 @@
 #include "history/HistoryRecorder.h"
 #include "history/SlotRows.h"
 #include "OperationsLog.h"
-#include "history/LegacyImport.h"
 #include "PedalPortName.h"
 #include "Strings.h"
 #include "WavImport.h"
@@ -380,8 +379,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                 .withTitle("Trim slot " + juce::String(slot) + "?")
                 .withMessage(juce::String::fromUTF8("The loop becomes the selected ")
                              + juce::String(seconds, 1)
-                             + juce::String::fromUTF8(" s. The original WAV moves to the app's "
-                                                      "trash first \xe2\x80\x94 that is your undo."))
+                             + juce::String::fromUTF8(" s. The original WAV is kept in the "
+                                                      "history \xe2\x80\x94 that is your undo."))
                 .withButton("Trim")
                 .withButton("Cancel"),
             [this, slot, inFrame, outFrame](int button) {
@@ -419,9 +418,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     disconnectButton.onClick = [this] { beginDisconnect(); };
     appMenu = std::make_unique<AppMenu>(AppMenu::Actions {
         .about = [this] { showAbout(); },
-        .backup = [this] { runBackup(); },
         .cleanJunk = [this] { runCleanJunk(); },
-        .importLegacy = [this] { runLegacyImport(); },
         .feedTheCat = [] {
             // Signed like the badge's own link: which app, which machine, which wrapper.
             felitronics::appkit::brand::feedTheCatLink("LooperCat",
@@ -1197,8 +1194,7 @@ void MainComponent::updateHistory()
                                  == juce::Time::getCurrentTime().getDayOfYear();
                              rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
                                               row.line.action, row.line.detail, row.line.audio,
-                                              row.playable, row.restorable, row.op,
-                                              juce::String::fromUTF8(row.line.hint.c_str()) });
+                                              row.playable, row.restorable, row.op });
                          }
                          juce::MessageManager::callAsync(
                              [safe, rows, loaded = std::move(entries), slot, alive]() mutable {
@@ -1461,19 +1457,6 @@ void MainComponent::savePedalBook()
     }
 }
 
-void MainComponent::runBackup()
-{
-    // A snapshot on request changes nothing on the card, so it is not an
-    // operation for the history — just a fresh directory of its own.
-    worker.enqueue({ "Backup configs", 0,
-                     [root = settings.dataDir().getChildFile("backups").getFullPathName().toStdString(),
-                      id = opid::make(juce::Time::getCurrentTime()
-                                          .formatted("%Y-%m-%dT%H-%M-%S")
-                                          .toStdString())](const volume::fs::path& volumePath) {
-                         commands::backup(volumePath, root, id);
-                     } });
-}
-
 void MainComponent::runCleanJunk()
 {
     worker.enqueue({ "Clean junk", 0,
@@ -1492,42 +1475,6 @@ void MainComponent::runCleanJunk()
                              throw Error("cannot remove junk file "
                                          + sweep.failed.front().string());
                      } });
-}
-
-// The folders from before the history — backups/ and trash/ — become rows
-// on request, and never on the first open: on a real machine that is 1.7 GB
-// and twenty seconds, which nobody does in silence. The store is on this
-// computer, so the job needs no card; the worker still runs it alone, like
-// everything that touches the history. The run's sentence goes to the toast;
-// every skipped folder, with its reason, to operations.log. Nothing under
-// the folders is touched (#74 decides their fate), and a second run records
-// nothing twice, so the item is safe to press again.
-void MainComponent::runLegacyImport()
-{
-    auto note = std::make_shared<juce::String>();
-    worker.enqueue({ "Import the folders from before the history",
-                     0,
-                     [rec = recorder, note,
-                      home = std::filesystem::path(settings.dataDir().getFullPathName().toStdString()),
-                      logDir = settings.dataDir()](const volume::fs::path&) {
-                         const auto report = history::legacy::importFolders(
-                             rec->store(), home,
-                             static_cast<std::int64_t>(juce::Time::currentTimeMillis()));
-                         for (const auto& skipped : report.skipped)
-                             oplog::append(logDir, "legacy import skipped "
-                                                       + juce::String::fromUTF8(skipped.path.c_str())
-                                                       + ": "
-                                                       + juce::String::fromUTF8(skipped.reason.c_str()));
-                         const juce::String sentence =
-                             juce::String::fromUTF8(history::legacy::describe(report).c_str());
-                         oplog::append(logDir, "legacy import: " + sentence);
-                         *note = sentence;
-                     },
-                     note,
-                     0,
-                     false,  // not background: the player asked for it and waits
-                     false,  // not quiet: the outcome is the whole point
-                     false }); // and it needs no card
 }
 
 void MainComponent::showAbout()
@@ -1812,22 +1759,11 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
 
 // --- mutations ---
 
-// A fresh identity per operation. The clock is only the readable head of it:
-// a bulk apply enqueues several operations inside one second, and when the
-// second WAS the identity they shared a backup directory and overwrote each
-// other's pre-state (issue #72).
 commands::WriteOptions MainComponent::makeWriteOptions()
 {
     const juce::String label = juce::Time::getCurrentTime().formatted("%Y-%m-%dT%H-%M-%S");
     const std::string opId = opid::make(label.toStdString());
-    const juce::File data = settings.dataDir();
-    // A replaced take goes to the history first, then to the trash folder:
-    // the folder stays the player's only door to it until the History tab
-    // (#50) opens the database. backups/ stays for the same reason.
-    return history::withHistory(
-        recorder,
-        { .backupRoot = data.getChildFile("backups").getFullPathName().toStdString(), .opId = opId },
-        commands::trashFolder(data.getChildFile("trash").getFullPathName().toStdString(), opId));
+    return history::withHistory(recorder, { .opId = opId });
 }
 
 // The operation opens in the history once the worker has let the job through
@@ -2092,8 +2028,8 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
             .withIconType(juce::MessageBoxIconType::WarningIcon)
             .withTitle("Replace slot " + juce::String(slot) + "?")
             .withMessage(juce::String::fromUTF8(
-                "This slot already holds a loop. The current WAV moves to the app's trash "
-                "first \xe2\x80\x94 that is your undo."))
+                "This slot already holds a loop. The current WAV is kept in the "
+                "history \xe2\x80\x94 that is your undo."))
             .withButton("Replace")
             .withButton("Cancel"),
         [enqueuePush](int button) {
@@ -2107,7 +2043,7 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
 // was handed, and a loop whose channels already match lands whole on either
 // jack however Pan turns out to be implemented. Destructive by nature — the
 // two channels stop being separable — so it asks first and keeps the stereo
-// original in the trash, exactly like a replace.
+// original in the history, exactly like a replace.
 void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placement placement)
 {
     const juce::String label = name.isEmpty() ? juce::String(slot)
@@ -2134,7 +2070,7 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
             .withTitle("Downmix slot " + label + " to mono, " + where + "?")
             .withMessage(consequence
                          + juce::String::fromUTF8(
-                             "\n\nThe current WAV moves to the app's trash first \xe2\x80\x94 "
+                             "\n\nThe current WAV is kept in the history \xe2\x80\x94 "
                              "that is your undo."))
             .withButton("Downmix")
             .withButton("Cancel"),
@@ -2157,7 +2093,7 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
 // sibling of normalize-on-upload, for setlists assembled before the option
 // existed. Destructive in the same sense as the fold (the original loudness
 // stops being recoverable from the file), so it asks first and keeps the
-// original in the trash. The target is the shared one from Settings → Import.
+// original in the history. The target is the shared one from Settings → Import.
 void MainComponent::normalizeSlot(int slot, const juce::String& name)
 {
     const double target = settings.file() != nullptr
@@ -2174,7 +2110,7 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
             .withMessage(juce::String::fromUTF8(
                              "One constant gain lands the whole loop at the target loudness "
                              "\xe2\x80\x94 nothing else about the sound changes.\n\n"
-                             "The current WAV moves to the app's trash first \xe2\x80\x94 "
+                             "The current WAV is kept in the history \xe2\x80\x94 "
                              "that is your undo."))
             .withButton("Normalize")
             .withButton("Cancel"),
@@ -2258,7 +2194,7 @@ void MainComponent::endNormalizeBatch()
 // when asked, because the answer costs reading the whole WAV off the card. It
 // runs as a worker job like every mutation — same busy pulse, same error
 // banner, and serialized against rewrites so it can never read a half-written
-// take — but it writes nothing: no trash, no journal line, no Disconnect hint.
+// take — but it writes nothing: no archive, no journal line, no Disconnect hint.
 double MainComponent::currentTargetLufs()
 {
     auto* file = settings.file();
@@ -2370,7 +2306,7 @@ void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, 
 // One slot's read (issue #53) on demand: the menu's Check loudness, a
 // double-click on the LUFS dash. A worker job like every mutation — same row
 // pulse, same error banner, serialized against rewrites so it can never read
-// a half-written take — but it writes nothing: no trash, no journal line, no
+// a half-written take — but it writes nothing: no archive, no journal line, no
 // Disconnect hint, no lock. (The loaded slot needs none of this: the player's
 // own read pass meters it along with the waveform.)
 void MainComponent::measureSlotLoudness(int slot)
@@ -2434,7 +2370,7 @@ void MainComponent::finishLoudnessCheck()
 
 // The selection menu (issue #53): right-click inside a 2+ row selection.
 // One entry today — Normalize is the first operation safe enough to run over
-// a whole selection without an undo story beyond the trash; the menu grows as
+// a whole selection; the menu grows as
 // operations earn their way in.
 void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition)
 {
@@ -2492,7 +2428,7 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
                     .withMessage(juce::String::fromUTF8(
                         "Each loop gets its own constant gain to land at the target loudness; "
                         "a loop already there is left untouched. Every outcome is written to "
-                        "operations.log.\n\nEach rewritten WAV moves to the app's trash first "
+                        "operations.log.\n\nEach original WAV is kept in the history "
                         "\xe2\x80\x94 that is your undo."))
                     .withButton("Normalize")
                     .withButton("Cancel"),
@@ -2527,30 +2463,22 @@ void MainComponent::clearSlot(int slot, const juce::String& name)
 {
     const juce::String label = name.isEmpty() ? juce::String(slot)
                                               : juce::String(slot) + " (" + name + ")";
-    // The reference UI's trash choice, as explicit buttons: the default path
-    // keeps a safety copy; permanent deletion says so in plain words.
     auto* dialog = new juce::AlertWindow(
         "Clear slot " + label + "?",
-        juce::String::fromUTF8("The slot returns to factory state.\n\n"
-                               "\xe2\x80\xa2 Move to trash \xe2\x80\x94 the WAV is kept in the app's "
-                               "trash folder on this computer.\n"
-                               "\xe2\x80\xa2 Delete permanently \xe2\x80\x94 no copy is kept. "
-                               "This cannot be undone."),
+        juce::String::fromUTF8("The slot returns to factory state. The take is kept in the history."),
         juce::MessageBoxIconType::WarningIcon);
-    dialog->addButton("Move to trash", 1, juce::KeyPress(juce::KeyPress::returnKey));
-    dialog->addButton("Delete permanently", 2);
+    dialog->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
     dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
     dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, slot](int choice) {
-        if (choice != 1 && choice != 2)
+        if (choice != 1)
             return;
-        const bool useTrash = choice == 1;
         const auto options = makeWriteOptions();
         releasePlayerIfHolding(slot, slot); // the clear moves or deletes its WAV (issue #26)
         worker.enqueue(recorded(
             "clear", options,
             { juce::String("Clear slot ") + juce::String(slot), slot,
-              [slot, options, useTrash](const volume::fs::path& volumePath) {
-                  commands::clear(volumePath, { slot }, { .trash = useTrash, .write = options });
+              [slot, options](const volume::fs::path& volumePath) {
+                  commands::clear(volumePath, { slot }, { .write = options });
               } }));
     }), true);
 }
@@ -2819,7 +2747,7 @@ void MainComponent::feedHistoryWindow()
                              std::vector<int> slots = row.slots();
                              rows.push_back({ when.formatted(sameDay ? "%H:%M" : "%d %b %H:%M"),
                                               juce::String(row.action), juce::String(row.detail),
-                                              juce::String(row.state), audio, juce::String(row.hint),
+                                              juce::String(row.state), audio,
                                               slots, row.playable(), row.restorable(), row.pinned,
                                               row.op });
                              WindowEntry entry;

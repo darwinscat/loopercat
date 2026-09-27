@@ -302,8 +302,7 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
 
 void HistoryStore::fillSlotFacts(TimelineEntry& row, int slot)
 {
-    // The take the row offers: the state's own, or — for a row that has
-    // no state, which is what a legacy import leaves — the one it kept.
+    // Offer the state's take, or the one kept before the slot was emptied.
     sqlite::Statement take(db_, "SELECT name, hash, "
                                 "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash), side "
                                 "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
@@ -341,67 +340,6 @@ std::string HistoryStore::opStatus(std::int64_t op)
     if (!read.step())
         throw Error("no operation " + std::to_string(op));
     return read.text(0);
-}
-
-std::optional<HistoryStore::OpIdentity> HistoryStore::findOp(const std::string& opId)
-{
-    sqlite::Statement read(db_, "SELECT seq, actor FROM ops WHERE id = ?1");
-    read.bindText(1, opId);
-    if (!read.step())
-        return std::nullopt;
-    return OpIdentity { read.integer(0), read.text(1) };
-}
-
-std::int64_t HistoryStore::recordLegacyOp(std::int64_t session, const std::string& opId,
-                                          std::int64_t atMs, const std::string& note)
-{
-    sqlite::Statement add(db_, "INSERT INTO ops(id, session, kind, actor, status, at, note) "
-                               "VALUES (?1, ?2, 'legacy', 'legacy', 'done', ?3, ?4)");
-    add.bindText(1, opId).bind(2, session).bind(3, atMs).bindText(4, note).run();
-    return db_.lastInsertRowid();
-}
-
-bool HistoryStore::recordLegacyFile(std::int64_t op, const std::string& path, const char* kind,
-                                    std::string_view bytes, std::int64_t nowMs,
-                                    const std::string& hash)
-{
-    const bool written = keepBlob(hash, bytes, nowMs);
-    sqlite::Statement ledger(db_, "INSERT INTO legacy_files(path, op, kind, hash, imported) "
-                                  "VALUES (?1, ?2, ?3, ?4, ?5)");
-    ledger.bindText(1, path).bind(2, op).bindText(3, kind).bindBlob(4, hash).bind(5, nowMs).run();
-    return written;
-}
-
-bool HistoryStore::keepLegacyTake(std::int64_t op, const std::string& path, int slot, int track,
-                                  const std::string& name, std::string_view bytes,
-                                  std::int64_t nowMs)
-{
-    const std::string hash = contentHash(bytes);
-    sqlite::Transaction tx(db_);
-    const bool written = recordLegacyFile(op, path, "take", bytes, nowMs, hash);
-    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
-                               "VALUES (?1, ?2, 'before', ?3, ?4, ?5, ?6)");
-    row.bind(1, op).bind(2, slot).bind(3, track).bindText(4, name)
-        .bind(5, static_cast<std::int64_t>(bytes.size())).bindBlob(6, hash).run();
-    tx.commit();
-    return written;
-}
-
-bool HistoryStore::keepLegacyDocument(std::int64_t op, const std::string& path,
-                                      std::string_view bytes, std::int64_t nowMs)
-{
-    const std::string hash = contentHash(bytes);
-    sqlite::Transaction tx(db_);
-    const bool written = recordLegacyFile(op, path, "document", bytes, nowMs, hash);
-    tx.commit();
-    return written;
-}
-
-bool HistoryStore::legacyFileImported(const std::string& path)
-{
-    sqlite::Statement read(db_, "SELECT 1 FROM legacy_files WHERE path = ?1");
-    read.bindText(1, path);
-    return read.step();
 }
 
 HistoryStore::Usage HistoryStore::usage()
@@ -466,9 +404,7 @@ HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, const UndoTar
         "SELECT "
         "  (SELECT pinned FROM blobs_meta WHERE hash = ?1) "
         "  OR EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
-        "             WHERE a.hash = ?1 AND o.pinned = 1) "
-        "  OR EXISTS (SELECT 1 FROM legacy_files l JOIN ops o ON o.seq = l.op "
-        "             WHERE l.hash = ?1 AND o.pinned = 1), "
+        "             WHERE a.hash = ?1 AND o.pinned = 1), "
         "  EXISTS (SELECT 1 FROM slot_audio a WHERE a.hash = ?1 AND a.side = 'before' "
         "          AND (a.op = ?2 OR a.op = ?3)), "
         "  EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
@@ -489,17 +425,12 @@ HistoryStore::Holds HistoryStore::holdsOn(const std::string& hash, const UndoTar
 std::vector<retention::Blob> HistoryStore::keptBlobs(const UndoTargets& targets)
 {
     std::vector<retention::Blob> out;
-    // References: every row that names the hash — a slot's audio on either
-    // side, and a legacy file (whose document has no slot_audio row).
-    // The label is for a person: the newest slot row naming the take, or the
-    // legacy file's path for a document no slot ever named.
+    // Count both sides; label the take with the newest slot row naming it.
     sqlite::Statement read(db_, "SELECT m.hash, m.size, m.created, "
-                                "  (SELECT count(*) FROM slot_audio a WHERE a.hash = m.hash) "
-                                "  + (SELECT count(*) FROM legacy_files l WHERE l.hash = m.hash), "
+                                "  (SELECT count(*) FROM slot_audio a WHERE a.hash = m.hash), "
                                 "  coalesce((SELECT 'slot ' || a.slot || ' ' || a.name FROM slot_audio a "
                                 "            WHERE a.hash = m.hash ORDER BY a.op DESC LIMIT 1), "
-                                "           (SELECT l.path FROM legacy_files l WHERE l.hash = m.hash "
-                                "            ORDER BY l.imported DESC LIMIT 1), '') "
+                                "           '') "
                                 "FROM blobs_meta m JOIN blobs b ON b.hash = m.hash "
                                 "ORDER BY m.created, m.size DESC, m.hash");
     while (read.step()) {

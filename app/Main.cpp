@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "MainComponent.h"
-#include "history/LegacyImport.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -29,7 +28,7 @@ public:
     {
         const auto args = getCommandLineParameters();
         return args.contains("--snapshot") || args.contains("--midi-probe")
-            || args.contains("--cycle") || args.contains("--import-legacy")
+            || args.contains("--cycle")
             || args.contains("--history-storage") || args.contains("--history-window")
             || args.contains("--undo-plan") || args.contains("--edit");
     }
@@ -44,8 +43,8 @@ public:
         const int volumeFlag = args.indexOf("--volume");
         const juce::String explicitVolume = volumeFlag >= 0 ? args[volumeFlag + 1] : juce::String();
 
-        // --data <dir>: the app's whole data home (settings, history, trash,
-        // backups) in another directory — the partner of --volume, so a run
+        // --data <dir>: the app's whole data home (settings, history,
+        // operations.log) in another directory — the partner of --volume, so a run
         // against a synthetic pedal writes nothing into the player's own data.
         const int dataFlag = args.indexOf("--data");
         const juce::File dataOverride = dataFlag >= 0
@@ -124,17 +123,6 @@ public:
         // a few hundred milliseconds during a disconnect are unreadable on
         // screen and impossible to screenshot reliably, but they are the only
         // record of what went wrong.
-        // --import-legacy: the Maintenance item without the window. Records
-        // the backups/ and trash/ folders under the data home into the
-        // history and prints the run's sentence, every skipped folder with
-        // its reason before it. For a verification run against a copied
-        // home (--data), and for the DoD check of #72's last stage.
-        if (args.contains("--import-legacy")) {
-            setApplicationReturnValue(runLegacyImport(dataOverride));
-            quit();
-            return;
-        }
-
         if (args.contains("--cycle")) {
             setApplicationReturnValue(runCycle(explicitVolume, dataOverride));
             quit();
@@ -234,26 +222,6 @@ private:
             lastState = state;
         }
         return state;
-    }
-
-    static int runLegacyImport(const juce::File& dataOverride)
-    {
-        try {
-            AppSettings settings(dataOverride);
-            const juce::File home = settings.dataDir();
-            history::HistoryStore store(std::filesystem::path(
-                home.getChildFile("history").getFullPathName().toStdString()));
-            const auto report = history::legacy::importFolders(
-                store, std::filesystem::path(home.getFullPathName().toStdString()),
-                static_cast<std::int64_t>(juce::Time::currentTimeMillis()));
-            for (const auto& skipped : report.skipped)
-                std::cout << "skipped " << skipped.path << ": " << skipped.reason << "\n";
-            std::cout << history::legacy::describe(report) << std::endl;
-            return 0;
-        } catch (const std::exception& e) {
-            std::cout << "import failed: " << e.what() << std::endl;
-            return 1;
-        }
     }
 
     static int runCycle(const juce::String& explicitVolume, const juce::File& dataOverride)
