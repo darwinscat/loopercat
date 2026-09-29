@@ -20,10 +20,15 @@ void showClearSlotConfirmation(int slot, std::function<void(int)> decided)
         juce::String::fromUTF8(
             "Its history is kept — you can restore it from the History tab."),
         juce::MessageBoxIconType::WarningIcon);
-    dialog->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
-    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    // Every destructive dialog answers the same way: Cancel is the default, on
+    // Return and on Escape, and it is the button the keyboard starts on. One
+    // key must not mean "yes, wipe it" here and "no, leave it" next door.
+    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::returnKey),
+                                   juce::KeyPress(juce::KeyPress::escapeKey));
+    dialog->addButton("Clear", 1);
     dialog->enterModalState(true,
         juce::ModalCallbackFunction::create(std::move(decided)), true);
+    dialog->getButton(0)->grabKeyboardFocus();
 }
 
 } // namespace
