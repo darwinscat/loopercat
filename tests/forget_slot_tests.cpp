@@ -6,6 +6,7 @@
 #include "../app/history/Undo.h"
 #include <chrono>
 #include <filesystem>
+#include <optional>
 using namespace loopercat;
 using history::HistoryStore;
 using history::OpStatus;
@@ -14,11 +15,20 @@ namespace {
 struct Fixture {
     fs::path dir = fs::temp_directory_path() / ("loopercat-forget-" + std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count()));
-    HistoryStore store { dir };
+    std::optional<HistoryStore> open { std::in_place, dir };
+    HistoryStore& store = *open;
     std::int64_t card = store.card("card-a", "RC-5", "A", 1);
     std::int64_t session = store.openSession(card, 1);
     int serial = 0;
-    ~Fixture() { fs::remove_all(dir); }
+    // Windows refuses to delete a file something still holds open: close the
+    // store before the directory. A throw here would leave a destructor and
+    // kill the suite with nothing but an exit code, so it is reported instead.
+    ~Fixture() {
+        open.reset();
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        if (ec) testkit::fail("scratch history left behind: " + ec.message(), __FILE__, __LINE__);
+    }
     std::int64_t op(std::vector<int> slots, const std::string& kind = "rename") {
         const auto id = ++serial;
         const auto row = store.beginOp(session, "op-" + std::to_string(id), kind, id + 10);
@@ -34,7 +44,7 @@ struct Fixture {
     }
 };
 }
-int main()
+static int runTests()
 {
     // Three own operations, a swap and a different card with the same slot.
     {
@@ -234,4 +244,15 @@ int main()
         CHECK(f.store.touchedSlots(snapshot) == std::vector<int>{2});
     }
     return testkit::summary("forget_slot_tests");
+}
+
+int main()
+{
+    // A suite that dies of an uncaught throw tells the reader nothing but an
+    // exit code, and on Windows not even a message.
+    try { return runTests(); }
+    catch (const std::exception& error) {
+        testkit::fail(error.what(), __FILE__, __LINE__);
+        return testkit::summary("forget_slot_tests");
+    }
 }
