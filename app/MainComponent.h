@@ -211,6 +211,9 @@ private:
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
     void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
     void updateInspector();                 // push the selected row into the panel
+    void clearSlotHistory(int slot);
+    bool clearingHistory = false;
+    std::optional<std::int64_t> historyCard;
     void updateHistory();                   // ask the worker for the selected slot's timeline
     void applyHistoryRows(std::vector<HistoryPane::Row> rows, int slot);
     void playFromHistory(std::int64_t op);    // an archived take, out of the store

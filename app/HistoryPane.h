@@ -48,6 +48,11 @@ public:
     std::function<void(std::int64_t)> onPlay;
     std::function<void(std::int64_t)> onRestore;
 
+    std::function<void(int)> onClearHistory;
+    void clearHistory();
+    bool clearHistoryEnabled() const { return forget_.isEnabled(); }
+    juce::String clearHistoryText() const { return forget_.getButtonText(); }
+
     void paint(juce::Graphics&) override;
     void resized() override;
 
@@ -67,6 +72,7 @@ private:
 
     juce::ListBox list_ { "history", this };
     juce::Label empty_;
+    juce::TextButton forget_ { juce::String::fromUTF8("Clear history of this slot\xe2\x80\xa6") };
     juce::TextButton play_ { "Play" };
     juce::TextButton restore_ { "Restore this state" };
 

@@ -58,7 +58,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 6;
+inline constexpr std::int64_t kVersion = 7;
 
 // Version 5 is the first supported store. Future steps append to this array;
 // kSteps[N] creates version kBaseVersion + N in the same transaction.
@@ -156,6 +156,16 @@ INSERT INTO slot_changes_v6(op, slot, before_body, after_body) SELECT * FROM slo
 DROP TABLE slot_changes;
 ALTER TABLE slot_changes_v6 RENAME TO slot_changes;
 CREATE INDEX slot_changes_by_slot ON slot_changes(slot, op);
+)sql",
+R"sql(
+-- A forgotten part of an operation is an Undo boundary, even if its other
+-- slots still have rows. Baseline omissions survive reconnects and resumption.
+ALTER TABLE cards ADD COLUMN undo_floor INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE forgotten_slots(
+    card INTEGER NOT NULL REFERENCES cards(id),
+    slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
+    PRIMARY KEY (card, slot)
+) STRICT;
 )sql",
 };
 

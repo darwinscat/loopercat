@@ -193,8 +193,9 @@ void HistoryStore::closeSession(std::int64_t session, std::int64_t nowMs)
 std::int64_t HistoryStore::beginOp(std::int64_t session, const std::string& opId,
                                    const std::string& kind, std::int64_t atMs)
 {
-    sqlite::Statement add(db_, "INSERT INTO ops(id, session, kind, actor, status, at) "
-                               "VALUES (?1, ?2, ?3, 'app', 'pending', ?4)");
+    sqlite::Statement add(db_, "INSERT INTO ops(seq, id, session, kind, actor, status, at) "
+                               "VALUES (max(coalesce((SELECT max(seq) FROM ops), 0), "
+                               "coalesce((SELECT max(undo_floor) FROM cards), 0)) + 1, ?1, ?2, ?3, 'app', 'pending', ?4)");
     add.bindText(1, opId).bind(2, session).bindText(3, kind).bind(4, atMs).run();
     return db_.lastInsertRowid();
 }
@@ -446,6 +447,7 @@ std::vector<HistoryStore::OpSummary> HistoryStore::operationsFor(std::int64_t ca
     std::vector<OpSummary> out;
     sqlite::Statement read(db_, "SELECT seq, kind, status, actor, reverts FROM ops "
                                 "WHERE session IN (SELECT id FROM sessions WHERE card = ?1) "
+                                "AND seq > (SELECT undo_floor FROM cards WHERE id = ?1) "
                                 "ORDER BY at, seq");
     read.bind(1, card);
     while (read.step()) {
@@ -565,8 +567,6 @@ std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
     std::int64_t freed = 0;
     sqlite::Statement kept(db_, "SELECT m.size FROM blobs_meta m JOIN blobs b ON b.hash = m.hash "
                                 "WHERE m.hash = ?1");
-    sqlite::Statement drop(db_, "DELETE FROM blobs WHERE hash = ?1");
-    sqlite::Statement mark(db_, "UPDATE blobs_meta SET released = ?2 WHERE hash = ?1");
     for (const std::string& hash : hashes) {
         kept.bindBlob(1, hash);
         if (!kept.step())
@@ -580,14 +580,125 @@ std::int64_t HistoryStore::releaseBlobs(const std::vector<std::string>& hashes,
             throw Error("take " + hex(hash) + " is needed by the undo or redo on offer");
         if (holds.inFlight)
             throw Error("take " + hex(hash) + " belongs to an operation still running");
-        drop.bindBlob(1, hash).run();
-        drop.reset();
-        mark.bindBlob(1, hash).bind(2, nowMs).run();
-        mark.reset();
+        releaseBytes(hash, nowMs);
         freed += size;
     }
     tx.commit();
     return freed;
+}
+
+void HistoryStore::releaseBytes(const std::string& hash, std::int64_t nowMs)
+{
+    sqlite::Statement drop(db_, "DELETE FROM blobs WHERE hash = ?1");
+    drop.bindBlob(1, hash).run();
+    sqlite::Statement mark(db_, "UPDATE blobs_meta SET released = ?2 WHERE hash = ?1");
+    mark.bindBlob(1, hash).bind(2, nowMs).run();
+}
+
+std::vector<int> HistoryStore::snapshotSlots(std::int64_t op)
+{
+    sqlite::Statement read(db_, "SELECT slot FROM slot_changes WHERE op = ?1 UNION "
+        "SELECT f.slot FROM forgotten_slots f JOIN sessions s ON s.card = f.card "
+        "JOIN ops o ON o.session = s.id WHERE o.seq = ?1 AND o.kind = 'snapshot' ORDER BY slot");
+    read.bind(1, op);
+    std::vector<int> out;
+    while (read.step()) out.push_back(static_cast<int>(read.integer(0)));
+    return out;
+}
+
+HistoryStore::ForgetPlan HistoryStore::planForgetSlot(std::int64_t cardId, int slot)
+{
+    if (slot < 1 || slot > 99) throw Error("a slot is 1..99");
+    ForgetPlan plan;
+    const auto targets = retentionTargets({});
+    sqlite::Statement rows(db_, "SELECT o.seq, o.pinned, o.status, "
+        "o.kind <> 'snapshot' AND o.seq > (SELECT undo_floor FROM cards WHERE id = ?1) FROM ops o "
+        "JOIN sessions s ON s.id = o.session WHERE s.card = ?1 AND "
+        "(EXISTS (SELECT 1 FROM slot_changes c WHERE c.op = o.seq AND c.slot = ?2) OR "
+        "EXISTS (SELECT 1 FROM slot_audio a WHERE a.op = o.seq AND a.slot = ?2)) ORDER BY o.seq");
+    rows.bind(1, cardId).bind(2, slot);
+    while (rows.step()) {
+        const auto op = rows.integer(0);
+        plan.operations.push_back(op);
+        if (rows.integer(1)) plan.pinned.push_back(op);
+        plan.inFlight |= rows.text(2) == "pending";
+        plan.cutsUndo |= rows.integer(3) != 0;
+        if (std::any_of(targets.begin(), targets.end(), [op](const auto& t) {
+                return t.undo == op || t.redo == op || t.redoRestores == op;
+            })) plan.undoTargets.push_back(op);
+    }
+    plan.rowsRemoved = static_cast<std::int64_t>(plan.operations.size());
+    sqlite::Statement blobs(db_, "SELECT b.hash, m.size FROM blobs b "
+        "JOIN blobs_meta m ON m.hash = b.hash WHERE "
+        "EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
+        "JOIN sessions s ON s.id = o.session WHERE a.hash = b.hash AND s.card = ?1 AND a.slot = ?2) "
+        "AND NOT EXISTS (SELECT 1 FROM slot_audio a JOIN ops o ON o.seq = a.op "
+        "JOIN sessions s ON s.id = o.session WHERE a.hash = b.hash AND (s.card <> ?1 OR a.slot <> ?2)) "
+        "ORDER BY b.hash");
+    blobs.bind(1, cardId).bind(2, slot);
+    while (blobs.step()) {
+        plan.hashes.push_back(blobs.blob(0));
+        plan.bytesFreed += blobs.integer(1);
+    }
+    plan.takesFreed = static_cast<std::int64_t>(plan.hashes.size());
+    return plan;
+}
+
+HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
+    std::int64_t nowMs, bool confirmHolds, const ForgetPlan* expected)
+{
+    sqlite::Transaction tx(db_);
+    const auto plan = planForgetSlot(cardId, slot);
+    if (expected && plan != *expected)
+        throw Error("the slot's history changed; review it again before clearing");
+    if (plan.inFlight) throw Error("the slot's history is still being recorded; try again when it finishes");
+    if (plan.hasHolds() && !confirmHolds)
+        throw Error("clearing pinned entries or Undo/Redo targets needs a separate confirmation");
+    if (!plan.operations.empty()) {
+        // A forgotten slot is only an omission of the FIRST SIGHTING when the
+        // snapshot is what recorded it. A slot the snapshot never reached must
+        // still be photographed when an interrupted run resumes.
+        sqlite::Statement firstSeen(db_, "SELECT coalesce(snapshot_op, 0) FROM cards WHERE id = ?1");
+        firstSeen.bind(1, cardId);
+        if (!firstSeen.step())
+            throw Error("card " + std::to_string(cardId) + " is not in the history");
+        const auto snapshotOp = firstSeen.integer(0);
+        if (std::find(plan.operations.begin(), plan.operations.end(), snapshotOp)
+            != plan.operations.end()) {
+            sqlite::Statement omitted(db_, "INSERT OR IGNORE INTO forgotten_slots VALUES (?1, ?2)");
+            omitted.bind(1, cardId).bind(2, slot).run();
+        }
+        std::vector<std::int64_t> partial;
+        for (const auto op : plan.operations) {
+            sqlite::Statement bodies(db_, "DELETE FROM slot_changes WHERE op = ?1 AND slot = ?2");
+            bodies.bind(1, op).bind(2, slot).run();
+            sqlite::Statement audio(db_, "DELETE FROM slot_audio WHERE op = ?1 AND slot = ?2");
+            audio.bind(1, op).bind(2, slot).run();
+            if (touchedSlots(op).empty() && systemChanges(op).empty()) {
+                sqlite::Statement unrefer(db_, "UPDATE ops SET reverts = NULL WHERE reverts = ?1");
+                unrefer.bind(1, op).run();
+                sqlite::Statement baseline(db_, "UPDATE cards SET snapshot_op = NULL WHERE snapshot_op = ?1");
+                baseline.bind(1, op).run();
+                sqlite::Statement drop(db_, "DELETE FROM ops WHERE seq = ?1");
+                drop.bind(1, op).run();
+            } else {
+                partial.push_back(op);
+            }
+        }
+        // A partial swap must never be offered as an undo of the whole swap: the
+        // slot just forgotten would stay where it is. Only an operation that
+        // SURVIVED half-forgotten moves the boundary; one forgotten whole leaves
+        // nothing behind, so the independent work below it stays undoable.
+        sqlite::Statement floor(db_, "UPDATE cards SET undo_floor = max(undo_floor, "
+            "coalesce((SELECT max(seq) FROM ops WHERE seq = ?2 AND kind <> 'snapshot'), 0)) WHERE id = ?1");
+        for (const auto op : partial) {
+            floor.bind(1, cardId).bind(2, op).run();
+            floor.reset();
+        }
+        for (const auto& hash : plan.hashes) releaseBytes(hash, nowMs);
+    }
+    tx.commit();
+    return plan;
 }
 
 std::vector<retention::Write> HistoryStore::writes()

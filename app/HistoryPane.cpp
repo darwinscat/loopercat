@@ -30,7 +30,7 @@ HistoryPane::HistoryPane()
     empty_.setText("Nothing has happened to this slot yet.", juce::dontSendNotification);
     addChildComponent(empty_);
 
-    for (juce::TextButton* button : { &play_, &restore_ }) {
+    for (juce::TextButton* button : { &play_, &restore_, &forget_ }) {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff17171d));
         button->setColour(juce::TextButton::textColourOffId, kPaper);
         addAndMakeVisible(*button);
@@ -43,6 +43,7 @@ HistoryPane::HistoryPane()
         if (const Row* row = selected(); row != nullptr && onRestore)
             onRestore(row->op);
     };
+    forget_.onClick = [this] { clearHistory(); };
     updateOffers();
 }
 
@@ -90,9 +91,15 @@ const HistoryPane::Row* HistoryPane::selected() const
 
 void HistoryPane::updateOffers()
 {
+    forget_.setEnabled(!busy_ && slot_ > 0 && !rows_.empty());
     const Row* row = selected();
     play_.setEnabled(!busy_ && row != nullptr && row->playable);
     restore_.setEnabled(!busy_ && row != nullptr && row->restorable);
+}
+
+void HistoryPane::clearHistory()
+{
+    if (forget_.isEnabled() && onClearHistory) onClearHistory(slot_);
 }
 
 void HistoryPane::selectedRowsChanged(int)
@@ -154,6 +161,7 @@ void HistoryPane::resized()
 {
     juce::Rectangle<int> area = getLocalBounds();
     juce::Rectangle<int> bar = area.removeFromBottom(kBarHeight).reduced(kGutter, 6);
+    forget_.setBounds(bar.removeFromLeft(225));
     restore_.setBounds(bar.removeFromRight(150));
     bar.removeFromRight(8);
     play_.setBounds(bar.removeFromRight(90));

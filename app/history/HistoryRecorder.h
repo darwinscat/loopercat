@@ -50,6 +50,8 @@ public:
 
     void begin(const std::string& opId, const std::string& kind,
                const std::filesystem::path& volume);
+    // Maintenance is journaled against the captured card without resolving a volume.
+    void beginMaintenance(const std::string& opId, std::int64_t card);
     void keepAudio(const std::string& opId, int slot, const std::string& fileName,
                    std::string_view bytes);
     void bodies(const std::string& opId, const std::vector<commands::SlotChange>& changes);
@@ -110,6 +112,9 @@ private:
     };
 
     std::int64_t opRow(const std::string& opId) const;
+    // The status of a baseline operation, or nothing when the row is gone:
+    // clearing a slot's history can take the snapshot with it.
+    std::optional<std::string> snapshotStatus(std::int64_t op);
     // After a successful operation, write down what each slot it touched now
     // holds, read from the card. Without it a slot's timeline cannot be read
     // on its own: a swap would send the reader into the other slot's rows,

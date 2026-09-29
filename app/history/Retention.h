@@ -110,6 +110,15 @@ inline Plan plan(std::vector<Blob> blobs, std::int64_t target)
     return out;
 }
 
+// "1 entry", "3 entries": a count that reads as a sentence rather than as a
+// field. The caller names both forms, because English does not derive one.
+inline std::string countText(std::int64_t count, const char* one, const char* many)
+{
+    if (count < 0)
+        throw Error("a count cannot be negative");
+    return std::to_string(count) + " " + (count == 1 ? one : many);
+}
+
 // "161 MB", "4.2 GB", "0 bytes": the shape the Settings line and the offer use.
 inline std::string bytesText(std::int64_t bytes)
 {

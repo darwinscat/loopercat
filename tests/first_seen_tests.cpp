@@ -98,6 +98,49 @@ void write(const std::shared_ptr<HistoryRecorder>& rec, const fs::path& card,
 
 static int runTests()
 {
+    {
+        Scratch tmp;
+        const auto volumePath = cardAt(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        auto snapshot = newSighting(*rec, volumePath);
+        rec->snapshotStep(snapshot, 4);
+        rec->interruptSnapshot(snapshot, "disconnected");
+        const auto cardId = *rec->store().selectedCard();
+        rec->store().forgetSlot(cardId, 4, 2000);
+        rec->disconnect();
+        snapshot = newSighting(*rec, volumePath);
+        complete(*rec, snapshot);
+        CHECK(rec->store().slotTimeline(4).empty());
+        CHECK_EQ(rec->store().touchedSlots(snapshot.op).size(), 98u);
+        CHECK_EQ(rec->store().snapshotSlots(snapshot.op).size(), 99u);
+        CHECK(!rec->firstSeen(volumePath));
+    }
+
+    // The mirror case: a slot the interrupted sighting never reached keeps its
+    // right to a first photograph. Clearing its ordinary history takes its own
+    // rows, not the baseline's promise, so the resumed run still records it.
+    {
+        Scratch tmp;
+        const auto volumePath = cardAt(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        auto snapshot = newSighting(*rec, volumePath);
+        rec->snapshotStep(snapshot, 1);
+        rec->interruptSnapshot(snapshot, "disconnected");
+        auto& store = rec->store();
+        const auto op = store.beginOp(*rec->sessionOn(volumePath), "rename-50", "rename", 1500);
+        store.recordBodies(op, {{ 50, testkit::syntheticSlotBody("Before"),
+                                      testkit::syntheticSlotBody("After") }});
+        store.finishOp(op, history::OpStatus::done, "");
+        CHECK_EQ(store.slotTimeline(50).size(), 1u);
+        store.forgetSlot(*store.selectedCard(), 50, 2000, true); // it is the Undo target
+        CHECK(store.slotTimeline(50).empty());
+        rec->disconnect();
+        snapshot = newSighting(*rec, volumePath);
+        complete(*rec, snapshot);
+        CHECK_EQ(store.slotTimeline(50).size(), 1u); // photographed after all
+        CHECK_EQ(store.touchedSlots(snapshot.op).size(), 99u);
+    }
+
     // All 99 slots, empty and occupied, have one baseline with exact bodies
     // and bytes. Restore uses the same state and core command as the slot tab.
     {
