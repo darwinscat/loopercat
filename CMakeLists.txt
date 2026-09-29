@@ -436,6 +436,7 @@ juce_add_gui_app(LooperCat
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>")
 
 target_sources(LooperCat PRIVATE
+    app/ClearSlotAction.cpp
     app/HistoryPane.cpp
     app/HistoryWindow.cpp
     app/Main.cpp
@@ -794,6 +795,30 @@ target_link_libraries(clear_history_action_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME clear_history_action_tests COMMAND clear_history_action_tests)
+# Drive the app Clear action, then Play and Restore on real history and card bytes.
+juce_add_console_app(clear_confirmation_tests PRODUCT_NAME "clear_confirmation_tests")
+target_sources(clear_confirmation_tests PRIVATE tests/clear_confirmation_tests.cpp
+    app/ClearSlotAction.cpp
+    app/HistoryPane.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp
+    app/history/TakeAudition.cpp)
+target_compile_definitions(clear_confirmation_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(clear_confirmation_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME clear_confirmation_tests COMMAND clear_confirmation_tests)
 
 # Undo and Redo carried out on a card (#73): real core commands on a synthetic
 # pedal, recorded through history::withHistory, undone and redone through the
