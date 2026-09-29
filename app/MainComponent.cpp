@@ -1240,7 +1240,7 @@ void confirmClearHistory(clearhistory::Question question, clearhistory::Answer a
 
 void MainComponent::clearSlotHistory(int slot)
 {
-    if (clearingHistory || pedalBusy || !historyCard || slot != selectedSlot) return;
+    if (clearingHistory || historyEditPending || pedalBusy || !historyCard || slot != selectedSlot) return;
     clearingHistory = true;
     history.setBusy(true);
     const auto cardId = *historyCard;
@@ -3046,7 +3046,8 @@ juce::String MainComponent::undoMenuText(bool redo) const
 bool MainComponent::undoEnabled(bool redo) const
 {
     return (redo ? undoOffer.redo : undoOffer.undo).has_value() && cardTakesEdits()
-        && !historyEditPending; // one press at a time
+        && !historyEditPending   // one press at a time
+        && !clearingHistory;     // and never against history being forgotten
 }
 
 // The press: planned on the worker against the store as it is, handed back

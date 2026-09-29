@@ -20,9 +20,10 @@ inline PedalWorker::Job forgetSlotJob(std::shared_ptr<HistoryRecorder> recorder,
             auto& store = recorder->store();
             const auto result = store.forgetSlot(card, slot,
                 static_cast<std::int64_t>(juce::Time::currentTimeMillis()), confirmedHolds, &plan);
-            *note = "Slot " + juce::String(slot) + ": " + juce::String(result.rowsRemoved) + " entries, "
-                + juce::String(result.takesFreed) + " takes, "
-                + juce::String(result.bytesFreed) + " bytes freed";
+            *note = "Slot " + juce::String(slot) + ": "
+                + juce::String(retention::countText(result.rowsRemoved, "entry", "entries")) + ", "
+                + juce::String(retention::countText(result.takesFreed, "take", "takes")) + ", "
+                + juce::String(retention::bytesText(result.bytesFreed)) + " freed";
             while (store.vacuum(64) > 0) {}
         }, note, 0, false, false, false
     };

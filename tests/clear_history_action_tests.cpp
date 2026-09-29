@@ -31,7 +31,7 @@ int main()
                 ++asked;
                 CHECK_EQ(q.holds, asked == 2);
                 CHECK(q.message.find("This cannot be undone.") != std::string::npos);
-                CHECK(q.message.find("It includes 1 pinned entries") != std::string::npos);
+                CHECK(q.message.find("It includes 1 pinned entry") != std::string::npos);
                 CHECK(q.message.find("Undo will no longer be able to go back past this point.") != std::string::npos);
                 answer(asked != cancelAt);
             }, [&](bool accepted) { CHECK(!accepted); ++completed; });
@@ -55,10 +55,10 @@ int main()
         CHECK_EQ(store.cardTimeline().size(), 1u);
         CHECK_EQ(store.cardTimeline().front().kind, std::string("forget-history"));
         CHECK_EQ(store.cardTimeline().front().status, std::string("done"));
-        CHECK_EQ(store.cardTimeline().front().note, std::string("Slot 4: 1 entries, 1 takes, 5 bytes freed"));
+        CHECK_EQ(store.cardTimeline().front().note, std::string("Slot 4: 1 entry, 1 take, 5 bytes freed"));
         const auto rows = history::rows::forCard(store.cardTimeline());
         CHECK_EQ(rows.front().action, std::string("Cleared slot history"));
-        CHECK_EQ(rows.front().detail, std::string("Slot 4: 1 entries, 1 takes, 5 bytes freed"));
+        CHECK_EQ(rows.front().detail, std::string("Slot 4: 1 entry, 1 take, 5 bytes freed"));
         CHECK(!rows.front().restorable());
         CHECK(rows.front().slots().empty());
         CHECK(!store.takeBytes(history::HistoryStore::contentHash("bytes")));
@@ -70,7 +70,17 @@ int main()
         plan = {}; plan.rowsRemoved = 3; plan.takesFreed = 2; plan.bytesFreed = 1572864;
         const auto q = clearhistory::question(4, plan);
         CHECK_EQ(q.title, std::string("Clear the history of slot 4?"));
-        CHECK_EQ(q.message, std::string("This cannot be undone. 3 entries and 2 takes (1.5 MB) will be deleted."));
+        CHECK_EQ(q.message, std::string("This cannot be undone. 3 entries and 2 takes (2 MB) will be deleted."));
+        // One of each reads as English, and a take of a few bytes is not "0.0 MB".
+        clearhistory::Plan single; single.rowsRemoved = 1; single.takesFreed = 1; single.bytesFreed = 5;
+        single.pinned = { 1 };
+        const auto lone = clearhistory::question(4, single);
+        CHECK_EQ(lone.message.substr(0, lone.message.find("\n")),
+                 std::string("This cannot be undone. 1 entry and 1 take (5 bytes) will be deleted."));
+        CHECK(lone.message.find("It includes 1 pinned entry") != std::string::npos);
+        clearhistory::Plan none; none.rowsRemoved = 2; none.takesFreed = 0;
+        CHECK_EQ(clearhistory::question(4, none).message,
+                 std::string("This cannot be undone. 2 entries and 0 takes (0 bytes) will be deleted."));
         clearhistory::ask(4, plan, [&](clearhistory::Question question, clearhistory::Answer answer) {
             ++questions; CHECK(!question.holds); answer(true);
         }, [&](bool yes) { CHECK(yes); });

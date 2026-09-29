@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "history/HistoryStore.h"
+#include "history/Retention.h"
 #include <functional>
-#include <iomanip>
-#include <locale>
-#include <sstream>
+#include <string>
 
 namespace loopercat::clearhistory {
 using Plan = history::HistoryStore::ForgetPlan;
@@ -19,14 +18,15 @@ using Confirm = std::function<void(Question, Answer)>;
 
 inline Question question(int slot, const Plan& plan, bool holds = false)
 {
-    std::ostringstream mb;
-    mb.imbue(std::locale::classic());
-    mb << std::fixed << std::setprecision(1) << static_cast<double>(plan.bytesFreed) / 1048576.0;
+    using history::retention::bytesText;
+    using history::retention::countText;
     Question q { "Clear the history of slot " + std::to_string(slot) + "?",
-        "This cannot be undone. " + std::to_string(plan.rowsRemoved) + " entries and "
-        + std::to_string(plan.takesFreed) + " takes (" + mb.str() + " MB) will be deleted.", holds };
+        "This cannot be undone. " + countText(plan.rowsRemoved, "entry", "entries") + " and "
+        + countText(plan.takesFreed, "take", "takes")
+        + " (" + bytesText(plan.bytesFreed) + ") will be deleted.", holds };
     if (!plan.pinned.empty())
-        q.message += "\n\nIt includes " + std::to_string(plan.pinned.size()) + " pinned entries";
+        q.message += "\n\nIt includes "
+            + countText(static_cast<std::int64_t>(plan.pinned.size()), "pinned entry", "pinned entries");
     if (plan.cutsUndo || !plan.undoTargets.empty())
         q.message += "\n\nUndo will no longer be able to go back past this point.";
     if (holds) {
