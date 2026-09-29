@@ -54,7 +54,7 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     // A row whose take is the one it archived — a clear, an undo that emptied
     // the slot — does not say what the slot holds now, even as the newest
     // row: its take is kept, or lost.
-    const bool onCard = newest && entry.takeIsAfter;
+    const bool onCard = newest && entry.takeIsAfter && entry.kind != "snapshot";
     story::Take take = story::Take::none;
     if (hasTake)
         take = onCard          ? story::Take::onCard
@@ -95,7 +95,8 @@ inline std::vector<Row> forSlot(const std::vector<HistoryStore::TimelineEntry>& 
 // What the row offers: Play when any take it holds is kept (the first kept
 // one is what plays; Export takes the same bytes); Restore when it recorded
 // at least one state and every state it recorded can go back, by the slot's
-// own rule. `state` says what the operation's own status or origin adds —
+// own rule. A first-sighting snapshot instead offers each eligible slot
+// independently. `state` says what the operation's own status or origin adds —
 // failed, interrupted, recorded on the pedal — and is empty for a plain
 // finished operation of the app's.
 struct CardRow {
@@ -132,8 +133,17 @@ struct CardRow {
                 return true;
         return false;
     }
+    std::vector<int> restorableSlots() const
+    {
+        std::vector<int> out;
+        for (const Take& take : takes)
+            if (take.restorable) out.push_back(take.slot);
+        return out;
+    }
     bool restorable() const
     {
+        if (kind == "snapshot")
+            return !restorableSlots().empty();
         if (takes.empty())
             return false;
         for (const Take& take : takes)
@@ -179,6 +189,20 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             }
             row.takes.push_back({ touched.slot, slotRow.line.audio, slotRow.playable,
                                   slotRow.restorable, slotRow.takeHash });
+        }
+        if (entry.kind == "snapshot") {
+            std::int64_t count = 0, bytes = 0;
+            std::string failures;
+            for (const auto& touched : entry.slots) {
+                count += touched.facts.takeCount;
+                bytes += touched.facts.takeBytes;
+                if (touched.facts.status == "failed")
+                    failures += (failures.empty() ? "" : "; ") + std::string("slot ")
+                        + std::to_string(touched.slot) + " failed: " + touched.facts.note;
+            }
+            row.detail = std::to_string(count) + (count == 1 ? " take, " : " takes, ")
+                + retention::bytesText(bytes);
+            if (!failures.empty()) row.state = std::move(failures);
         }
         if (entry.kind == "swap" && entry.slots.size() == 2) {
             row.action = "Swapped slots " + std::to_string(entry.slots[0].slot) + " and "

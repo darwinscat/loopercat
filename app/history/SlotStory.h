@@ -114,7 +114,12 @@ inline Line tell(const Facts& facts)
         line.detail += (line.detail.empty() ? "" : " - ") + std::string(kNoteLengthReplaced);
     };
 
-    if (facts.kind == "push") {
+    if (facts.kind == "snapshot") {
+        line.action = "Card first seen";
+        line.detail = facts.takeName;
+        if (!facts.note.empty())
+            line.detail += (line.detail.empty() ? "" : "; ") + facts.note;
+    } else if (facts.kind == "push") {
         line.action = "Pushed";
         line.detail = facts.takeName;
         if (bodies) {

@@ -84,9 +84,12 @@ fs::path makeCard(const fs::path& root, const std::string& system)
     const fs::path volume = root / "BOSS RC-5";
     fs::create_directories(volume::dataDir(volume));
     fs::create_directories(volume / "ROLAND" / "WAVE");
-    for (const int fileNo : { 1, 2 })
+    for (const int fileNo : { 1, 2 }) {
         commands::writeFileBytes(volume::systemPath(volume, fileNo),
                                  rc0::setTailGeneration(system, 100u + static_cast<unsigned>(fileNo)));
+        commands::writeFileBytes(volume::memoryPath(volume, fileNo),
+                                 rc0::setTailMarker(testkit::syntheticMemoryText(), fileNo));
+    }
     return volume;
 }
 
@@ -97,7 +100,7 @@ struct Ready {
     int ops = 0;
     explicit Ready(const fs::path& dir) : store(dir)
     {
-        session = store.openSession(store.card("RC-5", "BOSS RC-5", 1000), 1000);
+        session = store.openSession(store.card("test-RC-5", "RC-5", "BOSS RC-5", 1000), 1000);
     }
     std::int64_t begin(const std::string& kind)
     {
@@ -185,9 +188,8 @@ int main()
     // --- the recorder: rows under the operation that has begun, and refused otherwise ---
     {
         TempDir tmp;
-        HistoryRecorder rec(tmp.path / "history", "RC-5", [] { return std::int64_t { 5000 }; });
-        const fs::path volume = tmp.path / "BOSS RC-5";
-        fs::create_directories(volume);
+        HistoryRecorder rec(tmp.path / "history", [] { return std::int64_t { 5000 }; });
+        const fs::path volume = makeCard(tmp.path, systemFixture());
         rec.begin("op-controls", "controls", volume);
         rec.systemChanges("op-controls", { { "CTL", ctl(17, 18), ctl(17, 22) } });
         rec.finish("op-controls", "");
@@ -207,7 +209,7 @@ int main()
         TempDir tmp;
         const std::string original = systemFixture();
         const fs::path volume = makeCard(tmp.path, original);
-        auto rec = std::make_shared<HistoryRecorder>(tmp.path / "history", "RC-5",
+        auto rec = std::make_shared<HistoryRecorder>(tmp.path / "history",
                                                      [] { return std::int64_t { 7000 }; });
         const std::string edited = sysfile::setField(original, sysfile::kSectionCtl, "Ctl2", 22);
         CHECK(sysfile::field(original, sysfile::kSectionCtl, "Ctl2") != 22);
@@ -219,7 +221,7 @@ int main()
         rec->finish("op-controls", "");
         sqlite::Db& db = rec->store().db();
         CHECK_EQ(count(db, "SELECT count(*) FROM system_changes"), 1);
-        const auto rows = rec->store().systemChanges(1);
+        const auto rows = rec->store().systemChanges(rec->store().operations().back().op);
         CHECK_EQ(rows.size(), 1u);
         CHECK(rows.size() == 1 && rows.front().section == sysfile::kSectionCtl);
         CHECK(rows.size() == 1 && rows.front().before == sysfile::sectionText(original, sysfile::kSectionCtl));
@@ -227,7 +229,7 @@ int main()
         CHECK_EQ(sysfile::field(commands::readSystem(volume), sysfile::kSectionCtl, "Ctl2"), 22);
         // and the timeline reads it back as an operation on no slot
         const auto entries = rec->store().cardTimeline();
-        CHECK(entries.size() == 1 && entries.front().slots.empty() && entries.front().system.size() == 1);
+        CHECK(entries.size() == 2 && entries.back().slots.empty() && entries.back().system.size() == 1);
 
         // a write for an operation that never began: the history refuses
         // before the write, and the card stays as it was

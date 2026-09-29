@@ -28,7 +28,8 @@
 //
 // The button is there at all times, not only at the limit: below the limit
 // the offer starts at "nothing needs to go", and lowering the amount to keep
-// names the oldest unheld takes that would go. What the plan does not give,
+// names the unheld takes that would go, with first-seen takes last, oldest
+// first within each group. What the plan does not give,
 // the button does not offer — it is disabled, and the sentence says why.
 //==============================================================================
 namespace loopercat

@@ -29,6 +29,7 @@
 #include "history/SlotRows.h"
 #include "history/TakeAudition.h"
 #include "history/HistoryRecorder.h"
+#include "history/FirstSeenJob.h"
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
 #include "history/TakeExport.h"
@@ -63,7 +64,7 @@ public:
     {
         // Tall enough that the format line lands past the chip's edge and is
         // clipped away, with the version line centred in what is left.
-        badge_.setBounds(0, 0, getWidth(), juce::roundToInt(getHeight() / 0.56f));
+        badge_.setBounds(0, 0, getWidth(), juce::roundToInt(static_cast<float>(getHeight()) / 0.56f));
     }
 
 private:
@@ -91,6 +92,15 @@ public:
     // The card's own name (issue #99): read from its marker once the volume
     // is up, minted when it has none. For the --snapshot seam: whether that
     // has settled, and what the corner says.
+    bool firstSeenReady() const { return firstSeenSettled; }
+    std::string firstSeenError() const { return firstSeenProblem; }
+    std::string historyText() const
+    {
+        std::string text;
+        for (const auto& row : historyEntries)
+            text += row.line.action + " | " + row.line.detail + " | " + row.line.audio + "\n";
+        return text;
+    }
     bool cardNameReady() const { return cardNameSettled; }
     std::string pedalName() const { return pedalLight.label().toStdString(); }
     void showAbout(); // the menu About and --about: opens the version badge's popover
@@ -186,6 +196,7 @@ private:
     // none — and the name lands in the corner and in the pedal book under
     // the endpoint Connect chose. A click on the name renames the card.
     void readCardName();
+    void snapshotNext(const std::shared_ptr<history::FirstSeenRun>& run, int slot);
     void cardNamed(marker::Card card, bool minted, std::string sweepNote);
     void renamePedal();
     void savePedalBook();
@@ -215,6 +226,8 @@ private:
         std::string takeName;  // the name it is exported under
         juce::String action;
         std::vector<int> slots;
+        std::vector<int> snapshotSlots;
+        bool isSnapshot = false;
         bool restorable = false;
     };
     std::vector<WindowEntry> windowEntries;
@@ -222,7 +235,7 @@ private:
     const WindowEntry* windowEntry(std::int64_t op) const;
     void playFromWindow(std::int64_t op);
     void exportFromWindow(std::int64_t op);
-    void restoreFromWindow(std::int64_t op);
+    void restoreFromWindow(std::int64_t op, std::optional<int> snapshotSlot = std::nullopt);
     void pinFromWindow(std::int64_t op, bool pinned);
     bool historyKeys(const juce::KeyPress& key); // Cmd-Z / Cmd-Shift-Z, from either window
 
@@ -353,6 +366,11 @@ private:
     pedalbook::Book pedalBook;          // endpoint -> the card it carried, and its name (settings)
     std::optional<marker::Card> card;   // the mounted card's marker, once read
     std::string cardNameVolume;         // the volume the marker was read for (one read per mount)
+    std::shared_ptr<history::FirstSeenRun> firstSeenRun;
+    bool firstSeenSettled = false;
+    std::string firstSeenProblem;
+    int firstSeenCount = 0;
+    int cardGeneration = 0;
     bool cardNameSettled = false;       // read, minted, or given up — for the seam
     juce::String lastConnectSendError; // last enter-storage send result — the honest give-up
     std::int64_t connectHoldUntilMs = 0; // Connect held while the pedal re-boots its MIDI face
@@ -379,7 +397,6 @@ private:
     std::vector<history::rows::Row> historyEntries; // what the tab is showing, for its buttons
     std::shared_ptr<history::HistoryRecorder> recorder = std::make_shared<history::HistoryRecorder>(
         std::filesystem::path(settings.dataDir().getChildFile("history").getFullPathName().toStdString()),
-        "RC-5",
         [] { return static_cast<std::int64_t>(juce::Time::currentTimeMillis()); });
     PedalWorker worker;
 

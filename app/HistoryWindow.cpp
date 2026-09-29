@@ -143,12 +143,20 @@ const HistoryWindow::Row* HistoryWindow::selected() const
     return visibleRow(list_.getSelectedRow());
 }
 
+bool HistoryWindow::canRestore(const Row& row) const
+{
+    if (row.isSnapshot && filter_)
+        return std::find(row.restorableSlots.begin(), row.restorableSlots.end(), *filter_)
+            != row.restorableSlots.end();
+    return row.restorable;
+}
+
 void HistoryWindow::updateOffers()
 {
     const Row* row = selected();
     play_.setEnabled(!busy_ && row != nullptr && row->playable);
     export_.setEnabled(!busy_ && row != nullptr && row->playable);
-    restore_.setEnabled(!busy_ && row != nullptr && row->restorable);
+    restore_.setEnabled(!busy_ && row != nullptr && canRestore(*row));
     pin_.setEnabled(!busy_ && row != nullptr);
     pin_.setButtonText(row != nullptr && row->pinned ? "Unpin" : "Pin");
 }
@@ -161,7 +169,7 @@ void HistoryWindow::play()
 
 void HistoryWindow::restore()
 {
-    if (const Row* row = selected(); row != nullptr && row->restorable && !busy_ && onRestore)
+    if (const Row* row = selected(); row != nullptr && canRestore(*row) && !busy_ && onRestore)
         onRestore(row->op);
 }
 

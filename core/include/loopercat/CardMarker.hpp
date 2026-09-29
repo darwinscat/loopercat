@@ -53,6 +53,12 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// Lean windows.h: the full header pulls in rpcndr.h, whose `#define small char`
+// breaks JUCE headers (PushNotifications has an enumerator named small) in any
+// translation unit that includes this one before JUCE's GUI modules.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>

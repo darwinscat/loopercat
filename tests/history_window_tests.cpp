@@ -248,5 +248,32 @@ int main()
               && window.pinEnabled());
     }
 
+    // A snapshot offers individual changed slots; filtering to an unchanged slot disables Restore.
+    {
+        HistoryWindow window;
+        HistoryWindow::Row baseline;
+        baseline.op = 42;
+        baseline.action = "Card first seen";
+        baseline.slots = { 1, 2, 3 };
+        baseline.isSnapshot = true;
+        baseline.restorable = true;
+        baseline.restorableSlots = { 2 };
+        window.show({ baseline });
+        window.selectVisible(0);
+        CHECK(window.restoreEnabled());
+        window.setFilter(1);
+        window.selectVisible(0);
+        CHECK(!window.restoreEnabled());
+        window.setFilter(2);
+        window.selectVisible(0);
+        CHECK(window.restoreEnabled());
+        int restores = 0;
+        window.onRestore = [&](std::int64_t op) { CHECK_EQ(op, 42); ++restores; };
+        window.restore();
+        CHECK_EQ(restores, 1);
+        window.setFilter(3);
+        window.restore();
+        CHECK_EQ(restores, 1);
+    }
     return testkit::summary("history_window_tests");
 }

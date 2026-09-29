@@ -75,7 +75,7 @@ struct Archive {
     int nextOp = 0;
     explicit Archive(const fs::path& dir) : store(dir)
     {
-        session = store.openSession(store.card("RC-5", "BOSS RC-5", 1000), 1000);
+        session = store.openSession(store.card("test-RC-5", "RC-5", "BOSS RC-5", 1000), 1000);
     }
     std::string keep(const std::string& bytes)
     {

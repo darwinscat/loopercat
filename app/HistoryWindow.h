@@ -48,6 +48,8 @@ public:
         bool restorable = false;
         bool pinned = false;
         std::int64_t op = 0;
+        bool isSnapshot = false;
+        std::vector<int> restorableSlots {};
     };
 
     HistoryWindow();
@@ -101,6 +103,7 @@ private:
 
     void rebuildVisible(std::int64_t keepSelectedOp);
     void updateOffers();
+    bool canRestore(const Row& row) const;
 
     std::vector<Row> rows_;
     std::vector<std::size_t> visible_; // indices into rows_

@@ -183,11 +183,13 @@ int main()
         {
             HistoryStore fresh(tmp.path);
             auto& db = fresh.db();
-            CHECK_EQ(schema::kVersion, 5);
-            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 5);
+            CHECK_EQ(schema::kVersion, 6);
+            CHECK_EQ(count(db, "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
+            CHECK_THROWS(db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id) VALUES ('RC-5', '', 0, 0, NULL)"), "NOT NULL");
+            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 6);
             CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 8);
             CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'legacy_files'"), 0);
-            const auto session = fresh.openSession(fresh.card("RC-5", "Card", 1000), 1000);
+            const auto session = fresh.openSession(fresh.card("test-RC-5", "RC-5", "Card", 1000), 1000);
             const auto op = fresh.beginOp(session, "first", "clear", 1000);
             fresh.keepAudio(op, 1, 1, "take.wav", "take bytes", 1000);
             fresh.recordBodies(op, { { 1, "before", "after" } });
@@ -201,16 +203,76 @@ int main()
             CHECK_THROWS(db.exec("INSERT INTO system_changes VALUES (1, 'CTL', 'c', 'd')"), "UNIQUE");
         }
         HistoryStore reopened(tmp.path);
-        CHECK_EQ(schema::pragmaInteger(reopened.db(), "user_version"), 5);
+        CHECK_EQ(schema::pragmaInteger(reopened.db(), "user_version"), 6);
         CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM ops WHERE pinned = 1"), 1);
         CHECK(reopened.takeBytes(HistoryStore::contentHash("take bytes")) == "take bytes");
         CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM system_changes"), 1);
     }
     {
+        // A version 5 history survives migration without guessing a marker
+        // from its old label. Existing bodies, takes and references stay intact.
+        TempDir tmp;
+        {
+            auto db = sqlite::Db::open(tmp.path / "history.db");
+            db.exec("PRAGMA page_size = 16384");
+            db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+            std::string v5 = kPreview4;
+            const auto legacyStart = v5.find("CREATE TABLE legacy_files");
+            const auto legacyEnd = v5.find("ALTER TABLE ops", legacyStart);
+            v5.erase(legacyStart, legacyEnd - legacyStart);
+            const auto actor = v5.find("'app', 'pedal', 'legacy'");
+            v5.replace(actor, std::string("'app', 'pedal', 'legacy'").size(), "'app', 'pedal'");
+            db.exec(v5);
+            db.exec("PRAGMA user_version = 5");
+            db.exec("INSERT INTO cards VALUES (1, 'RC-5', 'BOSS RC-5', NULL, 1000, 1000)");
+            db.exec("INSERT INTO sessions VALUES (1, 1, 1000, 2000)");
+            db.exec("INSERT INTO ops(id, session, kind, actor, status, at) "
+                    "VALUES ('v5', 1, 'rename', 'app', 'done', 1500)");
+            db.exec("INSERT INTO slot_changes VALUES (1, 3, x'6265666f7265', x'6166746572')");
+        }
+        HistoryStore migrated(tmp.path);
+        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 6);
+        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM cards WHERE marker_id IS NULL"), 0);
+        CHECK_EQ(count(migrated.db(), "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
+        CHECK_THROWS(migrated.db().exec("UPDATE cards SET marker_id = NULL"), "NOT NULL");
+        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM cards WHERE marker_id = 'unidentified-v5:1'"), 1);
+        migrated.selectCard(1);
+        CHECK_EQ(migrated.slotTimeline(3).size(), 1u);
+        CHECK(migrated.slotTimeline(3).front().beforeBody == "before");
+        CHECK(migrated.slotTimeline(3).front().afterBody == "after");
+        const auto identified = migrated.card("new-marker", "RC-5", "BOSS RC-5", 3000);
+        CHECK(identified != 1);
+        migrated.selectCard(identified);
+        CHECK(migrated.slotTimeline(3).empty());
+        CHECK_THROWS(migrated.db().exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id) "
+                                      "VALUES ('RC-5', '', 0, 0, 'new-marker')"), "UNIQUE");
+        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 0);
+        schema::migrate(migrated.db());
+        CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM slot_changes"), 1);
+    }
+    {
+        TempDir freshDir, migratedDir;
+        {
+            auto db = sqlite::Db::open(migratedDir.path / "history.db");
+            db.exec("PRAGMA page_size = 16384");
+            db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+            db.exec(schema::kSteps[0]);
+            db.exec("PRAGMA user_version = 5");
+        }
+        HistoryStore fresh(freshDir.path), migrated(migratedDir.path);
+        const auto definition = [](HistoryStore& store) {
+            std::string out;
+            sqlite::Statement read(store.db(), "SELECT type || name || coalesce(sql, '') FROM sqlite_master ORDER BY name");
+            while (read.step()) out += read.text(0) + "\n";
+            return out;
+        };
+        CHECK_EQ(definition(fresh), definition(migrated));
+    }
+    {
         TempDir tmp;
         {
             HistoryStore fresh(tmp.path);
-            fresh.db().exec("PRAGMA user_version = 6");
+            fresh.db().exec("PRAGMA user_version = 7");
         }
         const auto before = commands::readFileBytes(tmp.path / "history.db");
         CHECK_THROWS(HistoryStore(tmp.path), "newer LooperCat");

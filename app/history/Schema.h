@@ -14,8 +14,7 @@
 // guess.
 //
 // One file, history.db, holds the timeline and the bytes:
-//   cards        a pedal's card, by model; identity signals arrive in #72's
-//                connect stage, until then a card is its volume label
+//   cards        a card by its marker id, with its name and model
 //   sessions     one per connection
 //   ops          one per operation, in timeline order (seq); `id` is the
 //                operation id the app mints (app/OperationId.h)
@@ -59,7 +58,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 5;
+inline constexpr std::int64_t kVersion = 6;
 
 // Version 5 is the first supported store. Future steps append to this array;
 // kSteps[N] creates version kBaseVersion + N in the same transaction.
@@ -136,6 +135,27 @@ CREATE TABLE system_changes(
     after   TEXT    NOT NULL,
     PRIMARY KEY (op, section)
 ) STRICT;
+)sql",
+R"sql(
+-- Unidentified version 5 cards stay separate: a label cannot prove identity.
+ALTER TABLE cards ADD COLUMN marker_id TEXT NOT NULL DEFAULT '';
+UPDATE cards SET marker_id = 'unidentified-v5:' || id;
+ALTER TABLE cards ADD COLUMN name TEXT;
+ALTER TABLE cards ADD COLUMN snapshot_op INTEGER REFERENCES ops(seq);
+CREATE UNIQUE INDEX cards_by_marker ON cards(marker_id);
+CREATE TABLE slot_changes_v6(
+    op INTEGER NOT NULL REFERENCES ops(seq),
+    slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
+    before_body BLOB,
+    after_body BLOB,
+    snapshot_error TEXT,
+    CHECK (after_body IS NOT NULL OR snapshot_error IS NOT NULL),
+    PRIMARY KEY (op, slot)
+) STRICT;
+INSERT INTO slot_changes_v6(op, slot, before_body, after_body) SELECT * FROM slot_changes;
+DROP TABLE slot_changes;
+ALTER TABLE slot_changes_v6 RENAME TO slot_changes;
+CREATE INDEX slot_changes_by_slot ON slot_changes(slot, op);
 )sql",
 };
 

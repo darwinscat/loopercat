@@ -138,7 +138,7 @@ struct Bench {
     TempDir tmp;
     fs::path volume = makePedal(tmp.path);
     std::shared_ptr<HistoryRecorder> rec =
-        std::make_shared<HistoryRecorder>(tmp.path / "history", "RC-5", tick);
+        std::make_shared<HistoryRecorder>(tmp.path / "history", tick);
     int ops = 0;
 
     commands::WriteOptions options(const std::string& opId)
@@ -415,8 +415,10 @@ int main()
         const std::int64_t first = newest(b.rec->store()).session;
         CHECK(b.rec->sessionOn(b.volume) == first);
         CHECK(!b.rec->sessionOn(b.tmp.path / "another card").has_value());
-        b.rec = std::make_shared<HistoryRecorder>(b.tmp.path / "history", "RC-5", tick); // the app again
+        b.rec = std::make_shared<HistoryRecorder>(b.tmp.path / "history", tick); // the app again
         CHECK(!b.rec->sessionOn(b.volume).has_value()); // nothing written in this run yet
+        CHECK(b.rec->store().cardTimeline().empty());
+        b.rec->selectVolume(b.volume);
         const auto timeline = b.rec->store().cardTimeline();
         const undo::Plan plan = undo::plan(timeline, *undo::offer(b.rec->store()).undo);
         CHECK(!plan.crossesConnection); // the plan's proxy misses it: nothing newer on the card
@@ -437,7 +439,7 @@ int main()
             commands::push(b.volume, sourceWav(b.tmp.path, "a.wav", 44100 * 4), 5, { .write = o });
         });
         const std::int64_t first = newest(b.rec->store()).session;
-        b.rec = std::make_shared<HistoryRecorder>(b.tmp.path / "history", "RC-5", tick); // the app again
+        b.rec = std::make_shared<HistoryRecorder>(b.tmp.path / "history", tick); // the app again
         b.op("push", [&](const commands::WriteOptions& o) {
             commands::push(b.volume, sourceWav(b.tmp.path, "b.wav", 44100 * 3), 7, { .write = o });
         });

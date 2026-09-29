@@ -85,7 +85,7 @@ struct Ready {
     std::int64_t session;
     explicit Ready(const fs::path& dir) : store(dir)
     {
-        session = store.openSession(store.card("RC-5", "BOSS RC-5", 1000), 1000);
+        session = store.openSession(store.card("test-RC-5", "RC-5", "BOSS RC-5", 1000), 1000);
     }
 };
 
@@ -271,9 +271,9 @@ int main()
     {
         TempDir tmp;
         HistoryStore store(tmp.path);
-        const auto a = store.card("RC-5", "BOSS RC-5", 1000);
-        CHECK_EQ(store.card("RC-5", "BOSS RC-5", 5000), a); // found again, not duplicated
-        CHECK(store.card("RC-500", "BOSS RC-5", 5000) != a); // another model is another card
+        const auto a = store.card("test-RC-5", "RC-5", "BOSS RC-5", 1000);
+        CHECK_EQ(store.card("test-RC-5", "RC-5", "BOSS RC-5", 5000), a); // found again, not duplicated
+        CHECK(store.card("test-RC-500", "RC-500", "BOSS RC-5", 5000) != a); // a different marker is a different card
         CHECK_EQ(count(store.db(), "SELECT last_seen FROM cards WHERE id = " + std::to_string(a)),
                  5000);
         const auto s = store.openSession(a, 6000);

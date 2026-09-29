@@ -388,6 +388,7 @@ inline Checked check(HistoryStore& store, bool redo, std::int64_t target)
 inline Checked beginPress(HistoryRecorder& recorder, const std::string& opId, bool redo,
                           std::int64_t target, const fs::path& volume)
 {
+    recorder.selectVolume(volume);
     Checked checked = check(recorder.store(), redo, target);
     recorder.begin(opId, redo ? "redo" : "undo", volume);
     recorder.reverts(opId, target);
