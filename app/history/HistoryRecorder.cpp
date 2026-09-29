@@ -121,12 +121,21 @@ int HistoryRecorder::snapshotStep(const Snapshot& snapshot, int slot)
     return static_cast<int>(slots.size());
 }
 
+// A baseline can have been forgotten since its last step, and a missing
+// operation is not a failure to either caller: there is simply nothing left to
+// close or to preserve. opStatus() throws on it, so both read the row directly.
+std::optional<std::string> HistoryRecorder::snapshotStatus(std::int64_t op)
+{
+    sqlite::Statement row(store().db(), "SELECT status FROM ops WHERE seq = ?1");
+    row.bind(1, op);
+    if (!row.step())
+        return std::nullopt;
+    return row.text(0);
+}
+
 void HistoryRecorder::interruptSnapshot(const Snapshot& snapshot, const std::string& reason)
 {
-    // An interrupted baseline can have been forgotten since its last step.
-    sqlite::Statement row(store().db(), "SELECT status FROM ops WHERE seq = ?1");
-    row.bind(1, snapshot.op);
-    if (row.step() && row.text(0) == "pending")
+    if (snapshotStatus(snapshot.op) == "pending")
         store().finishOp(snapshot.op, OpStatus::interrupted, reason);
 }
 
@@ -135,8 +144,9 @@ void HistoryRecorder::preserveSlots(const std::string& opId, const std::vector<i
     const auto found = ops_.find(opId);
     if (found == ops_.end())
         throw Error("operation " + opId + " reported to the history without having begun");
+    const auto status = snapshot_ ? snapshotStatus(snapshot_->op) : std::nullopt;
     if (!snapshot_ || snapshot_->volume != found->second.volume
-        || store().opStatus(snapshot_->op) == "done")
+        || !status.has_value() || *status == "done")
         return;
     for (int slot : slots)
         snapshotStep(*snapshot_, slot);

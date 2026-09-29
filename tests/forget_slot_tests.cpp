@@ -136,7 +136,11 @@ int main()
         f.store.forgetSlot(f.card, 4, 40, true);
         CHECK(!f.store.offeredTargets().undo); CHECK(!f.store.offeredTargets().redo);
         auto next = f.op({9});
-        CHECK(next > undo); // SQLite must not reuse a sequence below the Undo boundary
+        // A new operation must land above the card's Undo boundary, or the store
+        // would hide work that has just been done. Operations forgotten whole
+        // move no boundary, so here the boundary is still nothing.
+        CHECK(next > f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)));
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), 0);
         CHECK(f.store.offeredTargets().undo == next);
         HistoryStore reopened(f.dir); reopened.selectCard(f.card);
         CHECK(reopened.offeredTargets().undo == next);
@@ -187,6 +191,47 @@ int main()
         CHECK_EQ(f.bytes(), before);
         CHECK(f.store.offeredTargets().undo == op);
         CHECK(f.store.takeBytes(HistoryStore::contentHash("bytes")) == "bytes");
+    }
+    // Work on other slots stays undoable: an operation forgotten whole leaves
+    // nothing behind, so it is not an Undo boundary for the rest of the card.
+    {
+        Fixture f;
+        const auto nine = f.op({9});
+        const auto four = f.op({4});
+        CHECK(f.store.offeredTargets().undo == four);
+        f.store.forgetSlot(f.card, 4, 40, true);
+        CHECK(f.store.offeredTargets().undo == nine);
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), 0);
+        CHECK_EQ(f.store.slotTimeline(9).size(), 1u);
+        CHECK_EQ(f.scalar("SELECT count(*) FROM forgotten_slots"), 0);
+    }
+    // A swap that survives half-forgotten IS a boundary: undoing it would put
+    // the other slot back and leave the forgotten one where it is.
+    {
+        Fixture f;
+        f.op({9});
+        const auto swap = f.op({4, 9}, "swap");
+        f.store.forgetSlot(f.card, 4, 40, true);
+        CHECK_EQ(f.store.opStatus(swap), std::string("done"));
+        CHECK(!f.store.offeredTargets().undo);
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), swap);
+    }
+    // A slot the first sighting never reached is not marked forgotten: only
+    // clearing the snapshot's own row may make a resumed run skip a slot.
+    {
+        Fixture f;
+        const auto snapshot = f.store.firstSeen(f.session, "marker-a", 5);
+        for (int slot : {1, 2})
+            f.store.snapshotSlot(snapshot, slot, testkit::syntheticSlotBody("First"), {}, 10);
+        f.store.finishOp(snapshot, OpStatus::interrupted, "unplugged"); // it never reached slot 50
+        f.op({50});
+        f.store.forgetSlot(f.card, 50, 40, true);
+        CHECK_EQ(f.scalar("SELECT count(*) FROM forgotten_slots"), 0);
+        CHECK((f.store.snapshotSlots(snapshot) == std::vector<int>{1, 2})); // slot 50 still to come
+        f.store.forgetSlot(f.card, 1, 50, true);
+        CHECK_EQ(f.scalar("SELECT count(*) FROM forgotten_slots"), 1);
+        CHECK((f.store.snapshotSlots(snapshot) == std::vector<int>{1, 2})); // 1 counts as covered
+        CHECK(f.store.touchedSlots(snapshot) == std::vector<int>{2});
     }
     return testkit::summary("forget_slot_tests");
 }

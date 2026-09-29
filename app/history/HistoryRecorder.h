@@ -112,6 +112,9 @@ private:
     };
 
     std::int64_t opRow(const std::string& opId) const;
+    // The status of a baseline operation, or nothing when the row is gone:
+    // clearing a slot's history can take the snapshot with it.
+    std::optional<std::string> snapshotStatus(std::int64_t op);
     // After a successful operation, write down what each slot it touched now
     // holds, read from the card. Without it a slot's timeline cannot be read
     // on its own: a swap would send the reader into the other slot's rows,

@@ -599,7 +599,7 @@ std::vector<int> HistoryStore::snapshotSlots(std::int64_t op)
 {
     sqlite::Statement read(db_, "SELECT slot FROM slot_changes WHERE op = ?1 UNION "
         "SELECT f.slot FROM forgotten_slots f JOIN sessions s ON s.card = f.card "
-        "JOIN ops o ON o.session = s.id WHERE o.seq = ?1 ORDER BY slot");
+        "JOIN ops o ON o.session = s.id WHERE o.seq = ?1 AND o.kind = 'snapshot' ORDER BY slot");
     read.bind(1, op);
     std::vector<int> out;
     while (read.step()) out.push_back(static_cast<int>(read.integer(0)));
@@ -655,16 +655,20 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
     if (plan.hasHolds() && !confirmHolds)
         throw Error("clearing pinned entries or Undo/Redo targets needs a separate confirmation");
     if (!plan.operations.empty()) {
-        // A partial swap must never be offered as an undo of the whole swap.
-        // Preserve newer independent operations, but never cross the missing state.
-        sqlite::Statement floor(db_, "UPDATE cards SET undo_floor = max(undo_floor, "
-            "coalesce((SELECT max(seq) FROM ops WHERE seq = ?2 AND kind <> 'snapshot'), 0)) WHERE id = ?1");
-        for (const auto op : plan.operations) {
-            floor.bind(1, cardId).bind(2, op).run();
-            floor.reset();
+        // A forgotten slot is only an omission of the FIRST SIGHTING when the
+        // snapshot is what recorded it. A slot the snapshot never reached must
+        // still be photographed when an interrupted run resumes.
+        sqlite::Statement firstSeen(db_, "SELECT coalesce(snapshot_op, 0) FROM cards WHERE id = ?1");
+        firstSeen.bind(1, cardId);
+        if (!firstSeen.step())
+            throw Error("card " + std::to_string(cardId) + " is not in the history");
+        const auto snapshotOp = firstSeen.integer(0);
+        if (std::find(plan.operations.begin(), plan.operations.end(), snapshotOp)
+            != plan.operations.end()) {
+            sqlite::Statement omitted(db_, "INSERT OR IGNORE INTO forgotten_slots VALUES (?1, ?2)");
+            omitted.bind(1, cardId).bind(2, slot).run();
         }
-        sqlite::Statement omitted(db_, "INSERT OR IGNORE INTO forgotten_slots VALUES (?1, ?2)");
-        omitted.bind(1, cardId).bind(2, slot).run();
+        std::vector<std::int64_t> partial;
         for (const auto op : plan.operations) {
             sqlite::Statement bodies(db_, "DELETE FROM slot_changes WHERE op = ?1 AND slot = ?2");
             bodies.bind(1, op).bind(2, slot).run();
@@ -677,7 +681,19 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
                 baseline.bind(1, op).run();
                 sqlite::Statement drop(db_, "DELETE FROM ops WHERE seq = ?1");
                 drop.bind(1, op).run();
+            } else {
+                partial.push_back(op);
             }
+        }
+        // A partial swap must never be offered as an undo of the whole swap: the
+        // slot just forgotten would stay where it is. Only an operation that
+        // SURVIVED half-forgotten moves the boundary; one forgotten whole leaves
+        // nothing behind, so the independent work below it stays undoable.
+        sqlite::Statement floor(db_, "UPDATE cards SET undo_floor = max(undo_floor, "
+            "coalesce((SELECT max(seq) FROM ops WHERE seq = ?2 AND kind <> 'snapshot'), 0)) WHERE id = ?1");
+        for (const auto op : partial) {
+            floor.bind(1, cardId).bind(2, op).run();
+            floor.reset();
         }
         for (const auto& hash : plan.hashes) releaseBytes(hash, nowMs);
     }
