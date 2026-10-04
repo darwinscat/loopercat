@@ -138,8 +138,11 @@ struct Prepared {
 
 // Fails when the source is not audio JUCE can read, has more than two
 // channels — a surround downmix is a creative decision, not a default — or
-// is a WAV cut short (wav::isTruncatedRiff): a decoder would pad the missing
-// frames with silence, and the pedal would get a loop longer than its audio.
+// is a WAV whose structure is at fault (wav::riffFault: cut short, never
+// finalised, two data chunks): a decoder would pad, drop or guess, and the
+// pedal would get audio that is not the file's under the player's own name.
+// A header the core's gate does not read (an extensible tag) is a shape, not
+// a fault: the converter reads it.
 // `importTmp` is the app's import-tmp root; a conversion gets a directory of
 // its own under it.
 juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prepared& out,

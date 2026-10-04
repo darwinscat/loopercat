@@ -133,12 +133,13 @@ juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prep
     if (!source.loadFileAsData(raw))
         return juce::Result::fail("cannot read " + source.getFullPathName());
     const wav::BytesView bytes(static_cast<const unsigned char*>(raw.getData()), raw.getSize());
-    // A WAV cut short is refused, never padded: a decoder fills the missing
-    // frames with silence, and the pedal would get a loop longer than its
-    // audio under the player's own name (review of issue #139).
-    if (wav::isTruncatedRiff(bytes))
-        return juce::Result::fail(source.getFileName()
-                                  + " is cut short: its header claims more audio than the file holds");
+    // A WAV whose structure is at fault is refused with the fault named,
+    // never handed to a decoder that would pad a cut data chunk with
+    // silence or keep one of two data chunks and drop the other (review of
+    // issue #139). What the gate then refuses is shape — a tag, a rate, a
+    // width — and that is the converter's job.
+    if (const auto fault = wav::riffFault(bytes))
+        return juce::Result::fail(source.getFileName() + " " + *fault);
     const bool passesAsIs = pedalAcceptsAsIs(bytes);
     if (!options.normalizeTargetLufs.has_value() && passesAsIs) {
         out = untouched(source, std::nullopt);

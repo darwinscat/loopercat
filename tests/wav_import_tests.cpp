@@ -198,6 +198,15 @@ std::vector<unsigned char> monoRamp(int frames)
     return b;
 }
 
+// A file's bytes as the core reads them — kept alive by the caller's block.
+std::vector<unsigned char> fileBytes(const juce::File& f)
+{
+    juce::MemoryBlock raw;
+    testkit::check(f.loadFileAsData(raw), "loadFileAsData", __FILE__, __LINE__);
+    const auto* data = static_cast<const unsigned char*>(raw.getData());
+    return std::vector<unsigned char>(data, data + raw.getSize());
+}
+
 wav::Info infoOf(const juce::File& f)
 {
     juce::MemoryBlock raw;
@@ -764,8 +773,8 @@ int main()
         wavimport::Prepared p;
         const juce::Result r = wavimport::prepare(src, tmp, p, {});
         CHECK(r.failed());
-        CHECK(r.getErrorMessage().contains("cut short"));
-        CHECK(r.getErrorMessage().contains("cut-float.wav"));
+        CHECK_EQ(r.getErrorMessage().toStdString(),
+                 std::string("cut-float.wav is cut short: its data chunk claims 17640 bytes more than the file holds"));
         CHECK(!p.converted);
         CHECK(p.file == juce::File());
         // the same with pcm16 — the shape JUCE would otherwise convert and pad
@@ -782,6 +791,64 @@ int main()
         const auto cutOne = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410, .truncateBy = 1 });
         wavimport::Prepared o;
         CHECK(wavimport::prepare(writeTemp(work, "cut-one.wav", cutOne), tmp, o, {}).failed());
+    }
+
+    // --- a header a writer never finalised is refused by that name ---
+    {
+        auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410 });
+        for (int i = 40; i < 44; ++i)
+            bytes[static_cast<std::size_t>(i)] = 0xff; // the data chunk's size field
+        wavimport::Prepared p;
+        const juce::Result r = wavimport::prepare(writeTemp(work, "unfinalised.wav", bytes), tmp, p, {});
+        CHECK(r.failed());
+        CHECK_EQ(r.getErrorMessage().toStdString(),
+                 std::string("unfinalised.wav was never finalised: its data chunk's size is still unset"));
+        CHECK(!p.converted);
+    }
+
+    // --- a metadata trailer cut off after the audio: imported, every sample intact ---
+    //
+    // The core calls the file truncated and the gate refuses it, so it goes
+    // through the converter — as a repack: a pedal-ready file whose only
+    // flaw is a LIST chunk that ends early loses nothing.
+    {
+        const int frames = 4410;
+        auto bytes = sineWav(frames, 2, dbAmp(-12.0));
+        for (const char c : std::string("LIST")) bytes.push_back(static_cast<unsigned char>(c));
+        for (const int c : { 26, 0, 0, 0 }) bytes.push_back(static_cast<unsigned char>(c));
+        for (int i = 0; i < 10; ++i) bytes.push_back(0);
+        const juce::File src = writeTemp(work, "cut-trailer.wav", bytes);
+        {
+            const auto raw = fileBytes(src);
+            CHECK_THROWS(wav::readWavInfo(wav::BytesView(raw.data(), raw.size())), "truncated"); // the core's view
+        }
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+        CHECK(p.converted);
+        CHECK(!p.rebuilt);
+        const std::vector<float> in = samplesOf(src, 2, frames);
+        const std::vector<float> out = samplesOf(p.file, 2, frames);
+        CHECK_EQ(in.size(), std::size_t(2 * frames));
+        CHECK(in == out);
+        CHECK_EQ(infoOf(p.file).frames, std::int64_t(frames));
+    }
+
+    // --- two data chunks: refused, nothing converted ---
+    //
+    // The core refuses the file as malformed; a decoder would keep the last
+    // chunk and drop the first without a word (the review saw 88200 frames
+    // vanish and the rest land unmarked under the player's own name).
+    {
+        auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 88200 });
+        const auto second = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 44100 });
+        bytes.insert(bytes.end(), second.begin() + 36, second.end()); // its data chunk only
+        wavimport::Prepared p;
+        const juce::Result r = wavimport::prepare(writeTemp(work, "two-data.wav", bytes), tmp, p, {});
+        CHECK(r.failed());
+        CHECK_EQ(r.getErrorMessage().toStdString(), std::string("two-data.wav has two data chunks"));
+        CHECK(!p.converted);
+        CHECK(p.file == juce::File());
+        CHECK_EQ(tmp.getNumberOfChildFiles(juce::File::findFilesAndDirectories), 0);
     }
 
     // --- the sentence says only what changed ---
