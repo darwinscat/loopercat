@@ -10,8 +10,10 @@
 //     nothing and tells nobody; a point just past it names the first tab
 //   - what is drawn and what is hit agree at both edges of every tab
 //   - a label that would not fit the column is refused, and the strip
-//     keeps the label it had; the widest label the pedal can need, SLOT 99,
-//     fits (99 memories, RC-5 Owner's Manual)
+//     keeps the label it had; every label the pedal can need, SLOT 01 to
+//     SLOT 99, fits (99 memories, RC-5 Owner's Manual)
+//   - a label with a line break is refused: the width is measured on one
+//     line, and a second line would hide the number
 //   - built plain (the Settings dialog), the first tab starts at the left
 //     edge, the hit test is x over the tab width, and no label can be set
 //   - select() out of range or of the live tab tells nobody
@@ -125,13 +127,19 @@ int main()
         CHECK_EQ(strip.selected(), 2);
         CHECK_EQ(fired, 1);
 
-        // The widest label the pedal can need fits, on every platform's font.
-        try {
-            strip.setLeadingLabel("SLOT 99");
-            CHECK_EQ(strip.leadingLabel(), juce::String("SLOT 99"));
-        } catch (const Error& e) {
-            testkit::fail(std::string("SLOT 99 refused: ") + e.what(), __FILE__, __LINE__);
+        // Every label the pedal can need fits, whatever this platform's font
+        // makes of each digit: a font that refuses one fails here, not in
+        // the app.
+        for (int slot = 1; slot <= 99; ++slot) {
+            const juce::String label = "SLOT " + juce::String(slot).paddedLeft('0', 2);
+            try {
+                strip.setLeadingLabel(label);
+                CHECK_EQ(strip.leadingLabel(), label);
+            } catch (const Error& e) {
+                testkit::fail(label.toStdString() + " refused: " + e.what(), __FILE__, __LINE__);
+            }
         }
+        CHECK(boundsOf(strip, kTabs) == before);
     }
 
     // --- a label wider than the column is refused, not cut ---
@@ -144,6 +152,18 @@ int main()
         CHECK_EQ(strip.leadingLabel(), juce::String("SLOT 12"));
         CHECK(boundsOf(strip, kTabs) == before);
         CHECK_EQ(strip.tabAt(TabStrip::kLeadWidth), 0);
+
+        // A line break is refused too, wherever it sits: the first line
+        // alone would pass the width check, and the number would paint out
+        // of sight.
+        CHECK_THROWS(strip.setLeadingLabel("SLOT\n12"), "line break");
+        CHECK_THROWS(strip.setLeadingLabel("SLOT 12\n"), "line break");
+        CHECK_THROWS(strip.setLeadingLabel("\nSLOT 12"), "line break");
+        CHECK_THROWS(strip.setLeadingLabel("SLOT\r\n12"), "line break");
+        CHECK_THROWS(strip.setLeadingLabel("SLOT 12\r"), "line break");
+        CHECK_THROWS(strip.setLeadingLabel("\n"), "line break");
+        CHECK_EQ(strip.leadingLabel(), juce::String("SLOT 12"));
+        CHECK(boundsOf(strip, kTabs) == before);
     }
 
     // --- plain (the Settings dialog): the first tab starts at the edge ---

@@ -48,11 +48,15 @@ public:
 
     // The words ahead of the tabs; empty clears them. The column was sized
     // for "SLOT nn", and a label that would not fit is refused rather than
-    // cut: a number shown short is a different number.
+    // cut: a number shown short is a different number. One line only: the
+    // width is measured on the first line, and a second one would paint
+    // past the row with the number out of sight.
     void setLeadingLabel(juce::String label)
     {
         if (lead_ != Lead::label)
             throw Error("this tab strip has no lead column for \"" + label.toStdString() + "\"");
+        if (label.containsAnyOf("\r\n"))
+            throw Error("a label with a line break cannot lead the tab strip");
         if (juce::GlyphArrangement::getStringWidthInt(labelFont(), label) > labelBounds().getWidth())
             throw Error("\"" + label.toStdString() + "\" does not fit the tab strip's lead column");
         if (label == leadingLabel_)
