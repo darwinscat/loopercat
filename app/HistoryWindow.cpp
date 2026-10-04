@@ -37,6 +37,25 @@ const juce::Colour kWarning { 0xffd9a441 };  // failed, interrupted
 int badgesLeft() { return kGutter + kClockWidth; }
 int badgeLeft(int index) { return badgesLeft() + index * (kBadgeWidth + kBadgeGap); }
 int badgesRight() { return badgesLeft() + kBadgeSlots * (kBadgeWidth + kBadgeGap); }
+bool inBadgeStrip(int x) { return x >= badgesLeft() && x < badgesRight(); }
+
+// The store hands a row's slots ascending, each once (HistoryStore.h,
+// CardEntry::slots), and the pedal has 1..99 of them. A row that says
+// otherwise would wear a badge for a slot the filter refuses — and a click
+// on it would throw from inside the mouse dispatch, far from the mistake.
+void checkSlots(const HistoryWindow::Row& row)
+{
+    int previous = 0;
+    for (const int slot : row.slots) {
+        if (slot < 1 || slot > 99)
+            throw Error("history row " + std::to_string(row.op) + ": slot " + std::to_string(slot)
+                        + " is not 1..99");
+        if (slot <= previous)
+            throw Error("history row " + std::to_string(row.op) + ": slots are ascending, each once ("
+                        + std::to_string(previous) + " then " + std::to_string(slot) + ")");
+        previous = slot;
+    }
+}
 history::badges::Shown badgesOf(const HistoryWindow::Row& row, std::optional<int> filter)
 {
     return history::badges::shown(row.slots, row.isSnapshot, kBadgeSlots, filter);
@@ -122,6 +141,8 @@ HistoryWindow::~HistoryWindow() { list_.setModel(nullptr); }
 
 void HistoryWindow::show(std::vector<Row> rows)
 {
+    for (const Row& row : rows)
+        checkSlots(row);
     const std::int64_t keep = selected() != nullptr ? selected()->op : 0;
     rows_ = std::move(rows);
     rebuildVisible(keep);
@@ -305,9 +326,14 @@ juce::String HistoryWindow::getTooltipForRow(int row)
 
 void HistoryWindow::listBoxItemDoubleClicked(int index, const juce::MouseEvent& event)
 {
-    if (badgeAt(index, event.x))
-        return; // the click already filtered; a second click is not a play
-    const Row* row = visibleRow(index);
+    doubleClickAt(index, event.x);
+}
+
+void HistoryWindow::doubleClickAt(int visibleIndex, int x)
+{
+    if (inBadgeStrip(x))
+        return; // a badge: the click already filtered; the chip or the words: a count is not a take
+    const Row* row = visibleRow(visibleIndex);
     if (row != nullptr && row->playable && !busy_ && onPlay)
         onPlay(row->op);
 }

@@ -13,6 +13,9 @@
 //     answer the filter, and the filtered slot is never the hidden one
 //   - a row's hint is its whole line, however narrow the row: the slots
 //     the strip only counts, and the pin, included
+//   - a double-click plays only past the badge strip: not on a badge, not
+//     on the chip, not on the words
+//   - a row whose slots are not the pedal's is refused, by its op
 //   - the buttons offer only what a row can do: no Play or Export for a
 //     take no longer kept, no Restore for a state that cannot go back
 //   - a pin toggled here reaches the owner with the operation and the new
@@ -100,8 +103,10 @@ HistoryWindow::Row firstSeen(const std::vector<int>& withTakes)
 }
 
 // Where a badge position starts, as the window lays them out: the gutter,
-// the clock, then 30-wide badges 4 apart. A click lands 5 in.
+// the clock, then 30-wide badges 4 apart. A click lands 5 in. The strip
+// has room for three; the sentence starts where the fourth would.
 int badgeX(int position) { return 12 + 110 + position * (30 + 4) + 5; }
+const int stripEnd = 12 + 110 + 3 * (30 + 4);
 
 std::vector<HistoryWindow::Row> timeline()
 {
@@ -536,6 +541,67 @@ int main()
         CHECK(!window.hintAt(0).contains("pinned"));
         window.togglePin();
         CHECK(!window.hintAt(1).contains("pinned"));
+    }
+
+    // --- #143 review: a row whose slots are not the pedal's is refused, by op ---
+    {
+        HistoryWindow window;
+        window.show(timeline());
+        window.selectVisible(0);
+        const auto refused = [&window](std::vector<int> slots, const char* why) {
+            auto rows = timeline();
+            rows.push_back(row(77, "Pushed", std::move(slots), true, true));
+            CHECK_THROWS(window.show(rows), why);
+            CHECK_THROWS(window.show(rows), "77"); // the row is named by its op
+            CHECK_EQ(window.visibleRows(), 4);    // the window kept what it showed
+            CHECK(window.selected() != nullptr && window.selected()->op == 1);
+        };
+        refused({ 0 }, "1..99");
+        refused({ 100 }, "1..99");
+        refused({ 12, 12 }, "ascending");
+        refused({ 43, 12 }, "ascending");
+        refused({ 1, 99, 100 }, "1..99");
+        refused({ 12, 43, 43 }, "ascending");
+        window.show({ row(78, "Normalized 3 slots", { 1, 50, 99 }, false, false) }); // the bounds are fine
+        CHECK_EQ(window.visibleRows(), 1);
+        window.show({ row(79, "Changed SETUP", {}, false, false) }); // no slot at all is fine
+        CHECK_EQ(window.visibleRows(), 1);
+    }
+
+    // --- #143 review: a double-click in the badge strip never plays ---
+    {
+        HistoryWindow window;
+        std::vector<std::int64_t> played;
+        window.onPlay = [&](std::int64_t op) { played.push_back(op); };
+        window.show({ firstSeen({ 57 }), row(8, "Pushed", { 3, 7, 12, 40, 99 }, true, true) });
+        CHECK(window.visibleRow(0)->playable); // the snapshot's kept take: the words are still not it
+        for (int position = 0; position < 3; ++position)
+            window.doubleClickAt(0, badgeX(position)); // "99 slots"
+        window.doubleClickAt(1, badgeX(2)); // the chip
+        window.doubleClickAt(1, badgeX(0)); // a badge
+        window.doubleClickAt(1, badgeX(1));
+        window.doubleClickAt(1, stripEnd - 1); // the strip's last pixel
+        window.doubleClickAt(0, stripEnd - 1);
+        CHECK(played.empty());
+        CHECK(!window.filter().has_value()); // nor does a double-click filter
+
+        window.doubleClickAt(1, stripEnd); // the sentence: plays
+        CHECK(played == (std::vector<std::int64_t> { 8 }));
+        window.doubleClickAt(0, window.getWidth() - 1); // the snapshot's audio column: plays its take
+        CHECK(played == (std::vector<std::int64_t> { 8, 7 }));
+        window.doubleClickAt(1, 0); // the clock, as before
+        CHECK(played == (std::vector<std::int64_t> { 8, 7, 8 }));
+
+        window.setBusy(true);
+        window.doubleClickAt(1, stripEnd);
+        CHECK_EQ(played.size(), 3u);
+        window.setBusy(false);
+        window.doubleClickAt(99, stripEnd); // no such row
+        CHECK_EQ(played.size(), 3u);
+        window.show({ row(9, "Trimmed", { 12 }, false, false) }); // nothing to play
+        window.doubleClickAt(0, stripEnd);
+        window.doubleClickAt(0, badgeX(1)); // the empty strip of a one-badge row: still the strip
+        CHECK_EQ(played.size(), 3u);
     }
 
     return testkit::summary("history_window_tests");

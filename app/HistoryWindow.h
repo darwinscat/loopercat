@@ -64,6 +64,9 @@ public:
 
     // The whole timeline, oldest first. The selection follows the row a
     // player was looking at; otherwise the newest visible row is selected.
+    // A row's slots are the pedal's — 1..99, ascending, each once, as the
+    // store hands them; a row that says otherwise is refused by its op, and
+    // the window keeps what it was showing.
     void show(std::vector<Row> rows);
     void setBusy(bool busy); // a worker job is running: the offers wait
 
@@ -99,6 +102,10 @@ public:
     // A click at x in a visible row, callable without a mouse: a badge
     // filters to its slot; anywhere else the click was only a selection.
     void clickAt(int visibleIndex, int x);
+    // A double-click at x in a visible row, callable without a mouse: past
+    // the badge strip it plays the row's take; inside the strip — a badge,
+    // the chip, the words — it does nothing, the first click having answered.
+    void doubleClickAt(int visibleIndex, int x);
     // What the badge strip reads, left to right — the badges' numbers and
     // the chip, or the words a row counted in words wears instead — for
     // whoever checks the row without painting it.
