@@ -133,7 +133,7 @@ int main()
             if (out.sourceFormat.has_value()) {
                 CHECK_EQ(out.sourceFormat->encoding.toStdString(), std::string("MP3"));
                 CHECK_EQ(wavimport::describeConversion(*out.sourceFormat).toStdString(),
-                         std::string("MP3 -> 32-bit float"));
+                         std::string("MP3 \xe2\x86\x92 32-bit float"));
             }
             juce::MemoryBlock raw;
             CHECK(out.file.loadFileAsData(raw));

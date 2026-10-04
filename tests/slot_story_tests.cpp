@@ -259,15 +259,15 @@ int main()
     {
         const auto converted = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                              .takeName = "song-pedal.wav", .take = story::Take::onCard,
-                                             .note = "48000 Hz, 24-bit, mono -> 44100 Hz, 32-bit float, stereo" });
+                                             .note = "48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo" });
         CHECK_EQ(converted.detail, std::string("song-pedal.wav - 4:36 - 111.1 BPM"));
         CHECK(converted.detail.find("48000 Hz") == std::string::npos);
-        CHECK(converted.detail.find("->") == std::string::npos);
+        CHECK(converted.detail.find("\xe2\x86\x92") == std::string::npos); // the arrow stays in the note
         CHECK_EQ(converted.audio, std::string("in the slot now"));
 
         const auto both = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                         .takeName = "song-pedal.wav", .take = story::Take::onCard,
-                                        .note = "24-bit -> 32-bit float; normalized +3.0 dB; "
+                                        .note = "24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB; "
                                             + std::string(story::kNoteLengthReplaced) });
         CHECK(both.detail.find("song-pedal.wav - ") == 0);
         CHECK(both.detail.find("24-bit") == std::string::npos);

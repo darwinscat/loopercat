@@ -278,7 +278,10 @@ juce::String describeConversion(const SourceFormat& source)
     }
     if (was.isEmpty())
         return {};
-    return was.joinIntoString(", ") + " -> " + now.joinIntoString(", ");
+    // The same arrow describeNormalize draws, so a note carrying both
+    // sentences reads with one.
+    return was.joinIntoString(", ") + juce::String::fromUTF8(" \xe2\x86\x92 ")
+         + now.joinIntoString(", ");
 }
 
 } // namespace loopercat::wavimport

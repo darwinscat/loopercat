@@ -247,7 +247,7 @@ as `<your name>-pedal.wav`: `song.mp3` becomes `song-pedal.wav`. The mark is
 there on purpose. The bytes in that slot are not the bytes of your file (they
 were resampled, spread to two channels, re-quantised, maybe gain-adjusted), and
 a take pulled back a month later should say so at a glance. The push toast and
-the history row spell out what changed, e.g. `48000 Hz, 24-bit, mono ->
+the history row spell out what changed, e.g. `48000 Hz, 24-bit, mono → 
 44100 Hz, 32-bit float, stereo`. The suffix is yours: Settings → **Import** →
 *Mark uploads converted for the pedal with*. Clear it and converted uploads
 land under their own name (with a `.wav` extension — the audio inside is a

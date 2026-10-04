@@ -73,10 +73,10 @@ inline constexpr int kTargetSampleRate = 44100;
 inline constexpr const char* kTargetEncoding = "32-bit float";
 inline constexpr int kTargetChannels = 2;
 
-// "48000 Hz, 24-bit, mono -> 44100 Hz, 32-bit float, stereo", saying only
-// what changed: a 44.1 kHz 24-bit stereo file reads "24-bit -> 32-bit float",
+// "48000 Hz, 24-bit, mono → 44100 Hz, 32-bit float, stereo", saying only
+// what changed: a 44.1 kHz 24-bit stereo file reads "24-bit → 32-bit float",
 // and a pedal-ready file that was rewritten for its loudness alone reads as
-// nothing — "32-bit float -> 32-bit float" is not a change anyone needs told.
+// nothing — "32-bit float → 32-bit float" is not a change anyone needs told.
 juce::String describeConversion(const SourceFormat& source);
 
 // The conversion's own directory under import-tmp: one per job, so two

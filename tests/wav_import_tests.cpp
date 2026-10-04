@@ -437,6 +437,10 @@ int main()
 
     // --- what the rebuild changed, as facts (issue #139) ---
 
+    // The arrow the report draws — the one describeNormalize already uses,
+    // so a note carrying both sentences reads with one.
+    const std::string arrow = " \xe2\x86\x92 ";
+
     // 48 kHz, 24-bit, mono: every fact differs from the pedal's, and the
     // sentence says all three — source on the left, the pedal on the right.
     {
@@ -452,7 +456,7 @@ int main()
             CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("24-bit"));
             CHECK_EQ(p.sourceFormat->channels, 1);
             CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
-                     std::string("48000 Hz, 24-bit, mono -> 44100 Hz, 32-bit float, stereo"));
+                     "48000 Hz, 24-bit, mono" + arrow + "44100 Hz, 32-bit float, stereo");
         }
     }
 
@@ -470,7 +474,7 @@ int main()
 
     // A pedal-ready file rewritten for its loudness alone IS a conversion,
     // and its facts match the pedal on every point — so the sentence is
-    // empty: "32-bit float -> 32-bit float" is nothing anyone needs told.
+    // empty: "32-bit float → 32-bit float" is nothing anyone needs told.
     {
         const juce::File src =
             writeTemp(work, "quiet-facts.wav", sineWav(3 * 44100, 2, dbAmp(-28.0)));
@@ -496,7 +500,7 @@ int main()
         CHECK(p.sourceFormat.has_value());
         if (p.sourceFormat.has_value())
             CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
-                     std::string("24-bit -> 32-bit float"));
+                     "24-bit" + arrow + "32-bit float");
     }
 
     // --- the sentence says only what changed ---
@@ -506,16 +510,16 @@ int main()
             return wavimport::describeConversion(f).toStdString();
         };
         CHECK_EQ(say({ 48000, "24-bit", 1 }),
-                 std::string("48000 Hz, 24-bit, mono -> 44100 Hz, 32-bit float, stereo"));
-        CHECK_EQ(say({ 44100, "24-bit", 2 }), std::string("24-bit -> 32-bit float"));
+                 "48000 Hz, 24-bit, mono" + arrow + "44100 Hz, 32-bit float, stereo");
+        CHECK_EQ(say({ 44100, "24-bit", 2 }), "24-bit" + arrow + "32-bit float");
         CHECK_EQ(say({ 44100, "32-bit float", 2 }), std::string(""));
-        CHECK_EQ(say({ 44100, "16-bit", 2 }), std::string("16-bit -> 32-bit float"));
-        CHECK_EQ(say({ 44100, "MP3", 2 }), std::string("MP3 -> 32-bit float"));
-        CHECK_EQ(say({ 48000, "32-bit float", 2 }), std::string("48000 Hz -> 44100 Hz"));
-        CHECK_EQ(say({ 44100, "32-bit float", 1 }), std::string("mono -> stereo"));
+        CHECK_EQ(say({ 44100, "16-bit", 2 }), "16-bit" + arrow + "32-bit float");
+        CHECK_EQ(say({ 44100, "MP3", 2 }), "MP3" + arrow + "32-bit float");
+        CHECK_EQ(say({ 48000, "32-bit float", 2 }), "48000 Hz" + arrow + "44100 Hz");
+        CHECK_EQ(say({ 44100, "32-bit float", 1 }), "mono" + arrow + "stereo");
         CHECK_EQ(say({ 96000, "16-bit", 1 }),
-                 std::string("96000 Hz, 16-bit, mono -> 44100 Hz, 32-bit float, stereo"));
-        CHECK_EQ(say({ 22050, "8-bit", 2 }), std::string("22050 Hz, 8-bit -> 44100 Hz, 32-bit float"));
+                 "96000 Hz, 16-bit, mono" + arrow + "44100 Hz, 32-bit float, stereo");
+        CHECK_EQ(say({ 22050, "8-bit", 2 }), "22050 Hz, 8-bit" + arrow + "44100 Hz, 32-bit float");
     }
 
     // --- the conversion's directory: one per job, gone with the job ---
