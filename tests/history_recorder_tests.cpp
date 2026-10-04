@@ -16,6 +16,8 @@
 //   - an op cut off mid-way reads as interrupted, and its take is still kept
 //   - an op names the slot it is about once it has begun, and keeps it when
 //     it then writes nothing (#144); maintenance is about no slot
+//   - every take row carries the stamp the card's directory entry showed
+//     (#141)
 
 #include "support.hpp"
 
@@ -25,6 +27,7 @@
 #include <loopercat/Commands.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -68,6 +71,13 @@ void putWav(const fs::path& volume, int slot, const std::string& name, int frame
     commands::writeFileBytes(volume::wavDir(volume, slot) / name,
                              std::string_view(reinterpret_cast<const char*>(bytes.data()),
                                               bytes.size()));
+}
+
+// A file's modification time as the OS reports it, ms since the epoch — the
+// oracle the rows are compared against.
+std::int64_t fileStamp(const fs::path& file)
+{
+    return juce::File(juce::String(file.string())).getLastModificationTime().toMilliseconds();
 }
 
 std::map<std::string, std::string> volumeBytes(const fs::path& volume)
@@ -583,6 +593,54 @@ int main()
         rec->finish("op-forget", "");
         CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-forget'"), std::string("done"));
         CHECK_EQ(rec->store().slotTimeline(7).size(), 1u);
+    }
+
+    // --- every take row carries the stamp the card's directory entry showed (#141) ---
+    //
+    // Theory: whatever way a take reaches a row — photographed by the first
+    // sighting, found in place after an operation, landed by a write — the
+    // row says what the directory entry said, exactly, so a later connect
+    // can compare the two without reading the file.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "take.wav", 132300);
+        const fs::path takeFile = volume::wavDir(volume, 4) / "take.wav";
+        // a stamp of the test's choosing, with milliseconds, years in the past
+        const std::int64_t stamped = 1'600'000'000'123;
+        CHECK(juce::File(juce::String(takeFile.string())).setLastModificationTime(juce::Time(stamped)));
+        CHECK_EQ(fileStamp(takeFile), stamped); // the file system kept it to the millisecond
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(run(*rec, "op-rename", "rename", volume, [&] {
+                     commands::rename(volume, 4, "Stamped", options(rec, "op-rename"));
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        // the first sighting photographed the take with its stamp...
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.kind = 'snapshot' AND a.slot = 4"),
+                 stamped);
+        // ...and the rename, which did not touch the file, wrote the same stamp down again
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-rename' AND a.slot = 4"),
+                 stamped);
+        // a trim lands a new file: its row carries the new entry's stamp — the
+        // write's own time, not the old file's
+        const std::int64_t before = juce::Time::currentTimeMillis();
+        CHECK_EQ(run(*rec, "op-trim", "trim", volume, [&] {
+                     commands::trim(volume, 4, 0, 66150, { .write = options(rec, "op-trim") });
+                 }),
+                 std::string());
+        const std::int64_t after = juce::Time::currentTimeMillis();
+        const std::int64_t landed = count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                              "WHERE o.id = 'op-trim' AND a.side = 'after'");
+        CHECK(landed != stamped);
+        CHECK(landed >= before - 2000 && landed <= after + 2000); // a file system may round to whole seconds
+        CHECK_EQ(landed, fileStamp(takeFile));
+        // every row that says what the slot holds has its stamp; the archived
+        // take's row names bytes on their way out, and a connect never meets them
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after' AND modified IS NULL"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after'"), 3); // snapshot, rename, trim
     }
 
     // --- the wiring refuses to be built without what it needs ---

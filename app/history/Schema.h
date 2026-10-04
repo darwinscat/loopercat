@@ -40,6 +40,21 @@
 //                writes no slot_changes row, and still was about that slot.
 //                A subject names no state, so it never makes an operation
 //                restorable, nor an Undo target.
+//   loudness_readings
+//                what a take's bytes measure (#140), by their content hash
+//                and nothing else: the raw BS.1770 numbers, never the
+//                verdict, since the target they are judged against moves
+//                in Settings. No foreign key on purpose — a reading holds
+//                for bytes slot_audio only names, kept or released, and for
+//                bytes read off the card that no operation ever archived.
+//   slot_audio.modified
+//                the take's modification time as the card's directory entry
+//                carries it, on every `after` row from version 9 on: with
+//                the name and the size it tells a later connect whether the
+//                file in the slot is still the one that was measured,
+//                without reading it (#141). NULL on `after` rows older than
+//                the column, and on `before` rows: an archived take is
+//                leaving its slot, and no connect will meet it there.
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -63,7 +78,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 8;
+inline constexpr std::int64_t kVersion = 9;
 
 // Version 5 is the first supported store. Future steps append to this array;
 // kSteps[N] creates version kBaseVersion + N in the same transaction.
@@ -182,6 +197,24 @@ CREATE TABLE op_subjects(
     PRIMARY KEY (op, slot)
 ) STRICT;
 CREATE INDEX op_subjects_by_slot ON op_subjects(slot, op);
+)sql",
+R"sql(
+-- A loudness reading is a fact about bytes (#140): keyed by their hash and by
+-- nothing else, so it outlives the slot, the operation and the kept copy.
+-- The raw reading, not the verdict. integrated_lufs is NULL for silence or
+-- under one 400 ms gating block; true_peak_dbtp is -Inf for digital silence.
+CREATE TABLE loudness_readings(
+    hash            BLOB    PRIMARY KEY CHECK (length(hash) = 32),
+    integrated_lufs REAL,
+    sample_peak     REAL    NOT NULL,
+    true_peak_dbtp  REAL    NOT NULL,
+    wild_samples    INTEGER NOT NULL CHECK (wild_samples >= 0),
+    measured        INTEGER NOT NULL
+) STRICT;
+-- The take's modification time off the card's directory entry (#141), on
+-- the rows that say what a slot holds. NULL on those written before this
+-- version, and on the rows of archived takes.
+ALTER TABLE slot_audio ADD COLUMN modified INTEGER;
 )sql",
 };
 

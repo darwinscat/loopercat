@@ -62,6 +62,9 @@ public:
     void keepAudio(const std::string& opId, int slot, const std::string& fileName,
                    std::string_view bytes);
     void bodies(const std::string& opId, const std::vector<commands::SlotChange>& changes);
+    // A take has landed on the card: its row carries the hash of the bytes
+    // the core handed over and the modification time the card's directory
+    // entry now shows for the file (#141).
     void landed(const std::string& opId, int slot, const std::string& fileName,
                 std::string_view bytes);
     // `error` empty = the job succeeded, and `note` is the line the job wrote
@@ -118,6 +121,8 @@ private:
         std::filesystem::path volume;
     };
 
+    // An operation that has begun and not finished; refused by name otherwise.
+    const Operation& operation(const std::string& opId) const;
     std::int64_t opRow(const std::string& opId) const;
     // The status of a baseline operation, or nothing when the row is gone:
     // clearing a slot's history can take the snapshot with it.

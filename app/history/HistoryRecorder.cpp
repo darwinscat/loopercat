@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "HistoryRecorder.h"
+#include "FileTime.h"
 #include "../OperationId.h"
 
 namespace loopercat::history
@@ -104,7 +105,7 @@ int HistoryRecorder::snapshotStep(const Snapshot& snapshot, int slot)
                     // Leave room for SQLite's record header and hash. Refuse before allocating.
                     if (std::filesystem::file_size(file) > static_cast<std::uintmax_t>(std::max(0, limit - 1024)))
                         throw Error("take " + name + " exceeds the history store's size limit");
-                    takes.push_back({ track, name, commands::readFileBytes(file) });
+                    takes.push_back({ track, name, commands::readFileBytes(file), modifiedMs(file) });
                 }
             store().snapshotSlot(snapshot.op, slot, rc0::slotBody(memory, slot), takes, clock_());
         } catch (const std::exception& error) {
@@ -182,12 +183,17 @@ void HistoryRecorder::subject(const std::string& opId, int slot)
     store().recordSubject(found->second.row, slot);
 }
 
-std::int64_t HistoryRecorder::opRow(const std::string& opId) const
+const HistoryRecorder::Operation& HistoryRecorder::operation(const std::string& opId) const
 {
     const auto found = ops_.find(opId);
     if (found == ops_.end())
         throw Error("operation " + opId + " reported to the history without having begun");
-    return found->second.row;
+    return found->second;
+}
+
+std::int64_t HistoryRecorder::opRow(const std::string& opId) const
+{
+    return operation(opId).row;
 }
 
 void HistoryRecorder::keepAudio(const std::string& opId, int slot, const std::string& fileName,
@@ -205,7 +211,9 @@ void HistoryRecorder::bodies(const std::string& opId,
 void HistoryRecorder::landed(const std::string& opId, int slot, const std::string& fileName,
                              std::string_view bytes)
 {
-    store().recordLanded(opRow(opId), slot, kTrack, fileName, bytes);
+    const Operation& op = operation(opId);
+    store().recordLanded(op.row, slot, kTrack, fileName, bytes,
+                         modifiedMs(volume::wavDir(op.volume, slot) / fileName));
 }
 
 void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
@@ -225,7 +233,8 @@ void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
             if (ec)
                 throw Error("cannot measure " + (dir / name).string());
             store().recordPresentAudio(op.row, slot, kTrack, name, size,
-                                       store().hashHeldBefore(op.row, from, name, size));
+                                       store().hashHeldBefore(op.row, from, name, size),
+                                       modifiedMs(dir / name));
         }
     }
 }

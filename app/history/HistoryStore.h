@@ -28,9 +28,12 @@
 //   keepAudio      a take about to be replaced: its bytes and the row naming
 //                  them commit together, or neither does
 //   recordBodies   the slot bodies the write is about to change, before/after
-//   recordLanded   a take that landed: name, size and hash — not the bytes,
-//                  which are on the card and are archived when replaced
+//   recordLanded   a take that landed: name, size, hash and the file's
+//                  modification time — not the bytes, which are on the card
+//                  and are archived when replaced
 //   finishOp       done or failed
+//   recordReading  what a take's bytes measure (#140), by their hash: a fact
+//                  about bytes, outside any operation
 //
 // Opening the store turns every op still pending into `interrupted`: the app
 // stopped between two of those steps, and the history says so rather than
@@ -51,7 +54,9 @@ public:
     // rather than reading it on a guess.
     explicit HistoryStore(const std::filesystem::path& dir);
 
-    // SHA-256 of the bytes, raw (32 bytes): the audio store's key.
+    // SHA-256 of the bytes, raw (32 bytes): the audio store's key
+    // (history::contentHash, ContentHash.h — the one function, kept here by
+    // name for every caller that knows the store).
     static std::string contentHash(std::string_view bytes);
 
     // --- where and when ---
@@ -63,7 +68,14 @@ public:
 
     // One baseline per marker. Resuming keeps the operation and committed slots.
     std::int64_t firstSeen(std::int64_t session, const std::string& opId, std::int64_t nowMs);
-    struct SnapshotTake { int track; std::string name; std::string bytes; };
+    // A take as the first sighting found it on the card: its bytes, and the
+    // modification time its directory entry carried (ms since the epoch).
+    struct SnapshotTake {
+        int track;
+        std::string name;
+        std::string bytes;
+        std::int64_t modifiedMs;
+    };
     void snapshotSlot(std::int64_t op, int slot, const std::string& body,
                       const std::vector<SnapshotTake>& takes, std::int64_t nowMs);
     void snapshotFailed(std::int64_t op, int slot, const std::string& reason);
@@ -77,16 +89,44 @@ public:
     void keepAudio(std::int64_t op, int slot, int track, const std::string& name,
                    std::string_view bytes, std::int64_t nowMs);
     void recordBodies(std::int64_t op, const std::vector<commands::SlotChange>& changes);
+    // `modifiedMs`: the landed file's modification time off the card's
+    // directory entry, ms since the epoch — every row that says what a slot
+    // holds carries one from here on; only such rows older than store
+    // version 9 have none (#141). An archived take's row (keepAudio) names
+    // bytes on their way out of the slot and carries none.
     void recordLanded(std::int64_t op, int slot, int track, const std::string& name,
-                      std::string_view bytes);
+                      std::string_view bytes, std::int64_t modifiedMs);
     void finishOp(std::int64_t op, OpStatus status, const std::string& note);
 
     // The audio a slot holds AFTER an operation — the rows that make each
     // slot's timeline readable on its own. `hash` is absent when the store
     // has never seen those bytes: the file is then known by name and size,
-    // and no take can be fetched for it.
+    // and no take can be fetched for it. `modifiedMs` as in recordLanded.
     void recordPresentAudio(std::int64_t op, int slot, int track, const std::string& name,
-                            std::int64_t size, const std::optional<std::string>& hash);
+                            std::int64_t size, const std::optional<std::string>& hash,
+                            std::int64_t modifiedMs);
+
+    // --- loudness readings (#140): facts about bytes, under their hash ---
+
+    // The raw reading of a take's bytes, filed under their content hash and
+    // nothing else: no slot, no operation, no foreign key to blobs_meta — a
+    // reading holds for bytes the history has only named (a slot_audio row
+    // with no kept blob) and for bytes read off the card that no operation
+    // archived. The same hash again replaces: the bytes did not change, so
+    // a newer measurement is the same fact, dated anew. Refused: a hash that
+    // is not 32 bytes, a negative count, and a value that is not a number —
+    // SQLite would file a NaN as NULL, which here reads "unmeasurable".
+    // What the numbers mean against today's target is the reader's business
+    // (MainComponent::describeReading); the store keeps the numbers.
+    void recordReading(const std::string& hash, const wav::LoudnessReading& reading,
+                       std::int64_t nowMs);
+    struct StoredReading {
+        wav::LoudnessReading reading;
+        std::int64_t measuredMs = 0; // when the reading was taken
+    };
+    // Absent when these bytes were never measured. A hash of the wrong
+    // length is refused rather than reported as never measured.
+    std::optional<StoredReading> readingFor(const std::string& hash);
 
     // --- what an operation was about (#144) ---
 
