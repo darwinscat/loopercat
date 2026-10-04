@@ -328,7 +328,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                                   from,
                                   [from, to, options](const volume::fs::path& volumePath) {
                                       commands::swap(volumePath, from, to, options);
-                                  } }));
+                                  } },
+                                { to })); // the job names one slot for its busy row; the swap is about both
     };
     table.onEmptyWavCellClicked = [this](int slot) {
         if (!pedalBusy && slotRowFor(slot) != nullptr)
@@ -1886,10 +1887,22 @@ commands::WriteOptions MainComponent::makeWriteOptions()
 // The operation opens in the history once the worker has let the job through
 // and before it touches the card, and closes with the job's outcome.
 PedalWorker::Job MainComponent::recorded(const char* kind, const commands::WriteOptions& options,
-                                         PedalWorker::Job job)
+                                         PedalWorker::Job job, std::vector<int> alsoAbout)
 {
-    job.before = [rec = recorder, id = options.opId, k = std::string(kind)](
-                     const volume::fs::path& volumePath) { rec->begin(id, k, volumePath); };
+    // The slots the operation is about — the job's own, and any the caller
+    // adds — go down right after it opens, before the card is touched, so an
+    // operation that then changes nothing (a normalize that finds its slot
+    // at target) still keeps its slot in the history (#144).
+    std::vector<int> about;
+    if (job.slot > 0)
+        about.push_back(job.slot);
+    about.insert(about.end(), alsoAbout.begin(), alsoAbout.end());
+    job.before = [rec = recorder, id = options.opId, k = std::string(kind), about](
+                     const volume::fs::path& volumePath) {
+        rec->begin(id, k, volumePath);
+        for (const int slot : about)
+            rec->subject(id, slot);
+    };
     // The job's own line goes into the history with it. Without it an
     // operation that wrote nothing — a normalize that found the slot already
     // at target — leaves a row that says only "normalize", and the reason
