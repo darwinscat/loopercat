@@ -73,6 +73,12 @@ inline constexpr int kTargetSampleRate = 44100;
 inline constexpr const char* kTargetEncoding = "32-bit float";
 inline constexpr int kTargetChannels = 2;
 
+// Whether the samples had to change shape to become the pedal's: a different
+// rate, sample format or channel count. A source that matches on all three
+// was only repacked — a WAVE_FORMAT_EXTENSIBLE float export the pedal's
+// gate does not read, say — and its samples are the player's own.
+bool differsFromTarget(const SourceFormat& source);
+
 // "48000 Hz, 24-bit, mono → 44100 Hz, 32-bit float, stereo", saying only
 // what changed: a 44.1 kHz 24-bit stereo file reads "24-bit → 32-bit float",
 // and a pedal-ready file that was rewritten for its loudness alone reads as
@@ -104,20 +110,22 @@ public:
     const juce::File& path() const { return dir_; }
 
 private:
-    void release()
-    {
-        if (dir_ != juce::File())
-            dir_.deleteRecursively();
-        dir_ = juce::File();
-    }
+    // A delete that fails is written to the operations log beside the
+    // directory's data home; nothing sweeps import-tmp yet, so the line is
+    // the only trace a leftover has.
+    void release();
     juce::File dir_;
 };
 
 struct Prepared {
     juce::File file;        // hand this to commands::push
     bool converted = false; // true: `file` is a conversion in `jobDir`, not the source
+    // true: the samples are not the source's — the shape changed
+    // (differsFromTarget) or a gain went in. A pedal-ready file rewritten for
+    // its header alone is converted but not rebuilt; the mark keys on this.
+    bool rebuilt = false;
     std::optional<NormalizeOutcome> normalize; // engaged iff Options asked for it
-    std::optional<SourceFormat> sourceFormat;  // what was rebuilt; present iff converted
+    std::optional<SourceFormat> sourceFormat;  // what the source was; present iff converted
     JobDir jobDir;          // the conversion's directory; its lifetime is the file's
 };
 

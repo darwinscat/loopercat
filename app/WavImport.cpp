@@ -4,6 +4,7 @@
 #include "WavImport.h"
 
 #include "Mp3AudioFormat.h"
+#include "OperationsLog.h"
 
 #include <loopercat/Error.hpp>
 #include <loopercat/Loudness.hpp>
@@ -85,7 +86,7 @@ namespace
     // codec or reads samples as they lie.
     std::unique_ptr<juce::AudioFormatReader> openReader(juce::AudioFormatManager& formats,
                                                         const juce::File& source,
-                                                        juce::AudioFormat*& handledBy)
+                                                        const juce::AudioFormat*& handledBy)
     {
         for (auto* format : formats) {
             if (!format->canHandleFile(source))
@@ -101,15 +102,18 @@ namespace
         return nullptr;
     }
 
-    // "24-bit", "32-bit float" for a file that holds samples; the codec's
-    // name ("MP3") for one that holds a bitstream — our own MP3 reader hands
-    // out float32, and saying "32-bit float" about an mp3 would describe the
-    // decoder, not the file.
-    // (AudioFormat::isCompressed is not const in JUCE 8, hence the non-const format.)
-    juce::String encodingOf(const juce::AudioFormatReader& reader, juce::AudioFormat& format)
+    // "24-bit", "32-bit float" for a file that holds samples — WAV, AIFF, and
+    // FLAC, which compresses them but keeps their width and reports it. The
+    // codec's name for MP3 and Ogg Vorbis, which hold a bitstream: the width
+    // their readers report is the decoder's choice (ours hands out float32),
+    // and saying "32-bit float" about an mp3 would describe the decoder, not
+    // the file.
+    juce::String encodingOf(const juce::AudioFormatReader& reader, const juce::AudioFormat& format)
     {
-        if (format.isCompressed())
-            return format.getFormatName().replace(" file", "");
+        if (dynamic_cast<const Mp3AudioFormat*>(&format) != nullptr)
+            return "MP3";
+        if (dynamic_cast<const juce::OggVorbisAudioFormat*>(&format) != nullptr)
+            return "Ogg Vorbis";
         return juce::String(int(reader.bitsPerSample)) + "-bit"
              + (reader.usesFloatingPointData ? " float" : "");
     }
@@ -142,7 +146,7 @@ juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prep
     // OS codec would also claim the extension — identical PCM everywhere.
     formats.registerFormat(new Mp3AudioFormat(), false);
     formats.registerBasicFormats();
-    juce::AudioFormat* handledBy = nullptr;
+    const juce::AudioFormat* handledBy = nullptr;
     std::unique_ptr<juce::AudioFormatReader> reader = openReader(formats, source, handledBy);
     if (reader == nullptr)
         return juce::Result::fail(source.getFileName()
@@ -255,10 +259,32 @@ juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prep
 
     out.file = dest;
     out.converted = true;
+    // Rebuilt when the shape changed or a gain went in — the two ways the
+    // samples stop being the source's. A header-only rewrite is neither.
+    out.rebuilt = differsFromTarget(sourceFormat)
+               || (outcome.has_value() && outcome->measurable && !outcome->untouched);
     out.normalize = outcome;
     out.sourceFormat = sourceFormat;
     out.jobDir = std::move(jobDir);
     return juce::Result::ok();
+}
+
+bool differsFromTarget(const SourceFormat& source)
+{
+    return source.sampleRate != kTargetSampleRate || source.encoding != kTargetEncoding
+        || source.channels != kTargetChannels;
+}
+
+void JobDir::release()
+{
+    if (dir_ == juce::File())
+        return;
+    // import-tmp lives in the app's data home, beside operations.log.
+    if (!dir_.deleteRecursively())
+        oplog::append(dir_.getParentDirectory().getParentDirectory(),
+                      "import-tmp: could not remove " + dir_.getFullPathName()
+                          + " after the job; remove it by hand");
+    dir_ = juce::File();
 }
 
 juce::String describeConversion(const SourceFormat& source)

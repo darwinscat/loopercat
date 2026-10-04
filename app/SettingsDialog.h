@@ -276,9 +276,10 @@ private:
 
     void parseMark()
     {
-        // As typed, spaces included: a FAT name may hold them, and trimming
-        // would be the silent rewrite this field promises not to do.
-        const juce::String typed = mark_.getText();
+        // Trimmed: a mark of only spaces is the empty mark the hint promises,
+        // not a name with a space before its extension. Spaces inside stay —
+        // a FAT name may hold them.
+        const juce::String typed = mark_.getText().trim();
         try {
             uploadmark::assertSuffix(typed.toStdString());
         } catch (const Error& refused) {
@@ -288,6 +289,7 @@ private:
             return;
         }
         markRefusal_.setText({}, juce::dontSendNotification);
+        mark_.setText(typed, juce::dontSendNotification); // what was accepted, as it will be stored
         if (typed == importPrefs_.convertedMark)
             return;
         importPrefs_.convertedMark = typed;

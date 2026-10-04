@@ -24,8 +24,14 @@
 
 #include <bit>
 #include <cmath>
+#include <cstdint>
 #include <numbers>
 #include <optional>
+#include <vector>
+
+#if JUCE_MAC
+#include <unistd.h>
+#endif
 
 using namespace loopercat;
 
@@ -75,6 +81,94 @@ std::vector<unsigned char> extensiblePcm24(int frames)
     for (int i = 0; i < dataSize; ++i)
         b.push_back(0);
     return b;
+}
+
+// A WAVE_FORMAT_EXTENSIBLE 32-bit float 44.1 kHz stereo file — the shape a
+// DAW's float export wears. The pedal's strict gate refuses the header
+// (Info::format() reads tag 0xFFFE as pcm32), so it goes through the
+// converter; but every sample already is what the pedal wants.
+std::vector<unsigned char> extensibleFloat32(int frames)
+{
+    std::vector<unsigned char> b;
+    const auto ascii = [&b](std::string_view s) {
+        for (const char c : s)
+            b.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](long long v) {
+        p16(static_cast<int>(v & 0xffff));
+        p16(static_cast<int>((v >> 16) & 0xffff));
+    };
+    const auto pf = [&p32](float v) {
+        p32(static_cast<long long>(std::bit_cast<std::uint32_t>(v)));
+    };
+    const int blockAlign = 2 * 4;
+    const int dataSize = frames * blockAlign;
+    ascii("RIFF"); p32(4 + 8 + 40 + 8 + dataSize); ascii("WAVE");
+    ascii("fmt "); p32(40);
+    p16(0xfffe);                 // WAVE_FORMAT_EXTENSIBLE
+    p16(2); p32(44100); p32(44100 * blockAlign); p16(blockAlign); p16(32);
+    p16(22);                     // cbSize
+    p16(32);                     // valid bits
+    p32(3);                      // channel mask: L | R
+    // SubFormat GUID: KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+    p32(3); p16(0); p16(0x10);
+    for (const int c : { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 })
+        b.push_back(static_cast<unsigned char>(c));
+    ascii("data"); p32(dataSize);
+    // A signal with texture, not a bare tone — a slow ramp rides on the sine
+    // so neighbouring frames differ and a sample that moved would be seen —
+    // kept within full scale, so the loudness meter reads it as audio.
+    const double w = 2.0 * std::numbers::pi * 997.0 / 44100.0;
+    for (int i = 0; i < frames; ++i) {
+        pf(static_cast<float>(0.4 * std::sin(w * i) + 1.0e-5 * (i % 1000)));
+        pf(static_cast<float>(-0.3 * std::cos(w * i * 1.3)));
+    }
+    return b;
+}
+
+// Every sample of a file, through JUCE's reader (which reads the
+// extensible header the core refuses), channels side by side.
+std::vector<float> samplesOf(const juce::File& f, int channels, int frames)
+{
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(f));
+    std::vector<float> out;
+    if (reader == nullptr)
+        return out;
+    juce::AudioBuffer<float> buf(channels, frames);
+    reader->read(&buf, 0, frames, 0, true, true);
+    for (int c = 0; c < channels; ++c)
+        for (int i = 0; i < frames; ++i)
+            out.push_back(buf.getSample(c, i));
+    return out;
+}
+
+// A file written by one of JUCE's own encoders, from a mono frame-index ramp
+// at the given rate and width — the FLAC and Ogg sources a player may drop.
+juce::File encodeRamp(juce::AudioFormat& format, const juce::File& dest, double sampleRate,
+                      int bits, int frames)
+{
+    std::unique_ptr<juce::OutputStream> stream = dest.createOutputStream();
+    if (stream == nullptr)
+        return {};
+    std::unique_ptr<juce::AudioFormatWriter> writer = format.createWriterFor(
+        stream, juce::AudioFormatWriterOptions {}
+                    .withSampleRate(sampleRate)
+                    .withNumChannels(1)
+                    .withBitsPerSample(bits));
+    if (writer == nullptr)
+        return {};
+    juce::AudioBuffer<float> buf(1, frames);
+    for (int i = 0; i < frames; ++i)
+        buf.setSample(0, i, static_cast<float>(i - frames / 2) / 32768.0f);
+    writer->writeFromAudioSampleBuffer(buf, 0, frames);
+    writer.reset();
+    return dest;
 }
 
 // Mono pcm16 with a frame-index ramp — testkit's rampFill is stereo-only,
@@ -215,6 +309,7 @@ int main()
         wavimport::Prepared p;
         CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
         CHECK(!p.converted);
+        CHECK(!p.rebuilt);
         CHECK(p.file == src);
     }
 
@@ -259,6 +354,7 @@ int main()
         wavimport::Prepared p;
         CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
         CHECK(p.converted);
+        CHECK(p.rebuilt); // resampled: these are not the source's samples
         const wav::Info out = infoOf(p.file);
         CHECK_EQ(out.sampleRate, wav::kSampleRate);
         CHECK_EQ(out.format(), std::string("float32"));
@@ -323,6 +419,7 @@ int main()
         wavimport::Prepared p;
         CHECK(wavimport::prepare(src, tmp, p, { .normalizeTargetLufs = -18.0 }).wasOk());
         CHECK(p.converted);
+        CHECK(p.rebuilt); // a gain went in: the samples are not the source's
         CHECK(p.file != src);
         CHECK(p.normalize.has_value());
         CHECK(p.normalize->measurable);
@@ -503,6 +600,76 @@ int main()
                      "24-bit" + arrow + "32-bit float");
     }
 
+    // --- repacked, not rebuilt: a float export wearing an extensible header ---
+    //
+    // The pedal's gate refuses the header, so the file goes through the
+    // converter — but its rate, format and channels are already the pedal's
+    // and no gain went in. Converted (it lives in a job directory), not
+    // rebuilt (the mark must not claim the samples changed), no sentence,
+    // and every sample out equals every sample in.
+    {
+        const int frames = 4410;
+        const juce::File src = writeTemp(work, "daw-float.wav", extensibleFloat32(frames));
+        CHECK_THROWS(wav::assertUploadable(infoOf(src)), "format"); // the gate's view of it
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+        CHECK(p.converted);
+        CHECK(!p.rebuilt);
+        CHECK(p.sourceFormat.has_value());
+        if (p.sourceFormat.has_value()) {
+            CHECK_EQ(p.sourceFormat->sampleRate, 44100);
+            CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("32-bit float"));
+            CHECK_EQ(p.sourceFormat->channels, 2);
+            CHECK(!wavimport::differsFromTarget(*p.sourceFormat));
+            CHECK(wavimport::describeConversion(*p.sourceFormat).isEmpty());
+        }
+        const std::vector<float> in = samplesOf(src, 2, frames);
+        const std::vector<float> out = samplesOf(p.file, 2, frames);
+        CHECK_EQ(in.size(), std::size_t(2 * frames));
+        CHECK(in == out); // bit for bit, not within a tolerance
+        CHECK_EQ(infoOf(p.file).format(), std::string("float32")); // canonical now
+    }
+
+    // The same file, normalize ON and off target: now the samples did change.
+    {
+        const juce::File src = writeTemp(work, "daw-float-quiet.wav", extensibleFloat32(3 * 44100));
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, { .normalizeTargetLufs = -18.0 }).wasOk());
+        CHECK(p.converted);
+        CHECK(p.rebuilt);
+        CHECK(p.normalize.has_value() && p.normalize->measurable && !p.normalize->untouched);
+    }
+
+    // --- the encoding fact per format: FLAC keeps its width, Ogg names its codec ---
+    {
+        juce::FlacAudioFormat flac;
+        const juce::File src = encodeRamp(flac, work.getChildFile("ramp.flac"), 48000.0, 24, 4800);
+        CHECK(src.existsAsFile());
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+        CHECK(p.converted && p.rebuilt);
+        CHECK(p.sourceFormat.has_value());
+        if (p.sourceFormat.has_value()) {
+            CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("24-bit"));
+            CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
+                     "48000 Hz, 24-bit, mono" + arrow + "44100 Hz, 32-bit float, stereo");
+        }
+    }
+    {
+        juce::OggVorbisAudioFormat ogg;
+        const juce::File src = encodeRamp(ogg, work.getChildFile("ramp.ogg"), 44100.0, 16, 4410);
+        CHECK(src.existsAsFile());
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+        CHECK(p.converted && p.rebuilt);
+        CHECK(p.sourceFormat.has_value());
+        if (p.sourceFormat.has_value()) {
+            CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("Ogg Vorbis"));
+            CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
+                     "Ogg Vorbis, mono" + arrow + "32-bit float, stereo");
+        }
+    }
+
     // --- the sentence says only what changed ---
     {
         using wavimport::SourceFormat;
@@ -607,6 +774,31 @@ int main()
         }
         CHECK(!dir.exists());
     }
+
+#if JUCE_MAC
+    // A delete that fails leaves a line in the operations log beside
+    // import-tmp's data home — the only trace a leftover has. Denied by
+    // taking the write bit off import-tmp; root is never denied, so the
+    // case is skipped for it.
+    if (geteuid() != 0) {
+        const juce::File home = work.getChildFile("home");
+        const juce::File importTmp = home.getChildFile("import-tmp");
+        importTmp.createDirectory();
+        const auto bytes = testkit::syntheticWav({ .sampleRate = 48000, .frames = 4800 });
+        const juce::File src = writeTemp(work, "song-stuck.wav", bytes);
+        juce::File dir;
+        {
+            wavimport::Prepared p;
+            CHECK(wavimport::prepare(src, importTmp, p, {}).wasOk());
+            dir = p.jobDir.path();
+            CHECK(importTmp.setReadOnly(true, false));
+        }
+        CHECK(importTmp.setReadOnly(false, false));
+        CHECK(dir.isDirectory()); // the delete was denied...
+        const juce::String log = home.getChildFile("operations.log").loadFileAsString();
+        CHECK(log.contains("import-tmp: could not remove " + dir.getFullPathName()));
+    }
+#endif
 
     // Every Prepared above is gone; a cleanup that fails is a failure.
     CHECK(work.deleteRecursively());

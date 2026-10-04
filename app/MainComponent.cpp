@@ -2104,10 +2104,15 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
                                  throw Error(ok.getErrorMessage().toStdString());
                              // The name on the card is decided here, not inherited
                              // from the conversion's temp file (issue #139): a
-                             // rebuilt upload carries the mark, an untouched one
-                             // keeps its own name.
-                             const std::string landed = uploadmark::landedName(
-                                 sourceName.toStdString(), mark, prepared.converted);
+                             // rebuilt upload carries the mark, one only repacked
+                             // into the pedal's container lands under its own
+                             // stem, an untouched one keeps its name.
+                             const uploadmark::Audio audio = !prepared.converted
+                                 ? uploadmark::Audio::untouched
+                                 : prepared.rebuilt ? uploadmark::Audio::rebuilt
+                                                    : uploadmark::Audio::repackaged;
+                             const std::string landed =
+                                 uploadmark::landedName(sourceName.toStdString(), mark, audio);
                              const commands::PushResult pushed = commands::push(
                                  volumePath, prepared.file.getFullPathName().toStdString(), slot,
                                  { .landedName = landed, .force = force, .write = options });

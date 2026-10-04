@@ -14,9 +14,9 @@
 //
 // One reader and one writer, so the Settings dialog that edits them, the push
 // job that acts on them and a test that round-trips them all see the same
-// keys with the same defaults. The push job reads at the moment it acts, not
-// when it is queued: a settings change mid-queue must not rewrite jobs
-// already promised.
+// keys with the same defaults. The push job reads them when the player acts
+// — as the job is queued — and carries them with it: a settings change
+// after that must not rewrite a job already promised.
 //==============================================================================
 namespace loopercat
 {
