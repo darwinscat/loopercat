@@ -30,8 +30,8 @@ inline PedalWorker::Job forgetSlotJob(std::shared_ptr<HistoryRecorder> recorder,
     job.before = [recorder, card, id](const volume::fs::path&) {
         recorder->beginMaintenance(id, card);
     };
-    job.after = [recorder, id, note, refreshed](const std::string& error) {
-        try { recorder->finish(id, error, note->toStdString()); }
+    job.after = [recorder, id, note, refreshed](const JobOutcome& outcome) {
+        try { recorder->finish(id, outcome.error, note->toStdString()); }
         catch (...) { refreshed(); throw; }
         refreshed();
     };

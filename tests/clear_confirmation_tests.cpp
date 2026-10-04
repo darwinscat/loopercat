@@ -242,9 +242,9 @@ int main()
             try {
                 job.before(fixture.card);
                 job.work(fixture.card);
-                job.after({});
+                job.after(JobOutcome::success());
             } catch (const std::exception& error) {
-                job.after(error.what());
+                job.after(JobOutcome::failure(error.what()));
                 testkit::fail(std::string("clear: ") + error.what(), __FILE__, __LINE__);
             }
         }, [&](int slot, std::function<void(int)> callback) {

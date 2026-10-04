@@ -60,8 +60,8 @@ void request(int slot, bool hasTake, std::shared_ptr<history::HistoryRecorder> r
         job.before = [rec, id = options.opId](const volume::fs::path& volumePath) {
             rec->begin(id, "clear", volumePath);
         };
-        job.after = [rec, id = options.opId](const std::string& error) {
-            rec->finish(id, error);
+        job.after = [rec, id = options.opId](const JobOutcome& outcome) {
+            rec->finish(id, outcome.error);
         };
         submit(std::move(job));
     });

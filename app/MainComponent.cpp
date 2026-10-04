@@ -587,16 +587,16 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                 feedHistoryWindow();
         }
     };
-    worker.onJobResult = [this](juce::String description, juce::String error, int batch,
+    worker.onJobResult = [this](juce::String description, const JobOutcome& outcome, int batch,
                                 int slot) {
         // Credited by the id the worker hands back — never by parsing text.
         const bool inBatch = batchId != 0 && batch == batchId;
         const bool inCheck = checkId != 0 && batch == checkId;
         if (historyEditPending && description == historyEditDescription)
-            settleHistoryEdit(error.isEmpty() ? description + juce::String::fromUTF8(" \xe2\x80\x94 done")
-                                              : description + ": " + error);
-        if (error.isNotEmpty()) {
-            banners.showError(banners::Source::job, description + ": " + error);
+            settleHistoryEdit(outcome.ok() ? description + juce::String::fromUTF8(" \xe2\x80\x94 done")
+                                           : description + ": " + utf8(outcome.error));
+        if (!outcome.ok()) {
+            banners.showError(banners::Source::job, description + ": " + utf8(outcome.error));
             if (description.startsWith("Check slot") && slot > 0) {
                 player.clearLoudness(slot);       // a failed read must not stay "measuring…"
                 table.clearPendingLoudness(slot); // …nor its cell "…"
@@ -1272,7 +1272,7 @@ void MainComponent::clearSlotHistory(int slot)
             });
         }, nullptr, 0, true, true, false
     };
-    read.after = [settled](const std::string& error) { if (!error.empty()) settled(); };
+    read.after = [settled](const JobOutcome& outcome) { if (!outcome.ok()) settled(); };
     worker.enqueue(std::move(read));
 }
 
@@ -1453,14 +1453,19 @@ void MainComponent::readCardName()
         true,  // quiet: the corner is the report; a failure still speaks
         true   // the card is the point
     };
-    // Whatever happened, the seam must not wait forever.
-    job.after = [safe, generation = cardGeneration, alive = uiAlive](const std::string& error) {
-        if (error.empty()) return;
-        juce::MessageManager::callAsync([safe, alive, generation, error] {
+    // Whatever happened, the seam must not wait forever. A read the gate
+    // refused — the pedal left while the card was being read — is a quiet
+    // job's refusal: no banner, the next connect reads again; the trace
+    // keeps the core's sentence.
+    job.after = [safe, generation = cardGeneration, alive = uiAlive](const JobOutcome& outcome) {
+        if (outcome.ok()) return;
+        juce::MessageManager::callAsync([safe, alive, generation, outcome] {
             if (*alive && safe != nullptr && generation == safe->cardGeneration) {
                 safe->cardNameSettled = true;
                 safe->firstSeenSettled = true;
-                safe->firstSeenProblem = error;
+                safe->firstSeenProblem = outcome.error;
+                if (outcome.refusedAtGate())
+                    safe->trace("connect: the card's name was not read: " + utf8(outcome.error));
             }
         });
     };
@@ -1471,12 +1476,12 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
 {
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue(history::firstSeenJob(recorder, run, slot,
-        [safe, run, slot, alive = uiAlive](int count, const std::string& error) {
-            juce::MessageManager::callAsync([safe, run, slot, count, error, alive] {
+        [safe, run, slot, alive = uiAlive](int count, const JobOutcome& outcome) {
+            juce::MessageManager::callAsync([safe, run, slot, count, outcome, alive] {
                 if (!*alive || safe == nullptr || run->cancelled) return;
                 safe->firstSeenCount = count;
-                safe->firstSeenProblem = error;
-                safe->firstSeenSettled = !error.empty() || count == 99;
+                safe->firstSeenProblem = outcome.error;
+                safe->firstSeenSettled = !outcome.ok() || count == 99;
                 safe->updateStatusText();
                 if (safe->firstSeenSettled) {
                     safe->updateHistory();
@@ -1894,8 +1899,8 @@ PedalWorker::Job MainComponent::recorded(const char* kind, const commands::Write
     // operation that wrote nothing — a normalize that found the slot already
     // at target — leaves a row that says only "normalize", and the reason
     // lives nowhere but a toast that is already gone.
-    job.after = [rec = recorder, id = options.opId, note = job.note](const std::string& error) {
-        rec->finish(id, error, note != nullptr ? note->toStdString() : std::string());
+    job.after = [rec = recorder, id = options.opId, note = job.note](const JobOutcome& outcome) {
+        rec->finish(id, outcome.error, note != nullptr ? note->toStdString() : std::string());
     };
     return job;
 }
@@ -2727,7 +2732,7 @@ void MainComponent::releaseHistoryTakes(juce::Component::SafePointer<HistoryStor
         false   // and it needs no card
     };
     job.after = [rec = recorder, limit = historyLimit(), panel,
-                 alive = uiAlive](const std::string&) {
+                 alive = uiAlive](const JobOutcome&) {
         deliverHistoryStorage(rec->store(), limit, panel, alive);
     };
     worker.enqueue(std::move(job));
@@ -2989,7 +2994,7 @@ void MainComponent::pinFromWindow(std::int64_t op, bool pinned)
                                rec->store().pinOp(op, pinned);
                            },
                            nullptr, 0, true, false, false };
-    job.after = [safe, alive = uiAlive](const std::string&) {
+    job.after = [safe, alive = uiAlive](const JobOutcome&) {
         juce::MessageManager::callAsync([safe, alive] {
             if (*alive && safe != nullptr)
                 safe->feedHistoryWindow();
@@ -3095,12 +3100,12 @@ void MainComponent::pressUndo(bool redo)
                      },
                      nullptr, 0, true, true, false,
                      nullptr,
-                     [safe, alive = uiAlive](const std::string& error) {
+                     [safe, alive = uiAlive](const JobOutcome& outcome) {
                          // A plan that could not be read at all: the press is over.
-                         if (!error.empty())
-                             juce::MessageManager::callAsync([safe, alive, error] {
+                         if (!outcome.ok())
+                             juce::MessageManager::callAsync([safe, alive, outcome] {
                                  if (*alive && safe != nullptr)
-                                     safe->settleHistoryEdit(juce::String::fromUTF8(error.c_str()));
+                                     safe->settleHistoryEdit(utf8(outcome.error));
                              });
                      } });
 }
@@ -3166,8 +3171,8 @@ void MainComponent::runHistoryEdit(HistoryEdit edit)
                   checked](const volume::fs::path& volumePath) {
         *checked = history::undo::beginPress(*rec, id, redo, target, volumePath);
     };
-    job.after = [rec = recorder, id = options.opId, checked](const std::string& error) {
-        rec->finish(id, error, checked->note);
+    job.after = [rec = recorder, id = options.opId, checked](const JobOutcome& outcome) {
+        rec->finish(id, outcome.error, checked->note);
     };
     worker.enqueue(std::move(job));
 }

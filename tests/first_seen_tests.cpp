@@ -6,6 +6,7 @@
 #include "../app/history/SlotRows.h"
 #include "../app/history/UndoRun.h"
 #include "../app/history/CardRestore.h"
+#include "../app/JobWords.h"
 #include "../app/PedalBook.h"
 
 #include <chrono>
@@ -13,6 +14,7 @@
 #include <cmath>
 #include <filesystem>
 #include <map>
+#include <optional>
 
 using namespace loopercat;
 using history::HistoryRecorder;
@@ -310,17 +312,39 @@ static int runTests()
         auto run = std::make_shared<history::FirstSeenRun>(baseline);
         for (int slot = 1; slot <= 13; ++slot) {
             int progress = 0;
-            auto job = history::firstSeenJob(rec, run, slot, [&](int count, const auto& error) {
-                CHECK(error.empty()); progress = count;
+            auto job = history::firstSeenJob(rec, run, slot, [&](int count, const JobOutcome& outcome) {
+                CHECK(outcome.ok()); progress = count;
             });
             CHECK(job.background && job.quiet && job.needsVolume);
-            job.work(card); job.after("");
+            job.work(card); job.after(JobOutcome::success());
             CHECK_EQ(progress, slot);
         }
-        auto refused = history::firstSeenJob(rec, run, 14, [](int, const auto&) {});
-        refused.after("pedal is disconnected"); // worker gate: work never ran
+        // The worker's gate refused slot 14: `work` never ran, and the step's
+        // completion is handed the refusal whole. The run is interrupted and
+        // resumable — information for the player, in the player's words, with
+        // the core's sentence kept for the log; never a failure (issue #146).
+        std::optional<JobOutcome> ending;
+        auto refused = history::firstSeenJob(rec, run, 14, [&](int count, const JobOutcome& outcome) {
+            CHECK_EQ(count, 0); ending = outcome;
+        });
+        refused.after(JobOutcome::refused(lifecycle::State::disconnected));
+        CHECK(ending.has_value());
+        if (ending) {
+            CHECK(ending->refusedAtGate());
+            CHECK(!ending->failed());
+            CHECK(!ending->told(refused.quiet)); // the worker tells nobody: no banner line
+            CHECK_EQ(jobwords::firstSnapshotInterrupted(*ending),
+                     std::string("The card's first snapshot stopped when the pedal was disconnected "
+                                 "\xe2\x80\x94 it will finish next time you connect."));
+            CHECK_EQ(jobwords::firstSnapshotInterruptedLog(14, *ending),
+                     std::string("first snapshot interrupted at slot 14: pedal is disconnected "
+                                 "\xe2\x80\x94 refusing to touch the volume"));
+        }
         CHECK_EQ(rec->store().opStatus(baseline.op), std::string("interrupted"));
         CHECK_EQ(rec->store().touchedSlots(baseline.op).size(), 13u);
+        // The History window's row says the same, in one word.
+        CHECK_EQ(history::rows::forCard(rec->store().cardTimeline()).front().state,
+                 std::string("interrupted"));
         putTake(card, 1, 4321);
         if (restartApp) { rec.reset(); rec = recorderAt(tmp.path / "history"); }
         else rec->disconnect();
@@ -332,6 +356,49 @@ static int runTests()
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM slot_changes"), 99);
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM slot_audio"), 1);
         CHECK(rec->store().slotTimeline(1).front().takeHash == HistoryStore::contentHash(original));
+    }
+
+    // A step whose own work fails — the volume under the run is another one —
+    // is a failure, not an interruption: told with its error, in the banner's
+    // shape, quiet job or not. The run still closes as interrupted, so the
+    // next sighting resumes it instead of losing the slots it reached.
+    {
+        Scratch tmp;
+        const auto card = cardAt(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        const auto baseline = newSighting(*rec, card);
+        auto run = std::make_shared<history::FirstSeenRun>(baseline);
+        for (int slot = 1; slot <= 3; ++slot) {
+            auto job = history::firstSeenJob(rec, run, slot, [](int, const JobOutcome& outcome) {
+                CHECK(outcome.ok());
+            });
+            job.work(card); job.after(JobOutcome::success());
+        }
+        std::optional<JobOutcome> ending;
+        auto step = history::firstSeenJob(rec, run, 4, [&](int, const JobOutcome& outcome) {
+            ending = outcome;
+        });
+        const auto other = cardAt(tmp.path / "other");
+        std::string thrown;
+        try { step.work(other); }
+        catch (const Error& e) { thrown = e.what(); }
+        CHECK(thrown.find("mounted volume changed") != std::string::npos);
+        if (!thrown.empty()) step.after(JobOutcome::failure(thrown));
+        CHECK(ending.has_value());
+        if (ending) {
+            CHECK(ending->failed());
+            CHECK(!ending->refusedAtGate());
+            CHECK(ending->told(step.quiet)); // a failure is told, quiet or not
+            CHECK_EQ(jobwords::banner(step.description.toStdString(), *ending),
+                     std::string("Record the card's first snapshot: the mounted volume changed "
+                                 "before its first snapshot finished"));
+            CHECK_THROWS(jobwords::firstSnapshotInterrupted(*ending), "failed step");
+        }
+        CHECK_EQ(rec->store().opStatus(baseline.op), std::string("interrupted"));
+        CHECK_EQ(rec->store().touchedSlots(baseline.op).size(), 3u);
+        rec->disconnect();
+        const auto resumed = newSighting(*rec, card);
+        CHECK_EQ(resumed.op, baseline.op);
     }
 
     // Foreground commands overtaking the background work must preserve the
@@ -536,10 +603,10 @@ static int runTests()
         const auto oldLimit = sqlite3_limit(rec->store().db().raw(), SQLITE_LIMIT_LENGTH, 100000);
         auto run = std::make_shared<history::FirstSeenRun>(baseline);
         for (int slot = 1; slot <= 99; ++slot) {
-            auto job = history::firstSeenJob(rec, run, slot, [slot](int count, const auto& error) {
-                CHECK(error.empty()); CHECK_EQ(count, slot);
+            auto job = history::firstSeenJob(rec, run, slot, [slot](int count, const JobOutcome& outcome) {
+                CHECK(outcome.ok()); CHECK_EQ(count, slot);
             });
-            job.work(card); job.after("");
+            job.work(card); job.after(JobOutcome::success());
         }
         sqlite3_limit(rec->store().db().raw(), SQLITE_LIMIT_LENGTH, oldLimit);
         const auto failed = rec->store().slotTimeline(2).front();

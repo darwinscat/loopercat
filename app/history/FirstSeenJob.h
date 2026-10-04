@@ -15,10 +15,13 @@ struct FirstSeenRun {
 };
 
 // One slot per job: foreground work can run between any two slots. Completion
-// runs on the worker even when the lifecycle gate refuses the volume.
+// runs on the worker even when the lifecycle gate refuses the volume, and is
+// handed the step's outcome whole: a refusal is the interruption the run
+// resumes from on the next connect (issue #146), a failure of the step's own
+// work is a failure — the words for each are JobWords.h's.
 inline PedalWorker::Job firstSeenJob(const std::shared_ptr<HistoryRecorder>& recorder,
                                      const std::shared_ptr<FirstSeenRun>& run, int slot,
-                                     std::function<void(int, const std::string&)> completed)
+                                     std::function<void(int, const JobOutcome&)> completed)
 {
     auto count = std::make_shared<int>(0);
     PedalWorker::Job job {
@@ -30,11 +33,11 @@ inline PedalWorker::Job firstSeenJob(const std::shared_ptr<HistoryRecorder>& rec
             *count = recorder->snapshotStep(run->snapshot, slot);
         }, nullptr, 0, true, true, true
     };
-    job.after = [recorder, run, count, onComplete = std::move(completed)](const std::string& error) {
+    job.after = [recorder, run, count, onComplete = std::move(completed)](const JobOutcome& outcome) {
         if (run->cancelled) return;
-        if (!error.empty())
-            recorder->interruptSnapshot(run->snapshot, error);
-        onComplete(*count, error);
+        if (!outcome.ok())
+            recorder->interruptSnapshot(run->snapshot, outcome.error);
+        onComplete(*count, outcome);
     };
     return job;
 }
