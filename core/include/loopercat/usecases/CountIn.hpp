@@ -17,10 +17,20 @@
 // rhythm is otherwise silent. A groove set on the pedal is never overwritten
 // and never cancels the count — the two coexist on the hardware, and they
 // coexist here.
+//
+// Blank and the factory 0 are 4/4 numbers (Beat.hpp, #147): the PATTERN a
+// memory stores indexes the list of its current BEAT, and only the 4/4 list
+// is charted. So the two paths of this feature that write Pattern — the
+// borrow on the way on, the hand-back on the way off — are refused at any
+// other beat before a byte moves (#149; found with the pedal's own Rock2 at
+// 6/4, which "count-in on" turned into 57). The count alone, PlayCount over
+// a rhythm that is already playing, is still ours at every beat.
 
 #pragma once
 
+#include "../Error.hpp"
 #include "../Rc0.hpp"
+#include "Beat.hpp"
 
 #include <optional>
 #include <string>
@@ -55,13 +65,68 @@ inline bool isOn(std::string_view slotBody)
         && detail::rhythm(slotBody, "PlayCount") == rc0::kRhythmPlayCount1Meas;
 }
 
+// The two paths of the switch that write a PATTERN number, both 4/4 numbers.
+enum class Refusal {
+    onBorrowsSection,  // on over a silent section would write Blank (57)
+    offReturnsSection, // off would hand the borrowed section back as the factory 0
+};
+
+// Why switching the count to `on` is refused at this memory's beat, or
+// nothing. Pure over the body, and typed, so the table and the card make the
+// switch a lamp before the click and say so in their own words, while
+// apply() refuses after it with the fact (refusalText). The beat is not
+// named here: a memory can hold a beat the manual's list lacks, and a
+// PlayCount-only switch there must still pass. Already there is already
+// there — a count switched on over a playing rhythm, or off where nothing
+// was borrowed, moves PlayCount alone and passes at every beat.
+inline std::optional<Refusal> refusal(std::string_view slotBody, bool on)
+{
+    if (beat::patternListCharted(detail::rhythm(slotBody, "Beat")))
+        return std::nullopt;
+    const bool rhythmPlaying = detail::rhythm(slotBody, "State") == rc0::kRhythmStateOn;
+    if (on) {
+        if (rhythmPlaying)
+            return std::nullopt;
+        return Refusal::onBorrowsSection;
+    }
+    const bool borrowed = isOn(slotBody)
+        && detail::rhythm(slotBody, "Pattern") == rc0::kRhythmPatternBlank;
+    if (borrowed)
+        return Refusal::offReturnsSection;
+    return std::nullopt;
+}
+
+// The refusal as the core states it, for the banner and the log: what the
+// click needed, the beat as the screen prints it, and the fact.
+inline std::string refusalText(Refusal why, long long atBeat)
+{
+    const std::string fact(beat::kOnlyFourFourCharted);
+    switch (why) {
+    case Refusal::onBorrowsSection:
+        return "Switching the count-in on at " + beat::label(atBeat)
+            + " would silence the rhythm with Blank, a 4/4 number, and " + fact
+            + ": switch the rhythm on first, and the count joins it.";
+    case Refusal::offReturnsSection:
+        return "Switching the count-in off at " + beat::label(atBeat)
+            + " would hand the rhythm back the factory pattern, a 4/4 number, and " + fact
+            + ": set it on the pedal.";
+    }
+    throw Error("unknown count-in refusal " + std::to_string(static_cast<int>(why)));
+}
+
 // The groove that switching the count ON would replace, if any. Only a
 // silent rhythm section puts a pattern at risk: with the rhythm already
 // playing we leave Pattern alone, and Blank is not a groove anyone chose.
 // Pattern 0 is the factory value every untouched slot carries
 // (fixtures/golden.json) — reporting it would cry wolf on a fresh pedal.
+// At an uncharted beat nothing is at risk, because nothing will be written:
+// the switch that would replace the pattern is refused there (refusal), and
+// the refusal is what the UI says instead. Deciding anything from 0 or 57
+// at such a beat would be reading 4/4 names into another list's numbers.
 inline std::optional<long long> patternAtRisk(std::string_view slotBody)
 {
+    if (!beat::patternListCharted(detail::rhythm(slotBody, "Beat")))
+        return std::nullopt;
     const long long pattern = detail::rhythm(slotBody, "Pattern");
     if (detail::rhythm(slotBody, "State") == rc0::kRhythmStateOn)
         return std::nullopt;
@@ -75,9 +140,13 @@ inline std::optional<long long> patternAtRisk(std::string_view slotBody)
 // writes the count only. Turning it off gives the borrowed fields back —
 // the factory zeros, not a saved copy of anything: the feature keeps no
 // hidden state, so a slot that only ever had a count-in round-trips to the
-// exact bytes it started with.
+// exact bytes it started with. At an uncharted beat the two paths that
+// write Pattern are refused before any byte moves (refusal).
 inline std::string apply(std::string_view slotBody, bool on)
 {
+    if (const auto why = refusal(slotBody, on))
+        throw Error(refusalText(*why, detail::rhythm(slotBody, "Beat")));
+
     std::string body(slotBody);
     const bool rhythmPlaying = detail::rhythm(body, "State") == rc0::kRhythmStateOn;
     const bool rhythmSilent = detail::rhythm(body, "Pattern") == rc0::kRhythmPatternBlank;

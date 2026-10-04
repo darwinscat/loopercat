@@ -26,6 +26,7 @@
 #include "support.hpp"
 
 #include <loopercat/Catalog.hpp>
+#include <loopercat/usecases/Beat.hpp>
 #include <loopercat/usecases/CountIn.hpp>
 #include <loopercat/usecases/Rhythm.hpp>
 
@@ -75,12 +76,17 @@ namespace
         return rc0::sectionField(body, rc0::kSectionRhythm, tag);
     }
 
+    std::string atBeat(std::string body, long long beat)
+    {
+        return rc0::setSectionField(body, rc0::kSectionRhythm, "Beat", beat);
+    }
+
     // The same body at 6/4, holding `pattern` — a number from the 6/4 list,
     // which we cannot name.
     std::string atSixFour(std::string body, long long pattern)
     {
-        body = rc0::setSectionField(body, rc0::kSectionRhythm, "Beat", kSixFour);
-        return rc0::setSectionField(body, rc0::kSectionRhythm, "Pattern", pattern);
+        return rc0::setSectionField(atBeat(std::move(body), kSixFour), rc0::kSectionRhythm,
+                                    "Pattern", pattern);
     }
 }
 
@@ -627,7 +633,11 @@ int main()
         CHECK_THROWS(after = rhythm::applySwitch(blankOff, true), "on the pedal");
         CHECK_THROWS(after = rhythm::apply(blankOff, { .on = true }), "6/4");
         CHECK(after.empty());
-        CHECK(rhythm::switchRefusal(rhythm::read(blankOff), false, true).has_value());
+        CHECK(rhythm::switchRefusal(rhythm::read(blankOff), false, true)
+              == rhythm::SwitchRefusal::onNeedsGroove);
+        // The typed refusal and its sentence are one fact, told two ways.
+        CHECK_THROWS(rhythm::applySwitch(blankOff, true),
+                     rhythm::switchRefusalText(rhythm::SwitchRefusal::onNeedsGroove, kSixFour));
         // The count-in's silence (State on, Blank) is the same refusal on the
         // way on, and nothing at all on the way off: it is already off.
         const std::string countSilence
@@ -647,7 +657,10 @@ int main()
         CHECK_THROWS(after = rhythm::applySwitch(counted, false), "count-in");
         CHECK_THROWS(after = rhythm::apply(counted, { .on = false }), "6/4");
         CHECK(after.empty());
-        CHECK(rhythm::switchRefusal(rhythm::read(counted), true, false).has_value());
+        CHECK(rhythm::switchRefusal(rhythm::read(counted), true, false)
+              == rhythm::SwitchRefusal::offNeedsBlank);
+        CHECK_THROWS(rhythm::applySwitch(counted, false),
+                     rhythm::switchRefusalText(rhythm::SwitchRefusal::offNeedsBlank, kSixFour));
         // The same memory with the count-in off is State alone again.
         CHECK(!rhythm::switchRefusal(rhythm::read(counted), false, false).has_value());
         // Together with a move to 4/4 the numbers are 4/4 numbers: both pass.
@@ -686,6 +699,48 @@ int main()
              "pattern Rock2, beat 4/4");
     CHECK_EQ(rhythm::describe({ .beat = kSixFour }, kSixFour), "beat 6/4");
     CHECK_EQ(rhythm::describe({ .on = true, .kit = 2 }, kSixFour), "switched on, kit Jazz");
+
+    // --- a beat the manual's list lacks: read and labelled, never a throw on a reading ---
+    //
+    // kBeats is inferred past its one anchor, so a memory can hold a number
+    // the list lacks. Reading and labelling it must not throw — a tab paints
+    // on every snapshot — while an action on BEAT itself still fails loudly,
+    // and a pattern number is as refused there as at 6/4.
+    CHECK_EQ(usecases::beat::label(kSixFour), "6/4");
+    CHECK_EQ(*usecases::beat::nameIfListed(kFourFour), "4/4");
+    for (const long long odd : { -1LL, 17LL, 99LL }) {
+        const std::string number = std::to_string(odd);
+        const std::string body = atBeat(bodyWith(0, 0, kRock2At64), odd);
+        const rhythm::Values v = rhythm::read(body);
+        CHECK_EQ(v.beat, odd);
+        CHECK(!v.patternCharted);
+        CHECK_EQ(v.pattern, kRock2At64);
+        CHECK(!usecases::beat::nameIfListed(odd).has_value());
+        CHECK_EQ(usecases::beat::label(odd), "BEAT " + number + ", not in the manual's list");
+        CHECK_THROWS(rhythm::beatName(odd), "BEAT " + number);
+        // A State-only switch passes: no pattern number is needed for it.
+        CHECK(!rhythm::switchRefusal(v, false, true).has_value());
+        const std::string on = rhythm::applySwitch(body, true);
+        CHECK(onlyTheseFieldsMoved(body, on, { "State" }));
+        CHECK(rhythm::applySwitch(on, false) == body);
+        CHECK(rhythm::apply(body, { .on = true }) == on);
+        // The two pattern-writing clicks are refused, with the number told as
+        // the truth it is rather than a name the list does not have.
+        const std::string blank = atBeat(bodyWith(0, 0, rc0::kRhythmPatternBlank), odd);
+        CHECK(rhythm::switchRefusal(rhythm::read(blank), false, true)
+              == rhythm::SwitchRefusal::onNeedsGroove);
+        CHECK_THROWS(rhythm::applySwitch(blank, true), "BEAT " + number + ", not in the manual's list");
+        // A pattern edit is refused, before any byte moves; the rest of the
+        // card is still the player's, and so is the way out: BEAT itself.
+        std::string after;
+        CHECK_THROWS(after = rhythm::apply(body, { .pattern = kRock2At44 }),
+                     "PATTERN cannot be chosen at BEAT " + number);
+        CHECK(after.empty());
+        CHECK_THROWS(rhythm::describe({ .pattern = kRock2At44 }, odd), "BEAT " + number);
+        CHECK(onlyTheseFieldsMoved(body, rhythm::apply(body, { .kit = 2 }), { "Kit" }));
+        CHECK_EQ(rhythm::read(rhythm::apply(body, { .beat = kFourFour })).beat, kFourFour);
+        CHECK(rhythm::read(rhythm::apply(body, { .beat = kFourFour })).patternCharted);
+    }
 
     return testkit::summary("usecase_rhythm_tests");
 }
