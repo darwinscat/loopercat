@@ -53,10 +53,19 @@ inline juce::String countInRefused(usecases::countin::Refusal why, long long bea
             + " would replace the pattern: switch the rhythm on first.";
     case usecases::countin::Refusal::offReturnsSection:
         return "Switching off at " + beatLabel(beat)
-            + " would reset the pattern: set it on the pedal.";
+            + " would reset the pattern: switch the count-in off on the pedal instead.";
     }
     jassertfalse;
     return {};
+}
+
+// The BEAT caption and the line beside the switch while the count-in
+// borrows the rhythm section at 4/4 (Rhythm.hpp, beatHeldByCountIn): the
+// caption in the shape the take's lock takes, the line saying the way out.
+inline juce::String beatCaptionHeld() { return "BEAT (held by the count-in)"; }
+inline juce::String beatHeldByCountIn()
+{
+    return "BEAT stays at 4/4 while the count-in is on: switch the count-in off first.";
 }
 
 // The PATTERN caption at a beat whose list is not charted, in the shape BEAT

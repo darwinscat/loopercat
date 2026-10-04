@@ -716,7 +716,7 @@ int main()
         CHECK(!v.patternCharted);
         CHECK_EQ(v.pattern, kRock2At64);
         CHECK(!usecases::beat::nameIfListed(odd).has_value());
-        CHECK_EQ(usecases::beat::label(odd), "BEAT " + number + ", not in the manual's list");
+        CHECK_EQ(usecases::beat::label(odd), "BEAT " + number + " (not in the manual's list)");
         CHECK_THROWS(rhythm::beatName(odd), "BEAT " + number);
         // A State-only switch passes: no pattern number is needed for it.
         CHECK(!rhythm::switchRefusal(v, false, true).has_value());
@@ -729,7 +729,8 @@ int main()
         const std::string blank = atBeat(bodyWith(0, 0, rc0::kRhythmPatternBlank), odd);
         CHECK(rhythm::switchRefusal(rhythm::read(blank), false, true)
               == rhythm::SwitchRefusal::onNeedsGroove);
-        CHECK_THROWS(rhythm::applySwitch(blank, true), "BEAT " + number + ", not in the manual's list");
+        CHECK_THROWS(rhythm::applySwitch(blank, true),
+                     "at BEAT " + number + " (not in the manual's list) needs");
         // A pattern edit is refused, before any byte moves; the rest of the
         // card is still the player's, and so is the way out: BEAT itself.
         std::string after;
@@ -740,6 +741,59 @@ int main()
         CHECK(onlyTheseFieldsMoved(body, rhythm::apply(body, { .kit = 2 }), { "Kit" }));
         CHECK_EQ(rhythm::read(rhythm::apply(body, { .beat = kFourFour })).beat, kFourFour);
         CHECK(rhythm::read(rhythm::apply(body, { .beat = kFourFour })).patternCharted);
+    }
+
+    // --- BEAT stays at 4/4 while the count-in borrows the rhythm section ---
+    //
+    // State on, Blank, count on is the count-in's own shape. Moved away from
+    // 4/4 it is stuck in the app: the hand-back and the rhythm's switch would
+    // both need a pattern number there, and BEAT itself would be the only
+    // way back. So that one move is refused before any byte moves; every
+    // other BEAT move keeps the pattern bytes as it did, and a move TO 4/4
+    // is never refused.
+    {
+        const std::string borrowed = bodyWith(rc0::kRhythmStateOn, rc0::kRhythmPlayCount1Meas,
+                                              rc0::kRhythmPatternBlank);
+        CHECK(rhythm::read(borrowed).beatHeldByCountIn);
+        std::string after;
+        CHECK_THROWS(after = rhythm::apply(borrowed, { .beat = kSixFour }), "BEAT cannot leave 4/4");
+        CHECK(after.empty());
+        CHECK_THROWS(after = rhythm::apply(borrowed, { .beat = 16 }), "switch the count-in off first");
+        CHECK(after.empty());
+        CHECK_THROWS(after = rhythm::apply(borrowed, { .kit = 3, .beat = kSixFour }),
+                     "BEAT cannot leave 4/4");
+        CHECK(after.empty());
+        // The same beat is not a move, and the rest of the card is still the player's.
+        CHECK(rhythm::apply(borrowed, { .beat = kFourFour }) == borrowed);
+        CHECK(onlyTheseFieldsMoved(borrowed, rhythm::apply(borrowed, { .kit = 3 }), { "Kit" }));
+        // The way out is the count-in's own switch: off, and BEAT moves again.
+        const std::string released = usecases::countin::apply(borrowed, false);
+        CHECK(!rhythm::read(released).beatHeldByCountIn);
+        CHECK(onlyTheseFieldsMoved(released, rhythm::apply(released, { .beat = kSixFour }),
+                                   { "Beat" }));
+        // Not held: a count over a groove — 4/4 -> 6/4 passes and 12 stays 12;
+        // a rhythm on with Blank but no count; the factory slot.
+        const std::string counted
+            = bodyWith(rc0::kRhythmStateOn, rc0::kRhythmPlayCount1Meas, kRock2At44);
+        CHECK(!rhythm::read(counted).beatHeldByCountIn);
+        const std::string moved = rhythm::apply(counted, { .beat = kSixFour });
+        CHECK_EQ(rhythmField(moved, "Pattern"), kRock2At44);
+        CHECK(onlyTheseFieldsMoved(counted, moved, { "Beat" }));
+        CHECK(!rhythm::read(bodyWith(rc0::kRhythmStateOn, 0, rc0::kRhythmPatternBlank))
+                   .beatHeldByCountIn);
+        CHECK(!rhythm::read(factory).beatHeldByCountIn);
+        // A memory already stuck at 6/4 is not "held" — the hold is a 4/4
+        // fact — and BEAT back to 4/4 is never refused; nor is a move between
+        // two uncharted beats, which changes nothing about it.
+        const std::string stuck = atSixFour(borrowed, rc0::kRhythmPatternBlank);
+        CHECK(!rhythm::read(stuck).beatHeldByCountIn);
+        const std::string home = rhythm::apply(stuck, { .beat = kFourFour });
+        CHECK(rhythm::read(home).beatHeldByCountIn);
+        CHECK(onlyTheseFieldsMoved(stuck, home, { "Beat" }));
+        CHECK(onlyTheseFieldsMoved(stuck, rhythm::apply(stuck, { .beat = 5 }), { "Beat" }));
+        // Under a take the manual's refusal comes first.
+        CHECK_THROWS(rhythm::apply(withTake(borrowed), { .beat = kSixFour }),
+                     "BEAT cannot be changed");
     }
 
     return testkit::summary("usecase_rhythm_tests");

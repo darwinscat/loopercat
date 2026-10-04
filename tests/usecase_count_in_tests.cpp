@@ -294,7 +294,9 @@ int main()
             CHECK_THROWS(after = countin::apply(borrowed, false), "on the pedal");
             CHECK(after.empty());
             CHECK_THROWS(countin::apply(atBeat(bodyWith(0, 0, kRock2At64), 17), true),
-                         "BEAT 17, not in the manual's list");
+                         "at BEAT 17 (not in the manual's list) would");
+            CHECK_THROWS(after = countin::apply(borrowed, false),
+                         "switch the count-in off on the pedal instead");
             CHECK_THROWS(countin::apply(atBeat(bodyWith(0, 0, kRock2At64), -1), true), "BEAT -1");
         }
 

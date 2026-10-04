@@ -45,12 +45,21 @@
 // and shown, never named, and no edit writes <Pattern> — neither this
 // feature's nor the count-in's. The next uncharted edge is the reading
 // itself: isOn() still takes 57 for Blank at every beat, a 4/4 fact used
-// for display only, until the other lists are charted.
+// for display only, until the other lists are charted. A restore (history,
+// undo, redo) writes a recorded body faithfully, not through apply(), so a
+// row recorded before this guard can bring a 4/4 number back to a memory
+// at another beat; the tab then shows it as a number.
 //
 // One rule the manual states outright (p. 10): BEAT cannot be changed after
 // a track is recorded. A slot with an indexed take refuses a Beat edit; the
 // bar arithmetic that assumes 4/4 (Params.hpp, Commands.hpp) is #92's, and
-// this feature leaves every length field alone.
+// this feature leaves every length field alone. And one rule of ours
+// (#149): BEAT cannot leave 4/4 while the count-in borrows the rhythm
+// section (State on, Blank, count on) — at any other beat the count-in's
+// hand-back and this switch would both need a pattern number, and BEAT
+// itself would be the only way back: a memory stuck in the app. Every
+// other BEAT move keeps the pattern bytes exactly, and a move to 4/4 is
+// never refused.
 
 #pragma once
 
@@ -222,6 +231,9 @@ struct Values {
     long long toneLow;  // −10..+10, as on the screen
     long long toneHigh; // −10..+10, as on the screen
     bool beatLocked;    // a take is recorded: BEAT is read-only (manual p. 10)
+    bool beatHeldByCountIn; // at 4/4 with the count-in's own shape in the section
+                            // (State on, Blank, count on): BEAT cannot leave 4/4,
+                            // or the memory is stuck in the app (#149)
 
     bool operator==(const Values&) const = default;
 };
@@ -229,8 +241,9 @@ struct Values {
 inline Values read(std::string_view slotBody)
 {
     const long long beat = detail::rhythm(slotBody, "Beat");
+    const long long pattern = detail::rhythm(slotBody, "Pattern");
     return { isOn(slotBody),
-             detail::rhythm(slotBody, "Pattern"),
+             pattern,
              patternListCharted(beat),
              detail::rhythm(slotBody, "Kit"),
              beat,
@@ -239,7 +252,9 @@ inline Values read(std::string_view slotBody)
              detail::rhythm(slotBody, "Reverb"),
              toneOnScreen(detail::rhythm(slotBody, "ToneLow")),
              toneOnScreen(detail::rhythm(slotBody, "ToneHigh")),
-             beatLocked(slotBody) };
+             beatLocked(slotBody),
+             patternListCharted(beat) && countin::isOn(slotBody)
+                 && pattern == rc0::kRhythmPatternBlank };
 }
 
 // --- the beat's list, or none ---
@@ -374,6 +389,9 @@ inline std::string apply(std::string_view slotBody, const Edits& edits)
         if (beatLocked(slotBody))
             throw Error("BEAT cannot be changed once a track is recorded (RC-5 reference "
                         "manual p. 10)");
+        if (!patternListCharted(*edits.beat) && read(slotBody).beatHeldByCountIn)
+            throw Error("BEAT cannot leave 4/4 while the count-in borrows the rhythm section: "
+                        "switch the count-in off first");
     }
     // PATTERN is chosen from the list of the beat the memory will be at once
     // this edit lands — its own, or the one the edit carries — and so is the

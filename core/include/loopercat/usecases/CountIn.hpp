@@ -109,7 +109,7 @@ inline std::string refusalText(Refusal why, long long atBeat)
     case Refusal::offReturnsSection:
         return "Switching the count-in off at " + beat::label(atBeat)
             + " would hand the rhythm back the factory pattern, a 4/4 number, and " + fact
-            + ": set it on the pedal.";
+            + ": switch the count-in off on the pedal instead.";
     }
     throw Error("unknown count-in refusal " + std::to_string(static_cast<int>(why)));
 }

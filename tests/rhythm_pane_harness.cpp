@@ -94,7 +94,8 @@ bool paneSays(juce::Component& pane, const juce::String& fragment)
 // on; slot 11 the same with a count-in in front; slot 12 holds 57, off; slot
 // 13 holds 19 — the number the pedal could not name — off. Then two at Beat
 // 17, a number the manual's list lacks: slot 14 holds 3, off; slot 15 holds
-// 57, off.
+// 57, off. Slot 16 is 4/4 in the count-in's own shape (State on, Blank,
+// count on), where BEAT must stay.
 std::vector<SlotRow> rowsOf()
 {
     std::string text = testkit::syntheticMemoryText();
@@ -124,6 +125,9 @@ std::vector<SlotRow> rowsOf()
     set(14, "RHYTHM", "Pattern", 3);
     set(15, "RHYTHM", "Beat", 17);
     set(15, "RHYTHM", "Pattern", rc0::kRhythmPatternBlank);
+    set(16, "RHYTHM", "State", rc0::kRhythmStateOn);
+    set(16, "RHYTHM", "Pattern", rc0::kRhythmPatternBlank);
+    set(16, "RHYTHM", "PlayCount", rc0::kRhythmPlayCount1Meas);
     std::vector<SlotRow> rows;
     for (auto& info : catalog::listSlots(text))
         rows.push_back({ std::move(info), "", "", { "" } });
@@ -461,10 +465,24 @@ int main()
     // line tells the truth about the number.
     pane.setSlot(&rows[14]);
     CHECK(!toggle->isEnabled());
-    CHECK(paneSays(pane, "BEAT 17, not in the manual's list"));
+    CHECK(paneSays(pane, "BEAT 17 (not in the manual's list)"));
     CHECK(paneSays(pane, "on the pedal"));
     press();
     CHECK_EQ(heard.calls, 16);
+
+    // --- 4/4 with the count-in's own shape in the section: BEAT stays ---
+    // State on, Blank, count on: moved away from 4/4 the memory would be
+    // stuck, so BEAT is a lamp with the way out on the line; PATTERN and the
+    // switch are still the player's at 4/4.
+    pane.setSlot(&rows[15]);
+    CHECK(!beat->isEnabled());
+    CHECK(captionReads(pane, "BEAT (held by the count-in)"));
+    CHECK(paneSays(pane, "switch the count-in off first"));
+    CHECK(pattern->isEnabled() && kit->isEnabled());
+    CHECK(toggle->isEnabled() && !toggle->isOn());
+    choose(*beat, 4); // a lamp reports nothing, whoever reaches past its greyed face
+    CHECK_EQ(heard.calls, 16);
+    CHECK_EQ(beat->getText(), "4/4");
 
     // --- no slot again: the controls go away ---
     pane.setSlot(nullptr);

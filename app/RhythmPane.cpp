@@ -205,9 +205,13 @@ void RhythmControls::refresh()
     kit_.setSelectedId(static_cast<int>(values_.kit) + 1, juce::dontSendNotification);
     beat_.setSelectedId(static_cast<int>(values_.beat) + 1, juce::dontSendNotification);
     variation_.setSelectedId(static_cast<int>(values_.variation) + 1, juce::dontSendNotification);
-    // The manual's rule, said where it applies: a recorded take fixes the beat.
-    beat_.setEnabled(isEnabled() && !values_.beatLocked);
-    beatCaption_.setText(values_.beatLocked ? "BEAT (fixed by the take)" : "BEAT",
+    // The manual's rule, said where it applies: a recorded take fixes the
+    // beat. And ours (Rhythm.hpp, #149): while the count-in borrows the
+    // section at 4/4, BEAT stays — the way out is on the pane's line.
+    beat_.setEnabled(isEnabled() && !values_.beatLocked && !values_.beatHeldByCountIn);
+    beatCaption_.setText(values_.beatLocked         ? juce::String("BEAT (fixed by the take)")
+                         : values_.beatHeldByCountIn ? words::beatCaptionHeld()
+                                                     : juce::String("BEAT"),
                          juce::dontSendNotification);
 
     // A field being typed in is the user's, not ours.
@@ -341,11 +345,13 @@ void RhythmPane::refresh()
     const auto refused = rhythm::switchRefusal(v, info_.countIn, !v.on);
     if (refused)
         switch_.setEnabled(false);
-    // Otherwise the groove that "off" would forget: only with a count-in in
-    // front of playing drums does off mean Blank rather than State off
+    // Otherwise the BEAT that stays while the count-in borrows the section,
+    // or the groove that "off" would forget: only with a count-in in front
+    // of playing drums does off mean Blank rather than State off
     // (Rhythm.hpp). That click is refused at an uncharted beat, so the name
     // is looked up only where the list is charted.
     cost_.setText(refused ? words::rhythmSwitchRefused(*refused, v.beat)
+                  : v.beatHeldByCountIn ? words::beatHeldByCountIn()
                   : v.on && info_.countIn
                       ? "Switching it off keeps the count-in and forgets "
                             + name(rhythm::patternName(v.pattern)) + "."

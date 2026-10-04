@@ -71,7 +71,7 @@ inline std::string label(long long n)
 {
     if (const auto named = nameIfListed(n))
         return std::string(*named);
-    return "BEAT " + std::to_string(n) + ", not in the manual's list";
+    return "BEAT " + std::to_string(n) + " (not in the manual's list)";
 }
 
 } // namespace loopercat::usecases::beat
