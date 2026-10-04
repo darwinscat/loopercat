@@ -334,8 +334,7 @@ static int runTests()
             CHECK(!ending->failed());
             CHECK(!ending->told(refused.quiet)); // the worker tells nobody: no banner line
             CHECK_EQ(jobwords::firstSnapshotInterrupted(*ending),
-                     std::string("The card's first snapshot stopped when the pedal was disconnected "
-                                 "\xe2\x80\x94 it will finish next time you connect."));
+                     std::string("The card's first snapshot stopped; it will finish next time you connect."));
             CHECK_EQ(jobwords::firstSnapshotInterruptedLog(14, *ending),
                      std::string("first snapshot interrupted at slot 14: pedal is disconnected "
                                  "\xe2\x80\x94 refusing to touch the volume"));

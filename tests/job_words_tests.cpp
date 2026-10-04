@@ -12,6 +12,7 @@
 
 #include "support.hpp"
 
+#include "../app/FirstSnapshotNotice.h"
 #include "../app/JobWords.h"
 
 using namespace loopercat;
@@ -20,6 +21,8 @@ using lifecycle::State;
 namespace {
 const std::string kFirstSnapshot = "Record the card's first snapshot";
 const std::string kCoreTail = " \xe2\x80\x94 refusing to touch the volume";
+const std::string kStopped = "The card's first snapshot stopped; it will finish next time you connect.";
+const std::string kDisconnected = "Pedal disconnected \xe2\x80\x94 back on the looper screen";
 } // namespace
 
 int main()
@@ -124,16 +127,16 @@ int main()
 
     // --- the first snapshot: a refused step is an interruption, said once,
     // quietly, with what happens next; the same sentence whatever took the
-    // pedal away ---
+    // pedal away, and it does not say again that the pedal left — it follows
+    // the departure's own sentence ---
 
     {
-        const std::string expected = "The card's first snapshot stopped when the pedal was disconnected "
-                                     "\xe2\x80\x94 it will finish next time you connect.";
         for (const State state : { State::ejecting, State::disconnected, State::ghost, State::ejected }) {
             const std::string words = jobwords::firstSnapshotInterrupted(JobOutcome::refused(state));
-            CHECK_EQ(words, expected);
+            CHECK_EQ(words, kStopped);
             CHECK(words.find("refusing") == std::string::npos);
             CHECK(words.find("error") == std::string::npos);
+            CHECK(words.find("disconnected") == std::string::npos);
         }
         // A step that failed on its own is a failure and has no such sentence.
         CHECK_THROWS(jobwords::firstSnapshotInterrupted(JobOutcome::failure("card changed")), "failed step");
@@ -153,6 +156,71 @@ int main()
         CHECK_THROWS(jobwords::firstSnapshotInterruptedLog(100, JobOutcome::refused(State::ejecting)), "no slot 100");
         CHECK_THROWS(jobwords::firstSnapshotInterruptedLog(14, JobOutcome::failure("card changed")),
                      "only a step the gate refused");
+    }
+
+    // --- the notice: the interruption rides on the departure's toast, so it
+    // is not replaced unread by it. An app-driven disconnect with an
+    // interrupted snapshot says both sentences; one without says only its
+    // own ---
+
+    {
+        FirstSnapshotNotice notice;
+        CHECK(!notice.pending());
+        CHECK(notice.departure(kDisconnected) == std::optional<std::string>(kDisconnected));
+        CHECK(!notice.departure("").has_value()); // nothing happened, nothing to say
+
+        notice.interrupted(JobOutcome::refused(State::ejecting));
+        CHECK(notice.pending());
+        const auto both = notice.departure(kDisconnected);
+        CHECK(both.has_value());
+        if (both) {
+            CHECK_EQ(*both, kDisconnected + ". " + kStopped);
+            CHECK(both->find("refusing to touch") == std::string::npos);
+        }
+        // Said once: a second disconnect without a new interruption does not
+        // repeat it.
+        CHECK(!notice.pending());
+        CHECK(notice.departure(kDisconnected) == std::optional<std::string>(kDisconnected));
+    }
+
+    // --- where the departure was told another way (the lifecycle line, a
+    // banner), the sentence stands alone — and it is the one sentence ---
+
+    {
+        FirstSnapshotNotice notice;
+        notice.interrupted(JobOutcome::refused(State::ghost));
+        const auto alone = notice.departure("");
+        CHECK(alone.has_value());
+        if (alone)
+            CHECK_EQ(*alone, jobwords::firstSnapshotInterrupted(JobOutcome::refused(State::ghost)));
+        CHECK(!notice.departure("").has_value());
+    }
+
+    // --- the next connect resumes the snapshot and forgets the notice: the
+    // disconnect after it says only its own sentence ---
+
+    {
+        FirstSnapshotNotice notice;
+        notice.interrupted(JobOutcome::refused(State::disconnected));
+        notice.connectionStarted();
+        CHECK(!notice.pending());
+        CHECK(notice.departure(kDisconnected) == std::optional<std::string>(kDisconnected));
+        // The newest interruption is the one told, never an older one twice.
+        notice.interrupted(JobOutcome::refused(State::ejecting));
+        notice.interrupted(JobOutcome::refused(State::ejected));
+        CHECK(notice.departure(kDisconnected) == std::optional<std::string>(kDisconnected + ". " + kStopped));
+        CHECK(notice.departure(kDisconnected) == std::optional<std::string>(kDisconnected));
+    }
+
+    // --- only a refused step is an interruption: a failure or a success
+    // offered as one is a caller bug and leaves nothing pending ---
+
+    {
+        FirstSnapshotNotice notice;
+        CHECK_THROWS(notice.interrupted(JobOutcome::failure("card changed")), "only a step the gate refused");
+        CHECK_THROWS(notice.interrupted(JobOutcome::success()), "only a step the gate refused");
+        CHECK(!notice.pending());
+        CHECK(notice.departure(kDisconnected) == std::optional<std::string>(kDisconnected));
     }
 
     return testkit::summary("job_words");

@@ -76,15 +76,16 @@ inline std::string refusalLog(const std::string& description, const JobOutcome& 
 // The first snapshot is taken one slot per job and resumes on the next
 // connect from the slot it reached, so a step the gate refused is an
 // interruption, not a fault: one quiet sentence saying what happened and what
-// happens next. A step whose own work failed is a failure and takes the
-// banner's words — asking for the interruption's words for it is a caller bug.
+// happens next. It follows the departure's own sentence on the toast
+// (FirstSnapshotNotice), so it does not say again that the pedal left. A step
+// whose own work failed is a failure and takes the banner's words — asking
+// for the interruption's words for it is a caller bug.
 inline std::string firstSnapshotInterrupted(const JobOutcome& outcome)
 {
     if (!outcome.refusedAtGate())
         throw Error("only a step the gate refused interrupts the first snapshot; "
                     "a failed step has the banner's words");
-    return "The card's first snapshot stopped when the pedal was disconnected "
-           "\xe2\x80\x94 it will finish next time you connect.";
+    return "The card's first snapshot stopped; it will finish next time you connect.";
 }
 
 // The same interruption for the operations log: which slot the run stopped

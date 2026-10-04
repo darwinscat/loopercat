@@ -560,7 +560,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     connectHoldUntilMs = nowMs() + kReenumerateHoldMs;
                     startTimer(kSuperviseTickMs);
                     worker.postDeviceLost();
-                    toast.show(juce::String::fromUTF8(
+                    tellDeparture(juce::String::fromUTF8(
                         "Pedal disconnected \xe2\x80\x94 back on the looper screen"));
                     quitGate.finish(); // the pedal is walking home — quit may proceed
                 });
@@ -1490,13 +1490,14 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
                 safe->firstSeenProblem = outcome.error;
                 safe->firstSeenSettled = !outcome.ok() || count == 99;
                 // A step the gate refused is the interruption the run resumes
-                // from, told as information: the toast is the app's channel
-                // for that, and the status line is the disconnect's already.
-                // A step that failed on its own is told by the worker's
-                // result, as every failure is (issue #146).
+                // from, told as information: logged now, and said to the
+                // player with the departure's own toast (tellDeparture) — a
+                // toast now would be replaced by it unread. A step that
+                // failed on its own is told by the worker's result, as every
+                // failure is (issue #146).
                 if (outcome.refusedAtGate()) {
                     safe->trace(utf8(jobwords::firstSnapshotInterruptedLog(slot, outcome)));
-                    safe->toast.show(utf8(jobwords::firstSnapshotInterrupted(outcome)));
+                    safe->firstSeenNotice.interrupted(outcome);
                 }
                 safe->updateStatusText();
                 if (safe->firstSeenSettled) {
@@ -1507,6 +1508,16 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
                 }
             });
         }));
+}
+
+// The departure's last word to the player: `told` with the first snapshot's
+// interruption appended when this connection had one, said once (issue
+// #146). Empty `told` means the departure was told another way — the
+// lifecycle line, a banner — and the sentence, if any, stands alone.
+void MainComponent::tellDeparture(const juce::String& told)
+{
+    if (const std::optional<std::string> words = firstSeenNotice.departure(told.toStdString()))
+        toast.show(utf8(*words));
 }
 
 void MainComponent::cardNamed(marker::Card named, bool minted, std::string sweepNote)
@@ -1769,6 +1780,15 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     } else if (previousState == lifecycle::State::ghost) {
         ghostCleanupStarted = false; // the episode is over
     }
+    // The pedal is gone and the story had no toast of its own — a yank
+    // cleaned up, a Finder eject, a volume ejected while the pedal stayed in
+    // STORAGE: the lifecycle line and the status told it. An interrupted
+    // first snapshot still has its sentence to say, and it stands alone
+    // here (issue #146). The app-driven Disconnect said it with its own
+    // toast already, and then there is nothing left to say.
+    if (snapshot.state == lifecycle::State::disconnected
+        && previousState != lifecycle::State::disconnected)
+        tellDeparture({});
 
     // The corner wears the card's own name (issue #99) once the marker has
     // been read; until then, the volume's label. One read per mount: the
@@ -1790,6 +1810,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         if (firstSeenRun) firstSeenRun->cancelled = true;
         firstSeenSettled = false;
         firstSeenProblem.clear();
+        firstSeenNotice.connectionStarted(); // the snapshot resumes now — nothing to announce
         firstSeenCount = 0;
         card.reset();
         cardNameVolume = snapshot.volume;
@@ -2815,7 +2836,7 @@ void MainComponent::resized()
     // The version moved up into the status row, so the strip it used to
     // reserve at the bottom goes to the pane that needed it: the waveform is
     // back to its old height with the tab strip on top of it.
-    toast.setBounds(getWidth() / 2 - 280, getHeight() - kBottomPaneHeight - 42, 560, 34);
+    toast.anchor(getWidth() / 2, getHeight() - kBottomPaneHeight - 42);
     batchOverlay.setBounds(getLocalBounds());
     auto bottom = area.removeFromBottom(kBottomPaneHeight).reduced(12, 8);
     bottomTabs.setBounds(bottom.removeFromTop(26));
