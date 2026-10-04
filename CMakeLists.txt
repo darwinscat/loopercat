@@ -294,6 +294,7 @@ target_link_libraries(card_rows_tests PRIVATE loopercat_sqlite3)
 loopercat_core_test(undo_tests)
 target_link_libraries(undo_tests PRIVATE loopercat_sqlite3)
 loopercat_core_test(operation_id_tests)
+loopercat_core_test(history_badges_tests)
 loopercat_core_test(downmix_tests)
 loopercat_core_test(loudness_tests)
 loopercat_core_test(normalize_tests)
@@ -942,12 +943,29 @@ target_compile_definitions(history_window_tests PRIVATE
     LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
 target_link_libraries(history_window_tests PRIVATE
     loopercat::core
+    loopercat_sqlite3  # rows::forCard words the test's snapshot row; its header sees the store
     nlohmann_json::nlohmann_json
     felitronics::appkit
     juce::juce_gui_basics
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_window_tests COMMAND history_window_tests)
+
+# The middle cut of a long detail (#143): measured through a stand-in face —
+# no window, no font.
+juce_add_console_app(middle_ellipsis_tests PRODUCT_NAME "middle_ellipsis_tests")
+target_sources(middle_ellipsis_tests PRIVATE tests/middle_ellipsis_tests.cpp)
+target_compile_definitions(middle_ellipsis_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(middle_ellipsis_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME middle_ellipsis_tests COMMAND middle_ellipsis_tests)
 
 # GUI contract: built in restricted environments, run by the coordinator.
 juce_add_console_app(history_pane_tests PRODUCT_NAME "history_pane_tests")
