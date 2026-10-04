@@ -70,6 +70,7 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                              .swappedWith = entry.swappedWith,
                              .takeName = entry.takeName,
                              .take = take,
+                             .status = entry.status,
                              .note = entry.note });
     row.playable = entry.takeKept;
     row.restorable = !newest && entry.afterBody.has_value() && (!hasTake || entry.takeKept);
@@ -227,7 +228,7 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             // Nothing recorded about any slot: the words story::tell has for
             // the operation itself, including a kind this build has no words for.
             const story::Line bare = story::tell({ .kind = entry.kind, .take = story::Take::none,
-                                                   .note = entry.note });
+                                                   .status = entry.status, .note = entry.note });
             row.action = bare.action;
             row.detail = bare.detail.empty() ? entry.note : bare.detail; // a failed op's reason
         }
