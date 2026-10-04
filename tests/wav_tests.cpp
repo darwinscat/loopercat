@@ -324,5 +324,23 @@ int main()
     CHECK_THROWS(wav::trackFileName("x.wav", 3, 2), "track out of range");
     CHECK_THROWS(wav::trackFileName("x.wav", 2, 1), "track out of range");
 
+    // --- a RIFF cut short is named as such, and only such (issue #139, review) ---
+    {
+        const auto whole = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1000 });
+        CHECK(!wav::isTruncatedRiff(wav::BytesView(whole.data(), whole.size())));
+        const auto withList = testkit::syntheticWav({ .frames = 1000, .extraChunk = true });
+        CHECK(!wav::isTruncatedRiff(wav::BytesView(withList.data(), withList.size())));
+        const auto cut = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1000, .truncateBy = 1 });
+        CHECK(wav::isTruncatedRiff(wav::BytesView(cut.data(), cut.size())));
+        const auto cutDeep = testkit::syntheticWav({ .frames = 1000, .truncateBy = 3000 });
+        CHECK(wav::isTruncatedRiff(wav::BytesView(cutDeep.data(), cutDeep.size())));
+        CHECK_THROWS(wav::readWavInfo(wav::BytesView(cutDeep.data(), cutDeep.size())), "truncated");
+        // not RIFF/WAVE at all is not "truncated" — it is something else's problem
+        const std::vector<unsigned char> text { 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd', '!', '!' };
+        CHECK(!wav::isTruncatedRiff(wav::BytesView(text.data(), text.size())));
+        const std::vector<unsigned char> tiny { 'R', 'I', 'F', 'F' };
+        CHECK(!wav::isTruncatedRiff(wav::BytesView(tiny.data(), tiny.size())));
+    }
+
     return testkit::summary("wav");
 }

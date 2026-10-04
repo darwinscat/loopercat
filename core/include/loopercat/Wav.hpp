@@ -202,6 +202,28 @@ inline Bytes trimmed(BytesView data, std::int64_t startFrame, std::int64_t endFr
     return out;
 }
 
+// Whether a RIFF/WAVE buffer's chunks claim more bytes than it holds — the
+// shape a cut-off copy has. readWavInfo refuses such a file along with the
+// other malformed ones; this names that one fact on its own, so an importer
+// can refuse to pad it: a decoder fills the missing frames with silence and
+// the pedal gets a loop longer than its audio (issue #139, review). A buffer
+// that is not RIFF/WAVE at all is not "truncated" — it is something else.
+inline bool isTruncatedRiff(BytesView data)
+{
+    if (data.size() < 12 || !detail::chunkIdIs(data, 0, "RIFF")
+        || !detail::chunkIdIs(data, 8, "WAVE"))
+        return false;
+    const auto size = static_cast<std::int64_t>(data.size());
+    std::int64_t offset = 12;
+    while (offset + 8 <= size) {
+        const std::int64_t chunkSize = detail::u32(data, static_cast<std::size_t>(offset) + 4);
+        if (offset + 8 + chunkSize > size)
+            return true;
+        offset += 8 + chunkSize + (chunkSize % 2);
+    }
+    return false;
+}
+
 // Rewrite a WAV into the pedal's own canonical shape: RIFF + fmt + data,
 // nothing else. The RC-5 rewrites non-canonical files (DAW metadata chunks)
 // during boot-time indexing; handing it an already-canonical file means it
