@@ -129,7 +129,11 @@ memory. No power cycling.
   you switch it on: a *silent* rhythm section is what the count borrows, and
   it will replace that pattern. A rhythm that is actually playing is left
   alone — the count simply joins it, and switching the count off later leaves
-  your groove where it was.
+  your groove where it was. At a time signature other than 4/4 the switch
+  waits where the click would have to write a rhythm pattern number — only
+  the 4/4 pattern list is charted so far — and the card says what to do
+  instead; the Rhythm tab shows such a pattern as a number for the same
+  reason.
 - **One Shot** — play once and stop instead of looping.
 
 Both switches are also the lamps in the table, if you keep those columns on:
