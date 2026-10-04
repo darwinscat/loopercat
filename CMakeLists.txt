@@ -950,6 +950,22 @@ target_link_libraries(history_window_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_window_tests COMMAND history_window_tests)
 
+# The middle cut of a long detail (#143): measured through a stand-in face —
+# no window, no font.
+juce_add_console_app(middle_ellipsis_tests PRODUCT_NAME "middle_ellipsis_tests")
+target_sources(middle_ellipsis_tests PRIVATE tests/middle_ellipsis_tests.cpp)
+target_compile_definitions(middle_ellipsis_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(middle_ellipsis_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME middle_ellipsis_tests COMMAND middle_ellipsis_tests)
+
 # GUI contract: built in restricted environments, run by the coordinator.
 juce_add_console_app(history_pane_tests PRODUCT_NAME "history_pane_tests")
 target_sources(history_pane_tests PRIVATE tests/history_pane_tests.cpp

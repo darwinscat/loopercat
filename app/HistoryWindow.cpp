@@ -4,6 +4,7 @@
 #include "HistoryWindow.h"
 
 #include "HistoryBadges.h"
+#include "MiddleEllipsis.h"
 
 #include <felitronics/appkit/Brand.h>
 #include <loopercat/Error.hpp>
@@ -300,8 +301,15 @@ void HistoryWindow::paintListBoxItem(int index, juce::Graphics& g, int width, in
         juce::jmin(area.getWidth(), juce::GlyphArrangement::getStringWidthInt(g.getCurrentFont(), action) + 16);
     g.drawText(action, area.removeFromLeft(actionWidth), juce::Justification::centredLeft, false);
     if (row->detail.isNotEmpty()) {
+        // Cut in the middle when it does not fit: the tail ("nothing to do")
+        // is the part that matters, and the hint carries the whole sentence.
         g.setColour(kInk.brighter(0.35f));
-        g.drawText(row->detail, area, juce::Justification::centredLeft, true);
+        const juce::Font font = g.getCurrentFont();
+        const auto widthOf = [&font](const juce::String& text) {
+            return juce::GlyphArrangement::getStringWidthInt(font, text);
+        };
+        g.drawText(elideMiddle(row->detail, area.getWidth(), widthOf), area,
+                   juce::Justification::centredLeft, false);
     }
 }
 
