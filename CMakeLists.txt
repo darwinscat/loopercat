@@ -943,6 +943,7 @@ target_compile_definitions(history_window_tests PRIVATE
     LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
 target_link_libraries(history_window_tests PRIVATE
     loopercat::core
+    loopercat_sqlite3  # rows::forCard words the test's snapshot row; its header sees the store
     nlohmann_json::nlohmann_json
     felitronics::appkit
     juce::juce_gui_basics

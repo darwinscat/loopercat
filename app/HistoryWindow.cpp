@@ -10,6 +10,7 @@
 #include <loopercat/Error.hpp>
 
 #include <algorithm>
+#include <vector>
 
 namespace loopercat
 {
@@ -35,9 +36,48 @@ const juce::Colour kWarning { 0xffd9a441 };  // failed, interrupted
 // all: the hit test and the painting read the same numbers.
 int badgesLeft() { return kGutter + kClockWidth; }
 int badgeLeft(int index) { return badgesLeft() + index * (kBadgeWidth + kBadgeGap); }
-history::badges::Shown badgesOf(const HistoryWindow::Row& row)
+int badgesRight() { return badgesLeft() + kBadgeSlots * (kBadgeWidth + kBadgeGap); }
+history::badges::Shown badgesOf(const HistoryWindow::Row& row, std::optional<int> filter)
 {
-    return history::badges::shown(row.slots, row.isSnapshot, kBadgeSlots);
+    return history::badges::shown(row.slots, row.isSnapshot, kBadgeSlots, filter);
+}
+
+// The words a row counted in words wears where its badges would be:
+// "99 slots" for the card's first sighting.
+juce::String slotsInWords(const HistoryWindow::Row& row)
+{
+    const auto count = static_cast<int>(row.slots.size());
+    return juce::String(count) + (count == 1 ? " slot" : " slots");
+}
+
+// What each position of the strip reads: the badges' numbers, then the
+// chip's count — or, for a row counted in words, the words alone across the
+// strip. The painting and badgeStripText read the same list.
+std::vector<juce::String> stripTexts(const HistoryWindow::Row& row, const history::badges::Shown& worn)
+{
+    if (worn.inWords)
+        return { slotsInWords(row) };
+    std::vector<juce::String> texts;
+    for (const int slot : worn.slots)
+        texts.push_back(juce::String(slot));
+    if (worn.more > 0)
+        texts.push_back("+" + juce::String(worn.more));
+    return texts;
+}
+
+// The strip's part of the hint: the words, or every slot the chip only
+// counts — "slots 3, 7, 12, 40, 99" — and nothing for a row whose badges
+// already say it all.
+juce::String stripHint(const HistoryWindow::Row& row, const history::badges::Shown& worn)
+{
+    if (worn.inWords)
+        return slotsInWords(row);
+    if (worn.more == 0)
+        return {};
+    juce::String list;
+    for (const int slot : row.slots)
+        list << (list.isEmpty() ? "" : ", ") << slot;
+    return "slots " + list;
 }
 
 // What joins the parts of a row's hint. A dash, because the parts themselves
@@ -208,13 +248,24 @@ std::optional<int> HistoryWindow::badgeAt(int visibleIndex, int x) const
     const Row* row = visibleRow(visibleIndex);
     if (row == nullptr)
         return std::nullopt;
-    const history::badges::Shown worn = badgesOf(*row);
+    const history::badges::Shown worn = badgesOf(*row, filter_);
     for (std::size_t i = 0; i < worn.slots.size(); ++i) {
         const int left = badgeLeft(static_cast<int>(i));
         if (x >= left && x < left + kBadgeWidth)
             return worn.slots[i];
     }
-    return std::nullopt; // the clock, the chip, the sentence
+    return std::nullopt; // the clock, the chip, the words, the sentence
+}
+
+juce::String HistoryWindow::badgeStripText(int visibleIndex) const
+{
+    const Row* row = visibleRow(visibleIndex);
+    if (row == nullptr)
+        return {};
+    juce::String text;
+    for (const juce::String& cell : stripTexts(*row, badgesOf(*row, filter_)))
+        text << (text.isEmpty() ? "" : " ") << cell;
+    return text;
 }
 
 void HistoryWindow::clickAt(int visibleIndex, int x)
@@ -229,7 +280,9 @@ juce::String HistoryWindow::hintAt(int visibleIndex) const
     if (row == nullptr)
         return {};
     juce::String hint;
-    for (const juce::String& part : { row->when, row->action, row->detail, row->state, row->audio })
+    for (const juce::String& part : { row->when, stripHint(*row, badgesOf(*row, filter_)), row->action,
+                                      row->detail, row->state, row->audio,
+                                      juce::String(row->pinned ? "pinned" : "") })
         if (part.isNotEmpty())
             hint << (hint.isEmpty() ? juce::String() : hintJoin()) << part;
     return hint;
@@ -280,26 +333,29 @@ void HistoryWindow::paintListBoxItem(int index, juce::Graphics& g, int width, in
     g.setColour(kInk);
     g.drawText(row->when, area.removeFromLeft(kClockWidth), juce::Justification::centredLeft, false);
 
-    const history::badges::Shown worn = badgesOf(*row);
+    const history::badges::Shown worn = badgesOf(*row, filter_);
+    const std::vector<juce::String> texts = stripTexts(*row, worn);
     g.setFont(juce::FontOptions(11.0f));
-    for (std::size_t i = 0; i < worn.slots.size(); ++i) {
-        const juce::Rectangle<int> badge(badgeLeft(static_cast<int>(i)), 4, kBadgeWidth, height - 8);
-        g.setColour(filter_ && *filter_ == worn.slots[i] ? felitronics::appkit::brand::violet
-                                                          : kBadge);
-        g.fillRoundedRectangle(badge.toFloat(), 4.0f);
-        g.setColour(kPaper);
-        g.drawText(juce::String(worn.slots[i]), badge, juce::Justification::centred, false);
-    }
-    if (worn.more > 0) {
-        // The rest, counted. The quiet ink says it is a number, not a button.
-        const juce::Rectangle<int> chip(badgeLeft(static_cast<int>(worn.slots.size())), 4,
-                                        kBadgeWidth, height - 8);
-        g.setColour(kBadge);
-        g.fillRoundedRectangle(chip.toFloat(), 4.0f);
+    if (worn.inWords) {
+        // "99 slots" across the strip, in the chip's quiet ink: a count,
+        // not a badge.
+        const juce::Rectangle<int> strip(badgesLeft(), 0, badgesRight() - badgesLeft() - kBadgeGap,
+                                         height);
         g.setColour(kInk);
-        g.drawText("+" + juce::String(worn.more), chip, juce::Justification::centred, false);
+        g.drawText(texts.front(), strip, juce::Justification::centredLeft, false);
     }
-    area.removeFromLeft(kBadgeSlots * (kBadgeWidth + kBadgeGap));
+    for (std::size_t i = 0; i < texts.size() && !worn.inWords; ++i) {
+        // A badge wears paper; the chip, counting the rest, wears the quiet
+        // ink that says it is a number, not a button.
+        const bool badge = i < worn.slots.size();
+        const juce::Rectangle<int> cell(badgeLeft(static_cast<int>(i)), 4, kBadgeWidth, height - 8);
+        g.setColour(badge && filter_ && *filter_ == worn.slots[i] ? felitronics::appkit::brand::violet
+                                                                   : kBadge);
+        g.fillRoundedRectangle(cell.toFloat(), 4.0f);
+        g.setColour(badge ? kPaper : kInk);
+        g.drawText(texts[i], cell, juce::Justification::centred, false);
+    }
+    area.removeFromLeft(badgesRight() - badgesLeft());
     g.setFont(juce::FontOptions(13.0f));
 
     if (row->audio.isNotEmpty()) {

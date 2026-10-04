@@ -5,8 +5,10 @@
 
 #include <loopercat/Error.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <optional>
 #include <vector>
 
 //==============================================================================
@@ -21,6 +23,10 @@
 //   - up to `room` slots are badges, in the row's order
 //   - past that, the last position is a "+N" chip counting the rest — a
 //     number to read, not a badge to click
+//   - the slot the timeline is filtered to is never behind the chip: when
+//     it would be, it takes the last badge position in place of the row's
+//     slot there, so the row shows why it is listed; the chip's count does
+//     not move — one slot came out of hiding as one went in
 //   - a row counted in words (the snapshot's sentence already says "99
 //     slots") wears none at all
 //==============================================================================
@@ -33,7 +39,8 @@ struct Shown {
     bool inWords = false;   // no badges: the row's sentence counts its slots
 };
 
-inline Shown shown(const std::vector<int>& slots, bool countedInWords, int room)
+inline Shown shown(const std::vector<int>& slots, bool countedInWords, int room,
+                   std::optional<int> filter)
 {
     if (room < 1)
         throw Error("a row has room for at least one badge");
@@ -41,9 +48,14 @@ inline Shown shown(const std::vector<int>& slots, bool countedInWords, int room)
         return { {}, 0, true };
     if (slots.size() <= static_cast<std::size_t>(room))
         return { slots, 0, false };
-    const auto kept = static_cast<std::ptrdiff_t>(room - 1); // the last position goes to the chip
-    return { std::vector<int>(slots.begin(), std::next(slots.begin(), kept)),
-             static_cast<int>(slots.size()) - static_cast<int>(kept), false };
+    const auto badges = static_cast<std::ptrdiff_t>(room - 1); // the last position goes to the chip
+    std::vector<int> worn(slots.begin(), std::next(slots.begin(), badges));
+    const auto has = [](const std::vector<int>& in, int slot) {
+        return std::find(in.begin(), in.end(), slot) != in.end();
+    };
+    if (filter && !worn.empty() && has(slots, *filter) && !has(worn, *filter))
+        worn.back() = *filter;
+    return { std::move(worn), static_cast<int>(slots.size()) - static_cast<int>(badges), false };
 }
 
 } // namespace loopercat::history::badges

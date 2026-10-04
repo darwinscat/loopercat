@@ -24,13 +24,14 @@
 // before its sentence; clicking one filters the timeline to that slot, and
 // "All slots" widens it again. A swap is one row with two badges. Past three
 // the row says it in words: a "+N" chip counts the rest of a many-slot
-// operation, and a first-sighting snapshot wears none, its sentence already
-// says "99 slots" (#143). Which badges a row shows is one answer
-// (HistoryBadges.h), read by the painting and the hit test alike; what a
-// narrow row cuts short is whole in the row's hint. The buttons sit under
-// the list, for the selected row — a row is a sentence, not a form — and
-// offer only what the row can do: nothing plays a take the store no longer
-// keeps.
+// operation, and a first-sighting snapshot wears none — "99 slots" stands
+// where its badges would be (#143). Which badges a row shows is one answer
+// (HistoryBadges.h), read by the painting and the hit test alike, and the
+// slot the timeline is filtered to is never the one behind the chip. What
+// the row cuts short or counts is whole in the row's hint. The buttons sit
+// under the list, for the selected row — a row is a sentence, not a form —
+// and offer only what the row can do: nothing plays a take the store no
+// longer keeps.
 //
 // A pin toggled here shows at once and goes out through onPin; the window's
 // own flag is a promise, not the truth. The owner records the pin and calls
@@ -98,8 +99,13 @@ public:
     // A click at x in a visible row, callable without a mouse: a badge
     // filters to its slot; anywhere else the click was only a selection.
     void clickAt(int visibleIndex, int x);
-    // The row's whole line for its hint — when, action, detail, state,
-    // audio — including what a narrow row cut short.
+    // What the badge strip reads, left to right — the badges' numbers and
+    // the chip, or the words a row counted in words wears instead — for
+    // whoever checks the row without painting it.
+    juce::String badgeStripText(int visibleIndex) const;
+    // The row's whole line for its hint — when, the slots the strip only
+    // counts, action, detail, state, audio, the pin — including what a
+    // narrow row cut short.
     juce::String hintAt(int visibleIndex) const;
 
     void paint(juce::Graphics&) override;
