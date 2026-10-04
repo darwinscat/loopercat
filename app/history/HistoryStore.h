@@ -213,6 +213,8 @@ public:
         std::int64_t takesFreed = 0;  // distinct kept blobs losing their last reference
         std::int64_t bytesFreed = 0;
         std::vector<std::int64_t> operations;
+        // Pinned operations forgetting takes something of: a state here, or
+        // the whole row. One that loses only its badge here is not protected.
         std::vector<std::int64_t> pinned;
         // Cursor targets that lose a state here: the undo on offer goes with
         // the slot. A target this slot was only about keeps its undo.
@@ -220,8 +222,9 @@ public:
         std::vector<std::string> hashes;
         bool inFlight = false;
         // The Undo boundary will move: an operation loses a state here and
-        // still stands afterwards, so what is left of it must not be offered
-        // as the whole. One forgotten whole moves nothing.
+        // keeps one elsewhere, so what is left of it must not be offered as
+        // the whole. One forgotten whole moves nothing — a subject it was
+        // still about is not a surviving state.
         bool cutsUndo = false;
         bool hasHolds() const { return !pinned.empty() || !undoTargets.empty(); }
         bool operator==(const ForgetPlan&) const = default;

@@ -673,15 +673,21 @@ HistoryStore::ForgetPlan HistoryStore::planForgetSlot(std::int64_t cardId, int s
     while (rows.step()) {
         const auto op = rows.integer(0);
         plan.operations.push_back(op);
-        if (rows.integer(1)) plan.pinned.push_back(op);
         plan.inFlight |= rows.text(2) == "pending";
         const bool stateHere = rows.integer(4) != 0;
         const bool stateElsewhere = rows.integer(5) != 0;
         const bool aboutOthers = rows.integer(6) != 0;
+        // forgetSlot's rule, read ahead: an operation goes whole when no state
+        // of it survives — unless it never had one and is still about another
+        // slot, whose badge it keeps.
+        const bool dropped = !stateElsewhere && (stateHere || !aboutOthers);
+        // A pinned entry is protected when forgetting takes something of it:
+        // a state here, or the whole row. One losing only its badge here is not.
+        if (rows.integer(1) && (stateHere || dropped)) plan.pinned.push_back(op);
         // The boundary moves only for an operation that loses a state here
-        // and still stands afterwards — forgetSlot's rule, read ahead. One
-        // forgotten whole, or one that was only about this slot, moves nothing.
-        plan.cutsUndo |= stateHere && (stateElsewhere || aboutOthers) && rows.integer(3) != 0;
+        // and keeps one elsewhere. One forgotten whole, or one that was only
+        // about this slot, moves nothing.
+        plan.cutsUndo |= stateHere && stateElsewhere && rows.integer(3) != 0;
         // An Undo target is a hold when forgetting takes a state out of it:
         // one that was only about this slot keeps its undo intact, and one
         // with no state at all has none to lose.
@@ -749,7 +755,15 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
             about.bind(1, op).bind(2, slot).run();
             const bool stateLeft = !touchedSlots(op).empty() || !systemChanges(op).empty();
             const bool aboutOthers = !subjects(op).empty();
-            if (!stateLeft && !aboutOthers) {
+            if (!stateLeft && (stateHere || !aboutOthers)) {
+                // No state of it survives: it goes whole, the slots it was
+                // still about included. A subject is not a surviving state,
+                // and the row the other slot loses said "nothing changed" —
+                // not something a boundary guards. (An operation that never
+                // had a state and is still about another slot keeps standing
+                // for that slot's badge: nothing was taken from it here.)
+                sqlite::Statement names(db_, "DELETE FROM op_subjects WHERE op = ?1");
+                names.bind(1, op).run();
                 sqlite::Statement unrefer(db_, "UPDATE ops SET reverts = NULL WHERE reverts = ?1");
                 unrefer.bind(1, op).run();
                 sqlite::Statement baseline(db_, "UPDATE cards SET snapshot_op = NULL WHERE snapshot_op = ?1");
@@ -757,9 +771,8 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
                 sqlite::Statement drop(db_, "DELETE FROM ops WHERE seq = ?1");
                 drop.bind(1, op).run();
             } else if (stateHere) {
-                // Half-forgotten and still standing — for a state elsewhere or
-                // for another slot's badge: a boundary either way, since what
-                // is left of it must never be offered as the whole.
+                // Lost a state here, keeps one elsewhere: a boundary, since
+                // what is left of it must never be offered as the whole.
                 partial.push_back(op);
             }
             // Otherwise only its name came off this slot: the operation and

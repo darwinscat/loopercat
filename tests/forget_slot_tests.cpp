@@ -368,27 +368,75 @@ static int runTests()
         CHECK_EQ(f.scalar("SELECT count(*) FROM pragma_foreign_key_check"), 0);
         (void) nine;
     }
-    // An operation half-forgotten down to a subject: it stands for the other
-    // slot's badge, and it is a boundary like any half-forgotten operation —
-    // what is left of it is not the whole, so it is not the Undo target.
+    // An operation that loses its last state here goes whole, the slots it
+    // was still about included: a subject is not a surviving state, and the
+    // row the other slot loses said "nothing changed". No boundary moves,
+    // and the work below stays undoable — exactly as before subjects existed.
     {
         Fixture f;
         const auto nine = f.op({9});
         const auto op = f.about({7, 12}, {7}, "normalize");
         CHECK(f.store.offeredTargets().undo == op);
-        const auto plan = f.store.planForgetSlot(f.card, 7);
-        CHECK(plan.undoTargets == std::vector<std::int64_t>{op}); // it loses its state here
-        CHECK(plan.cutsUndo);
-        CHECK_THROWS(f.store.forgetSlot(f.card, 7, 40), "separate confirmation");
-        f.store.forgetSlot(f.card, 7, 40, true);
-        CHECK_EQ(f.store.opStatus(op), std::string("done"));
-        CHECK(f.store.subjects(op) == std::vector<int>{12});
-        CHECK(f.store.touchedSlots(op).empty());
-        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), op);
-        CHECK(!f.store.offeredTargets().undo); // neither it nor the work below the boundary
         CHECK_EQ(f.store.slotTimeline(12).size(), 1u);
-        CHECK(f.store.slotTimeline(12).front().subjectOnly);
-        (void) nine;
+        const auto plan = f.store.planForgetSlot(f.card, 7);
+        CHECK(plan.undoTargets == std::vector<std::int64_t>{op}); // the undo on offer goes with it
+        CHECK(!plan.cutsUndo); // no state of it survives anywhere
+        CHECK_THROWS(f.store.forgetSlot(f.card, 7, 40), "separate confirmation");
+        CHECK(f.store.forgetSlot(f.card, 7, 40, true) == plan);
+        CHECK_THROWS(f.store.opStatus(op), "no operation");
+        CHECK(f.store.subjects(op).empty());
+        CHECK_EQ(f.scalar("SELECT count(*) FROM op_subjects"), 0);
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), 0);
+        CHECK(f.store.offeredTargets().undo == nine);
+        CHECK(f.store.slotTimeline(12).empty());
+        CHECK_EQ(f.scalar("SELECT count(*) FROM pragma_foreign_key_check"), 0);
+    }
+    // A pinned operation that loses only its badge here is not a protected
+    // entry: its row, its state and its pin all stay. Three shapes — a
+    // subject beside a body elsewhere, beside a settings change, beside
+    // another subject. One whose only link was this slot's subject goes
+    // whole, and that IS protected, as is one losing a state here.
+    {
+        Fixture f;
+        const auto body = f.about({7, 12}, {12}, "rename");
+        const auto settings = f.about({7}, {}, "controls");
+        f.store.recordSystemChange(settings, {"CTL", "<CTL>before</CTL>", "<CTL>after</CTL>"});
+        const auto twice = f.about({7, 12}, {}, "swap", OpStatus::failed);
+        for (const auto op : {body, settings, twice}) f.store.pinOp(op, true);
+        const auto plan = f.store.planForgetSlot(f.card, 7);
+        CHECK_EQ(plan.rowsRemoved, 3);
+        CHECK(plan.pinned.empty());
+        CHECK(plan.undoTargets.empty());
+        CHECK(!plan.cutsUndo);
+        CHECK(!plan.hasHolds());
+        CHECK(f.store.forgetSlot(f.card, 7, 40, false, &plan) == plan); // no separate confirmation
+        for (const auto op : {body, settings, twice}) {
+            CHECK_EQ(f.scalar("SELECT pinned FROM ops WHERE seq = " + std::to_string(op)), 1);
+            CHECK_EQ(f.scalar("SELECT count(*) FROM ops WHERE seq = " + std::to_string(op)), 1);
+        }
+        CHECK(f.store.subjects(body) == std::vector<int>{12});
+        CHECK(f.store.touchedSlots(body) == std::vector<int>{12});
+        CHECK(f.store.subjects(settings).empty());
+        CHECK_EQ(f.store.systemChanges(settings).size(), 1u);
+        CHECK(f.store.subjects(twice) == std::vector<int>{12});
+        CHECK(f.store.slotTimeline(7).empty());
+        CHECK_EQ(f.store.slotTimeline(12).size(), 2u);
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), 0);
+        // the only link was this slot's subject: dropped whole, and protected
+        const auto alone = f.about({7}, {}, "normalize");
+        f.store.pinOp(alone, true);
+        const auto second = f.store.planForgetSlot(f.card, 7);
+        CHECK(second.pinned == std::vector<std::int64_t>{alone});
+        CHECK(second.hasHolds());
+        CHECK_THROWS(f.store.forgetSlot(f.card, 7, 50), "separate confirmation");
+        f.store.forgetSlot(f.card, 7, 50, true);
+        CHECK_THROWS(f.store.opStatus(alone), "no operation");
+        // and one that loses a state here is protected, as it always was
+        const auto stateful = f.about({7, 12}, {7, 12}, "swap");
+        f.store.pinOp(stateful, true);
+        CHECK(f.store.planForgetSlot(f.card, 7).pinned == std::vector<std::int64_t>{stateful});
+        CHECK(f.store.planForgetSlot(f.card, 7).cutsUndo);
+        CHECK_EQ(f.scalar("SELECT count(*) FROM pragma_foreign_key_check"), 0);
     }
     return testkit::summary("forget_slot_tests");
 }

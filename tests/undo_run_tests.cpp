@@ -200,6 +200,31 @@ struct Bench {
         read.step();
         return read.integer(0);
     }
+
+    // One recorded operation the way the worker wraps a job with a slot: it
+    // names the slots it is about right after it opens (#144), then runs.
+    // Returns the operation's row.
+    template <typename Work>
+    std::int64_t about(const std::string& kind, const std::vector<int>& slots, Work work)
+    {
+        const std::string id = "op-" + std::to_string(++ops);
+        rec->begin(id, kind, volume);
+        for (const int slot : slots)
+            rec->subject(id, slot);
+        std::string error;
+        try {
+            work(options(id));
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        rec->finish(id, error);
+        if (!error.empty())
+            std::printf("  operation %s failed: %s\n", kind.c_str(), error.c_str());
+        sqlite::Statement read(rec->store().db(), "SELECT seq FROM ops WHERE id = ?1");
+        read.bindText(1, id);
+        read.step();
+        return read.integer(0);
+    }
 };
 
 // The newest finished entry of the card's timeline.
@@ -606,6 +631,66 @@ int main()
         CHECK(!offer.redo.has_value());
         CHECK(offer.undo == newest(b.rec->store()).op);
         CHECK_EQ(undo::menuText(false, offer), std::string("Undo normalize"));
+    }
+
+    // --- a restore about two slots that changed one, then the other slot cleared (#144 review) ---
+    //
+    // Swap 12 and 43; rename 12 away and back; rename 43; "Restore this
+    // state" of the swap from the window — slot 12 is already there, so the
+    // restore records a state for 43 alone while being about both. Clearing
+    // slot 43 takes the restore's last state: the operation goes whole, its
+    // subject on 12 with it, and Undo of slot 12's rename is on offer exactly
+    // as it would be had no subject ever been written.
+    {
+        std::vector<std::pair<std::optional<std::int64_t>, std::int64_t>> outcomes; // {undo target, floor}
+        for (const bool withSubjects : { true, false }) {
+            Bench b;
+            // The card's first sighting, complete, as the app's worker leaves
+            // it: a snapshot still running would hold every slot it reached.
+            const auto sighting = b.rec->firstSeen(b.volume);
+            CHECK(sighting.has_value());
+            for (int slot = 1; sighting && slot <= 99; ++slot)
+                b.rec->snapshotStep(*sighting, slot);
+            CHECK(!b.rec->firstSeen(b.volume).has_value()); // done
+            const std::int64_t swapOp = b.about("swap", { 12, 43 }, [&](const commands::WriteOptions& o) {
+                commands::swap(b.volume, 12, 43, o);
+            });
+            const std::string wasNamed = history::story::trimmedName(
+                rc0::slotBody(commands::readMemory(b.volume), 12));
+            b.about("rename", { 12 }, [&](const commands::WriteOptions& o) { commands::rename(b.volume, 12, "Away", o); });
+            const std::int64_t renameBack = b.about("rename", { 12 }, [&](const commands::WriteOptions& o) {
+                commands::rename(b.volume, 12, wasNamed, o);
+            });
+            b.about("rename", { 43 }, [&](const commands::WriteOptions& o) { commands::rename(b.volume, 43, "Kitty", o); });
+            const std::int64_t restoreOp = b.about("restore", { 12, 43 }, [&](const commands::WriteOptions& o) {
+                history::restoreOperation(b.rec->store(), swapOp, b.volume, o);
+            });
+            HistoryStore& store = b.rec->store();
+            CHECK_EQ(store.opStatus(restoreOp), std::string("done"));
+            CHECK(store.touchedSlots(restoreOp) == std::vector<int> { 43 }); // 12 was already there
+            CHECK(store.subjects(restoreOp) == (std::vector<int> { 12, 43 }));
+            CHECK(store.offeredTargets().undo == restoreOp);
+            if (!withSubjects)
+                store.db().exec("DELETE FROM op_subjects"); // the history as it was before #144
+            const std::int64_t card = *store.selectedCard();
+            const auto plan = store.planForgetSlot(card, 43);
+            CHECK(plan.undoTargets == std::vector<std::int64_t> { restoreOp }); // the undo on offer goes
+            CHECK(plan.cutsUndo); // the swap survives half-forgotten on slot 12
+            CHECK(store.forgetSlot(card, 43, tick(), true, &plan) == plan);
+            CHECK_THROWS(store.opStatus(restoreOp), "no operation"); // gone whole, subject included
+            CHECK(store.subjects(restoreOp).empty());
+            sqlite::Statement floor(store.db(), "SELECT undo_floor FROM cards WHERE id = ?1");
+            floor.bind(1, card);
+            floor.step();
+            outcomes.emplace_back(store.offeredTargets().undo, floor.integer(0));
+            CHECK(store.offeredTargets().undo == renameBack);
+            CHECK_EQ(floor.integer(0), swapOp); // the half-forgotten swap's own boundary, nothing else
+            CHECK_EQ(store.slotTimeline(12).size(), 4u); // first seen, swap, away, back — no "nothing changed" row
+            CHECK(store.slotTimeline(43).empty());
+            CHECK_EQ(undo::menuText(false, undo::offer(store)), std::string("Undo rename of slot 12"));
+        }
+        CHECK_EQ(outcomes.size(), 2u);
+        CHECK(outcomes.size() == 2u && outcomes[0] == outcomes[1]); // with subjects == without
     }
 
     return testkit::summary("undo_run_tests");
