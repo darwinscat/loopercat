@@ -88,6 +88,18 @@ public:
     void recordPresentAudio(std::int64_t op, int slot, int track, const std::string& name,
                             std::int64_t size, const std::optional<std::string>& hash);
 
+    // --- what an operation was about (#144) ---
+
+    // The slot an operation set out to work on, written down when it begins
+    // and apart from what it changes: a normalize that finds its slot at
+    // target changes nothing, and still was about that slot. A subject
+    // names no state — it makes nothing restorable and no Undo target.
+    // Refused for an operation the store does not have, one that is not
+    // pending, a first sighting or maintenance (neither is about a slot), a
+    // slot outside 1..99, and a slot named twice for one operation.
+    void recordSubject(std::int64_t op, int slot);
+    std::vector<int> subjects(std::int64_t op); // ascending
+
     // One row of a slot's timeline, with everything the tab needs to write a
     // sentence and to know what it may offer for it.
     struct TimelineEntry {
@@ -111,9 +123,15 @@ public:
         std::int64_t takeCount = 0;
         std::int64_t takeBytes = 0;
         bool takeIsAfter = false;
+        // The operation was about this slot and recorded nothing here — a
+        // normalize that found its slot at target (#144). The row says what
+        // was tried, not what the slot holds: it is never the slot's state.
+        bool subjectOnly = false;
     };
 
-    // Selected card only; no selection returns no rows. Ordered by time, then sequence.
+    // Selected card only; no selection returns no rows. Ordered by time, then
+    // sequence. An operation that was about the slot is a row too, flagged
+    // subjectOnly when it recorded nothing here.
     std::vector<TimelineEntry> slotTimeline(int slot);
 
     // --- reads: what the tests look at today, and what #50 builds on ---
@@ -195,11 +213,19 @@ public:
         std::int64_t takesFreed = 0;  // distinct kept blobs losing their last reference
         std::int64_t bytesFreed = 0;
         std::vector<std::int64_t> operations;
+        // Pinned operations forgetting takes something of: a state here, or
+        // the whole row. One that loses only its badge here is not protected.
         std::vector<std::int64_t> pinned;
+        // Cursor targets that lose a state here: the undo on offer goes with
+        // the slot. A target this slot was only about keeps its undo.
         std::vector<std::int64_t> undoTargets;
         std::vector<std::string> hashes;
         bool inFlight = false;
-        bool cutsUndo = false; // the boundary advances even if the current target survives
+        // The Undo boundary will move: an operation loses a state here and
+        // keeps one elsewhere, so what is left of it must not be offered as
+        // the whole. One forgotten whole moves nothing — a subject it was
+        // still about is not a surviving state.
+        bool cutsUndo = false;
         bool hasHolds() const { return !pinned.empty() || !undoTargets.empty(); }
         bool operator==(const ForgetPlan&) const = default;
     };
@@ -230,7 +256,7 @@ public:
     // reached the card, so it is not where the slot is, and its state can be
     // offered back like any other. An operation that touched no slot (it
     // failed before the card, or changed only settings) is an entry with no
-    // slots.
+    // slots — and still with its subjects, when it was about any.
     // What an operation did to one section of the pedal's own settings
     // (SYSTEM*.RC0, issue #73): the section's text — <CTL>...</CTL> — as the
     // card held it before the write, and as the write left it. The section,
@@ -266,6 +292,10 @@ public:
             std::optional<TakeRef> archived;
         };
         std::vector<Slot> slots; // ascending by slot
+        // The slots the operation was about (#144), ascending — beside the
+        // ones it touched, often the same ones. A subject carries no facts
+        // and no take: a badge on the row, never an offer.
+        std::vector<int> subjects;
         // What the operation did to the pedal's own settings, per section:
         // an operation that changed settings and no slot is an entry with
         // no slots and these.

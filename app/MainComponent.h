@@ -309,8 +309,10 @@ private:
     void stopLoudnessCheck();
     void finishLoudnessCheck();
     commands::WriteOptions makeWriteOptions();
+    // `alsoAbout`: the slots the operation is about beyond the job's own —
+    // a swap's second slot (#144).
     PedalWorker::Job recorded(const char* kind, const commands::WriteOptions& options,
-                              PedalWorker::Job job);
+                              PedalWorker::Job job, std::vector<int> alsoAbout = {});
 
     // Declaration order is lifetime order: settings outlives the checker
     // (its Config captures it), the checker outlives the badge; the engine
