@@ -1064,6 +1064,80 @@ int main()
                      "out of range");
     }
 
+    // --- setCountIn at a beat whose pattern list is not charted (#149) ---
+    //
+    // The P0 as it was found on the card: the pedal's own Rock2 at 6/4 is
+    // stored as 3, and "count-in on" over it wrote 57, a 4/4 number. Now the
+    // transaction is refused and the volume is byte-identical afterwards —
+    // both memory files, and the whole batch: one refused slot refuses the
+    // write for every slot in it. The count alone is still written at 6/4.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        {
+            std::string text = commands::readMemory(volume);
+            const auto rhythm = [&text](int slot, const char* tag, long long value) {
+                text = rc0::replaceSlotBody(
+                    text, slot,
+                    rc0::setSectionField(rc0::slotBody(text, slot), rc0::kSectionRhythm, tag, value));
+            };
+            // Slot 5: silent at 6/4 with the pedal's Rock2. Slot 6: the same,
+            // playing. Slot 7: the app's own count-in shape, moved to 6/4.
+            rhythm(5, "Beat", 4);
+            rhythm(5, "Pattern", 3);
+            rhythm(6, "Beat", 4);
+            rhythm(6, "Pattern", 3);
+            rhythm(6, "State", rc0::kRhythmStateOn);
+            rhythm(7, "Beat", 4);
+            rhythm(7, "Pattern", rc0::kRhythmPatternBlank);
+            rhythm(7, "State", rc0::kRhythmStateOn);
+            rhythm(7, "PlayCount", rc0::kRhythmPlayCount1Meas);
+            for (const int fileNo : { 1, 2 })
+                commands::writeFileBytes(volume::memoryPath(volume, fileNo),
+                                         rc0::setTailMarker(text, fileNo));
+        }
+        const auto pair = [&volume] {
+            return std::pair { commands::readFileBytes(volume::memoryPath(volume, 1)),
+                               commands::readFileBytes(volume::memoryPath(volume, 2)) };
+        };
+        const auto before = pair();
+
+        CHECK_THROWS(commands::setCountIn(volume, { 5 }, true, writeOpts(tmp.path)), "at 6/4");
+        CHECK(pair() == before);
+        CHECK_EQ(rc0::field(rc0::slotBody(commands::readMemory(volume), 5), "Pattern"), 3);
+        // A 4/4 slot ahead of it in the batch does not land first.
+        CHECK_THROWS(commands::setCountIn(volume, { 3, 5 }, true, writeOpts(tmp.path)), "at 6/4");
+        CHECK(pair() == before);
+        CHECK(!catalog::readSlot(commands::readMemory(volume), 3).countIn);
+        // Off over the borrowed section is the other refused path.
+        CHECK_THROWS(commands::setCountIn(volume, { 7 }, false, writeOpts(tmp.path)), "at 6/4");
+        CHECK(pair() == before);
+        // On where it already is: nothing to write, nothing refused.
+        commands::setCountIn(volume, { 7 }, true, writeOpts(tmp.path));
+        CHECK(rc0::slotBody(commands::readMemory(volume), 7)
+              == rc0::slotBody(std::string(before.first.begin(), before.first.end()), 7));
+
+        // The count alone at 6/4: over a playing rhythm, on and then off move
+        // PlayCount and nothing else — the pedal's 3 stays 3.
+        commands::setCountIn(volume, { 6 }, true, writeOpts(tmp.path));
+        {
+            const std::string text = commands::readMemory(volume);
+            const std::string body = rc0::slotBody(text, 6);
+            CHECK_EQ(rc0::field(body, "PlayCount"), rc0::kRhythmPlayCount1Meas);
+            CHECK_EQ(rc0::field(body, "Pattern"), 3);
+            CHECK_EQ(rc0::field(body, "State"), rc0::kRhythmStateOn);
+            CHECK_EQ(rc0::field(body, "Beat"), 4);
+            CHECK(catalog::readSlot(text, 6).countIn);
+        }
+        commands::setCountIn(volume, { 6 }, false, writeOpts(tmp.path));
+        {
+            const std::string body = rc0::slotBody(commands::readMemory(volume), 6);
+            CHECK_EQ(rc0::field(body, "PlayCount"), 0);
+            CHECK_EQ(rc0::field(body, "Pattern"), 3);
+            CHECK_EQ(rc0::field(body, "State"), rc0::kRhythmStateOn);
+        }
+    }
+
     // --- push: validate-then-write, canonical bytes, full config ---
 
     {

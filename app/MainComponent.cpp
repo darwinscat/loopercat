@@ -351,8 +351,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             toggleCountIn(slot, row->info.countIn);
     };
     rhythmPane.onEdit = [this](int slot, usecases::rhythm::Edits edits) {
-        if (!pedalBusy && slotRowFor(slot) != nullptr)
-            editRhythm(slot, std::move(edits));
+        if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
+            editRhythm(slot, row->info.rhythm.beat, std::move(edits));
     };
     inspector.onPlayStopEdited = [this](int slot, usecases::playstop::Edits edits) {
         if (!pedalBusy && slotRowFor(slot) != nullptr)
@@ -2013,10 +2013,29 @@ void MainComponent::toggleCountIn(int slot, bool currentlyOn)
 // screen's fields. The change rides as the job's note, in the card's own
 // words (usecases::rhythm::describe): the banner reads "Rhythm on slot 7 —
 // kit Jazz", and the history row keeps the same words, not "field 5 = 2".
-void MainComponent::editRhythm(int slot, usecases::rhythm::Edits edits)
+// The words are made here, before the job is enqueued and before the
+// history opens its row, from the memory's beat as the table shows it: a
+// pattern at a beat whose list is not charted is refused at this line, and
+// no row is written for it (#149). The card itself is checked again on the
+// worker, against the beat it holds then.
+void MainComponent::editRhythm(int slot, long long beat, usecases::rhythm::Edits edits)
 {
     if (!CardPermissions::of(snapshot.family).rhythm)
         return;
+    // Caught rather than dropped: the tab locks PATTERN where these words
+    // would be refused, so reaching the catch means the tab and the core
+    // disagree, and a silent drop would hide exactly that. The banner shows
+    // the core's sentence; no job and no history row follow. Nothing above
+    // this frame catches on the message thread — a throw here would end
+    // the app, not report.
+    std::shared_ptr<juce::String> note;
+    try {
+        note = std::make_shared<juce::String>(utf8(usecases::rhythm::describe(edits, beat)));
+    } catch (const Error& e) {
+        banners.showError(banners::Source::job,
+                          "Rhythm on slot " + juce::String(slot) + ": " + utf8(e.what()));
+        return;
+    }
     const auto options = makeWriteOptions();
     worker.enqueue(recorded("rhythm", options,
                             { "Rhythm on slot " + juce::String(slot),
@@ -2024,8 +2043,7 @@ void MainComponent::editRhythm(int slot, usecases::rhythm::Edits edits)
                               [slot, edits, options](const volume::fs::path& volumePath) {
                                   commands::setRhythm(volumePath, slot, edits, options);
                               },
-                              std::make_shared<juce::String>(
-                                  utf8(usecases::rhythm::describe(edits))) }));
+                              std::move(note) }));
 }
 
 // One job per change on the Start & Stop card, the twin of editRhythm: the

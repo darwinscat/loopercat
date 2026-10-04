@@ -76,7 +76,7 @@ unplugged the pedal folds its own output to mono, which hardware confirmed.
 | `State` | Rhythm on/off for this memory | 0/1 | [M] |
 | `Level` | Drum level | 0–200 | [M] |
 | `Reverb` | Drum reverb send | 0–100, factory 30 | [M] |
-| `Pattern` | Rhythm pattern | enum 0–56 (57 patterns) | [M] map to verify |
+| `Pattern` | Rhythm pattern — an index into the list of the memory's **current `Beat`**, not into one global list | at 4/4: enum 0–56 (the manual's 57 patterns) + 57 = Blank; Rock2 is 12 at 4/4 and 3 at 6/4; every other beat's list uncharted (length, order, Blank) | [V] 4/4 only (hardware 2026-10-01) |
 | `Variation` | Variation A/B | 0/1 | [M] |
 | `VariationChange` | When A↔B switches | measure / loop end | [M] |
 | `Kit` | Drum kit | enum (Studio, Live, Rock, Jazz, Brush, Cajon…) | [M] map to verify |

@@ -3,6 +3,7 @@
 
 #include "RhythmPane.h"
 
+#include "RefusalWords.h"
 #include "Strings.h"
 
 #include <felitronics/appkit/Brand.h>
@@ -187,13 +188,30 @@ void RhythmControls::setValues(const rhythm::Values& values)
 
 void RhythmControls::refresh()
 {
-    pattern_.setSelectedId(static_cast<int>(values_.pattern) + 1, juce::dontSendNotification);
+    // PATTERN is an index into the current BEAT's list, and only the 4/4
+    // list is charted (Rhythm.hpp, #149): elsewhere the box shows the number
+    // the card holds — as text, with no item behind it — and is a lamp, in
+    // the shape BEAT takes under a take. A 4/4 name for a 6/4 number is the
+    // one thing this tab must never show. The caption never throws: a memory
+    // can hold a beat the manual's list lacks, and this runs on every snapshot.
+    if (values_.patternCharted)
+        pattern_.setSelectedId(static_cast<int>(values_.pattern) + 1, juce::dontSendNotification);
+    else
+        pattern_.setText(juce::String(values_.pattern), juce::dontSendNotification);
+    pattern_.setEnabled(isEnabled() && values_.patternCharted);
+    patternCaption_.setText(values_.patternCharted ? juce::String("PATTERN")
+                                                   : words::patternCaptionLocked(values_.beat),
+                            juce::dontSendNotification);
     kit_.setSelectedId(static_cast<int>(values_.kit) + 1, juce::dontSendNotification);
     beat_.setSelectedId(static_cast<int>(values_.beat) + 1, juce::dontSendNotification);
     variation_.setSelectedId(static_cast<int>(values_.variation) + 1, juce::dontSendNotification);
-    // The manual's rule, said where it applies: a recorded take fixes the beat.
-    beat_.setEnabled(isEnabled() && !values_.beatLocked);
-    beatCaption_.setText(values_.beatLocked ? "BEAT (fixed by the take)" : "BEAT",
+    // The manual's rule, said where it applies: a recorded take fixes the
+    // beat. And ours (Rhythm.hpp, #149): while the count-in borrows the
+    // section at 4/4, BEAT stays — the way out is on the pane's line.
+    beat_.setEnabled(isEnabled() && !values_.beatLocked && !values_.beatHeldByCountIn);
+    beatCaption_.setText(values_.beatLocked         ? juce::String("BEAT (fixed by the take)")
+                         : values_.beatHeldByCountIn ? words::beatCaptionHeld()
+                                                     : juce::String("BEAT"),
                          juce::dontSendNotification);
 
     // A field being typed in is the user's, not ours.
@@ -214,11 +232,11 @@ void RhythmControls::refresh()
 // not have until the job ends.
 void RhythmControls::enablementChanged()
 {
-    for (auto* control : std::initializer_list<juce::Component*> { &pattern_, &kit_, &variation_,
-                                                                   &level_, &reverb_, &toneLow_,
+    for (auto* control : std::initializer_list<juce::Component*> { &kit_, &variation_, &level_,
+                                                                   &reverb_, &toneLow_,
                                                                    &toneHigh_ })
         control->setEnabled(isEnabled());
-    refresh(); // also re-applies BEAT's own lock
+    refresh(); // also re-applies BEAT's own lock, and PATTERN's at an uncharted beat
 }
 
 void RhythmControls::resized()
@@ -319,9 +337,22 @@ void RhythmPane::refresh()
     const rhythm::Values& v = info_.rhythm;
     switch_.setState(v.on, v.on ? "Drums play with this memory."
                                 : "No drums with this memory.");
-    // The groove that "off" would forget: only with a count-in in front of
-    // playing drums does off mean Blank rather than State off (Rhythm.hpp).
-    cost_.setText(v.on && info_.countIn
+    // A click the core would refuse is not offered: at an uncharted beat the
+    // two clicks that write a PATTERN number make the switch a lamp, and the
+    // line beside it says why in the player's words (RefusalWords.h) — the
+    // same typed refusal the core would throw, so the tab and a banner can
+    // never disagree about when (Rhythm.hpp, switchRefusal).
+    const auto refused = rhythm::switchRefusal(v, info_.countIn, !v.on);
+    if (refused)
+        switch_.setEnabled(false);
+    // Otherwise the BEAT that stays while the count-in borrows the section,
+    // or the groove that "off" would forget: only with a count-in in front
+    // of playing drums does off mean Blank rather than State off
+    // (Rhythm.hpp). That click is refused at an uncharted beat, so the name
+    // is looked up only where the list is charted.
+    cost_.setText(refused ? words::rhythmSwitchRefused(*refused, v.beat)
+                  : v.beatHeldByCountIn ? words::beatHeldByCountIn()
+                  : v.on && info_.countIn
                       ? "Switching it off keeps the count-in and forgets "
                             + name(rhythm::patternName(v.pattern)) + "."
                       : juce::String(),

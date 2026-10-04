@@ -58,7 +58,9 @@ private:
 // The RHYTHM screen's eight fields, one control each, in the screen's order:
 // the choices above, the numbers below. Every control carries its field's
 // name as its component id (pattern, kit, beat, variation, level, reverb,
-// toneLow, toneHigh).
+// toneLow, toneHigh). Two of them lock themselves from the memory's own
+// facts, caption saying why: BEAT under a recorded take, PATTERN at a beat
+// whose list is not charted (Rhythm.hpp) — there it shows the number.
 class RhythmControls final : public juce::Component
 {
 public:
