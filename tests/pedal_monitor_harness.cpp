@@ -38,7 +38,9 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
+#include <stdexcept>
 
 using namespace loopercat;
 namespace fs = std::filesystem;
@@ -97,10 +99,10 @@ int main()
         deliveries.push_back(s);
     });
     std::vector<bool> busyEvents;
-    std::vector<std::pair<juce::String, juce::String>> jobResults;
+    std::vector<std::pair<juce::String, JobOutcome>> jobResults;
     monitor.onBusy = [&busyEvents](bool busy, int, bool) { busyEvents.push_back(busy); };
-    monitor.onJobResult = [&jobResults](juce::String description, juce::String error, int, int) {
-        jobResults.emplace_back(std::move(description), std::move(error));
+    monitor.onJobResult = [&jobResults](juce::String description, const JobOutcome& outcome, int, int) {
+        jobResults.emplace_back(std::move(description), outcome);
     };
     monitor.start();
 
@@ -169,7 +171,7 @@ int main()
     CHECK(pumpUntil([&] { return !jobResults.empty(); }, 5000));
     if (!jobResults.empty()) {
         CHECK_EQ(jobResults.back().first, juce::String("Rename slot 7"));
-        CHECK_EQ(jobResults.back().second, juce::String());
+        CHECK(jobResults.back().second.ok());
     }
     CHECK(pumpUntil([&] { return busyEvents.size() >= 2; }, 5000));
     if (busyEvents.size() >= 2) {
@@ -185,10 +187,78 @@ int main()
                           commands::rename(volumePath, 7, "ThirteenChars", testkit::unrecordedWrite());
                       } });
     CHECK(pumpUntil([&] { return jobResults.size() >= 2; }, 5000));
-    if (jobResults.size() >= 2)
-        CHECK(jobResults.back().second.contains("longer than 12"));
+    if (jobResults.size() >= 2) {
+        CHECK(jobResults.back().second.failed()); // its own work failed — not the gate
+        CHECK(jobResults.back().second.error().find("longer than 12") != std::string::npos);
+    }
     CHECK(!deliveries.empty() && !deliveries.back().slots.empty()
           && deliveries.back().slots.at(6).info.name == "Via Worker  ");
+
+    // 5b. A job that throws without a message must not take the worker with
+    // it (review of #146: a failure with no words would throw inside the
+    // handler, and a throw out of run() ends the thread). Its `after` runs,
+    // its result names the type, and the job behind it still runs.
+    {
+        std::optional<JobOutcome> wordlessAfter;
+        PedalWorker::Job wordless { "Throw without a word", 0,
+                                    [](const volume::fs::path&) { throw std::runtime_error(""); } };
+        wordless.after = [&wordlessAfter](const JobOutcome& outcome) { wordlessAfter = outcome; };
+        monitor.enqueue(std::move(wordless));
+        bool nextRan = false;
+        monitor.enqueue({ "Run after the wordless one", 0,
+                          [&nextRan](const volume::fs::path&) { nextRan = true; } });
+        CHECK(pumpUntil([&] { return jobResults.size() >= 4; }, 5000));
+        if (jobResults.size() >= 4) {
+            const JobOutcome& outcome = jobResults.at(jobResults.size() - 2).second;
+            CHECK_EQ(jobResults.at(jobResults.size() - 2).first, juce::String("Throw without a word"));
+            CHECK(outcome.failed());
+            // A plain sentence for the banner; the type that threw for the log.
+            CHECK_EQ(outcome.error(), std::string("the job stopped without saying why"));
+            CHECK(outcome.detail().find("a throw without a message: ") != std::string::npos);
+            CHECK(outcome.detail().find("runtime_error") != std::string::npos);
+            CHECK(jobResults.back().first == juce::String("Run after the wordless one"));
+            CHECK(jobResults.back().second.ok());
+        }
+        CHECK(wordlessAfter.has_value() && wordlessAfter->failed());
+        CHECK(nextRan);
+    }
+
+    // 5c. The eject starter is the other catch site on the worker: a
+    // wordless throw from it must not end the thread either. A fresh worker
+    // (the starter is wired before start) on the same content: the eject is
+    // requested while connected, the starter throws without a word, the
+    // "Eject" result names it, and a job behind it still runs — one that
+    // needs no card, since the machine stays `ejecting` with no completion.
+    {
+        std::vector<PedalSnapshot> ejectDeliveries;
+        PedalWorker ejector(volume.string(), [&ejectDeliveries](const PedalSnapshot& s) {
+            ejectDeliveries.push_back(s);
+        });
+        std::vector<std::pair<juce::String, JobOutcome>> ejectResults;
+        ejector.onJobResult = [&ejectResults](juce::String description, const JobOutcome& outcome, int, int) {
+            ejectResults.emplace_back(std::move(description), outcome);
+        };
+        ejector.setEjectStarter([](const std::string&) { throw std::runtime_error(""); });
+        ejector.start();
+        CHECK(pumpUntil([&] {
+            return !ejectDeliveries.empty() && ejectDeliveries.back().state == lifecycle::State::connected;
+        }, 5000));
+        ejector.requestEject();
+        bool afterwards = false;
+        ejector.enqueue({ "Run after the wordless eject", 0,
+                          [&afterwards](const volume::fs::path&) { afterwards = true; },
+                          nullptr, 0, false, false, false });
+        CHECK(pumpUntil([&] { return ejectResults.size() >= 2; }, 5000));
+        if (ejectResults.size() >= 2) {
+            CHECK_EQ(ejectResults.front().first, juce::String("Eject"));
+            CHECK(ejectResults.front().second.failed());
+            CHECK_EQ(ejectResults.front().second.error(), std::string("the job stopped without saying why"));
+            CHECK(ejectResults.front().second.detail().find("runtime_error") != std::string::npos);
+            CHECK_EQ(ejectResults.back().first, juce::String("Run after the wordless eject"));
+            CHECK(ejectResults.back().second.ok());
+        }
+        CHECK(afterwards);
+    }
 
     // 6. The content disappears (an unmount): the mounted state drops — no
     // rows and no clean volume left standing.
@@ -214,9 +284,10 @@ int main()
         PedalWorker ghostWorker(ghostVolume.string(), [&ghostDeliveries](const PedalSnapshot& s) {
             ghostDeliveries.push_back(s);
         });
-        std::vector<std::pair<juce::String, juce::String>> ghostResults;
-        ghostWorker.onJobResult = [&ghostResults](juce::String description, juce::String error, int, int) {
-            ghostResults.emplace_back(std::move(description), std::move(error));
+        std::vector<std::pair<juce::String, JobOutcome>> ghostResults;
+        ghostWorker.onJobResult = [&ghostResults](juce::String description, const JobOutcome& outcome,
+                                                  int, int) {
+            ghostResults.emplace_back(std::move(description), outcome);
         };
         ghostWorker.setBackingProbe(
             [](const volume::fs::path&) { return lifecycle::Backing::gone; });
@@ -226,17 +297,55 @@ int main()
         if (!ghostDeliveries.empty())
             CHECK(ghostDeliveries.back().state == lifecycle::State::ghost);
 
-        ghostWorker.enqueue({ "Rename slot 7 into the void", 7,
-                              [](const volume::fs::path& volumePath) {
-                                  commands::rename(volumePath, 7, "Phantom", testkit::unrecordedWrite());
-                              } });
+        // The refusal is a typed ending, not a sentence to parse (issue
+        // #146): the gate's state travels with the core's words, and nothing
+        // of the job ran — not `before`, not `work`. `after` still runs, and
+        // is handed the same refusal.
+        bool beforeRan = false;
+        bool workRan = false;
+        std::optional<JobOutcome> afterSaw;
+        PedalWorker::Job phantom { "Rename slot 7 into the void", 7,
+                                   [&workRan](const volume::fs::path& volumePath) {
+                                       workRan = true;
+                                       commands::rename(volumePath, 7, "Phantom", testkit::unrecordedWrite());
+                                   } };
+        phantom.before = [&beforeRan](const volume::fs::path&) { beforeRan = true; };
+        phantom.after = [&afterSaw](const JobOutcome& outcome) { afterSaw = outcome; };
+        ghostWorker.enqueue(std::move(phantom));
         CHECK(pumpUntil([&] { return !ghostResults.empty(); }, 5000));
-        if (!ghostResults.empty())
-            CHECK(ghostResults.back().second.contains("refusing to touch"));
+        if (!ghostResults.empty()) {
+            const JobOutcome& outcome = ghostResults.back().second;
+            CHECK(outcome.didNotRun());
+            CHECK(!outcome.failed());
+            CHECK(outcome.refusal() == JobOutcome::Refusal::ghost);
+            CHECK(outcome.error().find("refusing to touch") != std::string::npos);
+        }
+        CHECK(!beforeRan);
+        CHECK(!workRan);
+        CHECK(afterSaw.has_value() && afterSaw->didNotRun());
 
         // The write really was refused: the file on the ghost is untouched.
         const std::string after = readTextFile(ghostVolume / "ROLAND" / "DATA" / "MEMORY1.RC0");
         CHECK(after.find("Phantom") == std::string::npos);
+
+        // A quiet job the gate refuses is not told — nothing ran and nobody
+        // asked — but its `after` still learns the refusal. The player's own
+        // job queued behind it (both foreground, so in order) is told, and
+        // its result marks the moment to look.
+        std::optional<JobOutcome> quietSaw;
+        PedalWorker::Job quietJob { "Record the card's first snapshot", 0,
+                                    [&workRan](const volume::fs::path&) { workRan = true; },
+                                    nullptr, 0, false, true, true };
+        quietJob.after = [&quietSaw](const JobOutcome& outcome) { quietSaw = outcome; };
+        ghostWorker.enqueue(std::move(quietJob));
+        ghostWorker.enqueue({ "Rename slot 8 into the void", 8,
+                              [&workRan](const volume::fs::path&) { workRan = true; } });
+        CHECK(pumpUntil([&] { return ghostResults.size() >= 2; }, 5000));
+        CHECK_EQ(ghostResults.size(), 2u); // the quiet refusal was not told
+        if (ghostResults.size() >= 2)
+            CHECK_EQ(ghostResults.back().first, juce::String("Rename slot 8 into the void"));
+        CHECK(quietSaw.has_value() && quietSaw->didNotRun());
+        CHECK(!workRan);
 
         fs::remove_all(ghostVolume);
     }
