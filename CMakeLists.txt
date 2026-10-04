@@ -648,6 +648,7 @@ target_link_libraries(player_pane_harness PRIVATE
     felitronics::appkit
     juce::juce_gui_basics
     juce::juce_audio_utils
+    juce::juce_cryptography             # the read pass hashes what it meters (#140)
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME player_pane_harness COMMAND player_pane_harness)

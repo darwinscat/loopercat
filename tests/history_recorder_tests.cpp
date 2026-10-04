@@ -20,9 +20,12 @@
 //     (#141), and what normalize measured is in the history under the bytes
 //     it measured — written or not (#140); a reading has nowhere to go while
 //     no card is in front of the history
+//   - a loudness check files what it read under the hash of the file read,
+//     and still answers when the history will not take it
 
 #include "support.hpp"
 
+#include "../app/history/SlotLoudness.h"
 #include "../app/history/WriteOptionsFactory.h"
 #include "../app/OperationsLog.h"
 
@@ -747,6 +750,51 @@ int main()
         // and the store's refusals come through, a session or not
         rec->selectVolume(volume);
         CHECK_THROWS(rec->reading("short", { -20.0, 0.5f, -3.0, 0 }), "32 bytes");
+    }
+
+    // --- a loudness check files what it read, and answers even when the history will not (#140) ---
+    //
+    // Theory: the job reads the take once, measures it, and files the reading
+    // under the hash of exactly the bytes it read. The answer does not depend
+    // on the filing: no card in front of the history, nothing filed and no
+    // failure; a store that refuses, the refusal reported and the reading
+    // still returned. A slot with no take is an error, as before.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
+        const std::string bytes = commands::readFileBytes(volume::wavDir(volume, 9) / "009_1.WAV");
+        auto rec = recorderAt(tmp.path / "history");
+
+        const auto cold = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(cold.hash == HistoryStore::contentHash(bytes));
+        CHECK(cold.reading.integratedLufs.has_value()
+              && std::abs(*cold.reading.integratedLufs - (-23.0)) <= 0.1);
+        CHECK(!cold.kept);
+        CHECK(cold.failure.empty());
+        CHECK(!fs::exists(tmp.path / "history" / "history.db")); // not even opened for it
+
+        rec->selectVolume(volume); // the card is in front of the history now
+        const auto warm = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(warm.kept);
+        CHECK(warm.failure.empty());
+        const auto stored = rec->store().readingFor(HistoryStore::contentHash(bytes));
+        CHECK(stored.has_value());
+        CHECK(stored.has_value() && stored->reading.integratedLufs.has_value()
+              && warm.reading.integratedLufs.has_value()
+              && std::abs(*stored->reading.integratedLufs - *warm.reading.integratedLufs) <= 1.0e-12);
+        CHECK(stored.has_value() && stored->reading.wildSamples == 0);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM loudness_readings"), 1);
+
+        // the history cannot take it: the answer still comes, with the refusal beside it
+        rec->store().db().exec("DROP TABLE loudness_readings");
+        const auto broken = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(broken.reading.integratedLufs.has_value());
+        CHECK(broken.hash == HistoryStore::contentHash(bytes));
+        CHECK(!broken.kept);
+        CHECK(!broken.failure.empty());
+
+        CHECK_THROWS(history::readSlotLoudness(volume, 10, *rec), "no audio to measure");
     }
 
     // --- the wiring refuses to be built without what it needs ---

@@ -14,6 +14,7 @@
 
 #include <array>
 #include <optional>
+#include <string>
 #include <vector>
 
 //==============================================================================
@@ -98,13 +99,17 @@ public:
     // loads in ONE background pass that feeds both the waveform and a
     // BS.1770 meter, and hands the reading up through onLoudnessRead the
     // moment the waveform is complete — no second read off the card, no
-    // button. The owner turns it into words (target, damage) and feeds them
-    // back through setLoudness; a read-only check running elsewhere lands
-    // the same way. The readout and Normalize… share the row with Trim and
-    // step aside while a trim selection is active: the selection owns the
-    // row then, and Normalize is whole-loop work that must not read as "the
+    // button. With it goes the content hash of the bytes it metered
+    // (history::contentHash): a reading is a fact about those bytes, and
+    // the owner files it in the history under that key (#140). The owner
+    // turns it into words (target, damage) and feeds them back through
+    // setLoudness; a read-only check running elsewhere lands the same way.
+    // The readout and Normalize… share the row with Trim and step aside
+    // while a trim selection is active: the selection owns the row then,
+    // and Normalize is whole-loop work that must not read as "the
     // selection". All setters ignore a slot that is not the loaded one.
-    std::function<void(int, const wav::LoudnessReading&)> onLoudnessRead;
+    std::function<void(int, const wav::LoudnessReading&, const std::string& contentHash)>
+        onLoudnessRead;
     void setLoudness(int slot, const juce::String& text, bool attention, bool damaged,
                      const juce::String& tooltip);
     void setLoudnessPending(int slot);
@@ -147,12 +152,19 @@ private:
     void updateTransportRow();
     void updateLoudnessButtons();
     void layoutReadout();
-    void passFinished(int slot, std::optional<wav::LoudnessReading> reading); // message thread
+    void passFinished(int slot, std::optional<wav::LoudnessReading> reading,
+                      std::string contentHash); // message thread
 
     // The one read pass over a loaded file: waveform blocks into the
     // thumbnail, samples into the meter, then the reading up to the pane. A
     // new load or a clear stops it between blocks — browsing fast through
     // slots must not queue a card's worth of reads.
+    //
+    // A file that is metered is read into memory whole, in slices, and
+    // decoded from there: the reading is filed under the hash of its bytes
+    // (#140), a hash is of all of them, and the card is still read once. A
+    // lane that is only drawn (a multi-track memory) streams from the file
+    // as before.
     class ReadPass final : public juce::Thread
     {
     public:
@@ -166,6 +178,12 @@ private:
         void run() override;
 
     private:
+        // The whole file into `out`, a slice at a time so stop() is heard
+        // between two of them: one read of a long take over USB would hold
+        // the thread past stop()'s patience. False when the file could not
+        // be read to its end — or when the pass was told to stop.
+        bool readWhole(const juce::File& file, juce::MemoryBlock& out);
+
         PlayerPane& owner_;
         std::vector<juce::File> files_;
         int slot_ = 0;

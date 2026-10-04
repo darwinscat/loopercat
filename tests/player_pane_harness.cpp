@@ -21,11 +21,14 @@
 
 #include "../app/CardPermissions.h"
 #include "../app/PlayerPane.h"
+#include "../app/history/ContentHash.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <fstream>
 #include <optional>
+#include <string>
+#include <string_view>
 
 using namespace loopercat;
 
@@ -77,14 +80,18 @@ int main()
 
     const juce::File wavFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
                                    .getChildFile("loopercat_player_pane_harness.wav");
+    testkit::WavSpec spec;
+    spec.frames = kFrames;
+    const auto wavBytes = testkit::syntheticWav(spec);
     {
-        testkit::WavSpec spec;
-        spec.frames = kFrames;
-        const auto bytes = testkit::syntheticWav(spec);
         std::ofstream out(wavFile.getFullPathName().toStdString(), std::ios::binary);
-        out.write(reinterpret_cast<const char*>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
+        out.write(reinterpret_cast<const char*>(wavBytes.data()),
+                  static_cast<std::streamsize>(wavBytes.size()));
     }
+    // What the history would file the reading under: the hash of the file's
+    // bytes, every one of them, not of what a decoder chose to read.
+    const std::string wavHash = history::contentHash(
+        std::string_view(reinterpret_cast<const char*>(wavBytes.data()), wavBytes.size()));
 
     AudioEngine engine;
     PlayerPane pane(engine);
@@ -105,16 +112,22 @@ int main()
     pane.onTrim = [&](int slot, juce::int64 in, juce::int64 out) { trimmed = Trimmed { slot, in, out }; };
     // The owner's half of the loudness round trip: the reading comes back as
     // words, and the button is enabled again.
-    pane.onLoudnessRead = [&](int slot, const wav::LoudnessReading&) {
+    // The hash rides along with the reading (#140): the one the history keys
+    // takes by, of exactly the bytes in the file the pane was handed.
+    std::string readHash;
+    pane.onLoudnessRead = [&](int slot, const wav::LoudnessReading&, const std::string& hash) {
+        readHash = hash;
         pane.setLoudness(slot, "-14.0 LUFS", false, false, "");
     };
 
     const auto load = [&] {
+        readHash.clear();
         pane.setSlot(1, wavFile, "01 Loop", false, kFrames);
         CHECK(engine.hasSource());
         CHECK(pane.currentPath() == wavFile.getFullPathName());
         settle(pane);
         CHECK(normalize->isEnabled()); // so a dropped press below is the card's doing
+        CHECK(readHash == wavHash);    // the reading came up keyed by the file's own bytes
     };
 
     // --- a pane never told what it may do offers nothing ---

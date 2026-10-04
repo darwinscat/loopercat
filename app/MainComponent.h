@@ -303,6 +303,9 @@ private:
     };
     static LoudnessReport describeReading(const wav::LoudnessReading& reading, double targetLufs);
     void enqueueLoudnessRead(int slot, double target, int batch);
+    // A reading the player's own pass took, into the history under the hash
+    // of the bytes it metered (#140) — on the worker, the store's thread.
+    void keepReading(std::string hash, wav::LoudnessReading reading);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);

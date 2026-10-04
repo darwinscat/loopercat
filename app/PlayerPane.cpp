@@ -3,10 +3,13 @@
 
 #include "PlayerPane.h"
 
+#include "history/ContentHash.h"
+
 #include <loopercat/Params.hpp>
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
+#include <string_view>
 
 namespace loopercat
 {
@@ -18,6 +21,7 @@ namespace
     const juce::Colour kDim { 0xff63636d };
     constexpr int kTransportRowHeight = 30;
     constexpr int kReadBlock = 32768; // frames per read-pass block: ~0.7 s, a fine stop grain
+    constexpr int kReadSlice = 1 << 20; // bytes per slice of a whole-file read: ~3 s of float32 stereo
     // The transport row's right side, outside in: the time readout ("12:34 /
     // 12:34" at 13 px plus its 44 px right margin), then the operation zone
     // that [Reset][Trim] and [Measure][Normalize…] take turns in. Any
@@ -329,31 +333,67 @@ void PlayerPane::ReadPass::start(std::vector<juce::File> files, int slot)
     startThread();
 }
 
+bool PlayerPane::ReadPass::readWhole(const juce::File& file, juce::MemoryBlock& out)
+{
+    juce::FileInputStream in(file);
+    if (!in.openedOk())
+        return false;
+    const juce::int64 total = in.getTotalLength();
+    if (total < 0)
+        return false;
+    out.setSize(static_cast<std::size_t>(total), false);
+    juce::int64 done = 0;
+    while (done < total && !threadShouldExit()) {
+        const int n = static_cast<int>(std::min<juce::int64>(kReadSlice, total - done));
+        const int got = in.read(static_cast<char*>(out.getData()) + done, n);
+        if (got <= 0)
+            return false;
+        done += got;
+    }
+    return done == total;
+}
+
 void PlayerPane::ReadPass::run()
 {
     const int slot = slot_;
     juce::Component::SafePointer<PlayerPane> owner(&owner_);
-    const auto finish = [owner, slot](std::optional<wav::LoudnessReading> reading) {
-        juce::MessageManager::callAsync([owner, slot, reading] {
+    const auto finish = [owner, slot](std::optional<wav::LoudnessReading> reading,
+                                      std::string hash) {
+        juce::MessageManager::callAsync([owner, slot, reading, key = std::move(hash)] {
             if (owner != nullptr)
-                owner->passFinished(slot, reading);
+                owner->passFinished(slot, reading, key);
         });
     };
     // The meter measures one loop; a multi-track memory draws its lanes and
     // reports no reading.
     const bool measure = files_.size() == 1;
     std::optional<wav::LoudnessReading> reading;
+    std::string hash; // of the bytes metered: the key the reading is filed under (#140)
     for (std::size_t lane = 0; lane < files_.size() && lane < 2; ++lane) {
         juce::AudioThumbnail& thumbnail = owner_.thumbnailFor(static_cast<int>(lane));
         if (files_[lane] == juce::File()) {
             thumbnail.reset(2, 44100.0, 0); // a track without a take: an empty lane, drawn
             continue;
         }
-        std::unique_ptr<juce::AudioFormatReader> reader(
-            owner_.engine_.formats().createReaderFor(files_[lane]));
+        // Declared before the reader: a reader over the bytes must go first.
+        juce::MemoryBlock bytes;
+        std::unique_ptr<juce::AudioFormatReader> reader;
+        if (measure) {
+            if (!readWhole(files_[lane], bytes)) {
+                if (!threadShouldExit())
+                    finish(std::nullopt, {}); // a short read is not a reading
+                return;
+            }
+            hash = history::contentHash(
+                std::string_view(static_cast<const char*>(bytes.getData()), bytes.getSize()));
+            reader.reset(owner_.engine_.formats().createReaderFor(
+                std::make_unique<juce::MemoryInputStream>(bytes.getData(), bytes.getSize(), false)));
+        } else {
+            reader.reset(owner_.engine_.formats().createReaderFor(files_[lane]));
+        }
         if (reader == nullptr || reader->numChannels < 1) {
             if (measure)
-                finish(std::nullopt);
+                finish(std::nullopt, {});
             return;
         }
         const int channels = static_cast<int>(reader->numChannels);
@@ -401,7 +441,7 @@ void PlayerPane::ReadPass::run()
             return; // stopped for a newer file: no verdict, and no message
         if (measure) {
             if (position < total || !metered) {
-                finish(std::nullopt); // a short read is not a reading
+                finish(std::nullopt, {}); // a short read is not a reading
                 return;
             }
             reading = wav::LoudnessReading { meter->integratedLufs(), meter->samplePeak(),
@@ -409,10 +449,11 @@ void PlayerPane::ReadPass::run()
         }
     }
     if (measure)
-        finish(reading);
+        finish(reading, hash);
 }
 
-void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> reading)
+void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> reading,
+                              std::string contentHash)
 {
     if (slot != slot_)
         return; // the pass for a slot no longer loaded
@@ -424,7 +465,7 @@ void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> read
         return;
     }
     if (onLoudnessRead)
-        onLoudnessRead(slot, *reading); // the owner answers with setLoudness
+        onLoudnessRead(slot, *reading, contentHash); // the owner answers with setLoudness
 }
 
 // The readout sits right after the name and takes what is left of the row
