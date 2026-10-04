@@ -582,8 +582,9 @@ struct PushOptions {
 // name the card refuses at the write would leave the slot empty with a
 // config that says it holds audio (issue #139, review). The rules are
 // FatName.hpp's: no separator in either direction (the card is FAT and is
-// read on Windows too), none of FAT's reserved characters, at most 255
-// UTF-16 units, no Windows device name; plus the card's own: no name the
+// read on Windows too), none of FAT's reserved characters, at most 238
+// UTF-16 units (what Windows's MAX_PATH leaves under the card folder — FAT's
+// own 255 is not the binding limit), no Windows device name; plus the card's own: no name the
 // junk sweep deletes (volume::isJunkName — "._take.wav" would be reported
 // as pushed and swept at the next sweep), no name starting with a dot (a
 // hidden file on every host). The extension's case is not checked: the
@@ -614,10 +615,10 @@ inline void assertLandedName(const std::string& name)
                     + "\" would be a hidden file");
     if (fatname::isDeviceName(name))
         throw Error("push: \"" + name + "\" is a name Windows reserves for a device");
-    if (const std::size_t units = fatname::utf16Units(name); units > fatname::kMaxUnits)
+    if (const std::size_t units = fatname::utf16Units(name); units > fatname::kMaxLandedUnits)
         throw Error("push: the name on the card is " + std::to_string(units)
                     + " characters long; a file name on the card holds at most "
-                    + std::to_string(fatname::kMaxUnits));
+                    + std::to_string(fatname::kMaxLandedUnits));
 }
 
 struct PushResult {

@@ -16,8 +16,12 @@ using namespace loopercat;
 
 int main()
 {
-    // --- the limit is FAT's: 255 units ---
+    // --- the limits: FAT's 255 units, and the 238 Windows's MAX_PATH leaves under the card folder ---
     CHECK_EQ(fatname::kMaxUnits, std::size_t { 255 });
+    CHECK_EQ(fatname::kWindowsMaxPath, std::size_t { 260 });
+    CHECK_EQ(fatname::kCardFolderChars, std::string("E:\\ROLAND\\WAVE\\001_1\\").size());
+    CHECK_EQ(fatname::kMaxLandedUnits, std::size_t { 238 });
+    CHECK_EQ(fatname::kMaxLandedUnits, fatname::kWindowsMaxPath - 1 - fatname::kCardFolderChars);
 
     // --- units, not bytes: ASCII one each, BMP one each, astral two ---
     CHECK_EQ(fatname::utf16Units(""), std::size_t { 0 });
@@ -67,6 +71,18 @@ int main()
     for (const char* plain : { "", "CONSOLE.wav", "COM10.wav", "COM0.wav", "LPT.wav", "COM.wav",
                                "aux-pedal.wav", "nul1.wav", "song.wav", ".wav" })
         CHECK(!fatname::isDeviceName(plain));
+    // the superscript digits Windows reserves alongside 1-3: all twelve, in any case, with and without an extension
+    for (const char* sup : { "\xc2\xb9", "\xc2\xb2", "\xc2\xb3" }) {
+        for (const char* device : { "COM", "LPT", "com", "lpt" }) {
+            CHECK(fatname::isDeviceName(std::string(device) + sup));
+            CHECK(fatname::isDeviceName(std::string(device) + sup + ".wav"));
+        }
+    }
+    // ...and only those: a degree sign (C2 B0), a superscript four (E2 81 B4), a digit followed by more
+    CHECK(!fatname::isDeviceName("COM\xc2\xb0.wav"));
+    CHECK(!fatname::isDeviceName("COM\xe2\x81\xb4.wav"));
+    CHECK(!fatname::isDeviceName("COM\xc2\xb9x.wav"));
+    CHECK(!fatname::isDeviceName("COM1x.wav"));
 
     return testkit::summary("fat_name");
 }

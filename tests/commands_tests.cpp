@@ -1180,25 +1180,29 @@ int main()
         CHECK(!fs::exists(tmp.path / "archive" / replacing.opId));
         CHECK(volumeBytes(volume) == before);
 
-        // The review's P0: a name longer than a FAT name (255 UTF-16 units)
-        // used to pass the up-front check, so push archived and removed the
-        // old take and then failed at the write — an empty slot folder under
-        // a config that says it holds audio. A 252-character stem plus .wav
-        // is 256 units: refused before the archive is touched, the old take
-        // stays, the card is byte-identical.
+        // The review's P0: a name longer than the card can take used to pass
+        // the up-front check, so push archived and removed the old take and
+        // then failed at the write — an empty slot folder under a config that
+        // says it holds audio. The cap is 238 UTF-16 units: what Windows's
+        // MAX_PATH (260, terminator included) leaves under the 21-character
+        // card folder — FAT's own 255 is not the binding limit. A
+        // 252-character stem plus .wav: refused before the archive is
+        // touched, the old take stays, the card is byte-identical.
         const commands::WriteOptions longName = writeOpts(tmp.path, "op-long-name");
         CHECK_THROWS(commands::push(volume, source, 9,
                                     { .landedName = std::string(252, 'n') + ".wav", .force = true,
                                       .write = longName }),
-                     "at most 255");
+                     "at most 238");
         CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
         CHECK(!fs::exists(tmp.path / "archive" / longName.opId));
         CHECK(volumeBytes(volume) == before);
-        // Exactly 255 units passes the check (the card would take it); the
-        // file itself is not written here, where a host temp path plus 255
-        // characters would exceed what a Windows runner allows.
-        commands::assertLandedName(std::string(251, 'n') + ".wav");
-        CHECK_THROWS(commands::assertLandedName(std::string(252, 'n') + ".wav"), "256");
+        // The name that passed every check and still failed on Windows:
+        // 239 units. 238 passes, 239 is refused. The file itself is not
+        // written here, where a host temp path plus the name would exceed
+        // what a Windows runner allows.
+        commands::assertLandedName(std::string(234, 'n') + ".wav");
+        CHECK_THROWS(commands::assertLandedName(std::string(235, 'n') + ".wav"), "239");
+        CHECK_THROWS(commands::assertLandedName(std::string(251, 'n') + ".wav"), "at most 238");
         // units, not bytes: 200 "é" are 400 bytes and 200 units
         std::string accented;
         for (int i = 0; i < 200; ++i)
