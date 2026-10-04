@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "HintDelay.h"
 #include "HistoryWindow.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -20,7 +21,8 @@
 // The hints are the frame's too. A juce::TooltipWindow shows tips only for
 // components sharing its own peer, so the main window's never reaches a
 // view living in this one (#143): the view's list answers getTooltipForRow,
-// and this window is where the answer can appear.
+// and this window is where the answer can appear — after the same rest as
+// in the main window (HintDelay.h).
 //==============================================================================
 namespace loopercat
 {
@@ -48,9 +50,6 @@ public:
     }
 
 private:
-    // The main window's patience (MainComponent.h), so the two feel alike.
-    static constexpr int kHintDelayMs = 600;
-
     std::function<bool(const juce::KeyPress&)> keys_;
     juce::TooltipWindow hints_ { this, kHintDelayMs };
 
