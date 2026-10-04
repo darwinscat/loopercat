@@ -17,7 +17,9 @@
 //   - an op names the slot it is about once it has begun, and keeps it when
 //     it then writes nothing (#144); maintenance is about no slot
 //   - every take row carries the stamp the card's directory entry showed
-//     (#141)
+//     (#141), and what normalize measured is in the history under the bytes
+//     it measured — written or not (#140); a reading has nowhere to go while
+//     no card is in front of the history
 
 #include "support.hpp"
 
@@ -26,12 +28,16 @@
 
 #include <loopercat/Commands.hpp>
 
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <numbers>
 #include <string>
+#include <vector>
 
 using namespace loopercat;
 using history::HistoryRecorder;
@@ -71,6 +77,43 @@ void putWav(const fs::path& volume, int slot, const std::string& name, int frame
     commands::writeFileBytes(volume::wavDir(volume, slot) / name,
                              std::string_view(reinterpret_cast<const char*>(bytes.data()),
                                               bytes.size()));
+}
+
+// A float32 stereo take of a 997 Hz sine at `dbfs` peak in both channels —
+// the tone BS.1770 calibrates on, so a -28 dBFS take reads -28 LUFS — which
+// is what a measurement has to read off before anything can be said about it.
+void putSineWav(const fs::path& volume, int slot, const std::string& name, int frames, double dbfs)
+{
+    std::vector<unsigned char> b;
+    const auto ascii = [&b](std::string_view t) {
+        for (const char c : t)
+            b.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](int v) { p16(v & 0xffff); p16((v >> 16) & 0xffff); };
+    const auto sample = [&b](float value) {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        for (int shift = 0; shift < 32; shift += 8)
+            b.push_back(static_cast<unsigned char>((bits >> shift) & 0xffu));
+    };
+    const int dataSize = frames * 8;
+    ascii("RIFF"); p32(12 + 24 + 8 + dataSize - 8); ascii("WAVE");
+    ascii("fmt "); p32(16);
+    p16(3); p16(2); p32(wav::kSampleRate); p32(wav::kSampleRate * 8); p16(8); p16(32);
+    ascii("data"); p32(dataSize);
+    const double amp = std::pow(10.0, dbfs / 20.0);
+    const double w = 2.0 * std::numbers::pi * 997.0 / wav::kSampleRate;
+    for (int frame = 0; frame < frames; ++frame) {
+        const auto v = static_cast<float>(amp * std::sin(w * frame));
+        sample(v);
+        sample(v);
+    }
+    fs::create_directories(volume::wavDir(volume, slot));
+    commands::writeFileBytes(volume::wavDir(volume, slot) / name,
+                             std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
 }
 
 // A file's modification time as the OS reports it, ms since the epoch — the
@@ -641,6 +684,69 @@ int main()
         // take's row names bytes on their way out, and a connect never meets them
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after' AND modified IS NULL"), 0);
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after'"), 3); // snapshot, rename, trim
+    }
+
+    // --- what normalize measured is in the history, under the bytes it measured (#140) ---
+    //
+    // Theory: the reading is of the take as the command found it, so it is
+    // filed under the hash of those bytes — the same hash the archive names
+    // when a write follows — and it is filed whether a write follows or not.
+    // The bytes a gain lands get no derived number: nobody measured them. And
+    // a reading has nowhere to go while no card is in front of the history.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 6, "take.wav", 44100, -28.0);
+        const fs::path takeFile = volume::wavDir(volume, 6) / "take.wav";
+        const std::string original = commands::readFileBytes(takeFile);
+        auto rec = recorderAt(tmp.path / "history");
+        // nothing in front of the history yet: the reading is not taken, and the store is not even opened for it
+        CHECK(!rec->reading(HistoryStore::contentHash(original), { -28.0, 0.04f, -28.0, 0 }));
+        CHECK(!fs::exists(tmp.path / "history" / "history.db"));
+
+        CHECK_EQ(run(*rec, "op-norm", "normalize", volume, [&] {
+                     commands::normalize(volume, 6, { .targetLufs = -18.0, .write = options(rec, "op-norm") });
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        const auto before = rec->store().readingFor(HistoryStore::contentHash(original));
+        CHECK(before.has_value());
+        CHECK(before.has_value() && before->reading.integratedLufs.has_value()
+              && std::abs(*before->reading.integratedLufs - (-28.0)) <= 0.1);
+        CHECK(before.has_value() && before->reading.wildSamples == 0);
+        CHECK(before.has_value() && before->measuredMs > 1'000'000); // the recorder's clock, not a zero
+        // the same hash the archive filed the original under
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-norm' AND a.side = 'before' AND a.hash = (SELECT hash FROM loudness_readings)"),
+                 1);
+        // the bytes the gain landed have no number of their own
+        const std::string landed = commands::readFileBytes(takeFile);
+        CHECK(landed != original);
+        CHECK(!rec->store().readingFor(HistoryStore::contentHash(landed)).has_value());
+
+        // the slot is at target now: the second normalize writes nothing,
+        // archives nothing, has nothing to say about the slot (#144 names it
+        // as a subject in the app) — and still files what it measured
+        CHECK_EQ(run(*rec, "op-again", "normalize", volume, [&] {
+                     commands::normalize(volume, 6, { .targetLufs = -18.0, .write = options(rec, "op-again") });
+                 }),
+                 std::string());
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-again'"), std::string("done"));
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op WHERE o.id = 'op-again'"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes c JOIN ops o ON o.seq = c.op WHERE o.id = 'op-again'"), 0);
+        const auto now = rec->store().readingFor(HistoryStore::contentHash(landed));
+        CHECK(now.has_value());
+        CHECK(now.has_value() && now->reading.integratedLufs.has_value()
+              && std::abs(*now->reading.integratedLufs - (-18.0)) <= 0.1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+
+        // the card goes away: a reading has nowhere to go again, and nothing is filed
+        rec->disconnect();
+        CHECK(!rec->reading(HistoryStore::contentHash("later"), { -20.0, 0.5f, -3.0, 0 }));
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+        // and the store's refusals come through, a session or not
+        rec->selectVolume(volume);
+        CHECK_THROWS(rec->reading("short", { -20.0, 0.5f, -3.0, 0 }), "32 bytes");
     }
 
     // --- the wiring refuses to be built without what it needs ---

@@ -67,6 +67,14 @@ public:
     // entry now shows for the file (#141).
     void landed(const std::string& opId, int slot, const std::string& fileName,
                 std::string_view bytes);
+    // A loudness reading of bytes the worker has in hand, filed under their
+    // content hash (#140) — a fact about bytes, not about an operation, so
+    // none needs to have begun. Written while a card's session is open and
+    // not otherwise: with no card in front of it the history is not told
+    // about bytes it cannot place, and the store is never opened for this
+    // alone. Returns whether the reading went in; the store's own refusals
+    // (a hash of the wrong length, a value that is not a number) throw.
+    bool reading(const std::string& hash, const wav::LoudnessReading& reading);
     // `error` empty = the job succeeded, and `note` is the line the job wrote
     // about itself ("normalized -3.2 dB", "already at -18.0 LUFS") — the only
     // record of an operation that decided to change nothing, and empty for the
@@ -155,7 +163,8 @@ private:
 // The one wiring from an operation's WriteOptions into the history, shared by
 // the app and its tests so the tests exercise what ships: each replaced take
 // is kept by the history before the card changes; bodies, landed takes and
-// settings sections are recorded under the operation's id.
+// settings sections are recorded under the operation's id; a reading the
+// command took on its way is filed under the bytes it measured (#140).
 commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recorder,
                                    commands::WriteOptions options);
 

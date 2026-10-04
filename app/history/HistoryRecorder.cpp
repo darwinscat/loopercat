@@ -216,6 +216,14 @@ void HistoryRecorder::landed(const std::string& opId, int slot, const std::strin
                          modifiedMs(volume::wavDir(op.volume, slot) / fileName));
 }
 
+bool HistoryRecorder::reading(const std::string& hash, const wav::LoudnessReading& reading)
+{
+    if (!session_)
+        return false;
+    store().recordReading(hash, reading, clock_());
+    return true;
+}
+
 void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
 {
     const std::vector<int> slots = store().touchedSlots(op.row);
@@ -290,6 +298,18 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     };
     options.journal.slotsChanging = [recorder, opId](const std::vector<int>& slots) {
         recorder->preserveSlots(opId, slots);
+    };
+    // What the command measured, under the hash of the bytes it measured —
+    // the before-bytes, which the archive names by the same hash if a write
+    // follows. Inside an operation the card's session is open, so the
+    // reading always goes in; a store that cannot take it stops the command
+    // here, before the card is touched, like every other hook.
+    options.journal.loudnessMeasured = [recorder, opId](int slot, const std::string&,
+                                                        std::string_view bytes,
+                                                        const wav::LoudnessReading& reading) {
+        if (!recorder->reading(HistoryStore::contentHash(bytes), reading))
+            throw Error("operation " + opId + " measured slot " + std::to_string(slot)
+                        + " with no card session open to file the reading in");
     };
     // The settings pair, before it is written: each changed section, its
     // text before and after (sysfile::sectionChanges, in the core). A throw
