@@ -24,14 +24,10 @@ namespace
 
     // The pedal takes the file as-is when the core's own upload gate does —
     // one truth, not a parallel reimplementation of it.
-    bool pedalAcceptsAsIs(const juce::File& source)
+    bool pedalAcceptsAsIs(wav::BytesView bytes)
     {
-        juce::MemoryBlock raw;
-        if (!source.loadFileAsData(raw))
-            return false;
         try {
-            wav::assertUploadable(wav::readWavInfo(wav::BytesView(
-                static_cast<const unsigned char*>(raw.getData()), raw.getSize())));
+            wav::assertUploadable(wav::readWavInfo(bytes));
             return true;
         } catch (const Error&) {
             return false;
@@ -81,41 +77,39 @@ namespace
     // file is; the name on the card is decided elsewhere.
     constexpr const char* kConvertedFileName = "converted.wav";
 
-    // AudioFormatManager::createReaderFor, with the format that took the file
-    // kept: the encoding fact needs to know whether the reader decodes a
-    // codec or reads samples as they lie.
-    std::unique_ptr<juce::AudioFormatReader> openReader(juce::AudioFormatManager& formats,
-                                                        const juce::File& source,
-                                                        const juce::AudioFormat*& handledBy)
-    {
-        for (auto* format : formats) {
-            if (!format->canHandleFile(source))
-                continue;
-            if (auto in = source.createInputStream()) {
-                if (std::unique_ptr<juce::AudioFormatReader> reader {
-                        format->createReaderFor(in.release(), true) }) {
-                    handledBy = format;
-                    return reader;
-                }
-            }
-        }
-        return nullptr;
-    }
+    // JUCE's readers that read a file's samples as they lie, so the width
+    // they report is a fact about the file. Named by the READER
+    // (AudioFormatReader::getFormatName — wavFormatName and its siblings in
+    // juce_audio_formats/codecs), not by the format object that was asked:
+    // WavAudioFormat hands an Ogg stream inside a WAV to the Ogg reader. A
+    // JUCE upgrade that renamed one would make its files read as decoded by
+    // the system, which errs toward the mark.
+    constexpr const char* kWavReader = "WAV file";
+    constexpr const char* kAiffReader = "AIFF file";
+    constexpr const char* kFlacReader = "FLAC file";
+    constexpr const char* kOggReader = "Ogg-Vorbis file";
+    // The words for a system decoder — CoreAudio on macOS, Windows Media on
+    // Windows — which takes what JUCE's own readers refuse (float64, mu-law,
+    // AAC) and reports whatever width it chose: nothing about the file.
+    constexpr const char* kSystemDecoded = "decoded by the system";
 
-    // "24-bit", "32-bit float" for a file that holds samples — WAV, AIFF, and
-    // FLAC, which compresses them but keeps their width and reports it. The
-    // codec's name for MP3 and Ogg Vorbis, which hold a bitstream: the width
-    // their readers report is the decoder's choice (ours hands out float32),
-    // and saying "32-bit float" about an mp3 would describe the decoder, not
-    // the file.
-    juce::String encodingOf(const juce::AudioFormatReader& reader, const juce::AudioFormat& format)
+    SourceFormat factsOf(const juce::AudioFormatReader& reader)
     {
-        if (dynamic_cast<const Mp3AudioFormat*>(&format) != nullptr)
-            return "MP3";
-        if (dynamic_cast<const juce::OggVorbisAudioFormat*>(&format) != nullptr)
-            return "Ogg Vorbis";
-        return juce::String(int(reader.bitsPerSample)) + "-bit"
-             + (reader.usesFloatingPointData ? " float" : "");
+        SourceFormat facts { .sampleRate = int(std::llround(reader.sampleRate)),
+                             .channels = static_cast<int>(reader.numChannels) };
+        const juce::String name = reader.getFormatName();
+        if (name == Mp3AudioFormat::kReaderName) {
+            facts.encoding = "MP3";
+        } else if (name == kOggReader) {
+            facts.encoding = "Ogg Vorbis";
+        } else if (name == kWavReader || name == kAiffReader || name == kFlacReader) {
+            facts.encoding = juce::String(int(reader.bitsPerSample)) + "-bit"
+                           + (reader.usesFloatingPointData ? " float" : "");
+            facts.factual = true;
+        } else {
+            facts.encoding = kSystemDecoded;
+        }
+        return facts;
     }
 
     // The words the push report uses for a channel count prepare lets through.
@@ -135,7 +129,17 @@ namespace
 juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prepared& out,
                      const Options& options)
 {
-    const bool passesAsIs = pedalAcceptsAsIs(source);
+    juce::MemoryBlock raw;
+    if (!source.loadFileAsData(raw))
+        return juce::Result::fail("cannot read " + source.getFullPathName());
+    const wav::BytesView bytes(static_cast<const unsigned char*>(raw.getData()), raw.getSize());
+    // A WAV cut short is refused, never padded: a decoder fills the missing
+    // frames with silence, and the pedal would get a loop longer than its
+    // audio under the player's own name (review of issue #139).
+    if (wav::isTruncatedRiff(bytes))
+        return juce::Result::fail(source.getFileName()
+                                  + " is cut short: its header claims more audio than the file holds");
+    const bool passesAsIs = pedalAcceptsAsIs(bytes);
     if (!options.normalizeTargetLufs.has_value() && passesAsIs) {
         out = untouched(source, std::nullopt);
         return juce::Result::ok();
@@ -146,8 +150,7 @@ juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prep
     // OS codec would also claim the extension — identical PCM everywhere.
     formats.registerFormat(new Mp3AudioFormat(), false);
     formats.registerBasicFormats();
-    const juce::AudioFormat* handledBy = nullptr;
-    std::unique_ptr<juce::AudioFormatReader> reader = openReader(formats, source, handledBy);
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(source));
     if (reader == nullptr)
         return juce::Result::fail(source.getFileName()
                                   + " is not an audio file LooperCat can read");
@@ -156,9 +159,7 @@ juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prep
         return juce::Result::fail(source.getFileName() + " has "
                                   + juce::String(channels)
                                   + " channels — only mono and stereo can go to the pedal");
-    const SourceFormat sourceFormat { .sampleRate = int(std::llround(reader->sampleRate)),
-                                      .encoding = encodingOf(*reader, *handledBy),
-                                      .channels = channels };
+    const SourceFormat sourceFormat = factsOf(*reader);
 
     // Pass 1 of the opt-in normalization (issue #53): measure, decide, and —
     // when a pedal-ready file needs nothing — keep the byte-exact promise.
@@ -259,9 +260,11 @@ juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prep
 
     out.file = dest;
     out.converted = true;
-    // Rebuilt when the shape changed or a gain went in — the two ways the
-    // samples stop being the source's. A header-only rewrite is neither.
-    out.rebuilt = differsFromTarget(sourceFormat)
+    // Rebuilt unless there is positive evidence the samples are the source's:
+    // a reader that reads them as they lie reported the pedal's own shape,
+    // and no gain went in. A header-only rewrite of such a file is the one
+    // case that is not a rebuild; anything a decoder made is.
+    out.rebuilt = !sourceFormat.factual || differsFromTarget(sourceFormat)
                || (outcome.has_value() && outcome->measurable && !outcome->untouched);
     out.normalize = outcome;
     out.sourceFormat = sourceFormat;

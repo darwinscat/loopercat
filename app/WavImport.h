@@ -60,11 +60,18 @@ struct NormalizeOutcome {
 // report states, against the fixed target of 44100 Hz, 32-bit float, stereo.
 struct SourceFormat {
     int sampleRate = 0;    // Hz
-    // "24-bit", "32-bit float" — the file's own sample format; for a
-    // compressed source its codec ("MP3"): the bit depth a decoder hands
-    // out is the decoder's choice, not a fact about the file.
+    // "24-bit", "32-bit float" — the file's own sample format, when a reader
+    // that reads samples as they lie said so; the codec ("MP3", "Ogg Vorbis")
+    // for a bitstream, whose width is the decoder's choice; "decoded by the
+    // system" for what the OS decoded, which reports whatever it chose.
     juce::String encoding;
     int channels = 0;      // 1 or 2; prepare refuses the rest
+    // true: the reader reads the file's samples as they lie (JUCE's WAV, AIFF
+    // and FLAC readers), so `encoding` is a fact about the file and equal
+    // facts mean equal samples. false: a decoder made the samples, and
+    // nothing here proves them the file's — such a source is rebuilt however
+    // its facts read.
+    bool factual = false;
 };
 
 // The pedal's side of the sentence; a source that matches it on every point
@@ -129,8 +136,10 @@ struct Prepared {
     JobDir jobDir;          // the conversion's directory; its lifetime is the file's
 };
 
-// Fails when the source is not audio JUCE can read, or has more than two
-// channels — a surround downmix is a creative decision, not a default.
+// Fails when the source is not audio JUCE can read, has more than two
+// channels — a surround downmix is a creative decision, not a default — or
+// is a WAV cut short (wav::isTruncatedRiff): a decoder would pad the missing
+// frames with silence, and the pedal would get a loop longer than its audio.
 // `importTmp` is the app's import-tmp root; a conversion gets a directory of
 // its own under it.
 juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prepared& out,

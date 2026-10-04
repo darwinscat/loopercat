@@ -132,6 +132,7 @@ int main()
             // (issue #139): the report must not describe an mp3 as "32-bit float".
             CHECK(out.sourceFormat.has_value());
             if (out.sourceFormat.has_value()) {
+                CHECK(!out.sourceFormat->factual); // a decoder's samples, not the file's
                 CHECK_EQ(out.sourceFormat->encoding.toStdString(), std::string("MP3"));
                 CHECK_EQ(wavimport::describeConversion(*out.sourceFormat).toStdString(),
                          std::string("MP3 \xe2\x86\x92 32-bit float"));

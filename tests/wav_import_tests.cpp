@@ -620,6 +620,7 @@ int main()
             CHECK_EQ(p.sourceFormat->sampleRate, 44100);
             CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("32-bit float"));
             CHECK_EQ(p.sourceFormat->channels, 2);
+            CHECK(p.sourceFormat->factual); // JUCE's WAV reader: the width is the file's
             CHECK(!wavimport::differsFromTarget(*p.sourceFormat));
             CHECK(wavimport::describeConversion(*p.sourceFormat).isEmpty());
         }
@@ -650,6 +651,7 @@ int main()
         CHECK(p.converted && p.rebuilt);
         CHECK(p.sourceFormat.has_value());
         if (p.sourceFormat.has_value()) {
+            CHECK(p.sourceFormat->factual); // FLAC keeps the width, and its reader reports it
             CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("24-bit"));
             CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
                      "48000 Hz, 24-bit, mono" + arrow + "44100 Hz, 32-bit float, stereo");
@@ -664,10 +666,122 @@ int main()
         CHECK(p.converted && p.rebuilt);
         CHECK(p.sourceFormat.has_value());
         if (p.sourceFormat.has_value()) {
+            CHECK(!p.sourceFormat->factual); // a decoder's samples
             CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("Ogg Vorbis"));
             CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
                      "Ogg Vorbis, mono" + arrow + "32-bit float, stereo");
         }
+    }
+
+    // An Ogg stream inside a WAV container (fmt tag 0x6771): WavAudioFormat
+    // hands it to the Ogg reader, so the codec must be read off the READER's
+    // name — judged by the format object it would read "16-bit float".
+    {
+        juce::OggVorbisAudioFormat ogg;
+        const juce::File plain = encodeRamp(ogg, work.getChildFile("inner.ogg"), 44100.0, 16, 4410);
+        juce::MemoryBlock oggBytes;
+        CHECK(plain.loadFileAsData(oggBytes));
+        std::vector<unsigned char> b;
+        const auto ascii = [&b](std::string_view t) {
+            for (const char c : t)
+                b.push_back(static_cast<unsigned char>(c));
+        };
+        const auto p16 = [&b](int v) {
+            b.push_back(static_cast<unsigned char>(v & 0xff));
+            b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+        };
+        const auto p32 = [&p16](long long v) {
+            p16(static_cast<int>(v & 0xffff));
+            p16(static_cast<int>((v >> 16) & 0xffff));
+        };
+        const auto payload = static_cast<long long>(oggBytes.getSize());
+        const long long padded = payload + (payload % 2);
+        ascii("RIFF"); p32(4 + 8 + 16 + 8 + padded); ascii("WAVE");
+        ascii("fmt "); p32(16);
+        p16(0x6771); p16(1); p32(44100); p32(0); p16(0); p16(16); // WAVE_FORMAT_OGG_VORBIS_MODE_3_PLUS
+        ascii("data"); p32(payload);
+        const auto* bytes = static_cast<const unsigned char*>(oggBytes.getData());
+        b.insert(b.end(), bytes, bytes + oggBytes.getSize());
+        if (padded != payload)
+            b.push_back(0);
+        const juce::File src = writeTemp(work, "ogg-in-wav.wav", b);
+        wavimport::Prepared p;
+        const juce::Result r = wavimport::prepare(src, tmp, p, {});
+        CHECK(r.wasOk());
+        if (r.wasOk()) {
+            CHECK(p.converted && p.rebuilt);
+            CHECK(p.sourceFormat.has_value());
+            if (p.sourceFormat.has_value()) {
+                CHECK(!p.sourceFormat->factual);
+                CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("Ogg Vorbis"));
+                CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
+                         "Ogg Vorbis, mono" + arrow + "32-bit float, stereo");
+            }
+        }
+    }
+
+    // --- what the system decodes is rebuilt, whatever its facts read ---
+    //
+    // A float64 WAV: JUCE's own reader refuses it (over 32 bits), and on
+    // macOS CoreAudio takes it and reports 32-bit float, 44.1 kHz, stereo —
+    // "nothing differs" by the facts, while every sample was re-quantised.
+    // Positive evidence only: a source that no sample reader vouched for is
+    // rebuilt, and the sentence says what it can.
+    {
+        const auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 64, .frames = 4410 });
+        const juce::File src = writeTemp(work, "f64.wav", bytes);
+        CHECK_THROWS(wav::assertUploadable(infoOf(src)), "format"); // the gate: float64
+        wavimport::Prepared p;
+        const juce::Result r = wavimport::prepare(src, tmp, p, {});
+#if JUCE_MAC
+        CHECK(r.wasOk()); // CoreAudio is registered: dropping it would lose AAC/M4A import
+#endif
+        if (r.wasOk()) {
+            CHECK(p.converted);
+            CHECK(p.rebuilt);
+            CHECK(p.sourceFormat.has_value());
+            if (p.sourceFormat.has_value()) {
+                CHECK(!p.sourceFormat->factual);
+                CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("decoded by the system"));
+                CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
+                         "decoded by the system" + arrow + "32-bit float");
+            }
+        } else {
+            // no system decoder for it on this platform: refused, never guessed at
+            CHECK(r.getErrorMessage().contains("not an audio file"));
+        }
+    }
+
+    // --- a WAV cut short is refused, never padded ---
+    //
+    // The header claims more frames than the file holds. The core gate calls
+    // it truncated; JUCE's reader would pad the missing frames with silence
+    // and the pedal would get a loop twice as long as its audio, under the
+    // player's own name.
+    {
+        const auto cutFloat = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410, .truncateBy = 4410 * 4 });
+        const juce::File src = writeTemp(work, "cut-float.wav", cutFloat);
+        wavimport::Prepared p;
+        const juce::Result r = wavimport::prepare(src, tmp, p, {});
+        CHECK(r.failed());
+        CHECK(r.getErrorMessage().contains("cut short"));
+        CHECK(r.getErrorMessage().contains("cut-float.wav"));
+        CHECK(!p.converted);
+        CHECK(p.file == juce::File());
+        // the same with pcm16 — the shape JUCE would otherwise convert and pad
+        const auto cutPcm = testkit::syntheticWav({ .frames = 4410, .truncateBy = 4410 * 2 });
+        const juce::File src16 = writeTemp(work, "cut-pcm.wav", cutPcm);
+        wavimport::Prepared q;
+        const juce::Result r16 = wavimport::prepare(src16, tmp, q, {});
+        CHECK(r16.failed());
+        CHECK(r16.getErrorMessage().contains("cut short"));
+        // normalize ON changes nothing about the refusal
+        wavimport::Prepared n;
+        CHECK(wavimport::prepare(src16, tmp, n, { .normalizeTargetLufs = -18.0 }).failed());
+        // and one byte short is short
+        const auto cutOne = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410, .truncateBy = 1 });
+        wavimport::Prepared o;
+        CHECK(wavimport::prepare(writeTemp(work, "cut-one.wav", cutOne), tmp, o, {}).failed());
     }
 
     // --- the sentence says only what changed ---
