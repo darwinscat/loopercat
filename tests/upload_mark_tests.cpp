@@ -84,40 +84,47 @@ int run()
     uploadmark::assertSuffix("_PEDAL_");
     ++testkit::checksRun; // the five lines above threw nothing
 
-    // --- the FAT limit: 255 UTF-16 units for the whole name, counted, never trimmed ---
+    // --- the card's limit: 238 UTF-16 units for the whole name, counted, never trimmed ---
     //
-    // The review's reproductions: a 247-character stem with "-pedal" (257),
-    // and a 260-character mark. Both used to pass the up-front check and
-    // fail at the card's write, after the old take had been removed.
-    CHECK_EQ(uploadmark::kMaxSuffixUnits, std::size_t { 250 });
+    // FAT's own 255 is not the binding limit: the card is read on Windows,
+    // whose MAX_PATH (260, terminator included) leaves 238 under the
+    // 21-character card folder (fatname::kMaxLandedUnits). The review's
+    // reproductions — a 247-character stem with "-pedal", a 252-character
+    // stem, a 260-character mark, and the 239-unit name that passed the
+    // first cap — are all refused here, before anything reaches the card.
+    CHECK_EQ(uploadmark::kMaxSuffixUnits, std::size_t { 233 });
     {
-        const std::string stem245(245, 's');
-        CHECK_EQ(uploadmark::landedName(stem245 + ".mp3", "-pedal", Audio::rebuilt).size(),
-                 std::size_t { 255 }); // exactly the limit: allowed
-        const std::string stem246(246, 's');
-        CHECK_THROWS(uploadmark::landedName(stem246 + ".mp3", "-pedal", Audio::rebuilt), "at most 255");
-        const std::string stem247(247, 's');
-        CHECK_THROWS(uploadmark::landedName(stem247 + ".mp3", "-pedal", Audio::rebuilt), "or the mark");
+        const std::string stem228(228, 's');
+        CHECK_EQ(uploadmark::landedName(stem228 + ".mp3", "-pedal", Audio::rebuilt).size(),
+                 std::size_t { 238 }); // exactly the limit: allowed
+        const std::string stem229(229, 's');
+        CHECK_THROWS(uploadmark::landedName(stem229 + ".mp3", "-pedal", Audio::rebuilt), "at most 238");
+        const std::string stem230(230, 's');
+        CHECK_THROWS(uploadmark::landedName(stem230 + ".mp3", "-pedal", Audio::rebuilt), "or the mark");
         // the same stem with no mark fits: it was the mark that pushed it over
-        CHECK_EQ(uploadmark::landedName(stem247 + ".mp3", "", Audio::rebuilt).size(), std::size_t { 251 });
+        CHECK_EQ(uploadmark::landedName(stem230 + ".mp3", "", Audio::rebuilt).size(), std::size_t { 234 });
+        const std::string stem247(247, 's');
+        CHECK_THROWS(uploadmark::landedName(stem247 + ".mp3", "-pedal", Audio::rebuilt), "at most 238");
         // repacked names are measured too, and the advice names the file only
+        const std::string stem235(235, 's');
+        CHECK_THROWS(uploadmark::landedName(stem235 + ".mp3", "", Audio::repackaged), "shorten the file name");
         const std::string stem252(252, 's');
-        CHECK_THROWS(uploadmark::landedName(stem252 + ".mp3", "", Audio::repackaged), "shorten the file name");
+        CHECK_THROWS(uploadmark::landedName(stem252 + ".mp3", "", Audio::repackaged), "at most 238");
         // an untouched name is the host's own and is not measured here (the core does)
         CHECK_EQ(uploadmark::landedName(std::string(300, 'u') + ".wav", "-pedal", Audio::untouched).size(),
                  std::size_t { 304 });
     }
     {
         const std::string mark260(260, 'm');
-        CHECK_THROWS(uploadmark::assertSuffix(mark260), "at most 250");
-        CHECK_THROWS(uploadmark::landedName("song.mp3", mark260, Audio::rebuilt), "at most 250");
-        const std::string mark251(251, 'm');
-        CHECK_THROWS(uploadmark::assertSuffix(mark251), "at most 250");
-        const std::string mark250(250, 'm');
-        uploadmark::assertSuffix(mark250);
+        CHECK_THROWS(uploadmark::assertSuffix(mark260), "at most 233");
+        CHECK_THROWS(uploadmark::landedName("song.mp3", mark260, Audio::rebuilt), "at most 233");
+        const std::string mark234(234, 'm');
+        CHECK_THROWS(uploadmark::assertSuffix(mark234), "at most 233");
+        const std::string mark233(233, 'm');
+        uploadmark::assertSuffix(mark233);
         ++testkit::checksRun; // the longest mark a name can carry
         // ...and with the shortest stem it is exactly the limit
-        CHECK_EQ(uploadmark::landedName("s.mp3", mark250, Audio::rebuilt).size(), std::size_t { 255 });
+        CHECK_EQ(uploadmark::landedName("s.mp3", mark233, Audio::rebuilt).size(), std::size_t { 238 });
     }
     {
         // units, not bytes: 100 "é" are 200 bytes and 100 units
@@ -126,17 +133,17 @@ int run()
             accented += "\xc3\xa9";
         const std::string landed = uploadmark::landedName(accented + ".mp3", "-pedal", Audio::rebuilt);
         CHECK_EQ(landed.size(), std::size_t { 210 });
-        // the limit is in units: a name of 255 units may be 256 bytes...
-        const std::string stem250(250, 's');
-        CHECK_EQ(uploadmark::landedName(stem250 + ".mp3", "\xc3\xa9", Audio::rebuilt).size(),
-                 std::size_t { 256 }); // 250 + 1 unit + 4 = 255 units in 256 bytes: allowed
-        // ...or 258 bytes, when the extra character is a surrogate pair (2 units)
-        const std::string stem249(249, 's');
-        CHECK_EQ(uploadmark::landedName(stem249 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt).size(),
-                 std::size_t { 257 }); // 249 + 2 units (4 bytes) + 4 = 255 units in 257 bytes: allowed
-        // and the pair on a stem one longer is the 256th unit
-        CHECK_THROWS(uploadmark::landedName(stem250 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt),
-                     "at most 255");
+        // the limit is in units: a name of 238 units may be 239 bytes...
+        const std::string stem233(233, 's');
+        CHECK_EQ(uploadmark::landedName(stem233 + ".mp3", "\xc3\xa9", Audio::rebuilt).size(),
+                 std::size_t { 239 }); // 233 + 1 unit + 4 = 238 units in 239 bytes: allowed
+        // ...or 240 bytes, when the extra character is a surrogate pair (2 units)
+        const std::string stem232(232, 's');
+        CHECK_EQ(uploadmark::landedName(stem232 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt).size(),
+                 std::size_t { 240 }); // 232 + 2 units (4 bytes) + 4 = 238 units in 240 bytes: allowed
+        // and the pair on a stem one longer is the 239th unit
+        CHECK_THROWS(uploadmark::landedName(stem233 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt),
+                     "at most 238");
     }
 
     return testkit::summary("upload_mark");

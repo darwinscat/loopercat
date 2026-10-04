@@ -65,13 +65,13 @@ int main()
             auto file = open(work);
             importprefs::write(*file, { .normalizeOnUpload = true,
                                         .targetLufs = -16.5,
-                                        .convertedMark = " (pedal)" });
+                                        .convertedMark = "(pedal) v2" });
         } // closed: the next open reads the disk, not this object
         auto file = open(work);
         const ImportPrefs prefs = importprefs::read(*file);
         CHECK(prefs.normalizeOnUpload);
         CHECK(nearly(prefs.targetLufs, -16.5));
-        CHECK_EQ(prefs.convertedMark.toStdString(), std::string(" (pedal)")); // spaces survive
+        CHECK_EQ(prefs.convertedMark.toStdString(), std::string("(pedal) v2")); // the space inside survives
     }
 
     // --- a mark cleared to nothing stays nothing: "" is a value, not an absence ---
@@ -88,6 +88,24 @@ int main()
         CHECK_EQ(prefs.convertedMark.toStdString(), std::string(""));
         CHECK(prefs.normalizeOnUpload);  // the other two keys were not touched
         CHECK(nearly(prefs.targetLufs, -16.5));
+    }
+
+    // --- a mark of only spaces reads as empty, and one with space around it reads bare:
+    //     the Settings field trims on entry, and a hand-edited file gets the same rule ---
+    {
+        {
+            auto file = open(work);
+            file->setValue(importprefs::kConvertedMarkKey, "   ");
+            file->saveIfNeeded();
+        }
+        auto file = open(work);
+        CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string(""));
+        file->setValue(importprefs::kConvertedMarkKey, " -live ");
+        CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string("-live"));
+        file->setValue(importprefs::kConvertedMarkKey, "- live -"); // spaces inside stay
+        CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string("- live -"));
+        file->setValue(importprefs::kConvertedMarkKey, "");
+        file->saveIfNeeded();
     }
 
     // --- the keys are the ones a settings file shows, beside each other ---

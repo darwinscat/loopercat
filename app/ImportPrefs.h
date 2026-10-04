@@ -53,13 +53,15 @@ namespace importprefs
     // A key that is absent reads as its default; a key that is present reads
     // as stored, so a mark cleared to "" stays cleared — PropertySet::getValue
     // falls back only when the key is missing, not when its value is empty.
+    // The mark is trimmed here as the Settings field trims it, so "only
+    // spaces is the empty mark" holds whichever hand wrote the file.
     inline ImportPrefs read(juce::PropertiesFile& file)
     {
         const ImportPrefs shipped = defaults();
         return { .normalizeOnUpload =
                      file.getBoolValue(kNormalizeOnUploadKey, shipped.normalizeOnUpload),
                  .targetLufs = file.getDoubleValue(kTargetLufsKey, shipped.targetLufs),
-                 .convertedMark = file.getValue(kConvertedMarkKey, shipped.convertedMark) };
+                 .convertedMark = file.getValue(kConvertedMarkKey, shipped.convertedMark).trim() };
     }
 
     inline void write(juce::PropertiesFile& file, const ImportPrefs& prefs)

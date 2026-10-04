@@ -37,8 +37,10 @@ inline constexpr std::string_view kDefaultSuffix = "-pedal";
 inline constexpr std::string_view kExtension = ".wav";
 
 // A mark longer than this leaves no room for a name in front of it: the
-// FAT limit, less the extension, less one character of stem.
-inline constexpr std::size_t kMaxSuffixUnits = fatname::kMaxUnits - kExtension.size() - 1;
+// card's limit (fatname::kMaxLandedUnits, what Windows's MAX_PATH leaves
+// under the card folder), less the extension, less one character of stem.
+inline constexpr std::size_t kMaxSuffixUnits = fatname::kMaxLandedUnits - kExtension.size() - 1;
+static_assert(kMaxSuffixUnits == 233);
 
 // What happened to the audio on its way to the card.
 enum class Audio {
@@ -60,7 +62,7 @@ inline void assertSuffix(std::string_view suffix)
     if (units > kMaxSuffixUnits)
         throw Error("the mark is " + std::to_string(units) + " characters long; it can be at most "
                     + std::to_string(kMaxSuffixUnits) + " — a file name on the card holds "
-                    + std::to_string(fatname::kMaxUnits) + ", and the name needs room in front");
+                    + std::to_string(fatname::kMaxLandedUnits) + ", and the name needs room in front");
 }
 
 // The stem is everything before the last dot; a name with no dot, or only a
@@ -92,10 +94,10 @@ inline std::string landedName(std::string_view sourceFileName, std::string_view 
                            + (audio == Audio::rebuilt ? std::string(suffix) : std::string())
                            + std::string(kExtension);
     const std::size_t units = fatname::utf16Units(name);
-    if (units > fatname::kMaxUnits)
+    if (units > fatname::kMaxLandedUnits)
         throw Error("\"" + name + "\" is " + std::to_string(units)
                     + " characters long; a file name on the card holds at most "
-                    + std::to_string(fatname::kMaxUnits) + " — shorten the file name"
+                    + std::to_string(fatname::kMaxLandedUnits) + " — shorten the file name"
                     + (audio == Audio::rebuilt ? " or the mark" : ""));
     return name;
 }
