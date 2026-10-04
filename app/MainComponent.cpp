@@ -27,6 +27,7 @@
 
 #include <BinaryData.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace loopercat
@@ -1897,6 +1898,10 @@ PedalWorker::Job MainComponent::recorded(const char* kind, const commands::Write
     if (job.slot > 0)
         about.push_back(job.slot);
     about.insert(about.end(), alsoAbout.begin(), alsoAbout.end());
+    // Each slot once: the store refuses a repeated subject, and a job that
+    // names its own slot again must reach the core's refusal, not that one.
+    std::sort(about.begin(), about.end());
+    about.erase(std::unique(about.begin(), about.end()), about.end());
     job.before = [rec = recorder, id = options.opId, k = std::string(kind), about](
                      const volume::fs::path& volumePath) {
         rec->begin(id, k, volumePath);
@@ -2862,11 +2867,12 @@ void MainComponent::feedHistoryWindow()
                                          audio << (audio.isEmpty() ? "" : juce::String::fromUTF8(" \xc2\xb7 "))
                                                << "slot " << take.slot << ": " << juce::String(take.audio);
                              }
-                             std::vector<int> slots = row.slots();
+                             // The badges are every slot the row is about; what a
+                             // restore acts on is only the slots it recorded (#144).
                              rows.push_back({ when.formatted(sameDay ? "%H:%M" : "%d %b %H:%M"),
                                               juce::String(row.action), juce::String(row.detail),
                                               juce::String(row.state), audio,
-                                              slots, row.playable(), row.restorable(), row.pinned,
+                                              row.slots(), row.playable(), row.restorable(), row.pinned,
                                               row.op, row.kind == "snapshot", row.restorableSlots() });
                              WindowEntry entry;
                              entry.op = row.op;
@@ -2880,7 +2886,7 @@ void MainComponent::feedHistoryWindow()
                                  if (touched.slot == entry.slot)
                                      entry.takeName = touched.facts.takeName;
                              entry.action = juce::String(row.action);
-                             entry.slots = std::move(slots);
+                             entry.slots = row.touchedSlots();
                              entry.isSnapshot = row.kind == "snapshot";
                              entry.snapshotSlots = row.restorableSlots();
                              entry.restorable = row.restorable();
@@ -2989,7 +2995,8 @@ void MainComponent::restoreFromWindow(std::int64_t op, std::optional<int> snapsh
                             { "Restore " + where + " to " + entry->action, slots.size() == 1 ? slots[0] : 0,
                               [rec = recorder, op, options, snapshotSlot](const volume::fs::path& volumePath) {
                                   history::restoreOperation(rec->store(), op, volumePath, options, snapshotSlot);
-                              } }));
+                              } },
+                            slots)); // about every slot it puts back, however many the job names
 }
 
 // A pin is the store's to keep: the window showed it at once, and the rows

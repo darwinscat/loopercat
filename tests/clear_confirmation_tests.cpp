@@ -275,6 +275,13 @@ int main()
             continue;
         }
         CHECK_EQ(jobs, 1);
+        {
+            // the clear is about its slot, whatever it then found there (#144)
+            const auto timeline = fixture.rec->store().cardTimeline();
+            CHECK(!timeline.empty());
+            CHECK(!timeline.empty() && timeline.back().kind == "clear");
+            CHECK(!timeline.empty() && timeline.back().subjects == std::vector<int> { 4 });
+        }
         if (onPedal)
             checkTimeline(fixture, { "snapshot", "clear" });
         else
