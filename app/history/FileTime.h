@@ -3,8 +3,6 @@
 
 #pragma once
 
-#include "Sqlite.h"
-
 #include <loopercat/Error.hpp>
 
 #include <juce_core/juce_core.h>
@@ -24,19 +22,24 @@
 // unchanged file for equality, so the number has to be the platform's own
 // stamp, exactly, every time.
 //
-// A file that cannot be read is an error, not a null: slot_audio.modified is
-// NULL only in rows written before the store asked (Schema.h), and a null
-// that meant "could not tell" would read as one of those.
+// One stat, read as the answer: JUCE answers a file it cannot stat with the
+// epoch itself, and the epoch is not a time a take on a card was written at,
+// so that answer is an error here, not a null. slot_audio.modified is NULL
+// only in rows written before the store asked (Schema.h), and a null that
+// meant "could not tell" would read as one of those.
 //==============================================================================
 namespace loopercat::history
 {
 
 inline std::int64_t modifiedMs(const std::filesystem::path& file)
 {
-    const juce::File entry(juce::String::fromUTF8(sqlite::utf8(file).c_str()));
-    if (!entry.existsAsFile())
-        throw Error("cannot read the modification time of " + file.string() + ": no such file");
-    return entry.getLastModificationTime().toMilliseconds();
+    const std::u8string utf8 = file.u8string();
+    const juce::File entry(juce::String::fromUTF8(reinterpret_cast<const char*>(utf8.data()),
+                                                  static_cast<int>(utf8.size())));
+    const std::int64_t stamp = entry.getLastModificationTime().toMilliseconds();
+    if (stamp == 0)
+        throw Error("cannot read the modification time of " + file.string());
+    return stamp;
 }
 
 } // namespace loopercat::history

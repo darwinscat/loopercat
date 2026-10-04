@@ -302,6 +302,10 @@ void HistoryStore::recordReading(const std::string& hash, const wav::LoudnessRea
     if (std::isnan(reading.samplePeak) || std::isnan(reading.truePeakDb)
         || (reading.integratedLufs.has_value() && std::isnan(*reading.integratedLufs)))
         throw Error("a loudness reading with a value that is not a number is not a reading");
+    // The sample peak is the largest |sample|: a magnitude, never below zero.
+    if (reading.samplePeak < 0.0f)
+        throw Error("a sample peak is a magnitude and cannot be negative, got "
+                    + std::to_string(reading.samplePeak));
     sqlite::Statement put(db_, "INSERT INTO loudness_readings"
                                "(hash, integrated_lufs, sample_peak, true_peak_dbtp, wild_samples, measured) "
                                "VALUES (?1, ?2, ?3, ?4, ?5, ?6) "

@@ -371,6 +371,9 @@ int main()
                              + "', NULL, 0.0, 0.0, 0, NULL)"),
                      "NOT NULL");
         CHECK_THROWS(db.exec("INSERT INTO loudness_readings VALUES (x'" + std::string(64, 'a')
+                             + "', NULL, -1.0, 0.0, 0, 1)"),
+                     "CHECK"); // a sample peak is a magnitude
+        CHECK_THROWS(db.exec("INSERT INTO loudness_readings VALUES (x'" + std::string(64, 'a')
                              + "', 'loud', 0.0, 0.0, 0, 1)"),
                      ""); // STRICT: a word is not a REAL
         CHECK_EQ(count(db, "SELECT count(*) FROM pragma_foreign_key_check"), 0);

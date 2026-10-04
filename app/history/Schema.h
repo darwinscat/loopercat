@@ -206,7 +206,7 @@ R"sql(
 CREATE TABLE loudness_readings(
     hash            BLOB    PRIMARY KEY CHECK (length(hash) = 32),
     integrated_lufs REAL,
-    sample_peak     REAL    NOT NULL,
+    sample_peak     REAL    NOT NULL CHECK (sample_peak >= 0),
     true_peak_dbtp  REAL    NOT NULL,
     wild_samples    INTEGER NOT NULL CHECK (wild_samples >= 0),
     measured        INTEGER NOT NULL

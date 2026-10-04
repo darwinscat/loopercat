@@ -9,6 +9,7 @@
 #include <loopercat/Normalize.hpp>
 #include <loopercat/Volume.hpp>
 
+#include <exception>
 #include <string>
 
 //==============================================================================
@@ -50,8 +51,8 @@ inline SlotLoudness readSlotLoudness(const volume::fs::path& volume, int slot,
     out.hash = HistoryStore::contentHash(raw);
     try {
         out.kept = recorder.reading(out.hash, out.reading);
-    } catch (const Error& e) {
-        out.failure = e.what();
+    } catch (const std::exception& e) {
+        out.failure = e.what(); // the store's refusal, or anything else the filing threw
     }
     return out;
 }

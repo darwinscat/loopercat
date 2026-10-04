@@ -2444,7 +2444,7 @@ void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading)
                       logDir = settings.dataDir()](const volume::fs::path&) {
                          try {
                              rec->reading(key, reading);
-                         } catch (const Error& e) {
+                         } catch (const std::exception& e) {
                              oplog::append(logDir, "loudness reading not kept in the history: "
                                                        + juce::String::fromUTF8(e.what()));
                          }

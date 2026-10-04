@@ -659,9 +659,17 @@ int main()
                      "not a number");
         CHECK_THROWS(store.recordReading(HistoryStore::contentHash("negative"), { -20.0, 0.5f, -3.0, -1 }, 1),
                      "negative");
+        // a sample peak is a magnitude: below zero it is not a peak
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("neg-peak"), { -20.0, -0.5f, -3.0, 0 }, 1),
+                     "negative");
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("neg-peak"), { -20.0, -1.0e-30f, -3.0, 0 }, 1),
+                     "negative");
         CHECK_EQ(count(store.db(), "SELECT count(*) FROM loudness_readings"), 3);
         // the table refuses on its own what the method refuses
         CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'00', NULL, 0.0, 0.0, 0, 1)"), "CHECK");
+        CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'" + std::string(64, '0')
+                                     + "', NULL, -0.5, 0.0, 0, 1)"),
+                     "CHECK");
         CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'" + std::string(64, '0')
                                      + "', NULL, 0.0, 0.0, -1, 1)"),
                      "CHECK");
