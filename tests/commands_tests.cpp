@@ -1123,6 +1123,64 @@ int main()
               == pushed);
     }
 
+    // --- push lands the file under the name it is told (issue #139) ---
+    //
+    // The caller decides what a converted upload is called; push writes
+    // exactly that, and refuses a name that is not a bare .wav file name
+    // before a byte moves — the slot and the archive stay as they were.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const auto wavBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 });
+        // The file push is handed carries a working name that must NOT reach the card.
+        const fs::path source = tmp.path / "converted.wav";
+        commands::writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(wavBytes.data()),
+                                                          wavBytes.size()));
+
+        const auto landed = commands::push(volume, source, 9,
+                                           { .landedName = "song-pedal.wav", .write = writeOpts(tmp.path) });
+        CHECK_EQ(landed.dest.filename().string(), "song-pedal.wav");
+        CHECK(fs::exists(landed.dest));
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(landed.dest.parent_path() / "converted.wav"));
+
+        // The pedal's own case for the extension is a name too.
+        const auto upper = commands::push(volume, source, 10,
+                                          { .landedName = "TAKE.WAV", .write = writeOpts(tmp.path) });
+        CHECK_EQ(upper.dest.filename().string(), "TAKE.WAV");
+
+        // Absent: the name of the file push was handed, as before.
+        const auto plain = commands::push(volume, source, 11, { .write = writeOpts(tmp.path) });
+        CHECK_EQ(plain.dest.filename().string(), "converted.wav");
+
+        // Refusals, each before any write: an empty slot stays empty, no
+        // folder appears, and the volume is byte-identical.
+        const auto before = volumeBytes(volume);
+        for (const std::string bad : { "sub/song.wav", "sub\\song.wav", "/song.wav", "song.wav/" })
+            CHECK_THROWS(commands::push(volume, source, 12,
+                                        { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         "bare file name");
+        for (const std::string bad : { "song.mp3", "song", "song.wav.bak", "wav", "" })
+            CHECK_THROWS(commands::push(volume, source, 12,
+                                        { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         "end in .wav");
+        CHECK_THROWS(commands::push(volume, source, 12,
+                                    { .landedName = ".wav", .write = writeOpts(tmp.path) }),
+                     "name in front of .wav");
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(volume::wavDir(volume, 12)));
+
+        // On an occupied slot with force: the refusal comes before the
+        // archive is handed anything and before the old take moves.
+        const commands::WriteOptions replacing = writeOpts(tmp.path, "op-bad-name");
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .landedName = "song.mp3", .force = true, .write = replacing }),
+                     "end in .wav");
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(tmp.path / "archive" / replacing.opId));
+        CHECK(volumeBytes(volume) == before);
+    }
+
     // --- push failure leaves the volume byte-identical ---
 
     {

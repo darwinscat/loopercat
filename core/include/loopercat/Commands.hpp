@@ -25,6 +25,7 @@
 #include "Volume.hpp"
 #include "Wav.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -32,6 +33,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace loopercat::commands {
@@ -560,11 +562,38 @@ inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTen
 
 struct PushOptions {
     std::optional<std::string> name; // also rename the slot
+    // The file's name on the card (issue #139). Absent: the name of the file
+    // push is handed, as before. Present: exactly this — the caller decides
+    // what a converted upload is called, instead of a temp file's name
+    // travelling to the card by accident. Checked by assertLandedName before
+    // a byte moves.
+    std::optional<std::string> landedName;
     bool oneShot = false;
     bool writeConfig = true;         // false = drop the file only, let the pedal index it on boot
     bool force = false;              // replace existing slot audio (it goes to write.archive first)
     WriteOptions write;
 };
+
+// A landed name is a bare file name with a .wav extension and something in
+// front of it. No separator in either direction: the card is FAT and is read
+// on Windows too. The extension's case is not checked: the pedal's own
+// recordings wear uppercase .WAV (the pedal-technical names Wav.hpp
+// recognises) and FAT does not tell the two apart. An upload's extension
+// changes on purpose (issue #139: song.mp3 lands as song-pedal.wav), so a
+// name that kept its source's extension would lie about the bytes under it.
+inline void assertLandedName(const std::string& name)
+{
+    if (name.find_first_of("/\\") != std::string::npos)
+        throw Error("push: the name on the card must be a bare file name, not \"" + name + "\"");
+    constexpr std::string_view kWav = ".wav";
+    std::string tail = name.size() >= kWav.size() ? name.substr(name.size() - kWav.size()) : name;
+    for (char& c : tail)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (tail != kWav)
+        throw Error("push: the name on the card must end in .wav, not \"" + name + "\"");
+    if (name.size() == kWav.size())
+        throw Error("push: the name on the card needs a name in front of .wav");
+}
 
 struct PushResult {
     wav::Info info;
@@ -598,6 +627,8 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
 
     if (options.name)
         rc0::encodeName(*options.name); // validates; applied in the document below
+    if (options.landedName)
+        assertLandedName(*options.landedName);
 
     std::optional<params::SlotParams> slotParams;
     std::string newDocument;
@@ -652,8 +683,9 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     fs::create_directories(dir, ec);
     if (ec)
         throw Error("cannot create " + dir.string());
-    PushResult result { info, dir / wavPath.filename(), false, noteLengthReplaced, slotParams,
-                        {}, std::nullopt };
+    PushResult result { info,
+                        dir / (options.landedName ? fs::path(*options.landedName) : wavPath.filename()),
+                        false, noteLengthReplaced, slotParams, {}, std::nullopt };
     for (const auto& old : existing) {
         archiveTake(options.write, "push", slot, old, readFileBytes(dir / old));
         result.archived.push_back(old);
