@@ -11,6 +11,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 //==============================================================================
 // loopercat::FirstSnapshotNotice — the first snapshot's interruption, kept
@@ -82,7 +83,7 @@ public:
             if (told.empty())
                 words = stopped;
             else
-                words = told + (told.back() == '.' ? " " : ". ") + stopped;
+                words = told + (endsSentence(told) ? " " : ". ") + stopped;
         } else if (!told.empty()) {
             words = told;
         }
@@ -91,6 +92,18 @@ public:
     }
 
 private:
+    // A departure that already ends its sentence gets no second period:
+    // ".", "!", "?" or an ellipsis.
+    static bool endsSentence(const std::string& told)
+    {
+        static constexpr std::string_view kEllipsis = "\xe2\x80\xa6";
+        if (told.size() >= kEllipsis.size()
+            && told.compare(told.size() - kEllipsis.size(), kEllipsis.size(), kEllipsis) == 0)
+            return true;
+        const char last = told.back();
+        return last == '.' || last == '!' || last == '?';
+    }
+
     std::optional<JobOutcome> pending_;
 };
 

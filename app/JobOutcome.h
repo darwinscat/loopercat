@@ -59,13 +59,15 @@ public:
     }
 
     // A failure with no words would read as a success — the type refuses
-    // the contradiction.
-    static JobOutcome failure(std::string what)
+    // the contradiction. `detail` is engineering, for the operations log
+    // and never the banner: the type of a throw that had no words.
+    static JobOutcome failure(std::string what, std::string detail = {})
     {
         if (what.empty())
             throw Error("a job failure needs its reason");
         JobOutcome outcome;
         outcome.error_ = std::move(what);
+        outcome.detail_ = std::move(detail);
         return outcome;
     }
 
@@ -82,12 +84,16 @@ public:
     // The core's sentence for a failure or a refusal — the log's text; empty
     // when the job's own work succeeded or never ran into trouble.
     const std::string& error() const { return error_; }
+    const std::string& detail() const { return detail_; }
     std::optional<Refusal> refusal() const { return refusal_; }
     const std::string& historyError() const { return history_; }
 
+    // The job's own ending: it ran and failed, it did not run, or neither —
+    // its work succeeded, whatever the history then managed. ok() is the
+    // whole story: nothing went wrong anywhere.
     bool ok() const { return error_.empty() && history_.empty(); }
     bool didNotRun() const { return refusal_.has_value(); }
-    bool failed() const { return !didNotRun() && !ok(); }
+    bool failed() const { return !didNotRun() && !error_.empty(); }
     bool historyFailed() const { return !history_.empty(); }
 
     // Whether the ending is told at all (PedalWorker::onJobResult). A job the
@@ -144,6 +150,7 @@ private:
     }
 
     std::string error_;               // the core's sentence; empty = the work succeeded or never ran into trouble
+    std::string detail_;              // a failure's engineering detail, for the log only
     std::optional<Refusal> refusal_;  // set = the job did not run
     std::string history_;             // what `after` threw; empty = the history recorded the ending
 };

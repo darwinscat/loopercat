@@ -81,6 +81,20 @@ inline std::string refusalLog(const std::string& description, const JobOutcome& 
     return description + " did not run: " + outcome.error();
 }
 
+// The operations log's line for a failure that has more to say than the
+// banner does — the type of a throw that had no words. A failure without
+// a detail has nothing for the log the banner did not say.
+inline std::string failureLog(const std::string& description, const JobOutcome& outcome)
+{
+    if (description.empty())
+        throw Error("a failure's log line needs the job's description");
+    if (!outcome.failed())
+        throw Error("only a job that failed has a failure to log: " + description);
+    if (outcome.detail().empty())
+        throw Error("a failure's log line is for the detail the banner leaves out: " + description);
+    return description + ": " + outcome.error() + " (" + outcome.detail() + ")";
+}
+
 // The first snapshot is taken one slot per job and resumes on the next
 // connect from the slot it reached, so a step that did not run is an
 // interruption, not a fault: one quiet sentence saying what happened and what

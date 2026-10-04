@@ -270,15 +270,27 @@ private:
     // An exception with no words would make JobOutcome::failure throw inside
     // the handler, and a throw out of run() ends the thread: no `after`, no
     // result, no busy(false), no job or scan ever again. Such an exception is
-    // a bug in whatever threw it — asserted — and named by its type, so the
-    // banner still says something true.
+    // a bug in whatever threw it — asserted — so the banner gets a plain
+    // sentence and the operations log the type that threw (detailOf).
     static std::string reasonOf(const std::exception& e)
     {
         const std::string what = e.what();
         if (!what.empty())
             return what;
         jassertfalse;
-        return std::string("the job threw without a message (") + typeid(e).name() + ")";
+        return "the job stopped without saying why";
+    }
+
+    static std::string detailOf(const std::exception& e)
+    {
+        if (e.what()[0] != '\0')
+            return {};
+        return std::string("a throw without a message: ") + typeid(e).name();
+    }
+
+    static JobOutcome failureOf(const std::exception& e)
+    {
+        return JobOutcome::failure(reasonOf(e), detailOf(e));
     }
 
     std::optional<volume::fs::path> resolveVolume() const
@@ -360,7 +372,7 @@ private:
                             job->before(path);
                         job->work(path);
                     } catch (const std::exception& e) {
-                        outcome = JobOutcome::failure(reasonOf(e));
+                        outcome = failureOf(e);
                     }
                 }
                 if (job->after) {
@@ -452,7 +464,7 @@ private:
                     break;
                 }
             } catch (const std::exception& e) {
-                deliver([cb = onJobResult, outcome = JobOutcome::failure(e.what())] {
+                deliver([cb = onJobResult, outcome = failureOf(e)] {
                     if (cb)
                         cb("Eject", outcome, 0, 0);
                 });

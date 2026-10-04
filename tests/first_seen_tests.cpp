@@ -6,6 +6,7 @@
 #include "../app/history/SlotRows.h"
 #include "../app/history/UndoRun.h"
 #include "../app/history/CardRestore.h"
+#include "../app/FirstSnapshotNotice.h"
 #include "../app/JobWords.h"
 #include "../app/PedalBook.h"
 
@@ -415,6 +416,44 @@ static int runTests()
         rec->disconnect();
         const auto resumed = newSighting(*rec, card);
         CHECK_EQ(resumed.op, baseline.op);
+    }
+
+    // The departure's log line names the slot after the last one a step
+    // photographed — the run's own count, not the store's: a foreground write
+    // preserving a slot ahead of the run raises the store's count past the
+    // slot reached, and the step the gate refuses next is still the next in
+    // order (review of #146: count 7 after step 6 with slot 50 preserved).
+    {
+        Scratch tmp;
+        const auto card = cardAt(tmp.path);
+        putTake(card, 50, 2000);
+        auto rec = recorderAt(tmp.path / "history");
+        const auto baseline = newSighting(*rec, card);
+        auto run = std::make_shared<history::FirstSeenRun>(baseline);
+        CHECK_EQ(run->completed.load(), 0);
+        int reported = 0;
+        for (int slot = 1; slot <= 5; ++slot) {
+            auto job = history::firstSeenJob(rec, run, slot, [&](int count, const JobOutcome&) { reported = count; });
+            job.work(card); job.after(JobOutcome::success());
+        }
+        CHECK_EQ(run->completed.load(), 5);
+        const auto source = tmp.path / "In.wav";
+        commands::writeFileBytes(source, putTake(cardAt(tmp.path / "other"), 1, 88200)); // one 4/4 bar at 120 BPM
+        write(rec, card, "push", [&](const auto& options) {
+            commands::push(card, source, 50, { .force = true, .write = options });
+        });
+        auto six = history::firstSeenJob(rec, run, 6, [&](int count, const JobOutcome&) { reported = count; });
+        six.work(card); six.after(JobOutcome::success());
+        CHECK_EQ(reported, 7); // slots 1..6 and the preserved 50
+        CHECK_EQ(run->completed.load(), 6);
+        FirstSnapshotNotice notice;
+        CHECK(notice.departed(lifecycle::State::ejecting, true, run->completed.load())
+              == std::optional<std::string>("first snapshot interrupted at slot 7: pedal is ejecting "
+                                            "\xe2\x80\x94 refusing to touch the volume"));
+        // A refused step moves nothing: the run still stands at 6.
+        auto seven = history::firstSeenJob(rec, run, 7, [](int, const JobOutcome&) {});
+        seven.after(JobOutcome::refused(lifecycle::State::ejecting));
+        CHECK_EQ(run->completed.load(), 6);
     }
 
     // Foreground commands overtaking the background work must preserve the

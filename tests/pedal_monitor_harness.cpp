@@ -212,12 +212,52 @@ int main()
             const JobOutcome& outcome = jobResults.at(jobResults.size() - 2).second;
             CHECK_EQ(jobResults.at(jobResults.size() - 2).first, juce::String("Throw without a word"));
             CHECK(outcome.failed());
-            CHECK(outcome.error().find("threw without a message") != std::string::npos);
+            // A plain sentence for the banner; the type that threw for the log.
+            CHECK_EQ(outcome.error(), std::string("the job stopped without saying why"));
+            CHECK(outcome.detail().find("a throw without a message: ") != std::string::npos);
+            CHECK(outcome.detail().find("runtime_error") != std::string::npos);
             CHECK(jobResults.back().first == juce::String("Run after the wordless one"));
             CHECK(jobResults.back().second.ok());
         }
         CHECK(wordlessAfter.has_value() && wordlessAfter->failed());
         CHECK(nextRan);
+    }
+
+    // 5c. The eject starter is the other catch site on the worker: a
+    // wordless throw from it must not end the thread either. A fresh worker
+    // (the starter is wired before start) on the same content: the eject is
+    // requested while connected, the starter throws without a word, the
+    // "Eject" result names it, and a job behind it still runs — one that
+    // needs no card, since the machine stays `ejecting` with no completion.
+    {
+        std::vector<PedalSnapshot> ejectDeliveries;
+        PedalWorker ejector(volume.string(), [&ejectDeliveries](const PedalSnapshot& s) {
+            ejectDeliveries.push_back(s);
+        });
+        std::vector<std::pair<juce::String, JobOutcome>> ejectResults;
+        ejector.onJobResult = [&ejectResults](juce::String description, const JobOutcome& outcome, int, int) {
+            ejectResults.emplace_back(std::move(description), outcome);
+        };
+        ejector.setEjectStarter([](const std::string&) { throw std::runtime_error(""); });
+        ejector.start();
+        CHECK(pumpUntil([&] {
+            return !ejectDeliveries.empty() && ejectDeliveries.back().state == lifecycle::State::connected;
+        }, 5000));
+        ejector.requestEject();
+        bool afterwards = false;
+        ejector.enqueue({ "Run after the wordless eject", 0,
+                          [&afterwards](const volume::fs::path&) { afterwards = true; },
+                          nullptr, 0, false, false, false });
+        CHECK(pumpUntil([&] { return ejectResults.size() >= 2; }, 5000));
+        if (ejectResults.size() >= 2) {
+            CHECK_EQ(ejectResults.front().first, juce::String("Eject"));
+            CHECK(ejectResults.front().second.failed());
+            CHECK_EQ(ejectResults.front().second.error(), std::string("the job stopped without saying why"));
+            CHECK(ejectResults.front().second.detail().find("runtime_error") != std::string::npos);
+            CHECK_EQ(ejectResults.back().first, juce::String("Run after the wordless eject"));
+            CHECK(ejectResults.back().second.ok());
+        }
+        CHECK(afterwards);
     }
 
     // 6. The content disappears (an unmount): the mounted state drops — no

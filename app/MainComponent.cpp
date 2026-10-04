@@ -604,6 +604,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                               utf8(jobwords::banner(description.toStdString(), outcome)));
             if (outcome.didNotRun())
                 trace(utf8(jobwords::refusalLog(description.toStdString(), outcome)));
+            else if (!outcome.detail().empty())
+                trace(utf8(jobwords::failureLog(description.toStdString(), outcome)));
             if (description.startsWith("Check slot") && slot > 0) {
                 player.clearLoudness(slot);       // a failed read must not stay "measuring…"
                 table.clearPendingLoudness(slot); // …nor its cell "…"
@@ -1794,7 +1796,8 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
             // scan saw — the only way in for a Finder eject or a yank the
             // probe sees first (issue #146).
             const bool inFlight = firstSeenRun && !firstSeenRun->cancelled && !firstSeenSettled;
-            if (const auto line = firstSeenNotice.departed(snapshot.state, inFlight, firstSeenCount))
+            const int reached = inFlight ? firstSeenRun->completed.load() : 0;
+            if (const auto line = firstSeenNotice.departed(snapshot.state, inFlight, reached))
                 trace(utf8(*line));
             if (firstSeenRun) firstSeenRun->cancelled = true;
             worker.enqueue({ "Close the card's history session", 0,

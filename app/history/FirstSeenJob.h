@@ -12,6 +12,11 @@ namespace loopercat::history {
 struct FirstSeenRun {
     HistoryRecorder::Snapshot snapshot;
     std::atomic<bool> cancelled { false };
+    // The last slot a step of this run photographed (0 = none yet): the
+    // departure's log line names the slot after it. Not the store's count
+    // of recorded slots — a foreground write preserving a slot ahead of the
+    // run raises that past the slot reached (issue #146).
+    std::atomic<int> completed { 0 };
     explicit FirstSeenRun(HistoryRecorder::Snapshot value) : snapshot(std::move(value)) {}
 };
 
@@ -34,8 +39,10 @@ inline PedalWorker::Job firstSeenJob(const std::shared_ptr<HistoryRecorder>& rec
             *count = recorder->snapshotStep(run->snapshot, slot);
         }, nullptr, 0, true, true, true
     };
-    job.after = [recorder, run, count, onComplete = std::move(completed)](const JobOutcome& outcome) {
+    job.after = [recorder, run, slot, count, onComplete = std::move(completed)](const JobOutcome& outcome) {
         if (run->cancelled) return;
+        if (outcome.ok())
+            run->completed = slot;
         // The reason goes into the History row after the take's name: a
         // step that did not run says so in the player's words, a failed
         // step says what failed. The core's sentence is the log's.

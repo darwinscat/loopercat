@@ -95,16 +95,44 @@ int main()
         CHECK_EQ(refused.historyError(), "database is locked");
         CHECK_EQ(refused.error(), "pedal is ghost" + kCoreTail); // the core's sentence untouched
 
+        // The ending stays what it was: the work succeeded, the job did not
+        // fail — only nothing is ok any more.
         JobOutcome done = JobOutcome::success();
         done.historyThrew("database is locked");
         CHECK(!done.ok());
-        CHECK(done.failed());
+        CHECK(!done.failed());
+        CHECK(!done.didNotRun());
+        CHECK(done.historyFailed());
         CHECK(done.error().empty());
 
         JobOutcome failed = JobOutcome::failure("disk full");
         failed.historyThrew("database is locked");
         CHECK(failed.failed());
         CHECK_EQ(failed.error(), "disk full");
+    }
+
+    // --- a failure's detail is the log's, never the banner's: the type of
+    // a throw that had no words ---
+
+    {
+        const JobOutcome plain = JobOutcome::failure("disk full");
+        CHECK(plain.detail().empty());
+        const JobOutcome wordless =
+            JobOutcome::failure("the job stopped without saying why", "a throw without a message: St13runtime_error");
+        CHECK(wordless.failed());
+        CHECK_EQ(wordless.error(), "the job stopped without saying why");
+        CHECK_EQ(wordless.detail(), "a throw without a message: St13runtime_error");
+        CHECK_EQ(jobwords::banner("Trim slot 5", wordless), "Trim slot 5: the job stopped without saying why");
+        CHECK(jobwords::banner("Trim slot 5", wordless).find("runtime_error") == std::string::npos);
+        CHECK_EQ(jobwords::failureLog("Trim slot 5", wordless),
+                 "Trim slot 5: the job stopped without saying why (a throw without a message: St13runtime_error)");
+        // Nothing for the log that the banner did not say, and nothing for
+        // an ending that is not a failure.
+        CHECK_THROWS(jobwords::failureLog("Trim slot 5", plain), "detail the banner leaves out");
+        CHECK_THROWS(jobwords::failureLog("Trim slot 5", JobOutcome::refused(State::ghost)), "only a job that failed");
+        CHECK_THROWS(jobwords::failureLog("Trim slot 5", JobOutcome::success()), "only a job that failed");
+        CHECK_THROWS(jobwords::failureLog("", wordless), "needs the job's description");
+        CHECK(wordless != plain);
     }
 
     // --- who is told: the player's own job every time, a quiet job only when
@@ -340,14 +368,21 @@ int main()
         CHECK(!notice.departure("").has_value());
     }
 
-    // --- a departure that already ends in a period gets no second one ---
+    // --- a departure that already ends its sentence — a period, an
+    // ellipsis, "!" or "?" — gets no second period ---
 
     {
         FirstSnapshotNotice notice;
-        notice.interrupted(JobOutcome::refused(State::ejected), 5);
-        CHECK(notice.departure("Volume ejected.") == std::optional<std::string>("Volume ejected. " + kStopped));
+        for (const std::string told : { "Volume ejected.", "Volume ejected\xe2\x80\xa6", "Volume ejected!", "Volume ejected?" }) {
+            notice.interrupted(JobOutcome::refused(State::ejected), 5);
+            CHECK(notice.departure(told) == std::optional<std::string>(told + " " + kStopped));
+        }
         notice.interrupted(JobOutcome::refused(State::ejected), 5);
         CHECK(notice.departure("Volume ejected") == std::optional<std::string>("Volume ejected. " + kStopped));
+        // A bare period is a sentence end too; a word ending in the letter
+        // before an ellipsis's last byte is not an ellipsis.
+        notice.interrupted(JobOutcome::refused(State::ejected), 5);
+        CHECK(notice.departure("Done, ok.") == std::optional<std::string>("Done, ok. " + kStopped));
     }
 
     // --- the next connect resumes the snapshot and forgets the notice: the
