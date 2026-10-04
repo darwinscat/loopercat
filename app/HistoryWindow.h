@@ -26,10 +26,11 @@
 // the row says it in words: a "+N" chip counts the rest of a many-slot
 // operation, and a first-sighting snapshot wears none, its sentence already
 // says "99 slots" (#143). Which badges a row shows is one answer
-// (HistoryBadges.h), read by the painting and the hit test alike. The
-// buttons sit under the list, for the selected row — a row is a sentence,
-// not a form — and offer only what the row can do: nothing plays a take the
-// store no longer keeps.
+// (HistoryBadges.h), read by the painting and the hit test alike; what a
+// narrow row cuts short is whole in the row's hint. The buttons sit under
+// the list, for the selected row — a row is a sentence, not a form — and
+// offer only what the row can do: nothing plays a take the store no longer
+// keeps.
 //
 // A pin toggled here shows at once and goes out through onPin; the window's
 // own flag is a promise, not the truth. The owner records the pin and calls
@@ -97,6 +98,9 @@ public:
     // A click at x in a visible row, callable without a mouse: a badge
     // filters to its slot; anywhere else the click was only a selection.
     void clickAt(int visibleIndex, int x);
+    // The row's whole line for its hint — when, action, detail, state,
+    // audio — including what a narrow row cut short.
+    juce::String hintAt(int visibleIndex) const;
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -108,6 +112,7 @@ private:
     void selectedRowsChanged(int lastRowSelected) override;
     void listBoxItemClicked(int row, const juce::MouseEvent&) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override;
+    juce::String getTooltipForRow(int row) override;
 
     void rebuildVisible(std::int64_t keepSelectedOp);
     void updateOffers();

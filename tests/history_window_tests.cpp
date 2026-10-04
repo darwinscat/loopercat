@@ -10,6 +10,7 @@
 //   - a row wears at most three badges; past that a "+N" chip counts the
 //     rest and filters nothing, and a snapshot of all 99 wears none: its
 //     sentence says so (#143); the counted slots still answer the filter
+//   - a row's hint is its whole line, however narrow the row
 //   - the buttons offer only what a row can do: no Play or Export for a
 //     take no longer kept, no Restore for a state that cannot go back
 //   - a pin toggled here reaches the owner with the operation and the new
@@ -385,6 +386,46 @@ int main()
         CHECK(window.badgeAt(0, badgeX(3)) == std::nullopt);
         window.clickAt(0, badgeX(2));
         CHECK(window.filter() == 8);
+    }
+
+    // --- #143: the hint is the whole line, in the row's order ---
+    {
+        HistoryWindow window;
+        HistoryWindow::Row full = row(1, "Normalized slot 12", { 12 }, true, true);
+        full.when = "23 Sep 21:54";
+        full.detail = "already peaking at the -1 dBTP ceiling (measured -19.2 LUFS), nothing to do";
+        full.state = "failed";
+        full.audio = "take kept";
+        HistoryWindow::Row terse = row(2, "Renamed", { 7 }, false, true);
+        terse.when = "23 Sep 21:55";
+        window.show({ full, terse });
+
+        const juce::String hint = window.hintAt(0);
+        for (const juce::String& part : { full.when, full.action, full.detail, full.state, full.audio })
+            CHECK(hint.contains(part));
+        CHECK(hint.indexOf(full.when) < hint.indexOf(full.action));
+        CHECK(hint.indexOf(full.action) < hint.indexOf(full.detail));
+        CHECK(hint.indexOf(full.detail) < hint.indexOf(full.state));
+        CHECK(hint.indexOf(full.state) < hint.indexOf(full.audio));
+        CHECK(hint.startsWith(full.when));
+        CHECK(hint.endsWith(full.audio));
+
+        // a row with nothing but a clock and an action: what joins them is
+        // whatever the window chose, and it appears once between parts —
+        // never doubled for a missing part, never at either end
+        const juce::String bare = window.hintAt(1);
+        CHECK(bare.startsWith(terse.when));
+        CHECK(bare.endsWith(terse.action));
+        const juce::String join =
+            bare.substring(terse.when.length(), bare.length() - terse.action.length());
+        CHECK(join.trim().isNotEmpty());
+        CHECK_EQ(hint, full.when + join + full.action + join + full.detail + join + full.state
+                           + join + full.audio);
+        CHECK(!hint.contains(join + join));
+        CHECK(!bare.contains(join + join));
+
+        CHECK(window.hintAt(2).isEmpty()); // no such row
+        CHECK(window.hintAt(-1).isEmpty());
     }
 
     return testkit::summary("history_window_tests");

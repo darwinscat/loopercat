@@ -39,6 +39,10 @@ history::badges::Shown badgesOf(const HistoryWindow::Row& row)
 {
     return history::badges::shown(row.slots, row.isSnapshot, kBadgeSlots);
 }
+
+// What joins the parts of a row's hint. A dash, because the parts themselves
+// use the middle dot (several takes in one audio column).
+juce::String hintJoin() { return juce::String::fromUTF8(" \xe2\x80\x94 "); }
 } // namespace
 
 HistoryWindow::HistoryWindow()
@@ -219,6 +223,18 @@ void HistoryWindow::clickAt(int visibleIndex, int x)
         setFilter(slot);
 }
 
+juce::String HistoryWindow::hintAt(int visibleIndex) const
+{
+    const Row* row = visibleRow(visibleIndex);
+    if (row == nullptr)
+        return {};
+    juce::String hint;
+    for (const juce::String& part : { row->when, row->action, row->detail, row->state, row->audio })
+        if (part.isNotEmpty())
+            hint << (hint.isEmpty() ? juce::String() : hintJoin()) << part;
+    return hint;
+}
+
 void HistoryWindow::selectedRowsChanged(int)
 {
     updateOffers();
@@ -227,6 +243,11 @@ void HistoryWindow::selectedRowsChanged(int)
 void HistoryWindow::listBoxItemClicked(int row, const juce::MouseEvent& event)
 {
     clickAt(row, event.x);
+}
+
+juce::String HistoryWindow::getTooltipForRow(int row)
+{
+    return hintAt(row);
 }
 
 void HistoryWindow::listBoxItemDoubleClicked(int index, const juce::MouseEvent& event)
