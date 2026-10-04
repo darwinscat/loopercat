@@ -7,8 +7,6 @@
 #include "SlotTable.h"
 #include "Strings.h"
 
-#include <felitronics/appkit/Brand.h>
-
 #include <loopercat/Commands.hpp>
 
 #include <cmath>
@@ -237,15 +235,7 @@ void SlotInspector::paint(juce::Graphics& g)
         g.setColour(kDim);
         g.setFont(juce::FontOptions(13.0f));
         g.drawText("Select a slot to set it up", getLocalBounds(), juce::Justification::centred);
-        return;
     }
-
-    // The slot's number leads the row, the way the pedal's display names it.
-    auto header = getLocalBounds().reduced(kPad, 0).withHeight(28).withTrimmedTop(6);
-    g.setColour(felitronics::appkit::brand::lilac);
-    g.setFont(juce::FontOptions(14.0f));
-    g.drawText("SLOT " + juce::String(info_.slot).paddedLeft('0', 2),
-               header.removeFromLeft(76), juce::Justification::centredLeft);
 }
 
 void SlotInspector::resized()
@@ -255,7 +245,6 @@ void SlotInspector::resized()
     auto area = getLocalBounds().reduced(kPad, 6);
 
     auto identity = area.removeFromTop(28);
-    identity.removeFromLeft(76); // the painted "SLOT nn"
 
     nameCaption_.setBounds(identity.removeFromLeft(44).withTrimmedTop(8));
     const int nameWidth = fieldWidth(nameEditor_, rc0::kNameLength);
