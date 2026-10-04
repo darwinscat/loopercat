@@ -9,6 +9,7 @@
 #include "support.hpp"
 
 #include "../app/BannerModel.h"
+#include "../app/JobWords.h"
 
 #include <algorithm>
 
@@ -215,6 +216,50 @@ int main()
         CHECK_THROWS(m.showError(Source::job, ""), "must not be empty");
         CHECK_THROWS(m.showError(Source::connection, ""), "must not be empty");
         CHECK_EQ(m.lines().size(), static_cast<std::size_t>(0));
+    }
+
+    // --- issue #146: the first snapshot is a quiet job. A step the gate
+    // refused is the interruption the run resumes from — not told, so this
+    // lane never gets a line for it. A step whose own work failed is told,
+    // and gets the line a failure always got. ---
+
+    {
+        const std::string firstSnapshot = "Record the card's first snapshot";
+        Model m;
+        m.scan(State::connected, {});
+        m.scan(State::ejecting, {}); // Disconnect pressed mid-run
+        const JobOutcome interrupted = JobOutcome::refused(State::ejecting);
+        CHECK(!interrupted.told(/*quiet*/ true));
+        if (interrupted.told(true))
+            m.showError(Source::job, jobwords::banner(firstSnapshot, interrupted));
+        CHECK_EQ(m.lines().size(), static_cast<std::size_t>(0));
+        CHECK(!m.hasDismissible());
+        // The player's sentence exists; it is not this strip's.
+        CHECK(jobwords::firstSnapshotInterrupted(interrupted).find("next time you connect")
+              != std::string::npos);
+
+        const JobOutcome failed =
+            JobOutcome::failure("the mounted volume changed before its first snapshot finished");
+        CHECK(failed.told(true));
+        m.showError(Source::job, jobwords::banner(firstSnapshot, failed));
+        CHECK_EQ(m.lines().size(), static_cast<std::size_t>(1));
+        CHECK(anyLineContains(m, "Record the card's first snapshot: the mounted volume changed"));
+        CHECK(m.lines().at(0).level == commands::Level::error);
+        CHECK(m.lines().at(0).dismissible);
+    }
+
+    // --- a player's own job the gate refused does get a line — it did not
+    // run — in the player's words, never the core's ---
+
+    {
+        Model m;
+        m.scan(State::connected, {});
+        m.scan(State::ejecting, {});
+        m.showError(Source::job, jobwords::banner("Push loop.wav to slot 3",
+                                                  JobOutcome::refused(State::ejecting)));
+        CHECK(anyLineContains(m, "Push loop.wav to slot 3 did not run: the pedal was being disconnected"));
+        CHECK(!anyLineContains(m, "refusing to touch"));
+        CHECK(m.hasDismissible());
     }
 
     return testkit::summary("banners");

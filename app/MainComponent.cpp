@@ -11,6 +11,7 @@
 #include "history/ForgetSlotJob.h"
 #include "ClearSlotHistoryAction.h"
 #include "history/SlotRows.h"
+#include "JobWords.h"
 #include "OperationsLog.h"
 #include "PedalPortName.h"
 #include "Strings.h"
@@ -596,7 +597,13 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             settleHistoryEdit(outcome.ok() ? description + juce::String::fromUTF8(" \xe2\x80\x94 done")
                                            : description + ": " + utf8(outcome.error));
         if (!outcome.ok()) {
-            banners.showError(banners::Source::job, description + ": " + utf8(outcome.error));
+            // The player's words for the ending (JobWords.h): a job the gate
+            // refused "did not run", in a sentence about the pedal; the core's
+            // own sentence goes to the operations log (issue #146).
+            banners.showError(banners::Source::job,
+                              utf8(jobwords::banner(description.toStdString(), outcome)));
+            if (outcome.refusedAtGate())
+                trace(utf8(jobwords::refusalLog(description.toStdString(), outcome)));
             if (description.startsWith("Check slot") && slot > 0) {
                 player.clearLoudness(slot);       // a failed read must not stay "measuring…"
                 table.clearPendingLoudness(slot); // …nor its cell "…"
@@ -1482,6 +1489,15 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
                 safe->firstSeenCount = count;
                 safe->firstSeenProblem = outcome.error;
                 safe->firstSeenSettled = !outcome.ok() || count == 99;
+                // A step the gate refused is the interruption the run resumes
+                // from, told as information: the toast is the app's channel
+                // for that, and the status line is the disconnect's already.
+                // A step that failed on its own is told by the worker's
+                // result, as every failure is (issue #146).
+                if (outcome.refusedAtGate()) {
+                    safe->trace(utf8(jobwords::firstSnapshotInterruptedLog(slot, outcome)));
+                    safe->toast.show(utf8(jobwords::firstSnapshotInterrupted(outcome)));
+                }
                 safe->updateStatusText();
                 if (safe->firstSeenSettled) {
                     safe->updateHistory();
