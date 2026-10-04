@@ -104,7 +104,7 @@ static int runTests()
         CHECK_EQ(plan.takesFreed, 1);
         CHECK_EQ(plan.bytesFreed, static_cast<std::int64_t>(only.size()));
         CHECK(!plan.hasHolds());
-        CHECK(plan.cutsUndo);
+        CHECK(!plan.cutsUndo); // forgotten whole: nothing of it stands to become a boundary
         const auto size = fs::file_size(f.dir / "history.db");
         CHECK(f.store.forgetSlot(f.card, 4, 40) == plan);
         CHECK(!f.store.takeBytes(HistoryStore::contentHash(only)));
@@ -318,6 +318,77 @@ static int runTests()
         CHECK_EQ(f.bytes(), before);
         CHECK(f.store.subjects(again) == std::vector<int>{7});
         CHECK_EQ(f.store.slotTimeline(7).size(), 1u);
+    }
+    // A slot whose only entry is a no-op normalize that is the newest
+    // operation: the dialog has no hold to confirm and no boundary to warn
+    // about, because afterwards Undo is exactly what it was.
+    {
+        Fixture f;
+        const auto nine = f.op({9});
+        const auto nothing = f.about({7}, {}, "normalize");
+        CHECK(f.store.offeredTargets().undo == nothing); // the cursor's answer today
+        const auto plan = f.store.planForgetSlot(f.card, 7);
+        CHECK_EQ(plan.rowsRemoved, 1);
+        CHECK(plan.undoTargets.empty()); // no state to lose
+        CHECK(!plan.cutsUndo);
+        CHECK(!plan.hasHolds());
+        CHECK(f.store.forgetSlot(f.card, 7, 40, false, &plan) == plan); // no separate confirmation
+        CHECK_THROWS(f.store.opStatus(nothing), "no operation");
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), 0);
+        CHECK(f.store.offeredTargets().undo == nine);
+        CHECK(f.store.slotTimeline(7).empty());
+    }
+    // A slot that is only a SUBJECT of an operation whose state lives
+    // elsewhere: its name comes off the slot, and the operation stands as it
+    // was — no boundary, still the Undo target, no hold to confirm.
+    {
+        Fixture f;
+        const auto nine = f.op({9});
+        const auto op = f.about({7, 12}, {12}, "rename");
+        const auto settings = f.about({7}, {}, "controls");
+        f.store.recordSystemChange(settings, {"CTL", "<CTL>before</CTL>", "<CTL>after</CTL>"});
+        CHECK(f.store.offeredTargets().undo == settings);
+        CHECK_EQ(f.store.slotTimeline(7).size(), 2u);
+        const auto plan = f.store.planForgetSlot(f.card, 7);
+        CHECK_EQ(plan.rowsRemoved, 2);
+        CHECK(plan.undoTargets.empty());
+        CHECK(!plan.cutsUndo);
+        CHECK(!plan.hasHolds());
+        CHECK(f.store.forgetSlot(f.card, 7, 40, false, &plan) == plan);
+        CHECK_EQ(f.store.opStatus(op), std::string("done"));
+        CHECK(f.store.subjects(op) == std::vector<int>{12});
+        CHECK(f.store.touchedSlots(op) == std::vector<int>{12});
+        CHECK_EQ(f.store.opStatus(settings), std::string("done"));
+        CHECK(f.store.subjects(settings).empty());
+        CHECK_EQ(f.store.systemChanges(settings).size(), 1u);
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), 0);
+        CHECK(f.store.offeredTargets().undo == settings);
+        CHECK(f.store.slotTimeline(7).empty());
+        CHECK_EQ(f.store.slotTimeline(12).size(), 1u);
+        CHECK_EQ(f.scalar("SELECT count(*) FROM pragma_foreign_key_check"), 0);
+        (void) nine;
+    }
+    // An operation half-forgotten down to a subject: it stands for the other
+    // slot's badge, and it is a boundary like any half-forgotten operation —
+    // what is left of it is not the whole, so it is not the Undo target.
+    {
+        Fixture f;
+        const auto nine = f.op({9});
+        const auto op = f.about({7, 12}, {7}, "normalize");
+        CHECK(f.store.offeredTargets().undo == op);
+        const auto plan = f.store.planForgetSlot(f.card, 7);
+        CHECK(plan.undoTargets == std::vector<std::int64_t>{op}); // it loses its state here
+        CHECK(plan.cutsUndo);
+        CHECK_THROWS(f.store.forgetSlot(f.card, 7, 40), "separate confirmation");
+        f.store.forgetSlot(f.card, 7, 40, true);
+        CHECK_EQ(f.store.opStatus(op), std::string("done"));
+        CHECK(f.store.subjects(op) == std::vector<int>{12});
+        CHECK(f.store.touchedSlots(op).empty());
+        CHECK_EQ(f.scalar("SELECT undo_floor FROM cards WHERE id = " + std::to_string(f.card)), op);
+        CHECK(!f.store.offeredTargets().undo); // neither it nor the work below the boundary
+        CHECK_EQ(f.store.slotTimeline(12).size(), 1u);
+        CHECK(f.store.slotTimeline(12).front().subjectOnly);
+        (void) nine;
     }
     return testkit::summary("forget_slot_tests");
 }

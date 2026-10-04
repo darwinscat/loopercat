@@ -513,6 +513,34 @@ int main()
         // the table refuses on its own what the method refuses
         CHECK_THROWS(r.store.db().exec("INSERT INTO op_subjects VALUES (9999, 1)"), "FOREIGN KEY");
     }
+    {
+        // A subject is named while an operation runs, and only by one that
+        // can be about a slot: the first sighting has its rows, maintenance
+        // is about the history itself, and a closed operation is closed.
+        TempDir tmp;
+        Ready r(tmp.path);
+        const auto snapshot = r.store.firstSeen(r.session, "snap", 1500);
+        CHECK_THROWS(r.store.recordSubject(snapshot, 7), "about no slot");
+        const auto forget = r.store.beginOp(r.session, "op-forget", "forget-history", 2000);
+        CHECK_THROWS(r.store.recordSubject(forget, 7), "about no slot");
+        const auto done = r.store.beginOp(r.session, "op-done", "normalize", 2100);
+        r.store.finishOp(done, OpStatus::done, "");
+        CHECK_THROWS(r.store.recordSubject(done, 7), "not pending");
+        const auto failed = r.store.beginOp(r.session, "op-failed", "normalize", 2200);
+        r.store.finishOp(failed, OpStatus::failed, "cannot read 007_1.WAV");
+        CHECK_THROWS(r.store.recordSubject(failed, 7), "not pending");
+        const auto cut = r.store.beginOp(r.session, "op-cut", "normalize", 2300);
+        r.store.finishOp(cut, OpStatus::interrupted, "unplugged");
+        CHECK_THROWS(r.store.recordSubject(cut, 7), "not pending");
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM op_subjects"), 0);
+        // while it runs, it may: and the subject stays once it has closed
+        const auto running = r.store.beginOp(r.session, "op-running", "normalize", 2400);
+        r.store.recordSubject(running, 7);
+        r.store.finishOp(running, OpStatus::failed, "cannot read 007_1.WAV");
+        CHECK(r.store.subjects(running) == std::vector<int> { 7 });
+        CHECK_EQ(r.store.slotTimeline(7).size(), 1u);
+        CHECK(r.store.slotTimeline(7).size() == 1u && r.store.slotTimeline(7).front().status == "failed");
+    }
 
     return testkit::summary("history_store_tests");
 }

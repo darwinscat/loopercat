@@ -94,8 +94,9 @@ public:
     // and apart from what it changes: a normalize that finds its slot at
     // target changes nothing, and still was about that slot. A subject
     // names no state — it makes nothing restorable and no Undo target.
-    // Refused for an operation the store does not have, a slot outside
-    // 1..99, and a slot named twice for one operation.
+    // Refused for an operation the store does not have, one that is not
+    // pending, a first sighting or maintenance (neither is about a slot), a
+    // slot outside 1..99, and a slot named twice for one operation.
     void recordSubject(std::int64_t op, int slot);
     std::vector<int> subjects(std::int64_t op); // ascending
 
@@ -213,10 +214,15 @@ public:
         std::int64_t bytesFreed = 0;
         std::vector<std::int64_t> operations;
         std::vector<std::int64_t> pinned;
+        // Cursor targets that lose a state here: the undo on offer goes with
+        // the slot. A target this slot was only about keeps its undo.
         std::vector<std::int64_t> undoTargets;
         std::vector<std::string> hashes;
         bool inFlight = false;
-        bool cutsUndo = false; // the boundary advances even if the current target survives
+        // The Undo boundary will move: an operation loses a state here and
+        // still stands afterwards, so what is left of it must not be offered
+        // as the whole. One forgotten whole moves nothing.
+        bool cutsUndo = false;
         bool hasHolds() const { return !pinned.empty() || !undoTargets.empty(); }
         bool operator==(const ForgetPlan&) const = default;
     };

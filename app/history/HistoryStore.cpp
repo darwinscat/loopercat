@@ -293,10 +293,19 @@ void HistoryStore::recordSubject(std::int64_t op, int slot)
 {
     if (slot < 1 || slot > 99)
         throw Error("a slot is 1..99, not " + std::to_string(slot));
-    sqlite::Statement known(db_, "SELECT 1 FROM ops WHERE seq = ?1");
+    sqlite::Statement known(db_, "SELECT kind, status FROM ops WHERE seq = ?1");
     known.bind(1, op);
     if (!known.step())
         throw Error("no operation " + std::to_string(op));
+    // The first sighting has its rows, and maintenance is about the history
+    // itself: neither is about a slot. And a subject is named while the
+    // operation runs — after it has closed, nothing can be about anything.
+    const std::string kind = known.text(0);
+    const std::string status = known.text(1);
+    if (kind == "snapshot" || kind == "forget-history")
+        throw Error("a " + kind + " operation is about no slot");
+    if (status != "pending")
+        throw Error("operation " + std::to_string(op) + " is " + status + ", not pending");
     sqlite::Statement already(db_, "SELECT 1 FROM op_subjects WHERE op = ?1 AND slot = ?2");
     already.bind(1, op).bind(2, slot);
     if (already.step())
@@ -645,8 +654,17 @@ HistoryStore::ForgetPlan HistoryStore::planForgetSlot(std::int64_t cardId, int s
     if (slot < 1 || slot > 99) throw Error("a slot is 1..99");
     ForgetPlan plan;
     const auto targets = retentionTargets({});
+    // Per operation: whether this slot holds a state of it, whether a state
+    // of it lives elsewhere (another slot, the settings), and whether it is
+    // about another slot — the three facts forgetSlot decides by.
     sqlite::Statement rows(db_, "SELECT o.seq, o.pinned, o.status, "
-        "o.kind <> 'snapshot' AND o.seq > (SELECT undo_floor FROM cards WHERE id = ?1) FROM ops o "
+        "o.kind <> 'snapshot' AND o.seq > (SELECT undo_floor FROM cards WHERE id = ?1), "
+        "EXISTS (SELECT 1 FROM slot_changes c WHERE c.op = o.seq AND c.slot = ?2) OR "
+        "EXISTS (SELECT 1 FROM slot_audio a WHERE a.op = o.seq AND a.slot = ?2), "
+        "EXISTS (SELECT 1 FROM slot_changes c WHERE c.op = o.seq AND c.slot <> ?2) OR "
+        "EXISTS (SELECT 1 FROM slot_audio a WHERE a.op = o.seq AND a.slot <> ?2) OR "
+        "EXISTS (SELECT 1 FROM system_changes y WHERE y.op = o.seq), "
+        "EXISTS (SELECT 1 FROM op_subjects j WHERE j.op = o.seq AND j.slot <> ?2) FROM ops o "
         "JOIN sessions s ON s.id = o.session WHERE s.card = ?1 AND "
         "(EXISTS (SELECT 1 FROM slot_changes c WHERE c.op = o.seq AND c.slot = ?2) OR "
         "EXISTS (SELECT 1 FROM slot_audio a WHERE a.op = o.seq AND a.slot = ?2) OR "
@@ -657,8 +675,17 @@ HistoryStore::ForgetPlan HistoryStore::planForgetSlot(std::int64_t cardId, int s
         plan.operations.push_back(op);
         if (rows.integer(1)) plan.pinned.push_back(op);
         plan.inFlight |= rows.text(2) == "pending";
-        plan.cutsUndo |= rows.integer(3) != 0;
-        if (std::any_of(targets.begin(), targets.end(), [op](const auto& t) {
+        const bool stateHere = rows.integer(4) != 0;
+        const bool stateElsewhere = rows.integer(5) != 0;
+        const bool aboutOthers = rows.integer(6) != 0;
+        // The boundary moves only for an operation that loses a state here
+        // and still stands afterwards — forgetSlot's rule, read ahead. One
+        // forgotten whole, or one that was only about this slot, moves nothing.
+        plan.cutsUndo |= stateHere && (stateElsewhere || aboutOthers) && rows.integer(3) != 0;
+        // An Undo target is a hold when forgetting takes a state out of it:
+        // one that was only about this slot keeps its undo intact, and one
+        // with no state at all has none to lose.
+        if (stateHere && std::any_of(targets.begin(), targets.end(), [op](const auto& t) {
                 return t.undo == op || t.redo == op || t.redoRestores == op;
             })) plan.undoTargets.push_back(op);
     }
@@ -704,27 +731,39 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
             omitted.bind(1, cardId).bind(2, slot).run();
         }
         std::vector<std::int64_t> partial;
+        sqlite::Statement held(db_, "SELECT EXISTS (SELECT 1 FROM slot_changes WHERE op = ?1 AND slot = ?2) "
+                                    "OR EXISTS (SELECT 1 FROM slot_audio WHERE op = ?1 AND slot = ?2)");
         for (const auto op : plan.operations) {
+            // Whether this slot held a state of the operation: the difference
+            // between forgetting a part of it and taking only its name off
+            // the slot (#144).
+            held.bind(1, op).bind(2, slot);
+            held.step();
+            const bool stateHere = held.integer(0) != 0;
+            held.reset();
             sqlite::Statement bodies(db_, "DELETE FROM slot_changes WHERE op = ?1 AND slot = ?2");
             bodies.bind(1, op).bind(2, slot).run();
             sqlite::Statement audio(db_, "DELETE FROM slot_audio WHERE op = ?1 AND slot = ?2");
             audio.bind(1, op).bind(2, slot).run();
             sqlite::Statement about(db_, "DELETE FROM op_subjects WHERE op = ?1 AND slot = ?2");
             about.bind(1, op).bind(2, slot).run();
-            if (!touchedSlots(op).empty() || !systemChanges(op).empty()) {
-                partial.push_back(op);
-            } else if (subjects(op).empty()) {
+            const bool stateLeft = !touchedSlots(op).empty() || !systemChanges(op).empty();
+            const bool aboutOthers = !subjects(op).empty();
+            if (!stateLeft && !aboutOthers) {
                 sqlite::Statement unrefer(db_, "UPDATE ops SET reverts = NULL WHERE reverts = ?1");
                 unrefer.bind(1, op).run();
                 sqlite::Statement baseline(db_, "UPDATE cards SET snapshot_op = NULL WHERE snapshot_op = ?1");
                 baseline.bind(1, op).run();
                 sqlite::Statement drop(db_, "DELETE FROM ops WHERE seq = ?1");
                 drop.bind(1, op).run();
+            } else if (stateHere) {
+                // Half-forgotten and still standing — for a state elsewhere or
+                // for another slot's badge: a boundary either way, since what
+                // is left of it must never be offered as the whole.
+                partial.push_back(op);
             }
-            // Otherwise the operation is still about another slot (#144): its
-            // row keeps standing for that slot's badge. With no state left in
-            // it, it moves no boundary — there is nothing of it to put back,
-            // so nothing of it can be offered half-forgotten.
+            // Otherwise only its name came off this slot: the operation and
+            // whatever it recorded elsewhere stand exactly as they were.
         }
         // A partial swap must never be offered as an undo of the whole swap: the
         // slot just forgotten would stay where it is. Only an operation that
@@ -816,7 +855,15 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
             archived.reset();
             entry.slots.push_back(std::move(touched));
         }
-        entry.subjects = subjects(entry.op);
+    }
+
+    // The slots each operation was about (#144), ascending.
+    sqlite::Statement about(db_, "SELECT slot FROM op_subjects WHERE op = ?1 ORDER BY slot");
+    for (CardEntry& entry : entries) {
+        about.bind(1, entry.op);
+        while (about.step())
+            entry.subjects.push_back(static_cast<int>(about.integer(0)));
+        about.reset();
     }
 
     // What each operation did to the pedal's own settings, in section order.
