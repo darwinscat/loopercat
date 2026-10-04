@@ -705,5 +705,54 @@ int main()
               && std::abs(*kept->reading.integratedLufs - (-19.5)) <= 1.0e-12);
     }
 
+    // --- a hash is carried to a new row only for the very file an earlier row saw (#141) ---
+    //
+    // Theory: the slot's newest row for a file name is the slot's last word
+    // about that file. It vouches for the file in front of the recorder only
+    // when it carries a hash and its size and stamp are the file's now. A
+    // newer row without a hash means the file changed while the app was away,
+    // and no older row may speak over it; a row from before the store kept
+    // stamps cannot vouch for anything.
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string a = take(3000, 151);
+        const std::string hashA = HistoryStore::contentHash(a);
+        const auto push = r.store.beginOp(r.session, "op-push", "push", 2000);
+        r.store.recordLanded(push, 5, 1, "005_1.WAV", a, 1000);
+        r.store.recordLanded(push, 7, 1, "007_1.WAV", take(3000, 152), 1000);
+        r.store.finishOp(push, OpStatus::done, "");
+        const auto next = r.store.beginOp(r.session, "op-next", "rename", 3000);
+        // the same file: name, size and stamp as the row saw them
+        CHECK(r.store.hashHeldBefore(next, 5, "005_1.WAV", 3000, 1000) == hashA);
+        // another file under the same name: a different stamp, or a different size
+        CHECK(!r.store.hashHeldBefore(next, 5, "005_1.WAV", 3000, 2000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 5, "005_1.WAV", 3001, 1000).has_value());
+        // another slot, another name: nothing to carry
+        CHECK(!r.store.hashHeldBefore(next, 6, "005_1.WAV", 3000, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 5, "006_1.WAV", 3000, 1000).has_value());
+        // only rows before the operation asking
+        CHECK(!r.store.hashHeldBefore(push, 5, "005_1.WAV", 3000, 1000).has_value());
+        // the newest row has no hash: the last word, and an older match is not consulted
+        r.store.recordPresentAudio(next, 5, 1, "005_1.WAV", 3000, std::nullopt, 2000);
+        r.store.finishOp(next, OpStatus::done, "");
+        const auto later = r.store.beginOp(r.session, "op-later", "rename", 4000);
+        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 2000).has_value());
+        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 1000).has_value()); // not even for the old stamp
+        // a row from before the store kept stamps cannot vouch for a file
+        sqlite::Statement unstamp(r.store.db(), "UPDATE slot_audio SET modified = NULL WHERE slot = 7");
+        unstamp.run();
+        CHECK(!r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 1000).has_value());
+        // another card's rows are another card's
+        r.store.finishOp(later, OpStatus::done, "");
+        const auto other = r.store.openSession(r.store.card("other", "RC-5", "Other", 5000), 5000);
+        const auto elsewhere = r.store.beginOp(other, "op-elsewhere", "rename", 6000);
+        r.store.recordLanded(elsewhere, 9, 1, "009_1.WAV", a, 1000);
+        r.store.finishOp(elsewhere, OpStatus::done, "");
+        r.store.selectCard(1);
+        const auto back = r.store.beginOp(r.session, "op-back", "rename", 7000);
+        CHECK(!r.store.hashHeldBefore(back, 9, "009_1.WAV", 3000, 1000).has_value());
+    }
+
     return testkit::summary("history_store_tests");
 }

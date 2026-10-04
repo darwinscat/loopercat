@@ -140,8 +140,10 @@ private:
     // on its own: a swap would send the reader into the other slot's rows,
     // and a rename would leave no sign that the slot held a take at all.
     // Hashes are carried only where they are certain — from the slot's own
-    // last state, or, for a swap, from the slot it exchanged with. A file the
-    // store has never seen is recorded by name and size, with no hash.
+    // last state, or, for a swap, from the slot it exchanged with, and only
+    // when that state's size and stamp are the file's now. A file the store
+    // has never seen, or has seen change since, is recorded by name and
+    // size, with no hash.
     void recordWhatSlotsHold(const Operation& op);
     std::int64_t sessionFor(const std::filesystem::path& volume);
 

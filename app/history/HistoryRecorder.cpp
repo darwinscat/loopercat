@@ -240,9 +240,12 @@ void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
             const auto size = static_cast<std::int64_t>(std::filesystem::file_size(dir / name, ec));
             if (ec)
                 throw Error("cannot measure " + (dir / name).string());
+            // The stamp is read once and asked of the earlier row too: a hash
+            // is carried over only for the very file that row saw.
+            const std::int64_t modified = modifiedMs(dir / name);
             store().recordPresentAudio(op.row, slot, kTrack, name, size,
-                                       store().hashHeldBefore(op.row, from, name, size),
-                                       modifiedMs(dir / name));
+                                       store().hashHeldBefore(op.row, from, name, size, modified),
+                                       modified);
         }
     }
 }

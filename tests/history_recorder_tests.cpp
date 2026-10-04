@@ -40,6 +40,7 @@
 #include <memory>
 #include <numbers>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace loopercat;
@@ -543,6 +544,97 @@ int main()
         CHECK_EQ(row.text(0), std::string("012_1.WAV"));
         CHECK(row.integer(1) > 0);
         CHECK_EQ(row.integer(2), 1); // no hash, and none invented
+    }
+
+    {
+        // A take re-recorded in place under the same name and size is another
+        // file (#141, review). Take A is renamed, so its row carries A's hash
+        // with A's stamp; the pedal then records B over it — same name, same
+        // size, a later stamp — and the next rename must not pair B's stamp
+        // with A's hash. And once a row without a hash stands for the file,
+        // no older row with one may speak over it: the stamp is the tell.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV", 132300);
+        const fs::path file = volume::wavDir(volume, 3) / "003_1.WAV";
+        const std::string a = commands::readFileBytes(file);
+        const std::int64_t stampA = 1'600'000'000'000;
+        CHECK(juce::File(juce::String(file.string())).setLastModificationTime(juce::Time(stampA)));
+        auto rec = recorderAt(tmp.path / "history");
+        sqlite::Db& db = rec->store().db();
+        const auto rowOf = [&db](const std::string& opId) {
+            sqlite::Statement row(db, "SELECT hex(a.hash), a.modified, hash IS NULL FROM slot_audio a "
+                                      "JOIN ops o ON o.seq = a.op WHERE o.id = ?1 AND a.slot = 3 AND a.side = 'after'");
+            row.bindText(1, opId);
+            if (!row.step())
+                throw Error("no after-row for " + opId);
+            return std::tuple<std::string, std::int64_t, bool>(row.text(0), row.integer(1), row.integer(2) != 0);
+        };
+        const auto hex = [](const std::string& raw) {
+            static constexpr char digits[] = "0123456789ABCDEF";
+            std::string out;
+            for (const char c : raw) {
+                const auto b = static_cast<unsigned char>(c);
+                out += digits[b >> 4];
+                out += digits[b & 0xF];
+            }
+            return out;
+        };
+
+        CHECK_EQ(run(*rec, "op-r1", "rename", volume, [&] {
+                     commands::rename(volume, 3, "First", options(rec, "op-r1"));
+                 }),
+                 std::string());
+        const auto [hash1, stamp1, null1] = rowOf("op-r1");
+        CHECK(!null1);
+        CHECK_EQ(hash1, hex(HistoryStore::contentHash(a))); // A, photographed and carried
+        CHECK_EQ(stamp1, stampA);
+
+        // the pedal records B over A: same name, same size, other bytes, later stamp
+        std::string b = a;
+        b.back() = static_cast<char>(b.back() ^ 0x5a);
+        CHECK(b != a && b.size() == a.size());
+        commands::writeFileBytes(file, b);
+        const std::int64_t stampB = stampA + 10'000;
+        CHECK(juce::File(juce::String(file.string())).setLastModificationTime(juce::Time(stampB)));
+
+        CHECK_EQ(run(*rec, "op-r2", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Second", options(rec, "op-r2"));
+                 }),
+                 std::string());
+        const auto [hash2, stamp2, null2] = rowOf("op-r2");
+        CHECK(null2); // B is a stranger: no hash, and never A's
+        CHECK_EQ(stamp2, stampB);
+
+        // a third rename: the newest row for the file has no hash and is the
+        // last word — A's row two operations back may not speak over it
+        CHECK_EQ(run(*rec, "op-r3", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Third", options(rec, "op-r3"));
+                 }),
+                 std::string());
+        const auto [hash3, stamp3, null3] = rowOf("op-r3");
+        CHECK(null3);
+        CHECK_EQ(stamp3, stampB);
+
+        // once the app itself lands a take there, the hash travels again — for that file
+        CHECK_EQ(run(*rec, "op-trim", "trim", volume, [&] {
+                     commands::trim(volume, 3, 0, 66150, { .write = options(rec, "op-trim") });
+                 }),
+                 std::string());
+        const auto [hashC, stampC, nullC] = rowOf("op-trim");
+        CHECK(!nullC);
+        CHECK_EQ(hashC, hex(HistoryStore::contentHash(commands::readFileBytes(file))));
+        CHECK_EQ(run(*rec, "op-r4", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Fourth", options(rec, "op-r4"));
+                 }),
+                 std::string());
+        const auto [hash4, stamp4, null4] = rowOf("op-r4");
+        CHECK(!null4);
+        CHECK_EQ(hash4, hashC);
+        CHECK_EQ(stamp4, stampC);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE slot = 3 AND side = 'after' AND hash = "
+                           "(SELECT hash FROM slot_audio a2 JOIN ops o2 ON o2.seq = a2.op WHERE o2.id = 'op-r1' AND a2.slot = 3)"),
+                 2); // A's hash: the snapshot's row and the first rename's, nowhere else
     }
 
     {

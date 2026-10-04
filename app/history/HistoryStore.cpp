@@ -398,17 +398,25 @@ bool HistoryStore::hasAfterAudio(std::int64_t op, int slot)
 }
 
 std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot,
-                                                        const std::string& name, std::int64_t size)
+                                                        const std::string& name, std::int64_t size,
+                                                        std::int64_t modifiedMs)
 {
-    sqlite::Statement read(db_, "SELECT hash FROM slot_audio WHERE slot = ?2 AND side = 'after' "
-                                "AND name = ?3 AND size = ?4 AND op < ?1 AND hash IS NOT NULL "
+    // The newest row for this file name, whatever it says: a row with no
+    // hash is the slot's last word about the file, and an older row with
+    // one is about an earlier file of the same name.
+    sqlite::Statement read(db_, "SELECT hash, size, modified FROM slot_audio "
+                                "WHERE slot = ?2 AND side = 'after' AND name = ?3 AND op < ?1 "
                                 "AND op IN (SELECT o.seq FROM ops o JOIN sessions s ON s.id = o.session "
                                 "WHERE s.card = (SELECT s2.card FROM ops o2 JOIN sessions s2 "
                                 "ON s2.id = o2.session WHERE o2.seq = ?1)) "
                                 "ORDER BY op DESC LIMIT 1");
-    read.bind(1, op).bind(2, slot).bindText(3, name).bind(4, size);
+    read.bind(1, op).bind(2, slot).bindText(3, name);
     if (!read.step())
         return std::nullopt;
+    if (read.isNull(0) || read.isNull(2))
+        return std::nullopt; // no hash, or a stamp the store never asked for: uncertain
+    if (read.integer(1) != size || read.integer(2) != modifiedMs)
+        return std::nullopt; // the same name on a different file
     return read.blob(0);
 }
 
