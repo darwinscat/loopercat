@@ -87,6 +87,11 @@ int main()
                                               .beforeBody = bodyWith(kFrames4m36, 1111, "Memory42", true),
                                               .afterBody = pushed });
         CHECK_EQ(off.action, std::string("One Shot off"));
+        // without a body left behind — an attempt that failed, or found
+        // nothing to change — the switch is named and no position invented
+        CHECK_EQ(story::tell({ .kind = "oneshot" }).action, std::string("One Shot"));
+        CHECK_EQ(story::tell({ .kind = "oneshot", .beforeBody = pushed }).action, std::string("One Shot"));
+        CHECK_EQ(story::tell({ .kind = "countin" }).action, std::string("Play Count-In"));
     }
 
     // --- a swap says what happened, not the six fields it moved ---

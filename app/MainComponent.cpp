@@ -1204,8 +1204,8 @@ void MainComponent::updateHistory()
                              const bool today = when.getDayOfYear()
                                  == juce::Time::getCurrentTime().getDayOfYear();
                              rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
-                                              row.line.action, row.line.detail, row.line.audio,
-                                              row.playable, row.restorable, row.op });
+                                              row.line.action, row.line.detail, row.state,
+                                              row.line.audio, row.playable, row.restorable, row.op });
                          }
                          juce::MessageManager::callAsync(
                              [safe, rows, loaded = std::move(entries), slot, alive, loadedCard = rec->store().selectedCard()]() mutable {

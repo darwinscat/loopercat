@@ -284,6 +284,62 @@ int main()
         CHECK(rows::forCard({ mixed }).front().restorable()); // the one state it recorded can go back
     }
 
+    // --- badges are what the row is about; a restore acts on what it recorded ---
+    {
+        // A row touching {3, 40} and about {7, 12, 40}: four badges, two
+        // slots to put back — never "Restore 4 slots".
+        Card two = op(8, 8000, "restore");
+        Card::Slot a = touched(two, 40, false);
+        a.facts.beforeBody = loaded;
+        a.facts.afterBody = shorter;
+        Card::Slot b = touched(two, 3, false);
+        b.facts.beforeBody = loaded;
+        b.facts.afterBody = shorter;
+        two.slots = { b, a };
+        two.subjects = { 7, 12, 40 };
+        const auto made = rows::forCard({ two });
+        CHECK(made.front().slots() == (std::vector<int> { 3, 7, 12, 40 }));
+        CHECK(made.front().touchedSlots() == (std::vector<int> { 3, 40 }));
+        CHECK(made.front().restorableSlots() == (std::vector<int> { 3, 40 }));
+        CHECK(made.front().restorable());
+        // a subject-only row has badges and nothing to act on
+        Card nothing = op(9, 9000, "normalize");
+        nothing.subjects = { 7 };
+        CHECK(rows::forCard({ nothing }).front().slots() == (std::vector<int> { 7 }));
+        CHECK(rows::forCard({ nothing }).front().touchedSlots().empty());
+    }
+
+    // --- the window's words for a row that did nothing, or did not finish ---
+    {
+        Card renamed = op(10, 10000, "rename");
+        renamed.subjects = { 7 };
+        CHECK_EQ(rows::forCard({ renamed }).front().action, std::string("Renamed"));
+        CHECK_EQ(rows::forCard({ renamed }).front().detail, std::string("nothing changed"));
+        Card oneshot = op(11, 11000, "oneshot");
+        oneshot.subjects = { 7 };
+        CHECK_EQ(rows::forCard({ oneshot }).front().action, std::string("One Shot"));
+        CHECK_EQ(rows::forCard({ oneshot }).front().detail, std::string("nothing changed"));
+        // a failed attempt: the state, the reason, and no switch position
+        Card failedOneShot = op(12, 12000, "oneshot", "app", "failed");
+        failedOneShot.note = "cannot write MEMORY1.RC0";
+        failedOneShot.subjects = { 7 };
+        CHECK_EQ(rows::forCard({ failedOneShot }).front().action, std::string("One Shot"));
+        CHECK_EQ(rows::forCard({ failedOneShot }).front().detail, failedOneShot.note);
+        CHECK_EQ(rows::forCard({ failedOneShot }).front().state, std::string("failed"));
+        // an old no-op (no subject, no note) says nothing rather than inventing it
+        Card old = op(13, 13000, "normalize");
+        CHECK_EQ(rows::forCard({ old }).front().detail, std::string());
+        // a failed trim that recorded bodies on the way: its reason, not its numbers
+        Card failedTrim = op(14, 14000, "trim", "app", "failed");
+        failedTrim.note = "cannot write MEMORY2.RC0";
+        Card::Slot s = touched(failedTrim, 12, false);
+        s.facts.beforeBody = loaded;
+        s.facts.afterBody = shorter;
+        failedTrim.slots = { s };
+        CHECK_EQ(rows::forCard({ failedTrim }).front().detail, failedTrim.note);
+        CHECK_EQ(rows::forCard({ failedTrim }).front().state, std::string("failed"));
+    }
+
     // --- pins ride along; an empty card has no rows ---
     {
         Card pinned = op(1, 1000, "rename");

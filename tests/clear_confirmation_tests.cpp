@@ -310,7 +310,8 @@ int main()
         std::vector<HistoryPane::Row> shown;
         for (const auto& row : rows)
             shown.push_back({ {}, juce::String(row.line.action), juce::String(row.line.detail),
-                juce::String(row.line.audio), row.playable, row.restorable, row.op });
+                juce::String(row.state), juce::String(row.line.audio), row.playable, row.restorable,
+                row.op });
         pane.setRows(std::move(shown), 4);
         history::TakeAudition audition(fixture.root / "audition");
         AudioEngine engine;

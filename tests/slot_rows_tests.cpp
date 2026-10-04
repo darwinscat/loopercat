@@ -234,6 +234,117 @@ int main()
         CHECK_THROWS(rows::forSlot({ lyingTake }), "subject");
     }
 
+    // --- a row that did not finish says so, and claims no change (P1 of #144's review) ---
+    {
+        // A push that could not read its source, a tempo refused as out of
+        // range, a One Shot ON attempt that failed: each is a row of the slot
+        // (its subject), and none of them happened. The window says "failed"
+        // beside such a row; the tab must say the same, and the words must
+        // not invent what the write would have left.
+        Entry push = op(1, "push");
+        push.status = "failed";
+        push.note = "cannot read a.wav";
+        push.subjectOnly = true;
+        Entry tempo = op(2, "tempo");
+        tempo.status = "failed";
+        tempo.note = "400.0 BPM is out of the pedal's range";
+        tempo.subjectOnly = true;
+        Entry oneshot = op(3, "oneshot");
+        oneshot.status = "failed";
+        oneshot.note = "cannot write MEMORY1.RC0";
+        oneshot.subjectOnly = true;
+        const auto made = rows::forSlot({ push, tempo, oneshot });
+        CHECK_EQ(made.size(), 3u);
+        for (const auto& row : made) {
+            CHECK_EQ(row.state, std::string("failed"));
+            CHECK(!row.playable && !row.restorable);
+            CHECK_EQ(row.line.audio, std::string());
+            CHECK(row.line.action.find(" on") == std::string::npos);
+            CHECK(row.line.action.find(" off") == std::string::npos);
+        }
+        CHECK_EQ(made[0].line.detail, push.note);
+        CHECK_EQ(made[1].line.detail, tempo.note);
+        CHECK(made[1].line.detail.find("->") == std::string::npos); // no numbers it never wrote
+        CHECK_EQ(made[2].line.action, std::string("One Shot")); // not "on", not "off"
+        CHECK_EQ(made[2].line.detail, oneshot.note);
+
+        // A row that recorded bodies on the way and then failed or was cut
+        // off: the reason outranks its numbers, and the state says it.
+        Entry cutTrim = op(4, "trim");
+        cutTrim.status = "interrupted";
+        cutTrim.note = "the card went away";
+        cutTrim.beforeBody = loaded;
+        cutTrim.afterBody = bodyWith(441000, "TEST_42_HIST");
+        Entry failedTempo = op(5, "tempo");
+        failedTempo.status = "failed";
+        failedTempo.note = "cannot write MEMORY2.RC0";
+        failedTempo.beforeBody = loaded;
+        failedTempo.afterBody = bodyWith(1719900, "TEST_42_HIST");
+        const auto cut = rows::forSlot({ cutTrim, failedTempo });
+        CHECK_EQ(cut[0].state, std::string("interrupted"));
+        CHECK_EQ(cut[0].line.detail, cutTrim.note);
+        CHECK_EQ(cut[1].state, std::string("failed"));
+        CHECK_EQ(cut[1].line.detail, failedTempo.note);
+        // the state a cut-off write recorded can be offered back like any
+        // other (it is not where the slot is); the last state row is the
+        // slot's place, whatever its outcome, so it is not somewhere to go back to
+        CHECK(cut[0].restorable);
+        CHECK(!cut[1].restorable);
+
+        // an interrupted row without a reason keeps the numbers it recorded, and the state
+        Entry silent = op(6, "trim");
+        silent.status = "interrupted";
+        silent.beforeBody = loaded;
+        silent.afterBody = bodyWith(441000, "TEST_42_HIST");
+        CHECK_EQ(rows::forSlot({ silent }).front().state, std::string("interrupted"));
+        CHECK_EQ(rows::forSlot({ silent }).front().line.detail, std::string("0:39 -> 0:10"));
+
+        // a pending row and a pedal's row wear the window's words too; a plain finished one wears none
+        Entry running = op(7, "normalize");
+        running.status = "pending";
+        running.subjectOnly = true;
+        CHECK_EQ(rows::forSlot({ running }).front().state, std::string("still running"));
+        Entry pedal = op(8, "push");
+        pedal.actor = "pedal";
+        pedal.beforeBody = empty;
+        pedal.afterBody = loaded;
+        CHECK_EQ(rows::forSlot({ pedal }).front().state, std::string("recorded on the pedal"));
+        Entry plain = op(9, "rename");
+        plain.beforeBody = loaded;
+        plain.afterBody = bodyWith(1719900, "Kitty");
+        CHECK_EQ(rows::forSlot({ plain }).front().state, std::string());
+    }
+
+    // --- a finished operation about the slot with nothing to say did nothing: say so ---
+    {
+        Entry rename = op(1, "rename");
+        rename.subjectOnly = true;
+        Entry tempo = op(2, "tempo");
+        tempo.subjectOnly = true;
+        Entry oneshot = op(3, "oneshot");
+        oneshot.subjectOnly = true;
+        Entry normalize = op(4, "normalize");
+        normalize.subjectOnly = true;
+        normalize.note = "already at -18.0 LUFS (measured -18.1), nothing to do";
+        const auto made = rows::forSlot({ rename, tempo, oneshot, normalize });
+        CHECK_EQ(made[0].line.action, std::string("Renamed"));
+        CHECK_EQ(made[0].line.detail, std::string("nothing changed"));
+        CHECK_EQ(made[1].line.action, std::string("Tempo"));
+        CHECK_EQ(made[1].line.detail, std::string("nothing changed"));
+        CHECK_EQ(made[2].line.action, std::string("One Shot")); // no switch position it never set
+        CHECK_EQ(made[2].line.detail, std::string("nothing changed"));
+        CHECK_EQ(made[3].line.detail, normalize.note); // the note, when there is one
+        for (const auto& row : made) {
+            CHECK_EQ(row.state, std::string());
+            CHECK(!row.restorable && !row.playable);
+        }
+        // a touched row with no detail is not "nothing changed": it recorded a state
+        Entry touched = op(5, "rename");
+        touched.beforeBody = loaded;
+        touched.afterBody = loaded;
+        CHECK_EQ(rows::forSlot({ touched }).front().line.detail, std::string("TEST_42_HIST -> TEST_42_HIST"));
+    }
+
     // --- an empty slot has an empty timeline, and no offers to make ---
     {
         CHECK(rows::forSlot({}).empty());
