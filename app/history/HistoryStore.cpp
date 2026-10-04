@@ -289,6 +289,33 @@ void HistoryStore::recordPresentAudio(std::int64_t op, int slot, int track,
     row.run();
 }
 
+void HistoryStore::recordSubject(std::int64_t op, int slot)
+{
+    if (slot < 1 || slot > 99)
+        throw Error("a slot is 1..99, not " + std::to_string(slot));
+    sqlite::Statement known(db_, "SELECT 1 FROM ops WHERE seq = ?1");
+    known.bind(1, op);
+    if (!known.step())
+        throw Error("no operation " + std::to_string(op));
+    sqlite::Statement already(db_, "SELECT 1 FROM op_subjects WHERE op = ?1 AND slot = ?2");
+    already.bind(1, op).bind(2, slot);
+    if (already.step())
+        throw Error("slot " + std::to_string(slot) + " is already a subject of operation "
+                    + std::to_string(op));
+    sqlite::Statement add(db_, "INSERT INTO op_subjects(op, slot) VALUES (?1, ?2)");
+    add.bind(1, op).bind(2, slot).run();
+}
+
+std::vector<int> HistoryStore::subjects(std::int64_t op)
+{
+    sqlite::Statement read(db_, "SELECT slot FROM op_subjects WHERE op = ?1 ORDER BY slot");
+    read.bind(1, op);
+    std::vector<int> out;
+    while (read.step())
+        out.push_back(static_cast<int>(read.integer(0)));
+    return out;
+}
+
 std::vector<int> HistoryStore::touchedSlots(std::int64_t op)
 {
     sqlite::Statement read(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
@@ -326,12 +353,18 @@ std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slo
 std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
 {
     std::vector<TimelineEntry> rows;
+    // A row for what the operation did here, and one for an operation that
+    // was only about the slot (#144) — told apart by whether it recorded
+    // anything here at all.
     sqlite::Statement read(db_,
                            "SELECT o.seq, o.at, o.kind, o.actor, o.status, o.note, "
-                           "       c.before_body, c.after_body "
+                           "       c.before_body, c.after_body, "
+                           "       o.seq IN (SELECT op FROM slot_changes WHERE slot = ?1 "
+                           "                 UNION SELECT op FROM slot_audio WHERE slot = ?1) "
                            "FROM ops o LEFT JOIN slot_changes c ON c.op = o.seq AND c.slot = ?1 "
                            "WHERE o.seq IN (SELECT op FROM slot_changes WHERE slot = ?1 "
-                           "                UNION SELECT op FROM slot_audio WHERE slot = ?1) "
+                           "                UNION SELECT op FROM slot_audio WHERE slot = ?1 "
+                           "                UNION SELECT op FROM op_subjects WHERE slot = ?1) "
                            "AND o.session IN (SELECT id FROM sessions WHERE card = ?2) "
                            "ORDER BY o.at, o.seq");
     read.bind(1, slot);
@@ -351,6 +384,7 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
             row.beforeBody = read.blob(6);
         if (!read.isNull(7))
             row.afterBody = read.blob(7);
+        row.subjectOnly = read.integer(8) == 0;
         rows.push_back(std::move(row));
     }
 
@@ -615,7 +649,8 @@ HistoryStore::ForgetPlan HistoryStore::planForgetSlot(std::int64_t cardId, int s
         "o.kind <> 'snapshot' AND o.seq > (SELECT undo_floor FROM cards WHERE id = ?1) FROM ops o "
         "JOIN sessions s ON s.id = o.session WHERE s.card = ?1 AND "
         "(EXISTS (SELECT 1 FROM slot_changes c WHERE c.op = o.seq AND c.slot = ?2) OR "
-        "EXISTS (SELECT 1 FROM slot_audio a WHERE a.op = o.seq AND a.slot = ?2)) ORDER BY o.seq");
+        "EXISTS (SELECT 1 FROM slot_audio a WHERE a.op = o.seq AND a.slot = ?2) OR "
+        "EXISTS (SELECT 1 FROM op_subjects j WHERE j.op = o.seq AND j.slot = ?2)) ORDER BY o.seq");
     rows.bind(1, cardId).bind(2, slot);
     while (rows.step()) {
         const auto op = rows.integer(0);
@@ -674,16 +709,22 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
             bodies.bind(1, op).bind(2, slot).run();
             sqlite::Statement audio(db_, "DELETE FROM slot_audio WHERE op = ?1 AND slot = ?2");
             audio.bind(1, op).bind(2, slot).run();
-            if (touchedSlots(op).empty() && systemChanges(op).empty()) {
+            sqlite::Statement about(db_, "DELETE FROM op_subjects WHERE op = ?1 AND slot = ?2");
+            about.bind(1, op).bind(2, slot).run();
+            if (!touchedSlots(op).empty() || !systemChanges(op).empty()) {
+                partial.push_back(op);
+            } else if (subjects(op).empty()) {
                 sqlite::Statement unrefer(db_, "UPDATE ops SET reverts = NULL WHERE reverts = ?1");
                 unrefer.bind(1, op).run();
                 sqlite::Statement baseline(db_, "UPDATE cards SET snapshot_op = NULL WHERE snapshot_op = ?1");
                 baseline.bind(1, op).run();
                 sqlite::Statement drop(db_, "DELETE FROM ops WHERE seq = ?1");
                 drop.bind(1, op).run();
-            } else {
-                partial.push_back(op);
             }
+            // Otherwise the operation is still about another slot (#144): its
+            // row keeps standing for that slot's badge. With no state left in
+            // it, it moves no boundary — there is nothing of it to put back,
+            // so nothing of it can be offered half-forgotten.
         }
         // A partial swap must never be offered as an undo of the whole swap: the
         // slot just forgotten would stay where it is. Only an operation that
@@ -775,6 +816,7 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
             archived.reset();
             entry.slots.push_back(std::move(touched));
         }
+        entry.subjects = subjects(entry.op);
     }
 
     // What each operation did to the pedal's own settings, in section order.

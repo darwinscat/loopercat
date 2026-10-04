@@ -60,7 +60,9 @@ int main()
         CHECK_EQ(rows.front().action, std::string("Cleared slot history"));
         CHECK_EQ(rows.front().detail, std::string("Slot 4: 1 entry, 1 take, 5 bytes freed"));
         CHECK(!rows.front().restorable());
-        CHECK(rows.front().slots().empty());
+        CHECK(rows.front().slots().empty()); // maintenance is about no slot: it never writes slot 4 back (#144)
+        CHECK(store.subjects(store.cardTimeline().front().op).empty());
+        CHECK(store.slotTimeline(4).empty());
         CHECK(!store.takeBytes(history::HistoryStore::contentHash("bytes")));
         questions = 0;
         clearhistory::ask(4, store.planForgetSlot(card, 4),

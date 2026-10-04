@@ -14,6 +14,8 @@
 //   - a history that cannot open, or a hook for an op that never began, stops
 //     the command with the card untouched
 //   - an op cut off mid-way reads as interrupted, and its take is still kept
+//   - an op names the slot it is about once it has begun, and keeps it when
+//     it then writes nothing (#144); maintenance is about no slot
 
 #include "support.hpp"
 
@@ -550,6 +552,37 @@ int main()
         CHECK_EQ(text(db, "SELECT note FROM ops WHERE id = 'op-broke'"),
                  std::string("cannot write MEMORY1.RC0"));
         CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-broke'"), std::string("failed"));
+    }
+
+    // --- the slot an operation is about (#144): named once it has begun, kept when it wrote nothing ---
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_THROWS(rec->subject("op-unbegun", 7), "without having begun");
+        rec->begin("op-about", "normalize", volume);
+        rec->subject("op-about", 7);
+        CHECK_THROWS(rec->subject("op-about", 7), "already a subject");
+        CHECK_THROWS(rec->subject("op-about", 0), "1..99");
+        CHECK_THROWS(rec->subject("op-about", 100), "1..99");
+        rec->finish("op-about", "", "already at -18.0 LUFS (measured -18.1), nothing to do");
+        auto& db = rec->store().db();
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-about'"), std::string("done"));
+        CHECK_EQ(count(db, "SELECT count(*) FROM op_subjects WHERE slot = 7"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio"), 0); // wrote nothing, so holds nothing it can say
+        const auto rows = rec->store().slotTimeline(7);
+        CHECK_EQ(rows.size(), 1u);
+        CHECK(rows.size() == 1u && rows.front().subjectOnly);
+        CHECK(rows.size() == 1u && rows.front().kind == "normalize");
+        // maintenance is about no slot: a subject on it is refused, not written
+        const auto card = *rec->store().selectedCard();
+        rec->beginMaintenance("op-forget", card);
+        CHECK_THROWS(rec->subject("op-forget", 7), "about no slot");
+        CHECK_EQ(count(db, "SELECT count(*) FROM op_subjects"), 1);
+        rec->finish("op-forget", "");
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-forget'"), std::string("done"));
+        CHECK_EQ(rec->store().slotTimeline(7).size(), 1u);
     }
 
     // --- the wiring refuses to be built without what it needs ---

@@ -52,6 +52,13 @@ public:
                const std::filesystem::path& volume);
     // Maintenance is journaled against the captured card without resolving a volume.
     void beginMaintenance(const std::string& opId, std::int64_t card);
+    // The slot an operation that has begun is about (#144), written down
+    // before the job touches the card: an operation that then changes
+    // nothing — a normalize that finds its slot at target — still keeps its
+    // slot in the history. Refused for maintenance: clearing a slot's
+    // history is about the history, and a subject would write the slot
+    // straight back into what was just forgotten (ForgetSlotJob.h).
+    void subject(const std::string& opId, int slot);
     void keepAudio(const std::string& opId, int slot, const std::string& fileName,
                    std::string_view bytes);
     void bodies(const std::string& opId, const std::vector<commands::SlotChange>& changes);

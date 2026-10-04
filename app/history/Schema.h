@@ -35,6 +35,11 @@
 //   system_changes what an operation did to the pedal's own
 //                settings, per section — before and after, so it can be
 //                undone like a slot change
+//   op_subjects  the slots an operation was ABOUT, apart from what it
+//                changed (#144): a normalize that found its slot at target
+//                writes no slot_changes row, and still was about that slot.
+//                A subject names no state, so it never makes an operation
+//                restorable, nor an Undo target.
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -58,7 +63,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 7;
+inline constexpr std::int64_t kVersion = 8;
 
 // Version 5 is the first supported store. Future steps append to this array;
 // kSteps[N] creates version kBaseVersion + N in the same transaction.
@@ -166,6 +171,17 @@ CREATE TABLE forgotten_slots(
     slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
     PRIMARY KEY (card, slot)
 ) STRICT;
+)sql",
+R"sql(
+-- The slots an operation was about, beside what it changed (#144). Apart
+-- from slot_changes on purpose: a row there without bodies would look like
+-- a state to restore, and an operation that changed nothing has none.
+CREATE TABLE op_subjects(
+    op   INTEGER NOT NULL REFERENCES ops(seq),
+    slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
+    PRIMARY KEY (op, slot)
+) STRICT;
+CREATE INDEX op_subjects_by_slot ON op_subjects(slot, op);
 )sql",
 };
 

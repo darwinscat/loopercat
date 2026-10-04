@@ -14,6 +14,8 @@
 //     interrupted, never as done; nothing finishes twice
 //   - the store refuses what it cannot read correctly: a newer version, a file
 //     that could never return space, another program's database
+//   - an operation remembers the slot it was about even when it changed
+//     nothing there (#144): a row for the slot, never a state of it
 
 #include "support.hpp"
 
@@ -426,6 +428,90 @@ int main()
         CHECK_EQ(after.size(), 1u);
         CHECK(after.front().takeHash.has_value()); // we still know which take it was
         CHECK(!after.front().takeKept);            // and that its bytes are gone
+    }
+
+    // --- what an operation was about, apart from what it changed (#144) ---
+    {
+        // A normalize that found slot 7 at target: no bodies, no take, and
+        // still a row that names slot 7 — in the card's timeline, and in the
+        // slot's own, where it is never the state the slot is in.
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string bytes = take(8000, 71);
+        const auto push = r.store.beginOp(r.session, "op-push", "push", 2000);
+        r.store.recordBodies(push, { { 7, "empty", "loaded" } });
+        r.store.recordLanded(push, 7, 1, "007_1.WAV", bytes);
+        r.store.finishOp(push, OpStatus::done, "");
+        const std::string why = "already at -18.0 LUFS (measured -18.1), nothing to do";
+        const auto nothing = r.store.beginOp(r.session, "op-nothing", "normalize", 3000);
+        r.store.recordSubject(nothing, 7);
+        r.store.finishOp(nothing, OpStatus::done, why);
+        CHECK(r.store.subjects(nothing) == std::vector<int> { 7 });
+        CHECK(r.store.subjects(push).empty());
+        CHECK(r.store.touchedSlots(nothing).empty()); // a subject is not a touch
+        CHECK(!r.store.hasAfterAudio(nothing, 7));
+
+        const auto seven = r.store.slotTimeline(7);
+        CHECK_EQ(seven.size(), 2u);
+        if (seven.size() == 2u) {
+            CHECK_EQ(seven[0].op, push);
+            CHECK(!seven[0].subjectOnly);
+            CHECK_EQ(seven[1].op, nothing);
+            CHECK(seven[1].subjectOnly);
+            CHECK(!seven[1].beforeBody && !seven[1].afterBody);
+            CHECK(seven[1].takeName.empty() && !seven[1].takeHash && !seven[1].takeKept);
+            CHECK_EQ(seven[1].takeCount, 0);
+            CHECK_EQ(seven[1].note, why);
+            CHECK_EQ(seven[1].status, std::string("done"));
+        }
+        CHECK(r.store.slotTimeline(8).empty());
+
+        const auto card = r.store.cardTimeline();
+        CHECK_EQ(card.size(), 2u);
+        if (card.size() == 2u) {
+            CHECK(card[0].subjects.empty());
+            CHECK(card[1].slots.empty());
+            CHECK(card[1].subjects == std::vector<int> { 7 });
+            CHECK_EQ(card[1].note, why);
+        }
+        // the push is still the state slot 7 is in: the normalize recorded none
+        CHECK(card.size() == 2u && card[0].slots.size() == 1u && card[0].slots[0].newest);
+        // and another card sees nothing of it
+        r.store.selectCard(r.store.card("other", "RC-5", "Other", 1));
+        CHECK(r.store.slotTimeline(7).empty());
+        CHECK(r.store.cardTimeline().empty());
+    }
+    {
+        // A subject is about one operation the store has, one slot of the
+        // pedal's, once: refused otherwise, and a refusal writes nothing. A
+        // swap about the two slots it then changes has each of them once.
+        TempDir tmp;
+        Ready r(tmp.path);
+        const auto op = r.store.beginOp(r.session, "op-swap", "swap", 2000);
+        CHECK_THROWS(r.store.recordSubject(9999, 12), "no operation 9999");
+        CHECK_THROWS(r.store.recordSubject(op, 0), "1..99");
+        CHECK_THROWS(r.store.recordSubject(op, 100), "1..99");
+        CHECK_THROWS(r.store.recordSubject(op, -7), "1..99");
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM op_subjects"), 0);
+        r.store.recordSubject(op, 43);
+        r.store.recordSubject(op, 12);
+        CHECK_THROWS(r.store.recordSubject(op, 12), "already a subject");
+        CHECK_THROWS(r.store.recordSubject(op, 43), "already a subject");
+        CHECK(r.store.subjects(op) == (std::vector<int> { 12, 43 })); // ascending, each once
+        r.store.recordBodies(op, { { 12, "a-before", "a-after" }, { 43, "b-before", "b-after" } });
+        r.store.finishOp(op, OpStatus::done, "");
+        const auto card = r.store.cardTimeline();
+        CHECK_EQ(card.size(), 1u);
+        if (!card.empty()) {
+            CHECK_EQ(card.front().slots.size(), 2u);
+            CHECK(card.front().subjects == (std::vector<int> { 12, 43 }));
+        }
+        const auto twelve = r.store.slotTimeline(12);
+        CHECK_EQ(twelve.size(), 1u); // about it and changed it: one row, not two
+        CHECK(twelve.size() == 1u && !twelve.front().subjectOnly);
+        CHECK(twelve.size() == 1u && twelve.front().swappedWith == 43);
+        // the table refuses on its own what the method refuses
+        CHECK_THROWS(r.store.db().exec("INSERT INTO op_subjects VALUES (9999, 1)"), "FOREIGN KEY");
     }
 
     return testkit::summary("history_store_tests");

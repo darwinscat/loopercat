@@ -172,6 +172,16 @@ void HistoryRecorder::beginMaintenance(const std::string& opId, std::int64_t car
     ops_[opId] = Operation { row, "forget-history", {} };
 }
 
+void HistoryRecorder::subject(const std::string& opId, int slot)
+{
+    const auto found = ops_.find(opId);
+    if (found == ops_.end())
+        throw Error("operation " + opId + " reported to the history without having begun");
+    if (found->second.kind == "forget-history")
+        throw Error("maintenance operation " + opId + " is about no slot");
+    store().recordSubject(found->second.row, slot);
+}
+
 std::int64_t HistoryRecorder::opRow(const std::string& opId) const
 {
     const auto found = ops_.find(opId);
