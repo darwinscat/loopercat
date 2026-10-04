@@ -1172,11 +1172,16 @@ void MainComponent::updateTableRows()
 }
 
 // The panel always shows the slot the table has selected, re-read from the
-// newest snapshot: a finished write must change what the switches say.
+// newest snapshot: a finished write must change what the switches say. The
+// tab strip names that slot ahead of its tabs, and goes quiet with them.
 void MainComponent::updateInspector()
 {
-    inspector.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
-    rhythmPane.setSlot(selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr);
+    const SlotRow* row = selectedSlot > 0 ? slotRowFor(selectedSlot) : nullptr;
+    inspector.setSlot(row);
+    rhythmPane.setSlot(row);
+    bottomTabs.setLeadingLabel(row != nullptr
+                                   ? "SLOT " + juce::String(row->info.slot).paddedLeft('0', 2)
+                                   : juce::String());
     if (history.isVisible())
         updateHistory();
 }
@@ -1833,8 +1838,8 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
         return;
     }
 
-    const juce::String title = juce::String(row.info.slot).paddedLeft('0', 2) + "  "
-                             + trimmedName(row);
+    // The name alone: the slot's number is the tab strip's to say (#145).
+    const juce::String title = trimmedName(row);
     if (row.info.tracks.size() > 1) {
         // A multi-track memory plays as its mix, every take at its own level
         // (TRACK<n>/PlyLvl, 100 = unity); the pane's identity is the first
