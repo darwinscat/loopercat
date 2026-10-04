@@ -88,10 +88,21 @@ int main()
         out.write(reinterpret_cast<const char*>(wavBytes.data()),
                   static_cast<std::streamsize>(wavBytes.size()));
     }
-    // What the history would file the reading under: the hash of the file's
-    // bytes, every one of them, not of what a decoder chose to read.
-    const std::string wavHash = history::contentHash(
-        std::string_view(reinterpret_cast<const char*>(wavBytes.data()), wavBytes.size()));
+    // The fixture above is pcm16 — a shape the pedal gate refuses, so the pane
+    // must hand up NO hash for it (#140, review): JUCE decodes it and the
+    // number shows, but the history gets nothing it could mistake for the
+    // core's reading. A pedal float32 take beside it gets its hash — of the
+    // file's bytes, every one of them, not of what a decoder chose to read.
+    const juce::File floatFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                     .getChildFile("loopercat_player_pane_harness_f32.wav");
+    const auto floatBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = kFrames });
+    {
+        std::ofstream out(floatFile.getFullPathName().toStdString(), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(floatBytes.data()),
+                  static_cast<std::streamsize>(floatBytes.size()));
+    }
+    const std::string floatHash = history::contentHash(
+        std::string_view(reinterpret_cast<const char*>(floatBytes.data()), floatBytes.size()));
 
     AudioEngine engine;
     PlayerPane pane(engine);
@@ -112,22 +123,26 @@ int main()
     pane.onTrim = [&](int slot, juce::int64 in, juce::int64 out) { trimmed = Trimmed { slot, in, out }; };
     // The owner's half of the loudness round trip: the reading comes back as
     // words, and the button is enabled again.
-    // The hash rides along with the reading (#140): the one the history keys
-    // takes by, of exactly the bytes in the file the pane was handed.
+    // The hash rides along with the reading (#140): the history's key for the
+    // bytes, when the core would measure them — and empty when it would not.
+    bool readCame = false;
     std::string readHash;
     pane.onLoudnessRead = [&](int slot, const wav::LoudnessReading&, const std::string& hash) {
+        readCame = true;
         readHash = hash;
         pane.setLoudness(slot, "-14.0 LUFS", false, false, "");
     };
 
     const auto load = [&] {
+        readCame = false;
         readHash.clear();
         pane.setSlot(1, wavFile, "01 Loop", false, kFrames);
         CHECK(engine.hasSource());
         CHECK(pane.currentPath() == wavFile.getFullPathName());
         settle(pane);
         CHECK(normalize->isEnabled()); // so a dropped press below is the card's doing
-        CHECK(readHash == wavHash);    // the reading came up keyed by the file's own bytes
+        CHECK(readCame);               // the number came up for the screen...
+        CHECK(readHash.empty());       // ...with no key for the history: pcm16 is not the pedal's
     };
 
     // --- a pane never told what it may do offers nothing ---
@@ -207,7 +222,18 @@ int main()
     pane.setMarkers(0.2, 0.7);
     CHECK(trim->isVisible());
 
+    // --- a pedal float32 take comes up with its key; pcm16 came up without one ---
+
+    readCame = false;
+    readHash.clear();
+    pane.setSlot(2, floatFile, "02 Float", false, kFrames);
+    CHECK(pane.currentPath() == floatFile.getFullPathName());
+    settle(pane);
+    CHECK(readCame);
+    CHECK(readHash == floatHash); // the hash of the file's own bytes, every one of them
+
     pane.clear();
     wavFile.deleteFile();
+    floatFile.deleteFile();
     return testkit::summary("player_pane_harness");
 }

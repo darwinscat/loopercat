@@ -100,10 +100,13 @@ public:
     // BS.1770 meter, and hands the reading up through onLoudnessRead the
     // moment the waveform is complete — no second read off the card, no
     // button. With it goes the content hash of the bytes it metered
-    // (history::contentHash): a reading is a fact about those bytes, and
-    // the owner files it in the history under that key (#140). The owner
-    // turns it into words (target, damage) and feeds them back through
-    // setLoudness; a read-only check running elsewhere lands the same way.
+    // (history::contentHash), when the core would measure those bytes to
+    // the same number — the pedal's own stereo float32, whole — and empty
+    // otherwise: a reading is a fact about bytes, and the owner files it in
+    // the history under that key (#140) only when it is the core's fact
+    // too. The owner turns it into words (target, damage) and feeds them
+    // back through setLoudness; a read-only check running elsewhere lands
+    // the same way.
     // The readout and Normalize… share the row with Trim and step aside
     // while a trim selection is active: the selection owns the row then,
     // and Normalize is whole-loop work that must not read as "the
@@ -160,11 +163,11 @@ private:
     // new load or a clear stops it between blocks — browsing fast through
     // slots must not queue a card's worth of reads.
     //
-    // A file that is metered is read into memory whole, in slices, and
-    // decoded from there: the reading is filed under the hash of its bytes
-    // (#140), a hash is of all of them, and the card is still read once. A
-    // lane that is only drawn (a multi-track memory) streams from the file
-    // as before.
+    // A metered take is then hashed in a second, streamed pass over the file
+    // (history::fileContentHash), and the hash goes up with the reading only
+    // when the core would measure those very bytes (ReaderLoudness.h) and the
+    // file is still the one the decode began on. Otherwise the reading goes
+    // up alone: a number for the screen, none for the history.
     class ReadPass final : public juce::Thread
     {
     public:
@@ -178,11 +181,8 @@ private:
         void run() override;
 
     private:
-        // The whole file into `out`, a slice at a time so stop() is heard
-        // between two of them: one read of a long take over USB would hold
-        // the thread past stop()'s patience. False when the file could not
-        // be read to its end — or when the pass was told to stop.
-        bool readWhole(const juce::File& file, juce::MemoryBlock& out);
+        std::string fileKey(const juce::File& file, juce::int64 sizeBefore,
+                            juce::Time modifiedBefore);
 
         PlayerPane& owner_;
         std::vector<juce::File> files_;

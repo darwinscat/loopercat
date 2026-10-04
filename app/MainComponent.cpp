@@ -368,7 +368,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading,
                                    const std::string& hash) {
         applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
-        keepReading(hash, reading);
+        if (!hash.empty()) // empty: the core would not measure these bytes to this number
+            keepReading(hash, reading);
     };
     player.onNormalize = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))

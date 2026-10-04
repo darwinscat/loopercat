@@ -3,13 +3,13 @@
 
 #include "PlayerPane.h"
 
-#include "history/ContentHash.h"
+#include "ReaderLoudness.h"
+#include "history/FileHash.h"
 
 #include <loopercat/Params.hpp>
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
-#include <string_view>
 
 namespace loopercat
 {
@@ -20,8 +20,7 @@ namespace
     const juce::Colour kText { 0xffd8d8d8 };
     const juce::Colour kDim { 0xff63636d };
     constexpr int kTransportRowHeight = 30;
-    constexpr int kReadBlock = 32768; // frames per read-pass block: ~0.7 s, a fine stop grain
-    constexpr int kReadSlice = 1 << 20; // bytes per slice of a whole-file read: ~3 s of float32 stereo
+    constexpr int kReadBlock = readerloudness::kBlockFrames; // frames per read-pass block: ~0.7 s, a fine stop grain
     // The transport row's right side, outside in: the time readout ("12:34 /
     // 12:34" at 13 px plus its 44 px right margin), then the operation zone
     // that [Reset][Trim] and [Measure][Normalize…] take turns in. Any
@@ -333,24 +332,24 @@ void PlayerPane::ReadPass::start(std::vector<juce::File> files, int slot)
     startThread();
 }
 
-bool PlayerPane::ReadPass::readWhole(const juce::File& file, juce::MemoryBlock& out)
+// The key a metered take is filed under (#140), or nothing. Nothing when the
+// core would not measure these bytes (JUCE decodes files the core refuses,
+// and pads a truncated one to its header's length — its number is then not
+// the core's), when the file changed under the pass (size or stamp differ
+// from before the decode: the number and the hash would be of two files),
+// and when the hash read stopped short. The hash is streamed, a second pass
+// over the file; a take of any length stays out of memory.
+std::string PlayerPane::ReadPass::fileKey(const juce::File& file, juce::int64 sizeBefore,
+                                          juce::Time modifiedBefore)
 {
-    juce::FileInputStream in(file);
-    if (!in.openedOk())
-        return false;
-    const juce::int64 total = in.getTotalLength();
-    if (total < 0)
-        return false;
-    out.setSize(static_cast<std::size_t>(total), false);
-    juce::int64 done = 0;
-    while (done < total && !threadShouldExit()) {
-        const int n = static_cast<int>(std::min<juce::int64>(kReadSlice, total - done));
-        const int got = in.read(static_cast<char*>(out.getData()) + done, n);
-        if (got <= 0)
-            return false;
-        done += got;
-    }
-    return done == total;
+    if (!readerloudness::coreWouldMeasure(file))
+        return {};
+    const auto hash = history::fileContentHash(file, [this] { return threadShouldExit(); });
+    if (!hash)
+        return {};
+    if (file.getSize() != sizeBefore || file.getLastModificationTime() != modifiedBefore)
+        return {};
+    return *hash;
 }
 
 void PlayerPane::ReadPass::run()
@@ -375,22 +374,12 @@ void PlayerPane::ReadPass::run()
             thumbnail.reset(2, 44100.0, 0); // a track without a take: an empty lane, drawn
             continue;
         }
-        // Declared before the reader: a reader over the bytes must go first.
-        juce::MemoryBlock bytes;
-        std::unique_ptr<juce::AudioFormatReader> reader;
-        if (measure) {
-            if (!readWhole(files_[lane], bytes)) {
-                if (!threadShouldExit())
-                    finish(std::nullopt, {}); // a short read is not a reading
-                return;
-            }
-            hash = history::contentHash(
-                std::string_view(static_cast<const char*>(bytes.getData()), bytes.getSize()));
-            reader.reset(owner_.engine_.formats().createReaderFor(
-                std::make_unique<juce::MemoryInputStream>(bytes.getData(), bytes.getSize(), false)));
-        } else {
-            reader.reset(owner_.engine_.formats().createReaderFor(files_[lane]));
-        }
+        // What the file was before the decode began: a replace under the pass
+        // shows as a changed size or stamp afterwards, and then nothing is filed.
+        const juce::int64 sizeBefore = files_[lane].getSize();
+        const juce::Time modifiedBefore = files_[lane].getLastModificationTime();
+        std::unique_ptr<juce::AudioFormatReader> reader(
+            owner_.engine_.formats().createReaderFor(files_[lane]));
         if (reader == nullptr || reader->numChannels < 1) {
             if (measure)
                 finish(std::nullopt, {});
@@ -404,17 +393,16 @@ void PlayerPane::ReadPass::run()
         // pedal plays anyway, and a program past the meter's capacity is not
         // one it can read; the waveform still draws, the reading is simply
         // absent.
-        std::optional<loudness::Meter> meter;
+        std::optional<readerloudness::ReaderMeter> meter;
         if (measure) {
             try {
-                meter.emplace(static_cast<int>(reader->sampleRate));
+                meter.emplace(reader->sampleRate);
             } catch (const Error&) {
             }
         }
         bool metered = meter.has_value();
 
         juce::AudioBuffer<float> buffer(channels, kReadBlock);
-        std::vector<float> interleaved(2 * static_cast<std::size_t>(kReadBlock));
         juce::int64 position = 0;
         while (position < total && !threadShouldExit()) {
             const int n = static_cast<int>(std::min<juce::int64>(kReadBlock, total - position));
@@ -422,15 +410,8 @@ void PlayerPane::ReadPass::run()
                 break;
             thumbnail.addBlock(position, buffer, 0, n);
             if (metered) {
-                // Mono feeds both meter channels — the pedal plays it that way.
-                const float* left = buffer.getReadPointer(0);
-                const float* right = buffer.getReadPointer(channels >= 2 ? 1 : 0);
-                for (int i = 0; i < n; ++i) {
-                    interleaved[2 * static_cast<std::size_t>(i)] = left[i];
-                    interleaved[2 * static_cast<std::size_t>(i) + 1] = right[i];
-                }
                 try {
-                    meter->process(interleaved.data(), static_cast<std::size_t>(n));
+                    meter->feed(buffer, n);
                 } catch (const Error&) {
                     metered = false; // past the meter's capacity: the waveform still draws
                 }
@@ -444,8 +425,10 @@ void PlayerPane::ReadPass::run()
                 finish(std::nullopt, {}); // a short read is not a reading
                 return;
             }
-            reading = wav::LoudnessReading { meter->integratedLufs(), meter->samplePeak(),
-                                             meter->truePeakDb(), meter->wildSamples() };
+            reading = meter->reading();
+            hash = fileKey(files_[lane], sizeBefore, modifiedBefore);
+            if (threadShouldExit())
+                return; // the hash read was cut short for a newer file
         }
     }
     if (measure)
