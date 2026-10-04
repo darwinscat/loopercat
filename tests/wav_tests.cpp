@@ -324,5 +324,50 @@ int main()
     CHECK_THROWS(wav::trackFileName("x.wav", 3, 2), "track out of range");
     CHECK_THROWS(wav::trackFileName("x.wav", 2, 1), "track out of range");
 
+    // --- the header off a probe, with the file's size as the bound (#140) ---
+    //
+    // Theory: a reader that knows a file's first bytes and its whole size can
+    // ask the same questions of the header the whole-file parse asks, and
+    // must get the same answers — including the refusal of a file shorter
+    // than its header claims, which is the one lie a probe alone cannot see.
+    // What the probe does not reach, it must say it does not reach.
+    {
+        const auto whole = syntheticWav({ .tag = 3, .bits = 32, .frames = 44100 });
+        const auto size = static_cast<std::int64_t>(whole.size());
+        const wav::BytesView header(whole.data(), 44); // RIFF + fmt(16) + the data chunk's header
+        CHECK(wav::readWavInfo(header, size) == wav::readWavInfo(whole));
+        CHECK(wav::readWavInfo(wav::BytesView(whole.data(), 4096), size) == wav::readWavInfo(whole));
+        CHECK(wav::readWavInfo(whole, size) == wav::readWavInfo(whole));
+        // shorter than the header claims: by one byte, by 70 % — the core's
+        // truncation check, against the real size
+        CHECK_THROWS(wav::readWavInfo(header, size - 1), "truncated");
+        CHECK_THROWS(wav::readWavInfo(header, 44 + 13230 * 8), "truncated"); // 0.3 s present, 1 s claimed
+        CHECK_THROWS(wav::readWavInfo(header, 44), "truncated");
+        // a probe longer than the file is a lie about the file
+        CHECK_THROWS(wav::readWavInfo(wav::BytesView(whole.data(), 100), 44), "longer than the file");
+        // a chunk header past the probe: the probe cannot answer, and says so
+        const auto listed = syntheticWav({ .tag = 3, .bits = 32, .frames = 100, .extraChunk = true });
+        CHECK_THROWS(wav::readWavInfo(wav::BytesView(listed.data(), 44),
+                                      static_cast<std::int64_t>(listed.size())),
+                     "ends before the chunk at offset 70");
+        CHECK(wav::readWavInfo(wav::BytesView(listed.data(), 78), static_cast<std::int64_t>(listed.size()))
+              == wav::readWavInfo(listed));
+        // a fmt body cut by the probe: the same
+        std::vector<unsigned char> fmt;
+        const auto p16 = [&fmt](int v) {
+            fmt.push_back(static_cast<unsigned char>(v & 0xff));
+            fmt.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+        };
+        const auto p32 = [&p16](int v) { p16(v & 0xffff); p16((v >> 16) & 0xffff); };
+        p16(3); p16(2); p32(44100); p32(44100 * 8); p16(8); p16(32);
+        const std::vector<unsigned char> pad(24, 0), data(800, 0);
+        const auto junkFirst = rawRiff({ { "JUNK", 24, pad }, { "fmt ", 16, fmt }, { "data", 800, data } });
+        const auto junkSize = static_cast<std::int64_t>(junkFirst.size());
+        CHECK_THROWS(wav::readWavInfo(wav::BytesView(junkFirst.data(), 60), junkSize), "ends inside the fmt");
+        CHECK_THROWS(wav::readWavInfo(wav::BytesView(junkFirst.data(), 50), junkSize), "ends before the chunk at offset 44");
+        CHECK(wav::readWavInfo(wav::BytesView(junkFirst.data(), 76), junkSize) == wav::readWavInfo(junkFirst));
+        CHECK_EQ(wav::readWavInfo(wav::BytesView(junkFirst.data(), 76), junkSize).frames, 100);
+    }
+
     return testkit::summary("wav");
 }
