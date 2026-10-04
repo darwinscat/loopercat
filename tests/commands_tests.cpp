@@ -1179,6 +1179,67 @@ int main()
         CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
         CHECK(!fs::exists(tmp.path / "archive" / replacing.opId));
         CHECK(volumeBytes(volume) == before);
+
+        // The review's P0: a name longer than a FAT name (255 UTF-16 units)
+        // used to pass the up-front check, so push archived and removed the
+        // old take and then failed at the write — an empty slot folder under
+        // a config that says it holds audio. A 252-character stem plus .wav
+        // is 256 units: refused before the archive is touched, the old take
+        // stays, the card is byte-identical.
+        const commands::WriteOptions longName = writeOpts(tmp.path, "op-long-name");
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .landedName = std::string(252, 'n') + ".wav", .force = true,
+                                      .write = longName }),
+                     "at most 255");
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(tmp.path / "archive" / longName.opId));
+        CHECK(volumeBytes(volume) == before);
+        // Exactly 255 units passes the check (the card would take it); the
+        // file itself is not written here, where a host temp path plus 255
+        // characters would exceed what a Windows runner allows.
+        commands::assertLandedName(std::string(251, 'n') + ".wav");
+        CHECK_THROWS(commands::assertLandedName(std::string(252, 'n') + ".wav"), "256");
+        // units, not bytes: 200 "é" are 400 bytes and 200 units
+        std::string accented;
+        for (int i = 0; i < 200; ++i)
+            accented += "\xc3\xa9";
+        commands::assertLandedName(accented + ".wav");
+        ++testkit::checksRun; // the two names above were accepted
+
+        // Names every host of the card can create and the card's own sweep
+        // leaves alone — anything else is refused up front, with the slot
+        // and the card as they were.
+        for (const auto& [bad, why] : std::vector<std::pair<std::string, std::string>> {
+                 { "ta:ke.wav", "cannot contain \":\"" },
+                 { "take?.wav", "cannot contain \"?\"" },
+                 { "<take>.wav", "cannot contain \"<\"" },
+                 { "take|2.wav", "cannot contain \"|\"" },
+                 { "ta\"ke.wav", "cannot contain \"\"\"" },
+                 { "take*.wav", "cannot contain \"*\"" },
+                 { std::string("take\x01.wav"), "control character" },
+                 { std::string("take\t.wav"), "control character" },
+                 { "._take.wav", "card sweep deletes" },
+                 { ".take.wav", "start with a dot" },
+                 { "con.wav", "Windows reserves" },
+                 { "CON.wav", "Windows reserves" },
+                 { "LPT1.wav", "Windows reserves" },
+                 { "Com9.take.wav", "Windows reserves" },
+                 { "nul.wav", "Windows reserves" } }) {
+            CHECK_THROWS(commands::push(volume, source, 12, { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         why);
+            CHECK_THROWS(commands::push(volume, source, 9,
+                                        { .landedName = bad, .force = true, .write = writeOpts(tmp.path) }),
+                         why);
+        }
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(volume::wavDir(volume, 12)));
+        CHECK(volumeBytes(volume) == before);
+        // ...and what only looks reserved is not: a word that starts with a
+        // device name, COM10, a mark after the stem
+        for (const char* fine : { "console.wav", "COM10.wav", "aux-pedal.wav", "My Song (take 2).wav",
+                                  "caf\xc3\xa9 \xe2\x80\x93 live.wav" })
+            commands::assertLandedName(fine);
+        ++testkit::checksRun; // all accepted
     }
 
     // --- push failure leaves the volume byte-identical ---

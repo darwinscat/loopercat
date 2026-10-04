@@ -17,6 +17,7 @@
 #include "DeviceProfile.hpp"
 #include "Downmix.hpp"
 #include "Error.hpp"
+#include "FatName.hpp"
 #include "Loudness.hpp"
 #include "Normalize.hpp"
 #include "Params.hpp"
@@ -575,16 +576,29 @@ struct PushOptions {
 };
 
 // A landed name is a bare file name with a .wav extension and something in
-// front of it. No separator in either direction: the card is FAT and is read
-// on Windows too. The extension's case is not checked: the pedal's own
-// recordings wear uppercase .WAV (the pedal-technical names Wav.hpp
-// recognises) and FAT does not tell the two apart. An upload's extension
-// changes on purpose (issue #139: song.mp3 lands as song-pedal.wav), so a
-// name that kept its source's extension would lie about the bytes under it.
+// front of it, that every host of the card can create and the card's own
+// sweep leaves alone — checked here, before a byte moves, because push
+// archives and removes the old take before it writes the new one, and a
+// name the card refuses at the write would leave the slot empty with a
+// config that says it holds audio (issue #139, review). The rules are
+// FatName.hpp's: no separator in either direction (the card is FAT and is
+// read on Windows too), none of FAT's reserved characters, at most 255
+// UTF-16 units, no Windows device name; plus the card's own: no name the
+// junk sweep deletes (volume::isJunkName — "._take.wav" would be reported
+// as pushed and swept at the next sweep), no name starting with a dot (a
+// hidden file on every host). The extension's case is not checked: the
+// pedal's own recordings wear uppercase .WAV (the pedal-technical names
+// Wav.hpp recognises) and FAT does not tell the two apart. An upload's
+// extension changes on purpose (issue #139: song.mp3 lands as
+// song-pedal.wav), so a name that kept its source's extension would lie
+// about the bytes under it.
 inline void assertLandedName(const std::string& name)
 {
     if (name.find_first_of("/\\") != std::string::npos)
         throw Error("push: the name on the card must be a bare file name, not \"" + name + "\"");
+    if (const auto c = fatname::forbiddenCharacter(name))
+        throw Error("push: the name on the card cannot contain " + fatname::describeCharacter(*c)
+                    + " — a file name on the card cannot hold it");
     constexpr std::string_view kWav = ".wav";
     std::string tail = name.size() >= kWav.size() ? name.substr(name.size() - kWav.size()) : name;
     for (char& c : tail)
@@ -593,6 +607,17 @@ inline void assertLandedName(const std::string& name)
         throw Error("push: the name on the card must end in .wav, not \"" + name + "\"");
     if (name.size() == kWav.size())
         throw Error("push: the name on the card needs a name in front of .wav");
+    if (volume::isJunkName(name))
+        throw Error("push: \"" + name + "\" is a name the card sweep deletes");
+    if (name.front() == '.')
+        throw Error("push: the name on the card cannot start with a dot — \"" + name
+                    + "\" would be a hidden file");
+    if (fatname::isDeviceName(name))
+        throw Error("push: \"" + name + "\" is a name Windows reserves for a device");
+    if (const std::size_t units = fatname::utf16Units(name); units > fatname::kMaxUnits)
+        throw Error("push: the name on the card is " + std::to_string(units)
+                    + " characters long; a file name on the card holds at most "
+                    + std::to_string(fatname::kMaxUnits));
 }
 
 struct PushResult {
