@@ -6,6 +6,11 @@
 // else JUCE reads becomes 44.1 kHz stereo float32; what cannot become that
 // fails plainly. The field case that started this: DAW 24-bit exports wear
 // WAVE_FORMAT_EXTENSIBLE headers the strict core parser refuses.
+//
+// Issue #139 adds what a conversion reports about itself — the source's
+// rate, sample format and channels, said only where they differ from the
+// pedal's — and where it lives: a directory per job under import-tmp, gone
+// with the job whichever way the job ends.
 
 #include "support.hpp"
 
@@ -13,6 +18,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <loopercat/Error.hpp>
 #include <loopercat/Loudness.hpp>
 #include <loopercat/Wav.hpp>
 
@@ -429,6 +435,176 @@ int main()
         CHECK(!measureLufs(p.file).has_value()); // still silence on the way out
     }
 
-    work.deleteRecursively();
+    // --- what the rebuild changed, as facts (issue #139) ---
+
+    // 48 kHz, 24-bit, mono: every fact differs from the pedal's, and the
+    // sentence says all three — source on the left, the pedal on the right.
+    {
+        const auto bytes = testkit::syntheticWav(
+            { .tag = 1, .channels = 1, .sampleRate = 48000, .bits = 24, .frames = 4800 });
+        const juce::File src = writeTemp(work, "daw-mono-48k.wav", bytes);
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+        CHECK(p.converted);
+        CHECK(p.sourceFormat.has_value());
+        if (p.sourceFormat.has_value()) {
+            CHECK_EQ(p.sourceFormat->sampleRate, 48000);
+            CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("24-bit"));
+            CHECK_EQ(p.sourceFormat->channels, 1);
+            CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
+                     std::string("48000 Hz, 24-bit, mono -> 44100 Hz, 32-bit float, stereo"));
+        }
+    }
+
+    // A pedal-ready file passes through with no facts: there was no rebuild
+    // to report, and no directory to own.
+    {
+        const auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410 });
+        const juce::File src = writeTemp(work, "ready-facts.wav", bytes);
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+        CHECK(!p.converted);
+        CHECK(!p.sourceFormat.has_value());
+        CHECK(p.jobDir.path() == juce::File());
+    }
+
+    // A pedal-ready file rewritten for its loudness alone IS a conversion,
+    // and its facts match the pedal on every point — so the sentence is
+    // empty: "32-bit float -> 32-bit float" is nothing anyone needs told.
+    {
+        const juce::File src =
+            writeTemp(work, "quiet-facts.wav", sineWav(3 * 44100, 2, dbAmp(-28.0)));
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, { .normalizeTargetLufs = -18.0 }).wasOk());
+        CHECK(p.converted);
+        CHECK(p.sourceFormat.has_value());
+        if (p.sourceFormat.has_value()) {
+            CHECK_EQ(p.sourceFormat->sampleRate, 44100);
+            CHECK_EQ(p.sourceFormat->encoding.toStdString(), std::string("32-bit float"));
+            CHECK_EQ(p.sourceFormat->channels, 2);
+            CHECK(wavimport::describeConversion(*p.sourceFormat).isEmpty());
+        }
+        CHECK(p.normalize.has_value());
+        CHECK(p.normalize->measurable); // the gain is the only story here
+    }
+
+    // The field case keeps its bit depth as the fact, not the header's shape.
+    {
+        const juce::File src = writeTemp(work, "daw-export-facts.wav", extensiblePcm24(4410));
+        wavimport::Prepared p;
+        CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+        CHECK(p.sourceFormat.has_value());
+        if (p.sourceFormat.has_value())
+            CHECK_EQ(wavimport::describeConversion(*p.sourceFormat).toStdString(),
+                     std::string("24-bit -> 32-bit float"));
+    }
+
+    // --- the sentence says only what changed ---
+    {
+        using wavimport::SourceFormat;
+        const auto say = [](const SourceFormat& f) {
+            return wavimport::describeConversion(f).toStdString();
+        };
+        CHECK_EQ(say({ 48000, "24-bit", 1 }),
+                 std::string("48000 Hz, 24-bit, mono -> 44100 Hz, 32-bit float, stereo"));
+        CHECK_EQ(say({ 44100, "24-bit", 2 }), std::string("24-bit -> 32-bit float"));
+        CHECK_EQ(say({ 44100, "32-bit float", 2 }), std::string(""));
+        CHECK_EQ(say({ 44100, "16-bit", 2 }), std::string("16-bit -> 32-bit float"));
+        CHECK_EQ(say({ 44100, "MP3", 2 }), std::string("MP3 -> 32-bit float"));
+        CHECK_EQ(say({ 48000, "32-bit float", 2 }), std::string("48000 Hz -> 44100 Hz"));
+        CHECK_EQ(say({ 44100, "32-bit float", 1 }), std::string("mono -> stereo"));
+        CHECK_EQ(say({ 96000, "16-bit", 1 }),
+                 std::string("96000 Hz, 16-bit, mono -> 44100 Hz, 32-bit float, stereo"));
+        CHECK_EQ(say({ 22050, "8-bit", 2 }), std::string("22050 Hz, 8-bit -> 44100 Hz, 32-bit float"));
+    }
+
+    // --- the conversion's directory: one per job, gone with the job ---
+
+    // A conversion lives in a directory of its own directly under import-tmp,
+    // under a working name that is nobody's product: the name on the card is
+    // decided at the push, not here.
+    {
+        const auto bytes = testkit::syntheticWav({ .sampleRate = 48000, .frames = 48000 });
+        const juce::File src = writeTemp(work, "song.wav", bytes);
+        juce::File dir;
+        {
+            wavimport::Prepared p;
+            CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+            CHECK(p.converted);
+            dir = p.jobDir.path();
+            CHECK(dir.isDirectory());
+            CHECK(p.file.getParentDirectory() == dir);
+            CHECK(dir.getParentDirectory() == tmp);
+            CHECK(!p.file.getFileName().contains("-pedal"));
+            CHECK(!p.file.getFileName().startsWith("song"));
+        }
+        // the push succeeded and the job returned: the directory is gone
+        CHECK(!dir.exists());
+    }
+
+    // The push threw: the directory is gone just the same — the job's scope
+    // unwinds through the Prepared, whichever way it ends.
+    {
+        const auto bytes = testkit::syntheticWav({ .sampleRate = 48000, .frames = 48000 });
+        const juce::File src = writeTemp(work, "song-throws.wav", bytes);
+        juce::File dir;
+        try {
+            wavimport::Prepared p;
+            CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+            dir = p.jobDir.path();
+            CHECK(dir.isDirectory());
+            throw Error("slot 9 already has audio");
+        } catch (const Error&) {
+        }
+        CHECK(!dir.exists());
+    }
+
+    // Two files with the same stem in one queue: each conversion in its own
+    // directory, neither renamed around the other, both readable at once.
+    {
+        const juce::File dirA = work.getChildFile("a");
+        const juce::File dirB = work.getChildFile("b");
+        dirA.createDirectory();
+        dirB.createDirectory();
+        const juce::File srcA = writeTemp(dirA, "song.wav",
+                                          testkit::syntheticWav({ .sampleRate = 48000, .frames = 48000 }));
+        const juce::File srcB = writeTemp(dirB, "song.wav", monoRamp(1000));
+        {
+            wavimport::Prepared a, b;
+            CHECK(wavimport::prepare(srcA, tmp, a, {}).wasOk());
+            CHECK(wavimport::prepare(srcB, tmp, b, {}).wasOk());
+            CHECK(a.converted && b.converted);
+            CHECK(a.file != b.file);
+            CHECK(a.jobDir.path() != b.jobDir.path());
+            CHECK(a.file.existsAsFile() && b.file.existsAsFile());
+            CHECK(std::llabs(infoOf(a.file).frames - 44100) <= 1); // 48000 frames at 48 kHz
+            CHECK_EQ(infoOf(b.file).frames, 1000);                 // the mono ramp, untouched
+        }
+        // both jobs done: import-tmp holds nothing of either
+        CHECK_EQ(tmp.getNumberOfChildFiles(juce::File::findFilesAndDirectories), 0);
+    }
+
+    // The directory follows the Prepared that owns it through a move, and
+    // dies with the last owner, not the first.
+    {
+        const auto bytes = testkit::syntheticWav({ .sampleRate = 48000, .frames = 4800 });
+        const juce::File src = writeTemp(work, "song-moved.wav", bytes);
+        juce::File dir;
+        {
+            wavimport::Prepared moved;
+            {
+                wavimport::Prepared p;
+                CHECK(wavimport::prepare(src, tmp, p, {}).wasOk());
+                dir = p.jobDir.path();
+                moved = std::move(p);
+            }
+            CHECK(dir.isDirectory()); // the first owner is gone, the directory is not
+            CHECK(moved.file.existsAsFile());
+        }
+        CHECK(!dir.exists());
+    }
+
+    // Every Prepared above is gone; a cleanup that fails is a failure.
+    CHECK(work.deleteRecursively());
     return testkit::summary("wav_import");
 }

@@ -10,6 +10,8 @@
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace loopercat::wavimport
@@ -73,14 +75,65 @@ namespace
             remaining -= n;
         }
     }
+
+    // The conversion's file inside its job directory. The name says what the
+    // file is; the name on the card is decided elsewhere.
+    constexpr const char* kConvertedFileName = "converted.wav";
+
+    // AudioFormatManager::createReaderFor, with the format that took the file
+    // kept: the encoding fact needs to know whether the reader decodes a
+    // codec or reads samples as they lie.
+    std::unique_ptr<juce::AudioFormatReader> openReader(juce::AudioFormatManager& formats,
+                                                        const juce::File& source,
+                                                        juce::AudioFormat*& handledBy)
+    {
+        for (auto* format : formats) {
+            if (!format->canHandleFile(source))
+                continue;
+            if (auto in = source.createInputStream()) {
+                if (std::unique_ptr<juce::AudioFormatReader> reader {
+                        format->createReaderFor(in.release(), true) }) {
+                    handledBy = format;
+                    return reader;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    // "24-bit", "32-bit float" for a file that holds samples; the codec's
+    // name ("MP3") for one that holds a bitstream — our own MP3 reader hands
+    // out float32, and saying "32-bit float" about an mp3 would describe the
+    // decoder, not the file.
+    // (AudioFormat::isCompressed is not const in JUCE 8, hence the non-const format.)
+    juce::String encodingOf(const juce::AudioFormatReader& reader, juce::AudioFormat& format)
+    {
+        if (format.isCompressed())
+            return format.getFormatName().replace(" file", "");
+        return juce::String(int(reader.bitsPerSample)) + "-bit"
+             + (reader.usesFloatingPointData ? " float" : "");
+    }
+
+    // The words the push report uses for a channel count prepare lets through.
+    juce::String channelsWord(int channels) { return channels == 1 ? "mono" : "stereo"; }
+
+    // A source the pedal takes as it is: no conversion, no job directory.
+    Prepared untouched(const juce::File& source, std::optional<NormalizeOutcome> outcome)
+    {
+        Prepared p;
+        p.file = source;
+        p.converted = false;
+        p.normalize = outcome;
+        return p;
+    }
 } // namespace
 
-juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepared& out,
+juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prepared& out,
                      const Options& options)
 {
     const bool passesAsIs = pedalAcceptsAsIs(source);
     if (!options.normalizeTargetLufs.has_value() && passesAsIs) {
-        out = { source, false, std::nullopt };
+        out = untouched(source, std::nullopt);
         return juce::Result::ok();
     }
 
@@ -89,7 +142,8 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
     // OS codec would also claim the extension — identical PCM everywhere.
     formats.registerFormat(new Mp3AudioFormat(), false);
     formats.registerBasicFormats();
-    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(source));
+    juce::AudioFormat* handledBy = nullptr;
+    std::unique_ptr<juce::AudioFormatReader> reader = openReader(formats, source, handledBy);
     if (reader == nullptr)
         return juce::Result::fail(source.getFileName()
                                   + " is not an audio file LooperCat can read");
@@ -98,6 +152,9 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
         return juce::Result::fail(source.getFileName() + " has "
                                   + juce::String(channels)
                                   + " channels — only mono and stereo can go to the pedal");
+    const SourceFormat sourceFormat { .sampleRate = int(std::llround(reader->sampleRate)),
+                                      .encoding = encodingOf(*reader, *handledBy),
+                                      .channels = channels };
 
     // Pass 1 of the opt-in normalization (issue #53): measure, decide, and —
     // when a pedal-ready file needs nothing — keep the byte-exact promise.
@@ -113,7 +170,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
             // not a thing to aim at. Import as-is, report the damage.
             outcome = NormalizeOutcome { .damaged = true, .wildSamples = meter.wildSamples() };
             if (passesAsIs) {
-                out = { source, false, outcome };
+                out = untouched(source, outcome);
                 return juce::Result::ok();
             }
         } else if (!measured.has_value()) {
@@ -121,7 +178,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
             // and inventing a gain would be a guess. Import as-is and say so.
             outcome = NormalizeOutcome {};
             if (passesAsIs) {
-                out = { source, false, outcome };
+                out = untouched(source, outcome);
                 return juce::Result::ok();
             }
         } else {
@@ -129,7 +186,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
             if (passesAsIs && std::abs(wanted) < loudness::kAlreadyAtTargetLu) {
                 outcome = NormalizeOutcome { .measurable = true, .untouched = true,
                                              .measuredLufs = *measured };
-                out = { source, false, outcome };
+                out = untouched(source, outcome);
                 return juce::Result::ok();
             }
             gainDb = loudness::normalizeGainDb(*measured, target, meter.truePeakDb(),
@@ -141,12 +198,17 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
         }
     }
 
-    const juce::Result dirOk = tempDir.createDirectory();
+    // The job's own directory: nothing else writes there, so the file inside
+    // carries a fixed name and nothing is ever renamed around a clash. The
+    // name the audio lands under on the card is the caller's decision, made
+    // at the push (issue #139) — this one is never seen outside this job.
+    JobDir jobDir(importTmp.getChildFile(juce::Uuid().toString()));
+    const juce::Result dirOk = jobDir.path().createDirectory();
     if (dirOk.failed())
         return dirOk;
-    const juce::File dest =
-        tempDir.getChildFile(source.getFileNameWithoutExtension() + "-pedal.wav")
-            .getNonexistentSibling();
+    const juce::File dest = jobDir.path().getChildFile(kConvertedFileName);
+    if (dest.existsAsFile())
+        return juce::Result::fail(dest.getFullPathName() + " already exists in a fresh job directory");
 
     auto stream = dest.createOutputStream();
     if (stream == nullptr)
@@ -191,8 +253,32 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
     }
     writer.reset(); // flush before anyone reads the file
 
-    out = { dest, true, outcome };
+    out.file = dest;
+    out.converted = true;
+    out.normalize = outcome;
+    out.sourceFormat = sourceFormat;
+    out.jobDir = std::move(jobDir);
     return juce::Result::ok();
+}
+
+juce::String describeConversion(const SourceFormat& source)
+{
+    juce::StringArray was, now;
+    if (source.sampleRate != kTargetSampleRate) {
+        was.add(juce::String(source.sampleRate) + " Hz");
+        now.add(juce::String(kTargetSampleRate) + " Hz");
+    }
+    if (source.encoding != kTargetEncoding) {
+        was.add(source.encoding);
+        now.add(kTargetEncoding);
+    }
+    if (source.channels != kTargetChannels) {
+        was.add(channelsWord(source.channels));
+        now.add(channelsWord(kTargetChannels));
+    }
+    if (was.isEmpty())
+        return {};
+    return was.joinIntoString(", ") + " -> " + now.joinIntoString(", ");
 }
 
 } // namespace loopercat::wavimport
