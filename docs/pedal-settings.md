@@ -177,6 +177,15 @@ it has not been read against the RC-5's own screen, so the names are [M].
 | `Exp` | EXP FUNC — the expression pedal | EXP FUNC list, 0–7; field 1 = TRK LEVEL2, fixture 0 = TRK LEVEL1. The manual's marked default, MEMORY LEV2, would be 7, which neither pedal carries — the numbering of this list is in doubt | [M] in doubt |
 | `Cc80`–`Cc87` | CC#80 FUNC … CC#87 FUNC — what each fixed control change does | CC#80–87 FUNC list, 0–42; 0 = OFF on all eight, both pedals. The manual marks no default | [M] |
 
+### No auto-save setting in here
+
+Nothing in SYSTEM looks like a setting for saving a memory automatically —
+the question behind issue #23, which testers keep asking. The three sections
+are the pedal's state and display, its MIDI setup and its controls; no field
+names a save, a write-on-change or a confirmation. Whether the pedal has such
+a behaviour at all, with no stored setting behind it, is for the manual or
+the hardware to answer, not this file.
+
 ## What belongs in LooperCat
 
 **Tier 1 — obvious wins, all verified-mechanics writes** (same
