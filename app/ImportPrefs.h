@@ -36,6 +36,15 @@ struct ImportPrefs {
 
 namespace importprefs
 {
+    // The one rewrite a mark gets, typed or stored: a mark of only
+    // whitespace is the empty mark — "Empty: no mark", as the hint says.
+    // Any other mark stays as typed, spaces before, inside and after
+    // included: a rewritten mark is a different mark (UploadMark.h).
+    inline juce::String markAsTyped(const juce::String& text)
+    {
+        return text.trim().isEmpty() ? juce::String() : text;
+    }
+
     inline constexpr auto kNormalizeOnUploadKey = "normalizeOnUpload";
     inline constexpr auto kTargetLufsKey = "normalizeTargetLufs";
     inline constexpr auto kConvertedMarkKey = "convertedUploadMark";
@@ -53,15 +62,16 @@ namespace importprefs
     // A key that is absent reads as its default; a key that is present reads
     // as stored, so a mark cleared to "" stays cleared — PropertySet::getValue
     // falls back only when the key is missing, not when its value is empty.
-    // The mark is trimmed here as the Settings field trims it, so "only
-    // spaces is the empty mark" holds whichever hand wrote the file.
+    // The mark gets the field's one rule (markAsTyped), so "only spaces is
+    // the empty mark" holds whichever hand wrote the file — and nothing else
+    // about it is rewritten.
     inline ImportPrefs read(juce::PropertiesFile& file)
     {
         const ImportPrefs shipped = defaults();
         return { .normalizeOnUpload =
                      file.getBoolValue(kNormalizeOnUploadKey, shipped.normalizeOnUpload),
                  .targetLufs = file.getDoubleValue(kTargetLufsKey, shipped.targetLufs),
-                 .convertedMark = file.getValue(kConvertedMarkKey, shipped.convertedMark).trim() };
+                 .convertedMark = markAsTyped(file.getValue(kConvertedMarkKey, shipped.convertedMark)) };
     }
 
     inline void write(juce::PropertiesFile& file, const ImportPrefs& prefs)

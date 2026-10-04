@@ -90,8 +90,8 @@ int main()
         CHECK(nearly(prefs.targetLufs, -16.5));
     }
 
-    // --- a mark of only spaces reads as empty, and one with space around it reads bare:
-    //     the Settings field trims on entry, and a hand-edited file gets the same rule ---
+    // --- a mark of only whitespace reads as empty; every other mark reads as written:
+    //     one rule (markAsTyped), shared with the Settings field, and nothing else rewritten ---
     {
         {
             auto file = open(work);
@@ -100,12 +100,20 @@ int main()
         }
         auto file = open(work);
         CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string(""));
-        file->setValue(importprefs::kConvertedMarkKey, " -live ");
-        CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string("-live"));
-        file->setValue(importprefs::kConvertedMarkKey, "- live -"); // spaces inside stay
+        file->setValue(importprefs::kConvertedMarkKey, "\t \n");
+        CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string(""));
+        file->setValue(importprefs::kConvertedMarkKey, " -live "); // spaces around stay: as written
+        CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string(" -live "));
+        file->setValue(importprefs::kConvertedMarkKey, " pedal");
+        CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string(" pedal"));
+        file->setValue(importprefs::kConvertedMarkKey, "- live -"); // and inside
         CHECK_EQ(importprefs::read(*file).convertedMark.toStdString(), std::string("- live -"));
         file->setValue(importprefs::kConvertedMarkKey, "");
         file->saveIfNeeded();
+        // the rule itself
+        CHECK_EQ(importprefs::markAsTyped("").toStdString(), std::string(""));
+        CHECK_EQ(importprefs::markAsTyped("  ").toStdString(), std::string(""));
+        CHECK_EQ(importprefs::markAsTyped(" x ").toStdString(), std::string(" x "));
     }
 
     // --- the keys are the ones a settings file shows, beside each other ---
