@@ -595,14 +595,14 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         const bool inCheck = checkId != 0 && batch == checkId;
         if (historyEditPending && description == historyEditDescription)
             settleHistoryEdit(outcome.ok() ? description + juce::String::fromUTF8(" \xe2\x80\x94 done")
-                                           : description + ": " + utf8(outcome.error));
+                                           : utf8(jobwords::banner(description.toStdString(), outcome)));
         if (!outcome.ok()) {
-            // The player's words for the ending (JobWords.h): a job the gate
-            // refused "did not run", in a sentence about the pedal; the core's
-            // own sentence goes to the operations log (issue #146).
+            // The player's words for the ending (JobWords.h): a job that did
+            // not run says so, in a sentence about the pedal; the core's own
+            // sentence goes to the operations log (issue #146).
             banners.showError(banners::Source::job,
                               utf8(jobwords::banner(description.toStdString(), outcome)));
-            if (outcome.refusedAtGate())
+            if (outcome.didNotRun())
                 trace(utf8(jobwords::refusalLog(description.toStdString(), outcome)));
             if (description.startsWith("Check slot") && slot > 0) {
                 player.clearLoudness(slot);       // a failed read must not stay "measuring…"
@@ -1470,9 +1470,9 @@ void MainComponent::readCardName()
             if (*alive && safe != nullptr && generation == safe->cardGeneration) {
                 safe->cardNameSettled = true;
                 safe->firstSeenSettled = true;
-                safe->firstSeenProblem = outcome.error;
-                if (outcome.refusedAtGate())
-                    safe->trace("connect: the card's name was not read: " + utf8(outcome.error));
+                safe->firstSeenProblem = outcome.error();
+                if (outcome.didNotRun())
+                    safe->trace("connect: the card's name was not read: " + utf8(outcome.error()));
             }
         });
     };
@@ -1486,19 +1486,20 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
         [safe, run, slot, alive = uiAlive](int count, const JobOutcome& outcome) {
             juce::MessageManager::callAsync([safe, run, slot, count, outcome, alive] {
                 if (!*alive || safe == nullptr || run->cancelled) return;
-                safe->firstSeenCount = count;
-                safe->firstSeenProblem = outcome.error;
+                if (outcome.ok())
+                    safe->firstSeenCount = count; // a step that did not run photographed nothing
+                safe->firstSeenProblem = outcome.error();
                 safe->firstSeenSettled = !outcome.ok() || count == 99;
-                // A step the gate refused is the interruption the run resumes
-                // from, told as information: logged now, and said to the
-                // player with the departure's own toast (tellDeparture) — a
-                // toast now would be replaced by it unread. A step that
+                // A step that did not run is the interruption the run resumes
+                // from, told as information: logged now unless the scan that
+                // saw the pedal go already did (applySnapshot), and said to
+                // the player with the departure's own toast (tellDeparture) —
+                // a toast now would be replaced by it unread. A step that
                 // failed on its own is told by the worker's result, as every
                 // failure is (issue #146).
-                if (outcome.refusedAtGate()) {
-                    safe->trace(utf8(jobwords::firstSnapshotInterruptedLog(slot, outcome)));
-                    safe->firstSeenNotice.interrupted(outcome);
-                }
+                if (outcome.didNotRun())
+                    if (const auto line = safe->firstSeenNotice.interrupted(outcome, slot))
+                        safe->trace(utf8(*line));
                 safe->updateStatusText();
                 if (safe->firstSeenSettled) {
                     safe->updateHistory();
@@ -1780,15 +1781,6 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     } else if (previousState == lifecycle::State::ghost) {
         ghostCleanupStarted = false; // the episode is over
     }
-    // The pedal is gone and the story had no toast of its own — a yank
-    // cleaned up, a Finder eject, a volume ejected while the pedal stayed in
-    // STORAGE: the lifecycle line and the status told it. An interrupted
-    // first snapshot still has its sentence to say, and it stands alone
-    // here (issue #146). The app-driven Disconnect said it with its own
-    // toast already, and then there is nothing left to say.
-    if (snapshot.state == lifecycle::State::disconnected
-        && previousState != lifecycle::State::disconnected)
-        tellDeparture({});
 
     // The corner wears the card's own name (issue #99) once the marker has
     // been read; until then, the volume's label. One read per mount: the
@@ -1796,6 +1788,14 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     if (!mounted) {
         if (!cardNameVolume.empty()) {
             ++cardGeneration;
+            // The pedal went while the first snapshot was in flight: the
+            // step the gate refuses next loses its completion to the cancel
+            // below, so the interruption is decided here, from what this
+            // scan saw — the only way in for a Finder eject or a yank the
+            // probe sees first (issue #146).
+            const bool inFlight = firstSeenRun && !firstSeenRun->cancelled && !firstSeenSettled;
+            if (const auto line = firstSeenNotice.departed(snapshot.state, inFlight, firstSeenCount))
+                trace(utf8(*line));
             if (firstSeenRun) firstSeenRun->cancelled = true;
             worker.enqueue({ "Close the card's history session", 0,
                              [rec = recorder](const volume::fs::path&) { rec->disconnect(); },
@@ -1818,6 +1818,16 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         trace("connect: card up at " + utf8(snapshot.volume) + " (" + utf8(snapshot.family) + ")");
         readCardName();
     }
+    // The pedal is gone and the story had no toast of its own — a yank
+    // cleaned up, a Finder eject, a volume ejected while the pedal stayed in
+    // STORAGE: the lifecycle line and the status told it. An interrupted
+    // first snapshot still has its sentence to say, and it stands alone
+    // here, after the scan above has had its say (issue #146). The
+    // app-driven Disconnect said it with its own toast already, and then
+    // there is nothing left to say.
+    if (snapshot.state == lifecycle::State::disconnected
+        && previousState != lifecycle::State::disconnected)
+        tellDeparture({});
     if (card) {
         pedalLight.set(true, utf8(card->name));
     } else {
@@ -1937,7 +1947,7 @@ PedalWorker::Job MainComponent::recorded(const char* kind, const commands::Write
     // at target — leaves a row that says only "normalize", and the reason
     // lives nowhere but a toast that is already gone.
     job.after = [rec = recorder, id = options.opId, note = job.note](const JobOutcome& outcome) {
-        rec->finish(id, outcome.error, note != nullptr ? note->toStdString() : std::string());
+        rec->finish(id, outcome.error(), note != nullptr ? note->toStdString() : std::string());
     };
     return job;
 }
@@ -3142,7 +3152,7 @@ void MainComponent::pressUndo(bool redo)
                          if (!outcome.ok())
                              juce::MessageManager::callAsync([safe, alive, outcome] {
                                  if (*alive && safe != nullptr)
-                                     safe->settleHistoryEdit(utf8(outcome.error));
+                                     safe->settleHistoryEdit(utf8(outcome.error()));
                              });
                      } });
 }
@@ -3209,7 +3219,7 @@ void MainComponent::runHistoryEdit(HistoryEdit edit)
         *checked = history::undo::beginPress(*rec, id, redo, target, volumePath);
     };
     job.after = [rec = recorder, id = options.opId, checked](const JobOutcome& outcome) {
-        rec->finish(id, outcome.error, checked->note);
+        rec->finish(id, outcome.error(), checked->note);
     };
     worker.enqueue(std::move(job));
 }

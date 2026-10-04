@@ -61,7 +61,7 @@ void request(int slot, bool hasTake, std::shared_ptr<history::HistoryRecorder> r
             rec->begin(id, "clear", volumePath);
         };
         job.after = [rec, id = options.opId](const JobOutcome& outcome) {
-            rec->finish(id, outcome.error);
+            rec->finish(id, outcome.error());
         };
         submit(std::move(job));
     });

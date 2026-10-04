@@ -3,6 +3,7 @@
 #pragma once
 
 #include "HistoryRecorder.h"
+#include "../JobWords.h"
 #include "../PedalWorker.h"
 #include <atomic>
 
@@ -35,8 +36,14 @@ inline PedalWorker::Job firstSeenJob(const std::shared_ptr<HistoryRecorder>& rec
     };
     job.after = [recorder, run, count, onComplete = std::move(completed)](const JobOutcome& outcome) {
         if (run->cancelled) return;
+        // The reason goes into the History row after the take's name: a
+        // step that did not run says so in the player's words, a failed
+        // step says what failed. The core's sentence is the log's.
         if (!outcome.ok())
-            recorder->interruptSnapshot(run->snapshot, outcome.error);
+            recorder->interruptSnapshot(run->snapshot,
+                                        outcome.didNotRun()
+                                            ? jobwords::firstSnapshotInterruptedReason(outcome)
+                                            : outcome.error());
         onComplete(*count, outcome);
     };
     return job;

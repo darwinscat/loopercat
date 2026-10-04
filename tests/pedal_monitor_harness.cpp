@@ -40,6 +40,7 @@
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 
 using namespace loopercat;
 namespace fs = std::filesystem;
@@ -188,10 +189,36 @@ int main()
     CHECK(pumpUntil([&] { return jobResults.size() >= 2; }, 5000));
     if (jobResults.size() >= 2) {
         CHECK(jobResults.back().second.failed()); // its own work failed — not the gate
-        CHECK(jobResults.back().second.error.find("longer than 12") != std::string::npos);
+        CHECK(jobResults.back().second.error().find("longer than 12") != std::string::npos);
     }
     CHECK(!deliveries.empty() && !deliveries.back().slots.empty()
           && deliveries.back().slots.at(6).info.name == "Via Worker  ");
+
+    // 5b. A job that throws without a message must not take the worker with
+    // it (review of #146: a failure with no words would throw inside the
+    // handler, and a throw out of run() ends the thread). Its `after` runs,
+    // its result names the type, and the job behind it still runs.
+    {
+        std::optional<JobOutcome> wordlessAfter;
+        PedalWorker::Job wordless { "Throw without a word", 0,
+                                    [](const volume::fs::path&) { throw std::runtime_error(""); } };
+        wordless.after = [&wordlessAfter](const JobOutcome& outcome) { wordlessAfter = outcome; };
+        monitor.enqueue(std::move(wordless));
+        bool nextRan = false;
+        monitor.enqueue({ "Run after the wordless one", 0,
+                          [&nextRan](const volume::fs::path&) { nextRan = true; } });
+        CHECK(pumpUntil([&] { return jobResults.size() >= 4; }, 5000));
+        if (jobResults.size() >= 4) {
+            const JobOutcome& outcome = jobResults.at(jobResults.size() - 2).second;
+            CHECK_EQ(jobResults.at(jobResults.size() - 2).first, juce::String("Throw without a word"));
+            CHECK(outcome.failed());
+            CHECK(outcome.error().find("threw without a message") != std::string::npos);
+            CHECK(jobResults.back().first == juce::String("Run after the wordless one"));
+            CHECK(jobResults.back().second.ok());
+        }
+        CHECK(wordlessAfter.has_value() && wordlessAfter->failed());
+        CHECK(nextRan);
+    }
 
     // 6. The content disappears (an unmount): the mounted state drops — no
     // rows and no clean volume left standing.
@@ -248,14 +275,14 @@ int main()
         CHECK(pumpUntil([&] { return !ghostResults.empty(); }, 5000));
         if (!ghostResults.empty()) {
             const JobOutcome& outcome = ghostResults.back().second;
-            CHECK(outcome.refusedAtGate());
+            CHECK(outcome.didNotRun());
             CHECK(!outcome.failed());
-            CHECK(outcome.refusedIn == lifecycle::State::ghost);
-            CHECK(outcome.error.find("refusing to touch") != std::string::npos);
+            CHECK(outcome.refusal() == JobOutcome::Refusal::ghost);
+            CHECK(outcome.error().find("refusing to touch") != std::string::npos);
         }
         CHECK(!beforeRan);
         CHECK(!workRan);
-        CHECK(afterSaw.has_value() && afterSaw->refusedAtGate());
+        CHECK(afterSaw.has_value() && afterSaw->didNotRun());
 
         // The write really was refused: the file on the ghost is untouched.
         const std::string after = readTextFile(ghostVolume / "ROLAND" / "DATA" / "MEMORY1.RC0");
@@ -277,7 +304,7 @@ int main()
         CHECK_EQ(ghostResults.size(), 2u); // the quiet refusal was not told
         if (ghostResults.size() >= 2)
             CHECK_EQ(ghostResults.back().first, juce::String("Rename slot 8 into the void"));
-        CHECK(quietSaw.has_value() && quietSaw->refusedAtGate());
+        CHECK(quietSaw.has_value() && quietSaw->didNotRun());
         CHECK(!workRan);
 
         fs::remove_all(ghostVolume);

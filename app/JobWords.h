@@ -6,7 +6,6 @@
 #include "JobOutcome.h"
 
 #include <loopercat/Error.hpp>
-#include <loopercat/Lifecycle.hpp>
 #include <loopercat/Rc0.hpp>
 
 #include <string>
@@ -19,33 +18,34 @@
 // ending, so a job the lifecycle gate refused read "Push loop.wav to slot 3:
 // pedal is ejecting — refusing to touch the volume": the core's sentence,
 // right for a log, wrong for a window. Here a refusal becomes "<job> did not
-// run: <why, in the player's words>", one wording per state the gate refuses
-// in; a failure of the job's own work keeps the shape it always had. The
-// first snapshot has its own two sentences: the interruption it resumes from
-// is information for the toast and an engineering line for the log, never a
-// banner.
+// run: <why, in the player's words>", one wording per reason a job is
+// refused for; a failure of the job's own work keeps the shape it always
+// had; a history that could not record the ending says so after it. The
+// first snapshot has its own sentences: the interruption it resumes from is
+// information for the toast, a reason for its History row, and an
+// engineering line for the log — never a banner.
 //
 // JUCE-free on purpose: tested by theory in job_words_tests and banner_tests.
 //==============================================================================
 namespace loopercat::jobwords {
 
-// Why the gate refused, told to a musician. The lifecycle line in
+// Why the job did not run, told to a musician. The lifecycle line in
 // BannerModel.h already explains ghost and ejected in these words.
-inline std::string gateReason(lifecycle::State state)
+inline std::string refusalReason(JobOutcome::Refusal refusal)
 {
-    switch (state) {
-    case lifecycle::State::ejecting:
+    switch (refusal) {
+    case JobOutcome::Refusal::ejecting:
         return "the pedal was being disconnected";
-    case lifecycle::State::disconnected:
+    case JobOutcome::Refusal::disconnected:
         return "no pedal is connected";
-    case lifecycle::State::ghost:
+    case JobOutcome::Refusal::ghost:
         return "the pedal left without an eject";
-    case lifecycle::State::ejected:
+    case JobOutcome::Refusal::ejected:
         return "the card was already ejected";
-    case lifecycle::State::connected:
-        throw Error("the gate never refuses a job while the pedal is connected");
+    case JobOutcome::Refusal::noVolume:
+        return "no pedal volume is mounted";
     }
-    throw Error("unknown lifecycle state");
+    throw Error("unknown refusal");
 }
 
 // The banner's line for a job that did not succeed. A job that did has no
@@ -57,24 +57,32 @@ inline std::string banner(const std::string& description, const JobOutcome& outc
         throw Error("a job's banner line needs the job's description");
     if (outcome.ok())
         throw Error("the banner is for a job that did not succeed: " + description);
-    if (outcome.refusedAtGate())
-        return description + " did not run: " + gateReason(*outcome.refusedIn);
-    return description + ": " + outcome.error;
+    std::string line;
+    if (outcome.didNotRun())
+        line = description + " did not run: " + refusalReason(*outcome.refusal());
+    else if (!outcome.error().empty())
+        line = description + ": " + outcome.error();
+    else
+        line = description; // the work itself was fine: only the history failed
+    if (outcome.historyFailed())
+        line += (line == description ? ": " : "; ") + std::string("the history could not record it: ")
+              + outcome.historyError();
+    return line;
 }
 
-// The operations log's line for a job the gate refused: the core's sentence,
+// The operations log's line for a job that did not run: the core's sentence,
 // kept where it belongs.
 inline std::string refusalLog(const std::string& description, const JobOutcome& outcome)
 {
     if (description.empty())
         throw Error("a refusal's log line needs the job's description");
-    if (!outcome.refusedAtGate())
-        throw Error("only a job the gate refused has a refusal to log: " + description);
-    return description + " did not run: " + outcome.error;
+    if (!outcome.didNotRun())
+        throw Error("only a job that did not run has a refusal to log: " + description);
+    return description + " did not run: " + outcome.error();
 }
 
 // The first snapshot is taken one slot per job and resumes on the next
-// connect from the slot it reached, so a step the gate refused is an
+// connect from the slot it reached, so a step that did not run is an
 // interruption, not a fault: one quiet sentence saying what happened and what
 // happens next. It follows the departure's own sentence on the toast
 // (FirstSnapshotNotice), so it does not say again that the pedal left. A step
@@ -82,10 +90,19 @@ inline std::string refusalLog(const std::string& description, const JobOutcome& 
 // for the interruption's words for it is a caller bug.
 inline std::string firstSnapshotInterrupted(const JobOutcome& outcome)
 {
-    if (!outcome.refusedAtGate())
-        throw Error("only a step the gate refused interrupts the first snapshot; "
+    if (!outcome.didNotRun())
+        throw Error("only a step that did not run interrupts the first snapshot; "
                     "a failed step has the banner's words");
     return "The card's first snapshot stopped; it will finish next time you connect.";
+}
+
+// The same interruption as the History window's row reads it, after the
+// take's name: a reason, not the core's sentence.
+inline std::string firstSnapshotInterruptedReason(const JobOutcome& outcome)
+{
+    if (!outcome.didNotRun())
+        throw Error("only a step that did not run interrupts the first snapshot");
+    return "stopped when the pedal was disconnected";
 }
 
 // The same interruption for the operations log: which slot the run stopped
@@ -94,9 +111,9 @@ inline std::string firstSnapshotInterruptedLog(int slot, const JobOutcome& outco
 {
     if (slot < 1 || slot > rc0::kSlotCount)
         throw Error("the first snapshot has no slot " + std::to_string(slot));
-    if (!outcome.refusedAtGate())
-        throw Error("only a step the gate refused interrupts the first snapshot");
-    return "first snapshot interrupted at slot " + std::to_string(slot) + ": " + outcome.error;
+    if (!outcome.didNotRun())
+        throw Error("only a step that did not run interrupts the first snapshot");
+    return "first snapshot interrupted at slot " + std::to_string(slot) + ": " + outcome.error();
 }
 
 } // namespace loopercat::jobwords

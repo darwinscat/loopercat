@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <typeinfo>
 #include <vector>
 
 //==============================================================================
@@ -266,6 +267,20 @@ public:
     }
 
 private:
+    // An exception with no words would make JobOutcome::failure throw inside
+    // the handler, and a throw out of run() ends the thread: no `after`, no
+    // result, no busy(false), no job or scan ever again. Such an exception is
+    // a bug in whatever threw it — asserted — and named by its type, so the
+    // banner still says something true.
+    static std::string reasonOf(const std::exception& e)
+    {
+        const std::string what = e.what();
+        if (!what.empty())
+            return what;
+        jassertfalse;
+        return std::string("the job threw without a message (") + typeid(e).name() + ")";
+    }
+
     std::optional<volume::fs::path> resolveVolume() const
     {
         if (!explicitVolume_.empty())
@@ -320,28 +335,32 @@ private:
                         cb(true, slot, bg);
                 });
                 JobOutcome outcome = JobOutcome::success();
-                // The lifecycle gate: a ghost mount happily accepts writes
-                // into page cache that can never reach the pedal — the
-                // 2026-07-22 phantom "saved" toast. Only connected is honest.
-                // A refusal is its own ending, not a failure of the job:
-                // neither `before` nor `work` runs, and the card is untouched
-                // (issue #146).
-                if (job->needsVolume && !machine_.writable()) {
-                    outcome = JobOutcome::refused(machine_.state());
-                } else {
+                volume::fs::path path; // stays empty for a job that needs no card
+                if (job->needsVolume) {
+                    // The lifecycle gate: a ghost mount happily accepts writes
+                    // into page cache that can never reach the pedal — the
+                    // 2026-07-22 phantom "saved" toast. Only connected is
+                    // honest. A refusal is its own ending, not a failure of
+                    // the job: neither `before` nor `work` runs, and the card
+                    // is untouched (issue #146).
+                    if (!machine_.writable())
+                        outcome = JobOutcome::refused(machine_.state());
+                    else if (const auto found = resolveVolume();
+                             !found || !volume::looksLikePedal(*found))
+                        // Past the gate, the volume the last scan saw has
+                        // gone: nothing runs either, so this too is a
+                        // refusal, not a failure of the job.
+                        outcome = JobOutcome::unmounted();
+                    else
+                        path = *found;
+                }
+                if (!outcome.didNotRun()) {
                     try {
-                        volume::fs::path path;
-                        if (job->needsVolume) {
-                            const auto found = resolveVolume();
-                            if (!found || !volume::looksLikePedal(*found))
-                                throw Error("no pedal volume mounted");
-                            path = *found;
-                        }
                         if (job->before)
                             job->before(path);
                         job->work(path);
                     } catch (const std::exception& e) {
-                        outcome = JobOutcome::failure(e.what());
+                        outcome = JobOutcome::failure(reasonOf(e));
                     }
                 }
                 if (job->after) {
@@ -349,9 +368,9 @@ private:
                         job->after(outcome);
                     } catch (const std::exception& e) {
                         // The history's bookkeeping failed, whatever the job
-                        // did: that is a failure to tell, refusal or not.
-                        outcome = JobOutcome::failure(outcome.error + (outcome.ok() ? "" : "; ")
-                                                      + "history: " + e.what());
+                        // did: the ending stays what it was and is told with
+                        // this beside it, refusal or not.
+                        outcome.historyThrew(reasonOf(e));
                     }
                 }
                 maybeDeliverSnapshot(scanAdvanced());

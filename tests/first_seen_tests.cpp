@@ -330,7 +330,7 @@ static int runTests()
         refused.after(JobOutcome::refused(lifecycle::State::disconnected));
         CHECK(ending.has_value());
         if (ending) {
-            CHECK(ending->refusedAtGate());
+            CHECK(ending->didNotRun());
             CHECK(!ending->failed());
             CHECK(!ending->told(refused.quiet)); // the worker tells nobody: no banner line
             CHECK_EQ(jobwords::firstSnapshotInterrupted(*ending),
@@ -341,9 +341,19 @@ static int runTests()
         }
         CHECK_EQ(rec->store().opStatus(baseline.op), std::string("interrupted"));
         CHECK_EQ(rec->store().touchedSlots(baseline.op).size(), 13u);
-        // The History window's row says the same, in one word.
+        // The History window's row says the same, in one word — and the
+        // reason beside the take's name is the player's, not the core's.
         CHECK_EQ(history::rows::forCard(rec->store().cardTimeline()).front().state,
                  std::string("interrupted"));
+        {
+            sqlite::Statement note(rec->store().db(), "SELECT note FROM ops WHERE seq = ?1");
+            note.bind(1, baseline.op);
+            CHECK(note.step());
+            CHECK_EQ(note.text(0), std::string("stopped when the pedal was disconnected"));
+            const auto slotOne = history::rows::forSlot(rec->store().slotTimeline(1)).front().line;
+            CHECK(slotOne.detail.find("stopped when the pedal was disconnected") != std::string::npos);
+            CHECK(slotOne.detail.find("refusing to touch") == std::string::npos);
+        }
         putTake(card, 1, 4321);
         if (restartApp) { rec.reset(); rec = recorderAt(tmp.path / "history"); }
         else rec->disconnect();
@@ -386,7 +396,7 @@ static int runTests()
         CHECK(ending.has_value());
         if (ending) {
             CHECK(ending->failed());
-            CHECK(!ending->refusedAtGate());
+            CHECK(!ending->didNotRun());
             CHECK(ending->told(step.quiet)); // a failure is told, quiet or not
             CHECK_EQ(jobwords::banner(step.description.toStdString(), *ending),
                      std::string("Record the card's first snapshot: the mounted volume changed "
@@ -395,6 +405,13 @@ static int runTests()
         }
         CHECK_EQ(rec->store().opStatus(baseline.op), std::string("interrupted"));
         CHECK_EQ(rec->store().touchedSlots(baseline.op).size(), 3u);
+        {
+            // A failed step's row keeps what failed, as before.
+            sqlite::Statement note(rec->store().db(), "SELECT note FROM ops WHERE seq = ?1");
+            note.bind(1, baseline.op);
+            CHECK(note.step());
+            CHECK(note.text(0).find("mounted volume changed") != std::string::npos);
+        }
         rec->disconnect();
         const auto resumed = newSighting(*rec, card);
         CHECK_EQ(resumed.op, baseline.op);
