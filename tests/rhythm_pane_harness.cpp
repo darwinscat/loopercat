@@ -21,6 +21,9 @@
 //     the caption saying why, and only PATTERN is a lamp; the switch is a
 //     lamp exactly where its click would need a pattern number, and the
 //     line beside it says why before the click
+//   - a slot at a beat the manual's list does not even have (BEAT is
+//     inferred past its one anchor) is shown, not thrown on: the caption
+//     says the number is not in the list, and a State-only switch is offered
 //   - a busy tab is a lamp until the job is done; no slot means no controls
 
 #include "support.hpp"
@@ -89,7 +92,9 @@ bool paneSays(juce::Component& pane, const juce::String& fragment)
 // Then four at 6/4 (Beat 4), the beat whose list the hardware showed is not
 // ours (#147): slot 10 holds 3 — the pedal's own Rock2 at 6/4 — with drums
 // on; slot 11 the same with a count-in in front; slot 12 holds 57, off; slot
-// 13 holds 19 — the number the pedal could not name — off.
+// 13 holds 19 — the number the pedal could not name — off. Then two at Beat
+// 17, a number the manual's list lacks: slot 14 holds 3, off; slot 15 holds
+// 57, off.
 std::vector<SlotRow> rowsOf()
 {
     std::string text = testkit::syntheticMemoryText();
@@ -115,6 +120,10 @@ std::vector<SlotRow> rowsOf()
     set(11, "RHYTHM", "PlayCount", rc0::kRhythmPlayCount1Meas);
     set(12, "RHYTHM", "Pattern", rc0::kRhythmPatternBlank);
     set(13, "RHYTHM", "Pattern", 19);
+    set(14, "RHYTHM", "Beat", 17);
+    set(14, "RHYTHM", "Pattern", 3);
+    set(15, "RHYTHM", "Beat", 17);
+    set(15, "RHYTHM", "Pattern", rc0::kRhythmPatternBlank);
     std::vector<SlotRow> rows;
     for (auto& info : catalog::listSlots(text))
         rows.push_back({ std::move(info), "", "", { "" } });
@@ -432,6 +441,30 @@ int main()
     choose(*pattern, 12);
     CHECK_EQ(heard.calls, 15);
     CHECK(heard.last.pattern.has_value() && *heard.last.pattern == 12);
+
+    // --- a beat the list lacks: shown and said, never thrown on ---
+    // Reaching the next line at all is the first check: setSlot paints the
+    // caption and the cost line, and a throw there would end the harness.
+    pane.setSlot(&rows[13]);
+    CHECK(captionReads(pane, "PATTERN (BEAT 17 is not in the manual's list)"));
+    CHECK(!pattern->isEnabled());
+    CHECK_EQ(pattern->getText(), "3");
+    CHECK_EQ(beat->getSelectedId(), 0); // no item for 17: the box names nothing
+    CHECK(beat->isEnabled());           // and the way out is still the player's
+    CHECK(toggle->isEnabled() && !toggle->isOn()); // State alone: offered
+    CHECK(!paneSays(pane, "BEAT 17"));
+    press();
+    CHECK_EQ(heard.calls, 16);
+    CHECK_EQ(heard.slot, 14);
+    CHECK(heard.last.on.has_value() && *heard.last.on);
+    // Holding 57 there, "on" would need a pattern number: a lamp, and the
+    // line tells the truth about the number.
+    pane.setSlot(&rows[14]);
+    CHECK(!toggle->isEnabled());
+    CHECK(paneSays(pane, "BEAT 17, not in the manual's list"));
+    CHECK(paneSays(pane, "on the pedal"));
+    press();
+    CHECK_EQ(heard.calls, 16);
 
     // --- no slot again: the controls go away ---
     pane.setSlot(nullptr);

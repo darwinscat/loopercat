@@ -3,6 +3,7 @@
 
 #include "SlotTable.h"
 
+#include "RefusalWords.h"
 #include "Strings.h"
 
 #include <felitronics/appkit/Brand.h>
@@ -292,8 +293,10 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         onOneShotToggled(slotOfRow(row));
         return;
     }
-    // Same gesture for the Count-In cell.
-    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0 && allowed().countIn) {
+    // Same gesture for the Count-In cell — unless the core would refuse the
+    // click (CountIn.hpp, #149): then the dot is a lamp, and its hover says why.
+    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0 && allowed().countIn
+        && !rows_[static_cast<std::size_t>(row)].info.countInRefused) {
         onCountInToggled(slotOfRow(row));
         return;
     }
@@ -303,6 +306,19 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         if (!r.info.hasAudio && r.wavFile.empty())
             onEmptyWavCellClicked(r.info.slot);
     }
+}
+
+// The sentence a seven-pixel dot cannot carry: hovering the Count-In cell of
+// a memory whose click the core would refuse says why, in the card's words
+// (RefusalWords.h). Every other cell says nothing.
+juce::String SlotTable::getCellTooltip(int row, int columnId)
+{
+    if (columnId != kCountIn || slotOfRow(row) == 0)
+        return {};
+    const SlotRow& r = rows_[static_cast<std::size_t>(row)];
+    if (!r.info.countInRefused)
+        return {};
+    return words::countInRefused(*r.info.countInRefused, r.info.rhythm.beat);
 }
 
 // --- per-row busy indication ---
@@ -532,9 +548,12 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     if (columnId == kOneShot || columnId == kCountIn) {
         // The cell is the toggle: filled = on, hollow = off (click flips it).
         // On a card this app only reads it is a lamp, not a button: the
-        // same dot, dimmed, and a click does nothing.
+        // same dot, dimmed, and a click does nothing. So is a Count-In dot
+        // whose click the core would refuse (CountIn.hpp, #149).
         const bool on = columnId == kOneShot ? r.info.oneShot : r.info.countIn;
-        const bool clickable = columnId == kOneShot ? allowed().oneShot : allowed().countIn;
+        const bool clickable = columnId == kOneShot
+            ? allowed().oneShot
+            : allowed().countIn && !r.info.countInRefused;
         const float d = 7.0f;
         const float x = static_cast<float>(area.getX()) + 2.0f;
         const float y = (static_cast<float>(height) - d) * 0.5f;

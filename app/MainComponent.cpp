@@ -2022,7 +2022,20 @@ void MainComponent::editRhythm(int slot, long long beat, usecases::rhythm::Edits
 {
     if (!CardPermissions::of(snapshot.family).rhythm)
         return;
-    auto note = std::make_shared<juce::String>(utf8(usecases::rhythm::describe(edits, beat)));
+    // Caught rather than dropped: the tab locks PATTERN where these words
+    // would be refused, so reaching the catch means the tab and the core
+    // disagree, and a silent drop would hide exactly that. The banner shows
+    // the core's sentence; no job and no history row follow. Nothing above
+    // this frame catches on the message thread — a throw here would end
+    // the app, not report.
+    std::shared_ptr<juce::String> note;
+    try {
+        note = std::make_shared<juce::String>(utf8(usecases::rhythm::describe(edits, beat)));
+    } catch (const Error& e) {
+        banners.showError(banners::Source::job,
+                          "Rhythm on slot " + juce::String(slot) + ": " + utf8(e.what()));
+        return;
+    }
     const auto options = makeWriteOptions();
     worker.enqueue(recorded("rhythm", options,
                             { "Rhythm on slot " + juce::String(slot),

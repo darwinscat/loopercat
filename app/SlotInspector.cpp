@@ -3,6 +3,7 @@
 
 #include "SlotInspector.h"
 
+#include "RefusalWords.h"
 #include "SlotTable.h"
 #include "Strings.h"
 
@@ -124,7 +125,11 @@ void SlotInspector::refresh()
     nameEditor_.setReadOnly(!can.rename);
     tempoEditor_.setEnabled(live && can.tempo);
     tempoEditor_.setReadOnly(!can.tempo);
-    countIn_.setEnabled(live && can.countIn);
+    // A click the core would refuse is not offered: where the count-in's
+    // switch would write a PATTERN number at a beat whose list is not
+    // charted (CountIn.hpp, #149), the card is a lamp and its orange line
+    // says why, before the click rather than in a banner after it.
+    countIn_.setEnabled(live && can.countIn && !info_.countInRefused);
     oneShot_.setEnabled(live && can.oneShot);
     playStop_.setEnabled(live && can.playStop);
     footer_.setText(can.anyWrite() ? juce::String("Disconnect to hear the changes.")
@@ -155,7 +160,9 @@ void SlotInspector::refresh()
         info_.countIn ? "One bar of count at " + SlotTable::formatTempo(info_.tempoTenths)
                             + " BPM, then the loop."
                       : "No count: the loop starts the moment you press play.",
-        !info_.countIn && info_.countInTakesPattern
+        info_.countInRefused
+            ? words::countInRefused(*info_.countInRefused, info_.rhythm.beat)
+        : !info_.countIn && info_.countInTakesPattern
             ? juce::String::fromUTF8("Switching it on replaces a rhythm pattern chosen on the "
                                      "pedal.")
             : juce::String());
