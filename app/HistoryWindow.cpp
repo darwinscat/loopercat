@@ -3,6 +3,8 @@
 
 #include "HistoryWindow.h"
 
+#include "HistoryBadges.h"
+
 #include <felitronics/appkit/Brand.h>
 #include <loopercat/Error.hpp>
 
@@ -28,10 +30,14 @@ const juce::Colour kSelected { 0xff26263a };
 const juce::Colour kBadge { 0xff2a2a3a };
 const juce::Colour kWarning { 0xffd9a441 };  // failed, interrupted
 
-// Where the badges start and how wide each is: the hit test and the
-// painting read the same numbers.
+// Where the badges start, how wide each is — and which ones a row wears at
+// all: the hit test and the painting read the same numbers.
 int badgesLeft() { return kGutter + kClockWidth; }
 int badgeLeft(int index) { return badgesLeft() + index * (kBadgeWidth + kBadgeGap); }
+history::badges::Shown badgesOf(const HistoryWindow::Row& row)
+{
+    return history::badges::shown(row.slots, row.isSnapshot, kBadgeSlots);
+}
 } // namespace
 
 HistoryWindow::HistoryWindow()
@@ -197,12 +203,19 @@ std::optional<int> HistoryWindow::badgeAt(int visibleIndex, int x) const
     const Row* row = visibleRow(visibleIndex);
     if (row == nullptr)
         return std::nullopt;
-    for (std::size_t i = 0; i < row->slots.size(); ++i) {
+    const history::badges::Shown worn = badgesOf(*row);
+    for (std::size_t i = 0; i < worn.slots.size(); ++i) {
         const int left = badgeLeft(static_cast<int>(i));
         if (x >= left && x < left + kBadgeWidth)
-            return row->slots[i];
+            return worn.slots[i];
     }
-    return std::nullopt;
+    return std::nullopt; // the clock, the chip, the sentence
+}
+
+void HistoryWindow::clickAt(int visibleIndex, int x)
+{
+    if (const auto slot = badgeAt(visibleIndex, x))
+        setFilter(slot);
 }
 
 void HistoryWindow::selectedRowsChanged(int)
@@ -212,8 +225,7 @@ void HistoryWindow::selectedRowsChanged(int)
 
 void HistoryWindow::listBoxItemClicked(int row, const juce::MouseEvent& event)
 {
-    if (const auto slot = badgeAt(row, event.x))
-        setFilter(slot);
+    clickAt(row, event.x);
 }
 
 void HistoryWindow::listBoxItemDoubleClicked(int index, const juce::MouseEvent& event)
@@ -246,14 +258,24 @@ void HistoryWindow::paintListBoxItem(int index, juce::Graphics& g, int width, in
     g.setColour(kInk);
     g.drawText(row->when, area.removeFromLeft(kClockWidth), juce::Justification::centredLeft, false);
 
-    for (std::size_t i = 0; i < row->slots.size(); ++i) {
+    const history::badges::Shown worn = badgesOf(*row);
+    g.setFont(juce::FontOptions(11.0f));
+    for (std::size_t i = 0; i < worn.slots.size(); ++i) {
         const juce::Rectangle<int> badge(badgeLeft(static_cast<int>(i)), 4, kBadgeWidth, height - 8);
-        g.setColour(filter_ && *filter_ == row->slots[i] ? felitronics::appkit::brand::violet
+        g.setColour(filter_ && *filter_ == worn.slots[i] ? felitronics::appkit::brand::violet
                                                           : kBadge);
         g.fillRoundedRectangle(badge.toFloat(), 4.0f);
         g.setColour(kPaper);
-        g.setFont(juce::FontOptions(11.0f));
-        g.drawText(juce::String(row->slots[i]), badge, juce::Justification::centred, false);
+        g.drawText(juce::String(worn.slots[i]), badge, juce::Justification::centred, false);
+    }
+    if (worn.more > 0) {
+        // The rest, counted. The quiet ink says it is a number, not a button.
+        const juce::Rectangle<int> chip(badgeLeft(static_cast<int>(worn.slots.size())), 4,
+                                        kBadgeWidth, height - 8);
+        g.setColour(kBadge);
+        g.fillRoundedRectangle(chip.toFloat(), 4.0f);
+        g.setColour(kInk);
+        g.drawText("+" + juce::String(worn.more), chip, juce::Justification::centred, false);
     }
     area.removeFromLeft(kBadgeSlots * (kBadgeWidth + kBadgeGap));
     g.setFont(juce::FontOptions(13.0f));

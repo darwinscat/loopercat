@@ -20,11 +20,16 @@
 // back the row a player acted on. Whoever opens it feeds it, and hears back
 // through four callbacks: pin, export, restore, play.
 //
-// Every row wears the slots it touched as badges; clicking one filters the
-// timeline to that slot, and "All slots" widens it again. A swap is one row
-// with two badges. The buttons sit under the list, for the selected row —
-// a row is a sentence, not a form — and offer only what the row can do:
-// nothing plays a take the store no longer keeps.
+// Every row wears the slots it touched as badges — up to the three that fit
+// before its sentence; clicking one filters the timeline to that slot, and
+// "All slots" widens it again. A swap is one row with two badges. Past three
+// the row says it in words: a "+N" chip counts the rest of a many-slot
+// operation, and a first-sighting snapshot wears none, its sentence already
+// says "99 slots" (#143). Which badges a row shows is one answer
+// (HistoryBadges.h), read by the painting and the hit test alike. The
+// buttons sit under the list, for the selected row — a row is a sentence,
+// not a form — and offer only what the row can do: nothing plays a take the
+// store no longer keeps.
 //
 // A pin toggled here shows at once and goes out through onPin; the window's
 // own flag is a promise, not the truth. The owner records the pin and calls
@@ -87,8 +92,11 @@ public:
     juce::String pinButtonText() const { return pin_.getButtonText(); }
     juce::String emptyText() const { return empty_.isVisible() ? empty_.getText() : juce::String(); }
     // The slot whose badge sits under x in a visible row, if any: what a
-    // click there filters to.
+    // click there filters to. The "+N" chip and the sentence are nobody's.
     std::optional<int> badgeAt(int visibleIndex, int x) const;
+    // A click at x in a visible row, callable without a mouse: a badge
+    // filters to its slot; anywhere else the click was only a selection.
+    void clickAt(int visibleIndex, int x);
 
     void paint(juce::Graphics&) override;
     void resized() override;

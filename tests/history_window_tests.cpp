@@ -7,6 +7,9 @@
 //   - it shows the rows it is handed, oldest first, newest selected
 //   - a slot badge filters to that slot, and "All slots" widens again
 //   - a swap is one row wearing two badges, and answers to both filters
+//   - a row wears at most three badges; past that a "+N" chip counts the
+//     rest and filters nothing, and a snapshot of all 99 wears none: its
+//     sentence says so (#143); the counted slots still answer the filter
 //   - the buttons offer only what a row can do: no Play or Export for a
 //     take no longer kept, no Restore for a state that cannot go back
 //   - a pin toggled here reaches the owner with the operation and the new
@@ -38,6 +41,27 @@ HistoryWindow::Row row(std::int64_t op, const char* action, std::vector<int> slo
     r.op = op;
     return r;
 }
+
+// The card's first sighting: one row touching all 99 slots, with the slots
+// a restore could put back (the ones that held a take).
+HistoryWindow::Row firstSeen(std::vector<int> restorableSlots)
+{
+    HistoryWindow::Row seen;
+    seen.op = 7;
+    seen.when = "23 Sep 21:50";
+    seen.action = "Card first seen";
+    seen.detail = "99 slots, 0 takes";
+    seen.isSnapshot = true;
+    for (int slot = 1; slot <= 99; ++slot)
+        seen.slots.push_back(slot);
+    seen.restorable = !restorableSlots.empty();
+    seen.restorableSlots = std::move(restorableSlots);
+    return seen;
+}
+
+// Where a badge position starts, as the window lays them out: the gutter,
+// the clock, then 30-wide badges 4 apart. A click lands 5 in.
+int badgeX(int position) { return 12 + 110 + position * (30 + 4) + 5; }
 
 std::vector<HistoryWindow::Row> timeline()
 {
@@ -275,5 +299,93 @@ int main()
         window.restore();
         CHECK_EQ(restores, 1);
     }
+    // --- #143: a snapshot of all 99 slots wears no badge; nothing on it filters ---
+    {
+        HistoryWindow window;
+        window.show({ firstSeen({ 57 }), row(8, "Pushed", { 12 }, true, true) });
+        for (int position = 0; position < 99; ++position) {
+            CHECK(window.badgeAt(0, badgeX(position)) == std::nullopt);
+            window.clickAt(0, badgeX(position));
+        }
+        CHECK(window.badgeAt(0, badgeX(99)) == std::nullopt);
+        CHECK(window.badgeAt(0, window.getWidth() - 1) == std::nullopt);
+        CHECK(window.badgeAt(0, 100000) == std::nullopt);
+        window.clickAt(0, window.getWidth() - 1);
+        window.clickAt(0, 0);
+        CHECK(!window.filter().has_value()); // no click on the snapshot row filtered
+        CHECK_EQ(window.visibleRows(), 2);
+
+        // the push's badge still filters: the limit is the row's, not the window's
+        window.clickAt(1, badgeX(0));
+        CHECK(window.filter() == 12);
+    }
+
+    // --- #143: the filter finds the snapshot by what it touched; Restore goes by slot ---
+    {
+        HistoryWindow window;
+        window.show({ firstSeen({ 57 }) });
+        window.setFilter(57);
+        CHECK_EQ(window.visibleRows(), 1);
+        CHECK(window.visibleRow(0)->op == 7);
+        window.selectVisible(0);
+        CHECK(window.restoreEnabled());
+        int restores = 0;
+        window.onRestore = [&](std::int64_t op) { CHECK_EQ(op, 7); ++restores; };
+        window.restore();
+        CHECK_EQ(restores, 1);
+        CHECK(window.badgeAt(0, badgeX(0)) == std::nullopt); // behind the filter, still no badge
+
+        window.setFilter(58); // touched, so shown — but nothing of 58's to go back to
+        CHECK_EQ(window.visibleRows(), 1);
+        window.selectVisible(0);
+        CHECK(!window.restoreEnabled());
+        window.restore();
+        CHECK_EQ(restores, 1);
+
+        // the same slot in front, when the snapshot holds nothing for it
+        window.show({ firstSeen({}) });
+        window.setFilter(57);
+        CHECK_EQ(window.visibleRows(), 1);
+        window.selectVisible(0);
+        CHECK(!window.restoreEnabled());
+        window.restore();
+        CHECK_EQ(restores, 1);
+    }
+
+    // --- #143: five slots: two badges, then a "+3" chip that filters nothing ---
+    {
+        HistoryWindow window;
+        window.show({ row(1, "Normalized 5 slots", { 3, 7, 12, 40, 99 }, false, false) });
+        CHECK(window.badgeAt(0, badgeX(0)) == 3);
+        CHECK(window.badgeAt(0, badgeX(1)) == 7);
+        CHECK(window.badgeAt(0, badgeX(2)) == std::nullopt); // the chip
+        CHECK(window.badgeAt(0, badgeX(3)) == std::nullopt); // 40 is counted, not worn
+        CHECK(window.badgeAt(0, badgeX(4)) == std::nullopt); // 99 too
+        window.clickAt(0, badgeX(2));
+        CHECK(!window.filter().has_value());
+        window.clickAt(0, badgeX(3));
+        CHECK(!window.filter().has_value());
+        window.clickAt(0, badgeX(1));
+        CHECK(window.filter() == 7);
+        CHECK_EQ(window.visibleRows(), 1);
+        window.setFilter(40); // a counted slot still answers the filter
+        CHECK_EQ(window.visibleRows(), 1);
+        window.setFilter(std::nullopt);
+        window.clickAt(0, badgeX(0));
+        CHECK(window.filter() == 3);
+    }
+
+    // --- #143: exactly three slots: three badges, no chip ---
+    {
+        HistoryWindow window;
+        window.show({ row(1, "Normalized 3 slots", { 5, 6, 8 }, false, false) });
+        CHECK(window.badgeAt(0, badgeX(0)) == 5);
+        CHECK(window.badgeAt(0, badgeX(1)) == 6);
+        CHECK(window.badgeAt(0, badgeX(2)) == 8);
+        CHECK(window.badgeAt(0, badgeX(3)) == std::nullopt);
+        window.clickAt(0, badgeX(2));
+        CHECK(window.filter() == 8);
+    }
+
     return testkit::summary("history_window_tests");
 }
