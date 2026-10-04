@@ -3,12 +3,14 @@
 Every RC-5 memory carries ~35 settings in `MEMORY*.RC0`, and LooperCat exposes
 five of them so far (name, one-shot, tempo, bars, the wav linkage). This
 document maps everything else — what each field is, how confident we are, and
-which of them belong in an external editor. Sources: the factory slot body
-captured from hardware (rc5cat `lib/rc0.js`), observed values across a
-15-slot live card (2026-07-24 analysis, see issue #10), and the RC-5 manual's
-parameter list. Confidence marks: **[V]** verified on hardware, **[M]** manual
-semantics known / exact enum mapping to verify, **[?]** unknown — experiment
-needed.
+which of them belong in an external editor — and the pedal's own settings in
+`SYSTEM*.RC0`. Sources: the factory slot body captured from hardware (rc5cat
+`lib/rc0.js`), observed values across a 15-slot live card (2026-07-24 analysis,
+see issue #10), a settings file taken off hardware (fw 1.10,
+`fixtures/rc5-system.RC0`), two readings of an RC-5 in use (2026-10-01), and
+the RC-5 manual's parameter list. Confidence marks: **[V]** verified on
+hardware, **[M]** manual semantics known / exact enum mapping to verify, **[?]**
+unknown — experiment needed.
 
 ## TRACK1 — playback of the loop itself
 
@@ -89,9 +91,91 @@ unplugged the pedal folds its own output to mono, which hardware confirmed.
 | `Stop` | How the rhythm stops | factory 1; enum to verify | [M] |
 | `ToneLow` / `ToneHigh` | Drum tone EQ | factory 10/10 (±10 around 10?) | [M] |
 
-`SYSTEM1/2.RC0` (device-wide settings) are zero bytes on the observed card —
-the pedal appears to write them only when system settings change. Uncharted;
-out of scope for the memory editor.
+## SYSTEM — the pedal's own settings
+
+`SYSTEM1/2.RC0` are not empty on a working card. Read 2026-10-01 from an RC-5
+in use, both files were 716 bytes; the fw 1.10 file taken off hardware earlier,
+`fixtures/rc5-system.RC0`, is 717 — one more digit in `Ctl1`. The shape is the
+memory files' shape: the same `<database name="RC-5" revision="0">` header, a
+single `<sys>` element holding three sections — `SETUP`, `MIDI`, `CTL` — and
+after `</database>` the same trailer, `"\n"` plus a little-endian uint32 write
+counter. The two files are a pair like MEMORY1/2: within one reading their
+texts were identical and only the counters differed — 8 / 7 in the first
+reading, 10 / 11 in the second, while the memory pair went 53 / 54 → 55 / 56.
+The two pairs count independently: a fw 1.10 field pedal (2026-08-09) carried
+SYSTEM at 0x0524 / 0x0525 next to a memory pair far up in the 0x3e65xxxx
+range. Which file wins is decided exactly as for MEMORY1/2: the newer counter,
+compared as serial numbers so a wrapped counter still reads as newer; a file
+whose trailer is missing or unreadable loses the vote; with neither file
+readable, SYSTEM1's error is the one reported. All of this is [V] — observed
+on the card, and the rule the core reads by:
+`core/include/loopercat/SystemFile.hpp` is the reader and the gate,
+`core/include/loopercat/usecases/Controls.hpp` decodes CTL.
+
+The pedal writes SYSTEM more often than "when a setting changes". Between the
+two readings it was moved from memory 3 to memory 4 and one memory was saved;
+the only text change in SYSTEM was `MemoryNumber` 2 → 3, and the SYSTEM
+counters advanced by four writes against the memory pair's two. Switching the
+current memory is a SYSTEM write [V].
+
+LooperCat reads the pair by the rule above, its history records changes to the
+three sections, and Undo writes the pair back the way the memory pair is
+written — both files, counters continued past the highest one found. No screen
+in the app edits one of these settings yet.
+
+Values below are the ones observed: "field" is the pedal in use (2026-10-01),
+"fixture" is `fixtures/rc5-system.RC0` (fw 1.10); where the two agree, one
+value is given. Field names and their presence are [V] in every table.
+
+### SETUP
+
+| Field | Meaning | Values | Conf |
+| --- | --- | --- | --- |
+| `MemoryNumber` | The memory the pedal has selected, zero-based like `<mem id>`: 2 with the pedal on memory 3, 3 with it on memory 4. The pedal's property — an edit of anything else must leave it as found | 0–98 | [V] |
+| `DisplayMode` | Display mode, by name; not read against the screen | 5 | [?] |
+| `Contrast` | Display contrast, by name | 4 | [?] |
+| `UndoRedo` | An undo/redo setting, by name | 0 | [?] |
+| `Extent1Min` | Lower bound of a memory range, by name; 0 and 98 fit a zero-based 1–99 span, which is an inference | 0 | [?] |
+| `Extent1Max` | Upper bound of the same range, by name | 98 | [?] |
+
+### MIDI
+
+Identical on both pedals. Whether a channel field counts from 0 or 1, and what
+`RxCtlCh` = 0 means next to `Omni` = 1, has not been read off the screen;
+`docs/midi-protocol/` covers the sysex dialect, not these settings. The
+meanings here are the tag names expanded, nothing more.
+
+| Field | Meaning | Values | Conf |
+| --- | --- | --- | --- |
+| `RxCtlCh` | Receive channel for control messages, by name | 0 | [?] |
+| `Omni` | Omni receive, by name | 1 | [?] |
+| `RxNoteCh` | Receive channel for notes, by name | 9 | [?] |
+| `TxCh` | Transmit channel, by name | 16 | [?] |
+| `Sync` | Clock sync, by name | 0 | [?] |
+| `ClkOut` | Clock out, by name | 1 | [?] |
+| `SyncStart` | Start together with clock, by name | 1 | [?] |
+| `PcOut` | Program change out, by name | 1 | [?] |
+| `MidiThru` | MIDI thru, by name | 0 | [?] |
+| `UsbThru` | USB thru, by name | 0 | [?] |
+
+### CTL
+
+What the pedal switch, the two footswitch contacts of the STOP/MEMORY SHIFT
+jack, the expression pedal and the fixed control changes CC#80–87 do. On the
+RC-5 this map is global (SETUP > CONTROL on the screen), not per memory. A
+value is a position in one of three lists the RC-5 Reference Manual prints
+(SETUP > CONTROL, pp. 13–14), counted from zero in the manual's order. That
+numbering rule is measured on an RC-500 card and consistent on the RC-5 — the
+field pedal sits on exactly the three switch defaults the manual marks — but
+it has not been read against the RC-5's own screen, so the names are [M].
+
+| Field | Meaning | Values | Conf |
+| --- | --- | --- | --- |
+| `Pedal1` | PEDAL FUNC — the pedal switch | PEDAL/CTL1/CTL2 FUNC list, 0–18; field 2 = TRK R/P/S(C (the marked default), fixture 4 = TRK PLY/STP | [M] |
+| `Ctl1` | CTL1 FUNC — footswitch 1 on the STOP/MEMORY SHIFT jack | same list; field 8 = TRK STOP(CLR (the marked default), fixture 17 = MEMORY INC | [M] |
+| `Ctl2` | CTL2 FUNC — footswitch 2 | same list; field 17 = MEMORY INC (the marked default), fixture 18 = MEMORY DEC | [M] |
+| `Exp` | EXP FUNC — the expression pedal | EXP FUNC list, 0–7; field 1 = TRK LEVEL2, fixture 0 = TRK LEVEL1. The manual's marked default, MEMORY LEV2, would be 7, which neither pedal carries — the numbering of this list is in doubt | [M] in doubt |
+| `Cc80`–`Cc87` | CC#80 FUNC … CC#87 FUNC — what each fixed control change does | CC#80–87 FUNC list, 0–42; 0 = OFF on all eight, both pedals. The manual marks no default | [M] |
 
 ## What belongs in LooperCat
 
