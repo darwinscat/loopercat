@@ -17,6 +17,8 @@
 //     an operation that did not finish, nothing to put back
 //   - crossing a change made on the pedal, or another session, is flagged,
 //     and what the press writes over is listed
+//   - an operation that was only about a slot (#144) has nothing to put
+//     back, and its subject changes neither the cursor nor the plan
 
 #include "support.hpp"
 
@@ -372,6 +374,44 @@ int main()
         // same session, nothing from the pedal after it: no bump
         const auto quiet = undo::plan({ later, elsewhere }, 3);
         CHECK(!quiet.crossesPedal && !quiet.crossesConnection);
+    }
+
+    // ---------------- an operation about a slot it did not change (#144) ----------------
+    {
+        // The normalize that found slot 7 at target: a subject, no state.
+        // Nothing to put back, by name — a subject makes no plan possible.
+        Card nothing = card(30, "normalize");
+        nothing.subjects = { 7 };
+        const auto p = undo::plan({ nothing }, 30);
+        CHECK(!p.possible());
+        CHECK(p.refusal == undo::Refusal::nothingToPutBack);
+        CHECK(p.reason.find("changed no slot") != std::string::npos);
+        CHECK(p.steps.empty() && !p.swapBack && p.system.empty());
+        // two subjects are not a swap to swap back
+        Card about = card(31, "swap");
+        about.subjects = { 12, 43 };
+        CHECK(undo::plan({ about }, 31).refusal == undo::Refusal::nothingToPutBack);
+        CHECK(!undo::plan({ about }, 31).swapBack);
+
+        // The cursor reads kinds and outcomes; a subject is neither. So the
+        // operation is the step it was without one: today's cursor offers
+        // the body-less normalize, and the plan is what refuses it.
+        const auto t = undo::cursor({ op(1, "push"), op(2, "normalize") });
+        CHECK(t.undo == 2);
+        CHECK(!t.redo);
+        const auto after = undo::cursor({ op(1, "push"), op(3, "undo", "done", "app", 1), op(4, "normalize") });
+        CHECK(after.undo == 4);
+        CHECK(!after.redo); // a finished step closes the way back, as before
+
+        // A later operation that was only about the slot wrote nothing over
+        // it: the push's plan lists it nowhere.
+        Card push = card(1, "push");
+        push.slots = { slot(7, empty, loaded, std::nullopt, "take.wav") };
+        Card later = card(2, "normalize");
+        later.subjects = { 7 };
+        const auto plan = undo::plan({ push, later }, 1);
+        CHECK(plan.possible());
+        CHECK(plan.writesOver.empty());
     }
 
     return testkit::summary("undo_tests");

@@ -8,8 +8,9 @@
 // button that works and a button that lies.
 //
 // The cases below are the shapes a real store produces, including a take
-// whose bytes were released and a row that archived audio without changing
-// the slot body.
+// whose bytes were released, a row that archived audio without changing
+// the slot body, and a row that only names the slot — an operation that
+// was about it and changed nothing there (#144).
 
 #include "support.hpp"
 
@@ -176,6 +177,61 @@ int main()
         CHECK_EQ(made.front().line.audio, std::string());
         CHECK(!made.front().playable);
         CHECK(made.front().restorable); // an empty slot is a state like any other
+    }
+
+    // --- a row that only names the slot leaves the state where it was (#144) ---
+    {
+        Entry pushed = op(1, "push");
+        pushed.beforeBody = empty;
+        pushed.afterBody = loaded;
+        pushed.takeName = "take.wav";
+        pushed.takeHash = std::string(32, '\x11');
+        pushed.takeIsAfter = true;
+        Entry nothing = op(2, "normalize");
+        nothing.note = "already at -18.0 LUFS (measured -18.1), nothing to do";
+        nothing.subjectOnly = true;
+
+        const auto made = rows::forSlot({ pushed, nothing });
+        CHECK_EQ(made.size(), 2u);
+        CHECK_EQ(made.front().line.audio, std::string("in the slot now")); // the push is still where the slot is
+        CHECK(!made.front().restorable);
+        CHECK(!made.front().playable);
+        CHECK_EQ(made.back().line.action, std::string("Normalized"));
+        CHECK_EQ(made.back().line.detail, nothing.note);
+        CHECK_EQ(made.back().line.audio, std::string()); // never "in the slot now"
+        CHECK(!made.back().playable);
+        CHECK(!made.back().restorable);
+        CHECK(made.back().takeHash.empty());
+
+        // alone in the slot's timeline it is still no state of the slot
+        const auto alone = rows::forSlot({ nothing });
+        CHECK_EQ(alone.size(), 1u);
+        CHECK(!alone.front().restorable && !alone.front().playable);
+        CHECK_EQ(alone.front().line.audio, std::string());
+
+        // a state recorded after it is the newest again; the row between stays what it is
+        Entry trimmed = op(3, "trim");
+        trimmed.beforeBody = loaded;
+        trimmed.afterBody = bodyWith(441000, "TEST_42_HIST");
+        trimmed.takeName = "take.wav";
+        trimmed.takeHash = std::string(32, '\x22');
+        trimmed.takeIsAfter = true;
+        const auto later = rows::forSlot({ pushed, nothing, trimmed });
+        CHECK_EQ(later.size(), 3u);
+        CHECK_EQ(later[2].line.audio, std::string("in the slot now"));
+        CHECK(later[0].line.audio != "in the slot now");
+        CHECK_EQ(later[1].line.audio, std::string());
+        CHECK(!later[1].restorable);
+
+        // a row that names the slot and claims a state in it is not the store's
+        Entry lying = op(4, "normalize");
+        lying.subjectOnly = true;
+        lying.afterBody = loaded;
+        CHECK_THROWS(rows::forSlot({ lying }), "subject");
+        Entry lyingTake = op(5, "normalize");
+        lyingTake.subjectOnly = true;
+        lyingTake.takeName = "take.wav";
+        CHECK_THROWS(rows::forSlot({ lyingTake }), "subject");
     }
 
     // --- an empty slot has an empty timeline, and no offers to make ---

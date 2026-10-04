@@ -20,6 +20,8 @@
 //     operation already undone are not "written over"
 //   - the words on the Edit menu name the operation and its slots
 //   - "Restore this state" of the window puts every slot of a row back
+//   - an operation about a slot it did not change (#144) leaves Undo and
+//     Redo exactly where they were without its subject
 
 #include "support.hpp"
 #include "archive_support.hpp"
@@ -537,6 +539,73 @@ int main()
         CHECK_EQ(newest(b.rec->store()).status, std::string("done"));
         CHECK_THROWS(history::restoreOperation(b.rec->store(), 9999, b.volume, b.options("none")),
                      "not in the history");
+    }
+
+    // --- an operation about a slot it did not change (#144): Undo and Redo as without it ---
+    {
+        Bench b;
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "a.wav", 44100 * 4), 7, { .write = o });
+        });
+        const CardState pushed = cardState(b.volume);
+        HistoryStore& store = b.rec->store();
+
+        // the normalize that found slot 7 at target, recorded the way the
+        // worker records it: opened, named its slot, closed with its line
+        const std::string id = "op-" + std::to_string(++b.ops);
+        b.rec->begin(id, "normalize", b.volume);
+        b.rec->subject(id, 7);
+        b.rec->finish(id, "", "already at -18.0 LUFS (measured -18.1), nothing to do");
+        CHECK_SAME(cardState(b.volume), pushed);
+        const auto timeline = store.cardTimeline();
+        const HistoryStore::CardEntry& nothing = timeline.back();
+        CHECK_EQ(nothing.kind, std::string("normalize"));
+        CHECK(nothing.subjects == std::vector<int> { 7 });
+        CHECK(nothing.slots.empty());
+
+        // the cursor and the plan with the subject...
+        const HistoryStore::UndoTargets with = store.offeredTargets();
+        CHECK(with.undo.has_value());
+        const undo::Plan planWith = undo::plan(timeline, *with.undo);
+        // ...and without it: nothing moves
+        store.db().exec("DELETE FROM op_subjects");
+        const HistoryStore::UndoTargets without = store.offeredTargets();
+        CHECK(with.undo == without.undo && with.redo == without.redo
+              && with.redoRestores == without.redoRestores);
+        const undo::Plan planWithout = undo::plan(store.cardTimeline(), *without.undo);
+        CHECK(planWith.refusal == planWithout.refusal);
+        CHECK_EQ(planWith.reason, planWithout.reason);
+        CHECK(planWith.steps.empty() && planWithout.steps.empty());
+        store.db().exec("INSERT INTO op_subjects(op, slot) VALUES (" + std::to_string(nothing.op) + ", 7)");
+
+        // which is today's answer: the body-less operation is the step on
+        // offer, and the press is refused by name, the card untouched
+        CHECK(with.undo == nothing.op);
+        CHECK(planWith.refusal == undo::Refusal::nothingToPutBack);
+        const std::int64_t rows = b.opCount();
+        const std::string refused = b.press(false);
+        CHECK(refused.find("changed no slot") != std::string::npos);
+        CHECK_SAME(cardState(b.volume), pushed);
+        CHECK_EQ(b.opCount(), rows); // refused before any operation opened
+        CHECK(!undo::offer(store).redo.has_value());
+    }
+    {
+        // After an undo, the same operation closes the way back like any
+        // finished step, subject or not.
+        Bench b;
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "a.wav", 44100 * 4), 7, { .write = o });
+        });
+        CHECK_EQ(b.press(false), std::string());
+        CHECK(undo::offer(b.rec->store()).redo.has_value());
+        const std::string id = "op-" + std::to_string(++b.ops);
+        b.rec->begin(id, "normalize", b.volume);
+        b.rec->subject(id, 7);
+        b.rec->finish(id, "", "already at -18.0 LUFS (measured -18.1), nothing to do");
+        const undo::Offer offer = undo::offer(b.rec->store());
+        CHECK(!offer.redo.has_value());
+        CHECK(offer.undo == newest(b.rec->store()).op);
+        CHECK_EQ(undo::menuText(false, offer), std::string("Undo normalize"));
     }
 
     return testkit::summary("undo_run_tests");

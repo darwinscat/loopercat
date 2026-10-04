@@ -6,6 +6,7 @@
 #include "HistoryStore.h"
 #include "SlotStory.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -49,6 +50,11 @@ struct Row {
 inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
 {
     const bool hasTake = entry.takeHash.has_value() || !entry.takeName.empty();
+    // A row that only names the slot recorded nothing here; one that says so
+    // and carries a state or a take is not the store's — refused, not read.
+    if (entry.subjectOnly && (entry.beforeBody || entry.afterBody || hasTake))
+        throw Error("operation " + std::to_string(entry.op)
+                    + " names the slot as its subject and still recorded a state in it");
 
     // Only a take the operation LEFT in the slot can be the one on the card.
     // A row whose take is the one it archived — a clear, an undo that emptied
@@ -78,19 +84,29 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     return row;
 }
 
+// The state the slot is in is the last row that recorded one. A row that
+// only names the slot — an operation that was about it and changed nothing
+// (#144) — is not a state: it leaves the slot where the row before it put
+// it, and that row keeps saying "in the slot now".
 inline std::vector<Row> forSlot(const std::vector<HistoryStore::TimelineEntry>& entries)
 {
+    std::size_t newest = entries.size();
+    for (std::size_t i = 0; i < entries.size(); ++i)
+        if (!entries[i].subjectOnly)
+            newest = i;
     std::vector<Row> out;
     out.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i)
-        out.push_back(one(entries[i], i + 1 == entries.size()));
+        out.push_back(one(entries[i], i == newest));
     return out;
 }
 
 // --- the whole card (the History window, #73) ---
 
 // One row per operation, over the same facts and the same words as the
-// slot's rows: one model, two views. A swap is one row with two slots.
+// slot's rows: one model, two views. A swap is one row with two slots. An
+// operation that was about a slot and changed nothing (#144) is a row with
+// that slot's badge, its own words, and no take.
 //
 // What the row offers: Play when any take it holds is kept (the first kept
 // one is what plays; Export takes the same bytes); Restore when it recorded
@@ -117,13 +133,20 @@ struct CardRow {
     std::string action;
     std::string detail;
     std::string state;
-    std::vector<Take> takes; // one per touched slot, ascending
+    std::vector<Take> takes;   // one per touched slot, ascending
+    std::vector<int> subjects; // the slots the operation was about (#144), ascending
 
+    // Every slot the row wears as a badge: the ones the operation touched
+    // and the ones it was about, ascending, each once. A subject adds a
+    // badge and nothing else — no take to play, no state to put back.
     std::vector<int> slots() const
     {
         std::vector<int> out;
         for (const Take& take : takes)
             out.push_back(take.slot);
+        out.insert(out.end(), subjects.begin(), subjects.end());
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
         return out;
     }
     bool playable() const
@@ -172,6 +195,7 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
         row.actor = entry.actor;
         row.status = entry.status;
         row.pinned = entry.pinned;
+        row.subjects = entry.subjects;
         if (entry.status == "failed")
             row.state = "failed";
         else if (entry.status == "interrupted")
