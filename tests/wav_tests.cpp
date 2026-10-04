@@ -324,22 +324,71 @@ int main()
     CHECK_THROWS(wav::trackFileName("x.wav", 3, 2), "track out of range");
     CHECK_THROWS(wav::trackFileName("x.wav", 2, 1), "track out of range");
 
-    // --- a RIFF cut short is named as such, and only such (issue #139, review) ---
+    // --- a fault in a RIFF's structure is named, and only a fault (issue #139, review) ---
     {
+        const auto view = [](const std::vector<unsigned char>& b) { return wav::BytesView(b.data(), b.size()); };
         const auto whole = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1000 });
-        CHECK(!wav::isTruncatedRiff(wav::BytesView(whole.data(), whole.size())));
+        CHECK(!wav::riffFault(view(whole)).has_value());
         const auto withList = testkit::syntheticWav({ .frames = 1000, .extraChunk = true });
-        CHECK(!wav::isTruncatedRiff(wav::BytesView(withList.data(), withList.size())));
+        CHECK(!wav::riffFault(view(withList)).has_value());
+        // the fmt chunk's fields are shape, not structure: an extensible tag is no fault
+        auto extensible = testkit::syntheticWav({ .tag = 0xfffe, .bits = 24, .frames = 10 });
+        CHECK(!wav::riffFault(view(extensible)).has_value());
+        CHECK_THROWS(wav::readWavInfo(view(extensible)), "format tag");
+
+        // a data chunk short of its claim: cut, by how much
         const auto cut = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1000, .truncateBy = 1 });
-        CHECK(wav::isTruncatedRiff(wav::BytesView(cut.data(), cut.size())));
+        CHECK_EQ(wav::riffFault(view(cut)).value_or(""),
+                 std::string("is cut short: its data chunk claims 1 bytes more than the file holds"));
         const auto cutDeep = testkit::syntheticWav({ .frames = 1000, .truncateBy = 3000 });
-        CHECK(wav::isTruncatedRiff(wav::BytesView(cutDeep.data(), cutDeep.size())));
-        CHECK_THROWS(wav::readWavInfo(wav::BytesView(cutDeep.data(), cutDeep.size())), "truncated");
-        // not RIFF/WAVE at all is not "truncated" — it is something else's problem
+        CHECK_EQ(wav::riffFault(view(cutDeep)).value_or(""),
+                 std::string("is cut short: its data chunk claims 3000 bytes more than the file holds"));
+        CHECK_THROWS(wav::readWavInfo(view(cutDeep)), "truncated");
+
+        // a data size a writer never set
+        auto unfinalised = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1000 });
+        for (int i = 40; i < 44; ++i) // RIFF(12) + fmt(8 + 16): the data chunk's size field
+            unfinalised[static_cast<std::size_t>(i)] = 0xff;
+        CHECK_EQ(wav::riffFault(view(unfinalised)).value_or(""),
+                 std::string("was never finalised: its data chunk's size is still unset"));
+
+        // a metadata trailer cut off after a complete data chunk: no sample is
+        // missing, so no fault — though readWavInfo still calls it truncated
+        auto cutTrailer = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1000 });
+        for (const char c : std::string("LIST")) cutTrailer.push_back(static_cast<unsigned char>(c));
+        for (const int c : { 26, 0, 0, 0 }) cutTrailer.push_back(static_cast<unsigned char>(c));
+        for (int i = 0; i < 10; ++i) cutTrailer.push_back(0);
+        CHECK(!wav::riffFault(view(cutTrailer)).has_value());
+        CHECK_THROWS(wav::readWavInfo(view(cutTrailer)), "truncated");
+
+        // two data chunks: a reader would keep one and drop the other
+        auto twoData = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 10 });
+        {
+            const auto second = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 5 });
+            twoData.insert(twoData.end(), second.begin() + 36, second.end()); // its data chunk only
+        }
+        CHECK_EQ(wav::riffFault(view(twoData)).value_or(""), std::string("has two data chunks"));
+        CHECK_THROWS(wav::readWavInfo(view(twoData)), "more than one data chunk");
+
+        // two fmt chunks, a short fmt chunk, no data chunk, no fmt chunk
+        auto twoFmt = testkit::syntheticWav({ .frames = 10 });
+        twoFmt.insert(twoFmt.begin() + 36, twoFmt.begin() + 12, twoFmt.begin() + 36);
+        CHECK_EQ(wav::riffFault(view(twoFmt)).value_or(""), std::string("has two fmt chunks"));
+        auto shortFmt = testkit::syntheticWav({ .frames = 10 });
+        shortFmt[16] = 8; // the fmt chunk claims 8 bytes
+        CHECK_EQ(wav::riffFault(view(shortFmt)).value_or(""),
+                 std::string("has a malformed fmt chunk of 8 bytes"));
+        const auto noData = std::vector<unsigned char>(whole.begin(), whole.begin() + 36);
+        CHECK_EQ(wav::riffFault(view(noData)).value_or(""), std::string("has no data chunk"));
+        std::vector<unsigned char> noFmt(whole.begin(), whole.begin() + 12);
+        noFmt.insert(noFmt.end(), whole.begin() + 36, whole.end());
+        CHECK_EQ(wav::riffFault(view(noFmt)).value_or(""), std::string("has no fmt chunk"));
+
+        // not RIFF/WAVE at all is nobody's fault here
         const std::vector<unsigned char> text { 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd', '!', '!' };
-        CHECK(!wav::isTruncatedRiff(wav::BytesView(text.data(), text.size())));
+        CHECK(!wav::riffFault(view(text)).has_value());
         const std::vector<unsigned char> tiny { 'R', 'I', 'F', 'F' };
-        CHECK(!wav::isTruncatedRiff(wav::BytesView(tiny.data(), tiny.size())));
+        CHECK(!wav::riffFault(view(tiny)).has_value());
     }
 
     return testkit::summary("wav");

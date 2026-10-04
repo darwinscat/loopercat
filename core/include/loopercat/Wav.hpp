@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -202,26 +203,59 @@ inline Bytes trimmed(BytesView data, std::int64_t startFrame, std::int64_t endFr
     return out;
 }
 
-// Whether a RIFF/WAVE buffer's chunks claim more bytes than it holds — the
-// shape a cut-off copy has. readWavInfo refuses such a file along with the
-// other malformed ones; this names that one fact on its own, so an importer
-// can refuse to pad it: a decoder fills the missing frames with silence and
-// the pedal gets a loop longer than its audio (issue #139, review). A buffer
-// that is not RIFF/WAVE at all is not "truncated" — it is something else.
-inline bool isTruncatedRiff(BytesView data)
+// A fault in a RIFF/WAVE buffer's STRUCTURE — one no reader can make audio
+// of without inventing some — as a clause to put after the file's name, for
+// an importer to refuse with (issue #139, review). Empty for a sound
+// structure, and for a buffer that is not RIFF/WAVE at all: that is
+// something else's problem. The fmt chunk's fields are not structure: an
+// extensible or 24-bit header is a shape the converter reads, and
+// readWavInfo plus the upload gate decide about it.
+//
+// Chunks past the end are told apart on purpose: a data chunk short of its
+// claim is a recording cut off, named by how much; a data size of
+// 0xFFFFFFFF is a header a writer never finalised; a metadata chunk cut off
+// AFTER a complete data chunk — a LIST trailer — costs no sample and is no
+// fault here (readWavInfo still calls the file truncated, so it goes
+// through the converter, samples intact). Two data chunks are refused
+// because a reader keeps one and drops the other without a word.
+inline std::optional<std::string> riffFault(BytesView data)
 {
     if (data.size() < 12 || !detail::chunkIdIs(data, 0, "RIFF")
         || !detail::chunkIdIs(data, 8, "WAVE"))
-        return false;
+        return std::nullopt;
+    constexpr std::int64_t kUnfinalised = 0xFFFFFFFF;
     const auto size = static_cast<std::int64_t>(data.size());
+    int fmtChunks = 0, dataChunks = 0;
     std::int64_t offset = 12;
     while (offset + 8 <= size) {
-        const std::int64_t chunkSize = detail::u32(data, static_cast<std::size_t>(offset) + 4);
-        if (offset + 8 + chunkSize > size)
-            return true;
+        const auto o = static_cast<std::size_t>(offset);
+        const std::int64_t chunkSize = detail::u32(data, o + 4);
+        const bool isData = detail::chunkIdIs(data, o, "data");
+        const bool isFmt = detail::chunkIdIs(data, o, "fmt ");
+        if (isData && chunkSize == kUnfinalised)
+            return "was never finalised: its data chunk's size is still unset";
+        if (offset + 8 + chunkSize > size) {
+            if (isData)
+                return "is cut short: its data chunk claims "
+                     + std::to_string(offset + 8 + chunkSize - size)
+                     + " bytes more than the file holds";
+            break; // a metadata chunk cut off: what stands before it is whole
+        }
+        if (isFmt) {
+            if (++fmtChunks > 1)
+                return "has two fmt chunks";
+            if (chunkSize < 16)
+                return "has a malformed fmt chunk of " + std::to_string(chunkSize) + " bytes";
+        }
+        if (isData && ++dataChunks > 1)
+            return "has two data chunks";
         offset += 8 + chunkSize + (chunkSize % 2);
     }
-    return false;
+    if (fmtChunks == 0)
+        return "has no fmt chunk";
+    if (dataChunks == 0)
+        return "has no data chunk";
+    return std::nullopt;
 }
 
 // Rewrite a WAV into the pedal's own canonical shape: RIFF + fmt + data,
