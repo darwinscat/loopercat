@@ -14,6 +14,8 @@
 #include "OperationsLog.h"
 #include "PedalPortName.h"
 #include "Strings.h"
+#include "ImportPrefs.h"
+#include "UploadMark.h"
 #include "WavImport.h"
 
 #include "CardPermissions.h"
@@ -48,13 +50,10 @@ namespace
     // until a measure or a check fills it, and an empty column is noise.
     constexpr auto kLoudnessColumnKey = "columnLoudness";
 
-    // Normalize-on-upload (issue #53): OFF by default so every existing
-    // workflow keeps the byte-exact pass-through; -18 LUFS is ReplayGain
-    // 2.0's reference — the modern spelling of the "89 dB" the request
-    // arrived in.
-    constexpr auto kNormalizeOnUploadKey = "normalizeOnUpload";
-    constexpr auto kNormalizeTargetLufsKey = "normalizeTargetLufs";
-    constexpr double kDefaultTargetLufs = -18.0;
+    // The upload preferences live in ImportPrefs.h (issues #53, #139); the
+    // Normalize commands read the target under its name here.
+    constexpr auto kNormalizeTargetLufsKey = importprefs::kTargetLufsKey;
+    constexpr double kDefaultTargetLufs = importprefs::kDefaultTargetLufs;
 
     // The history's storage limit (issue #74): the bytes of takes the app
     // keeps before it starts offering the oldest for release. 5 GB out of
@@ -2076,50 +2075,57 @@ void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotO
 {
     const auto enqueuePush = [this, slot, sourcePath](bool force) {
         releasePlayerIfHolding(slot, slot); // a replace rewrites the WAV under preview (issue #26)
-        // The normalize preference is read HERE, when the player acts — a
+        // The upload preferences are read HERE, when the player acts — a
         // settings change mid-queue must not rewrite jobs already promised.
-        std::optional<double> normalizeTarget;
-        if (auto* file = settings.file();
-            file != nullptr && file->getBoolValue(kNormalizeOnUploadKey, false))
-            normalizeTarget = file->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs);
+        auto* file = settings.file();
+        const ImportPrefs prefs = file != nullptr ? importprefs::read(*file) : importprefs::defaults();
+        const std::optional<double> normalizeTarget =
+            prefs.normalizeOnUpload ? std::optional<double>(prefs.targetLufs) : std::nullopt;
         auto note = std::make_shared<juce::String>();
         const auto options = makeWriteOptions();
         worker.enqueue(recorded("push", options, { "Push " + juce::File(sourcePath).getFileName() + " to slot "
                              + juce::String(slot),
                          slot,
                          [source = sourcePath, slot, force, normalizeTarget, note,
-                          options,
+                          mark = prefs.convertedMark.toStdString(), options,
                           importTmp = settings.dataDir().getChildFile("import-tmp"),
                           logDir = settings.dataDir()](
                              const volume::fs::path& volumePath) {
                              // DAW exports arrive as anything — convert off the
                              // message thread, on this worker, before the push
-                             // (issue #20). The temp conversion dies with the job.
+                             // (issue #20). The conversion's directory dies with
+                             // `prepared`, on success and on a throw alike.
+                             const juce::String sourceName = juce::File(source).getFileName();
                              wavimport::Prepared prepared;
                              const juce::Result ok =
                                  wavimport::prepare(juce::File(source), importTmp, prepared,
                                                     { .normalizeTargetLufs = normalizeTarget });
                              if (ok.failed())
                                  throw Error(ok.getErrorMessage().toStdString());
-                             commands::PushResult pushed;
-                             try {
-                                 pushed = commands::push(volumePath,
-                                                         prepared.file.getFullPathName().toStdString(),
-                                                         slot,
-                                                         { .force = force, .write = options });
-                             } catch (...) {
-                                 if (prepared.converted)
-                                     prepared.file.deleteFile();
-                                 throw;
-                             }
-                             if (prepared.converted)
-                                 prepared.file.deleteFile();
-                             if (prepared.normalize.has_value() && normalizeTarget.has_value()) {
-                                 *note = describeNormalize(*prepared.normalize, *normalizeTarget);
+                             // The name on the card is decided here, not inherited
+                             // from the conversion's temp file (issue #139): a
+                             // rebuilt upload carries the mark, an untouched one
+                             // keeps its own name.
+                             const std::string landed = uploadmark::landedName(
+                                 sourceName.toStdString(), mark, prepared.converted);
+                             const commands::PushResult pushed = commands::push(
+                                 volumePath, prepared.file.getFullPathName().toStdString(), slot,
+                                 { .landedName = landed, .force = force, .write = options });
+                             // What changed on the way to the card: the rebuild's
+                             // facts, then the normalization's — each only when it
+                             // has something to say.
+                             if (prepared.sourceFormat.has_value())
+                                 *note = wavimport::describeConversion(*prepared.sourceFormat);
+                             if (prepared.normalize.has_value() && normalizeTarget.has_value())
+                                 *note << (note->isEmpty() ? "" : "; ")
+                                       << describeNormalize(*prepared.normalize, *normalizeTarget);
+                             if (note->isNotEmpty()) {
+                                 const juce::String as = juce::String(landed) == sourceName
+                                     ? juce::String()
+                                     : " as " + juce::String(landed);
                                  oplog::append(logDir,
-                                               "push " + juce::File(source).getFileName()
-                                                   + " to slot " + juce::String(slot) + ": "
-                                                   + *note);
+                                               "push " + sourceName + " to slot " + juce::String(slot)
+                                                   + as + ": " + *note);
                              }
                              // The slot's length was a note value and this take
                              // replaced it with a bar count (issue #92): said out
@@ -2616,17 +2622,10 @@ std::unique_ptr<SettingsDialog> MainComponent::makeSettingsDialog()
             }
             applyColumnPreferences();
         },
-        SettingsDialog::ImportPrefs {
-            settings.file() != nullptr && settings.file()->getBoolValue(kNormalizeOnUploadKey, false),
-            settings.file() != nullptr
-                ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
-                : kDefaultTargetLufs },
+        settings.file() != nullptr ? importprefs::read(*settings.file()) : importprefs::defaults(),
         [this](SettingsDialog::ImportPrefs prefs) {
-            if (auto* file = settings.file()) {
-                file->setValue(kNormalizeOnUploadKey, prefs.normalizeOnUpload);
-                file->setValue(kNormalizeTargetLufsKey, prefs.targetLufs);
-                file->saveIfNeeded();
-            }
+            if (auto* file = settings.file())
+                importprefs::write(*file, prefs);
         });
 
     // The storage panel (issue #74) is fed by the worker, where the store

@@ -5,7 +5,11 @@
 
 #include "AppSettings.h"
 #include "HistoryStoragePanel.h"
+#include "ImportPrefs.h"
 #include "TabStrip.h"
+#include "UploadMark.h"
+
+#include <loopercat/Error.hpp>
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
 
@@ -32,6 +36,12 @@
 // this one. The target is stored in LUFS; the label translates it into
 // ReplayGain vocabulary (reference 89 dB = -18 LUFS, the linear offset is
 // +107) because "normalize to 89 dB" is how the request arrived.
+//
+// The mark on converted uploads (issue #139) ships ON as "-pedal": that is
+// the spelling existing cards already carry, from the days the conversion's
+// temp-file name travelled to the card by accident. The field refuses a
+// character a FAT name cannot hold and snaps back to the stored mark, with
+// the refusal said under it — never a silently rewritten mark.
 //==============================================================================
 namespace loopercat
 {
@@ -45,10 +55,7 @@ public:
         bool loudness; // the LUFS column (issue #61) — off until asked for
     };
 
-    struct ImportPrefs {
-        bool normalizeOnUpload;
-        double targetLufs;
-    };
+    using ImportPrefs = loopercat::ImportPrefs; // read and written by importprefs::
 
     // The target field refuses values outside this window: hotter than -8
     // leaves no headroom against a live band's transients, quieter than -30
@@ -123,6 +130,31 @@ public:
         importHint_.setColour(juce::Label::textColourId, juce::Colour(0xff6f6f78));
         addChildComponent(importHint_);
 
+        markCaption_.setText("Mark uploads converted for the pedal with", juce::dontSendNotification);
+        markCaption_.setFont(juce::FontOptions(12.0f));
+        markCaption_.setColour(juce::Label::textColourId, juce::Colour(0xff8a8a92));
+        addChildComponent(markCaption_);
+
+        // No input restriction: a forbidden character is refused with its name,
+        // not dropped on the way in — the player sees what was wrong with it.
+        mark_.setText(importPrefs_.convertedMark, juce::dontSendNotification);
+        mark_.onReturnKey = [this] { parseMark(); };
+        mark_.onFocusLost = [this] { parseMark(); };
+        addChildComponent(mark_);
+
+        markRefusal_.setFont(juce::FontOptions(11.0f));
+        markRefusal_.setColour(juce::Label::textColourId, juce::Colour(0xffff8a3d)); // brand orange
+        addChildComponent(markRefusal_);
+
+        markHint_.setText("Added to the file name on the card when the audio had to be "
+                          "rebuilt for the pedal: a different sample rate, bit depth or "
+                          "channel count, or a normalization that rewrote it. A file the "
+                          "pedal takes as-is keeps its name. Empty: no mark.",
+                          juce::dontSendNotification);
+        markHint_.setFont(juce::FontOptions(11.0f));
+        markHint_.setColour(juce::Label::textColourId, juce::Colour(0xff6f6f78));
+        addChildComponent(markHint_);
+
         addChildComponent(storage_);
 
         addAndMakeVisible(tabs_);
@@ -180,6 +212,13 @@ public:
         targetEquiv_.setBounds(targetRow);
         importArea.removeFromTop(12);
         importHint_.setBounds(importArea.removeFromTop(40));
+        importArea.removeFromTop(14);
+        markCaption_.setBounds(importArea.removeFromTop(20));
+        importArea.removeFromTop(4);
+        mark_.setBounds(importArea.removeFromTop(24).removeFromLeft(160));
+        importArea.removeFromTop(4);
+        markRefusal_.setBounds(importArea.removeFromTop(18));
+        markHint_.setBounds(importArea.removeFromTop(54));
     }
 
 private:
@@ -191,7 +230,8 @@ private:
         countIn_.setVisible(index == 1);
         loudness_.setVisible(index == 1);
         for (auto* c : std::initializer_list<juce::Component*> {
-                 &normalize_, &targetCaption_, &target_, &targetEquiv_, &importHint_ })
+                 &normalize_, &targetCaption_, &target_, &targetEquiv_, &importHint_,
+                 &markCaption_, &mark_, &markRefusal_, &markHint_ })
             c->setVisible(index == 2);
         storage_.setVisible(index == kHistoryTab);
     }
@@ -234,6 +274,26 @@ private:
         commitImport();
     }
 
+    void parseMark()
+    {
+        // As typed, spaces included: a FAT name may hold them, and trimming
+        // would be the silent rewrite this field promises not to do.
+        const juce::String typed = mark_.getText();
+        try {
+            uploadmark::assertSuffix(typed.toStdString());
+        } catch (const Error& refused) {
+            // Not a mark — snap back to the stored one, and say why.
+            mark_.setText(importPrefs_.convertedMark, juce::dontSendNotification);
+            markRefusal_.setText(juce::String::fromUTF8(refused.what()), juce::dontSendNotification);
+            return;
+        }
+        markRefusal_.setText({}, juce::dontSendNotification);
+        if (typed == importPrefs_.convertedMark)
+            return;
+        importPrefs_.convertedMark = typed;
+        commitImport();
+    }
+
     static constexpr int kHistoryTab = 3;
     TabStrip tabs_ { { "Audio", "Columns", "Import", "History" } };
     felitronics::appkit::AudioSettingsPanel audio_;
@@ -251,6 +311,10 @@ private:
     juce::TextEditor target_;
     juce::Label targetEquiv_;
     juce::Label importHint_;
+    juce::Label markCaption_;
+    juce::TextEditor mark_;
+    juce::Label markRefusal_;
+    juce::Label markHint_;
 
     HistoryStoragePanel storage_;
 

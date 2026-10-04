@@ -250,5 +250,30 @@ int main()
         CHECK(other.detail.find("note length") == std::string::npos);
     }
 
+    // --- a push whose note says what the conversion changed (issue #139) ---
+    //
+    // The row names the take as it landed — the mark is in the name — and
+    // keeps its numbers; the conversion sentence travels in the note, where
+    // the normalize sentence already does, and does not crowd the line. The
+    // note-length fact still finds its way out from behind both sentences.
+    {
+        const auto converted = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
+                                             .takeName = "song-pedal.wav", .take = story::Take::onCard,
+                                             .note = "48000 Hz, 24-bit, mono -> 44100 Hz, 32-bit float, stereo" });
+        CHECK_EQ(converted.detail, std::string("song-pedal.wav - 4:36 - 111.1 BPM"));
+        CHECK(converted.detail.find("48000 Hz") == std::string::npos);
+        CHECK(converted.detail.find("->") == std::string::npos);
+        CHECK_EQ(converted.audio, std::string("in the slot now"));
+
+        const auto both = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
+                                        .takeName = "song-pedal.wav", .take = story::Take::onCard,
+                                        .note = "24-bit -> 32-bit float; normalized +3.0 dB; "
+                                            + std::string(story::kNoteLengthReplaced) });
+        CHECK(both.detail.find("song-pedal.wav - ") == 0);
+        CHECK(both.detail.find("24-bit") == std::string::npos);
+        CHECK(both.detail.find(" - note length replaced by bars")
+              == both.detail.size() - std::string(" - note length replaced by bars").size());
+    }
+
     return testkit::summary("slot_story_tests");
 }
