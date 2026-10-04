@@ -243,36 +243,51 @@ int main()
         CHECK_EQ(alone.detail, std::string("take.wav - note length replaced by bars"));
         const auto quiet = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
                                          .note = "normalized -3.2 dB" });
-        CHECK_EQ(quiet.detail, std::string("take.wav"));
+        CHECK_EQ(quiet.detail, std::string("take.wav - normalized -3.2 dB"));
         // the fact belongs to push and trim: a rename's note is a rename's note
         const auto other = story::tell({ .kind = "rename", .take = story::Take::none,
                                          .note = std::string(story::kNoteLengthReplaced) });
         CHECK(other.detail.find("note length") == std::string::npos);
     }
 
-    // --- a push whose note says what the conversion changed (issue #139) ---
+    // --- a push row says what the job said about the take (issue #139) ---
     //
-    // The row names the take as it landed — the mark is in the name — and
-    // keeps its numbers; the conversion sentence travels in the note, where
-    // the normalize sentence already does, and does not crowd the line. The
-    // note-length fact still finds its way out from behind both sentences.
+    // The row names the take as it landed — the mark is in the name — keeps
+    // its numbers, and then draws the note's sentences: the rebuild's facts,
+    // the normalization's. The note-length fact keeps its own place at the
+    // end, drawn once, and is left out of the sentences.
     {
         const auto converted = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                              .takeName = "song-pedal.wav", .take = story::Take::onCard,
                                              .note = "48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo" });
-        CHECK_EQ(converted.detail, std::string("song-pedal.wav - 4:36 - 111.1 BPM"));
-        CHECK(converted.detail.find("48000 Hz") == std::string::npos);
-        CHECK(converted.detail.find("\xe2\x86\x92") == std::string::npos); // the arrow stays in the note
+        CHECK_EQ(converted.detail,
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo"));
         CHECK_EQ(converted.audio, std::string("in the slot now"));
 
         const auto both = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                         .takeName = "song-pedal.wav", .take = story::Take::onCard,
                                         .note = "24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB; "
                                             + std::string(story::kNoteLengthReplaced) });
-        CHECK(both.detail.find("song-pedal.wav - ") == 0);
-        CHECK(both.detail.find("24-bit") == std::string::npos);
-        CHECK(both.detail.find(" - note length replaced by bars")
-              == both.detail.size() - std::string(" - note length replaced by bars").size());
+        CHECK_EQ(both.detail,
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB"
+                             " - note length replaced by bars"));
+
+        // no bodies (a row an older store kept): the name and the sentence
+        const auto bare = story::tell({ .kind = "push", .takeName = "song.wav", .take = story::Take::kept,
+                                        .note = "MP3 \xe2\x86\x92 32-bit float" });
+        CHECK_EQ(bare.detail, std::string("song.wav - MP3 \xe2\x86\x92 32-bit float"));
+
+        // a note that is only the fact adds nothing twice
+        const auto onlyFact = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
+                                            .note = std::string(story::kNoteLengthReplaced) + "; " });
+        CHECK_EQ(onlyFact.detail, std::string("take.wav - note length replaced by bars"));
+
+        // the helper itself: the fact is dropped wherever it sits, the rest keeps its order
+        CHECK_EQ(story::sentencesBesides("a; b; c", "b"), std::string("a; c"));
+        CHECK_EQ(story::sentencesBesides("b; a", "b"), std::string("a"));
+        CHECK_EQ(story::sentencesBesides("b", "b"), std::string(""));
+        CHECK_EQ(story::sentencesBesides("", "b"), std::string(""));
+        CHECK_EQ(story::sentencesBesides("a;b", "b"), std::string("a;b")); // not the join
     }
 
     return testkit::summary("slot_story_tests");
