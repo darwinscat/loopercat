@@ -54,6 +54,10 @@ struct Facts {
     std::optional<int> swappedWith;
     std::string takeName; // the take the slot held after the operation
     Take take = Take::none;
+    // The operation's status as the store records it ("done", "failed",
+    // "interrupted"): a note is the job's own words only when the job
+    // finished — a failed operation's note is its error.
+    std::string status;
     std::string note;
 };
 
@@ -152,9 +156,12 @@ inline Line tell(const Facts& facts)
         }
         // What the job said about the take on its way in — the rebuild's
         // facts, the normalization's — after the numbers (issue #139): the
-        // row and the toast tell the same story.
-        if (const std::string said = sentencesBesides(facts.note, kNoteLengthReplaced); !said.empty())
-            line.detail += (line.detail.empty() ? "" : " - ") + said;
+        // row and the toast tell the same story. Only for a job that
+        // finished: a failed one's note is its error, and the row's state
+        // already says it failed.
+        if (facts.status == "done")
+            if (const std::string said = sentencesBesides(facts.note, kNoteLengthReplaced); !said.empty())
+                line.detail += (line.detail.empty() ? "" : " - ") + said;
         sayNoteLength();
     } else if (facts.kind == "trim") {
         line.action = "Trimmed";
