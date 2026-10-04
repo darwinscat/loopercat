@@ -1291,10 +1291,10 @@ void MainComponent::playFromHistory(std::int64_t op)
                                     [op](const history::rows::Row& row) { return row.op == op; });
     if (found == historyEntries.end() || found->takeHash.empty())
         return;
-    const int slot = selectedSlot;
-    playArchivedTake(slot, found->takeHash,
-                     juce::String(slot) + juce::String::fromUTF8(" \xc2\xb7 ")
-                         + juce::String(found->line.action)
+    // The slot tab's own timeline, so the take is the selected slot's: the
+    // tab strip names it, and the title says only which take (#145).
+    playArchivedTake(selectedSlot, found->takeHash,
+                     juce::String(found->line.action)
                          + juce::String::fromUTF8(" \xc2\xb7 from the history"));
 }
 
@@ -2925,6 +2925,9 @@ void MainComponent::playFromWindow(std::int64_t op)
     const WindowEntry* entry = windowEntry(op);
     if (entry == nullptr || entry->takeHash.empty())
         return;
+    // The window lists every slot and auditions a take without changing the
+    // selection, so the tab strip may be naming another slot: this title
+    // keeps the number (#145).
     playArchivedTake(entry->slot, entry->takeHash,
                      juce::String(entry->slot) + juce::String::fromUTF8(" \xc2\xb7 ") + entry->action
                          + juce::String::fromUTF8(" \xc2\xb7 from the history"));
