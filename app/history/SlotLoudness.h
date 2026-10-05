@@ -11,6 +11,7 @@
 
 #include <exception>
 #include <string>
+#include <vector>
 
 //==============================================================================
 // loopercat::history::readSlotLoudness — one slot's loudness read as the
@@ -26,6 +27,16 @@
 // the history being able to remember it. A slot with no take, and bytes that
 // are not the pedal's own stereo float, are errors as before.
 //
+// recallOrReadSlotLoudness is the same read with the history asked first
+// (#142), for the single-slot Normalize's measure-before-asking step: a
+// reading the history holds for exactly these bytes is the answer, as filed,
+// and only bytes it has never measured are measured. Exactly these bytes —
+// the key is the content hash, so what the history infers about a slot from
+// a name, a size and a date (#141) never answers here: a guess may inform the
+// eye, never a decision. A history that cannot be asked — no card in front
+// of it, a store that will not answer — is measured around, and the trouble
+// goes in `failure` as a filing's would.
+//
 // Worker thread, like every read of the card and every write to the store.
 //==============================================================================
 namespace loopercat::history
@@ -33,27 +44,77 @@ namespace loopercat::history
 
 struct SlotLoudness {
     wav::LoudnessReading reading;
-    std::string hash;    // of the bytes measured — the key the reading is filed under
-    bool kept = false;   // the history holds the reading now
-    std::string failure; // the store's refusal, when it refused; empty otherwise
+    std::string hash;      // of the bytes measured — the key the reading is filed under
+    bool kept = false;     // the history holds the reading now
+    bool recalled = false; // the history held it already, for these very bytes: nothing was measured
+    std::string failure;   // the store's refusal, when it refused; empty otherwise
 };
+
+namespace detail {
+
+    // The slot's take as the worker reads it: the bytes, named as the
+    // history names them.
+    struct TakeBytes {
+        std::string raw;
+        std::string hash;
+    };
+
+    inline TakeBytes readTake(const volume::fs::path& volume, int slot)
+    {
+        const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
+        if (files.empty())
+            throw Error("slot " + std::to_string(slot) + " has no audio to measure");
+        TakeBytes take;
+        take.raw = commands::readFileBytes(volume::wavDir(volume, slot) / files.front());
+        take.hash = HistoryStore::contentHash(take.raw);
+        return take;
+    }
+
+    // Measure the bytes and file the reading under their hash; the filing's
+    // trouble is reported beside the reading, never thrown over it.
+    inline void measureAndFile(const TakeBytes& take, HistoryRecorder& recorder, SlotLoudness& out)
+    {
+        out.reading = wav::measureLoudness(wav::BytesView(
+            reinterpret_cast<const unsigned char*>(take.raw.data()), take.raw.size()));
+        try {
+            out.kept = recorder.reading(out.hash, out.reading);
+        } catch (const std::exception& e) {
+            out.failure = e.what(); // the store's refusal, or anything else the filing threw
+        }
+    }
+
+} // namespace detail
 
 inline SlotLoudness readSlotLoudness(const volume::fs::path& volume, int slot,
                                      HistoryRecorder& recorder)
 {
-    const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
-    if (files.empty())
-        throw Error("slot " + std::to_string(slot) + " has no audio to measure");
-    const std::string raw = commands::readFileBytes(volume::wavDir(volume, slot) / files.front());
+    const detail::TakeBytes take = detail::readTake(volume, slot);
     SlotLoudness out;
-    out.reading = wav::measureLoudness(
-        wav::BytesView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size()));
-    out.hash = HistoryStore::contentHash(raw);
-    try {
-        out.kept = recorder.reading(out.hash, out.reading);
-    } catch (const std::exception& e) {
-        out.failure = e.what(); // the store's refusal, or anything else the filing threw
+    out.hash = take.hash;
+    detail::measureAndFile(take, recorder, out);
+    return out;
+}
+
+inline SlotLoudness recallOrReadSlotLoudness(const volume::fs::path& volume, int slot,
+                                             HistoryRecorder& recorder)
+{
+    const detail::TakeBytes take = detail::readTake(volume, slot);
+    SlotLoudness out;
+    out.hash = take.hash;
+    // Asked only under the condition a reading is filed under — a session
+    // open for this card — so the store is never opened for the asking alone.
+    if (recorder.sessionOn(volume)) {
+        try {
+            if (const auto known = recorder.store().readingFor(out.hash)) {
+                out.reading = known->reading;
+                out.kept = out.recalled = true;
+                return out;
+            }
+        } catch (const std::exception& e) {
+            out.failure = e.what(); // the history could not be asked; the bytes still can be
+        }
     }
+    detail::measureAndFile(take, recorder, out);
     return out;
 }
 

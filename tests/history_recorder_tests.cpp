@@ -22,11 +22,16 @@
 //     no card is in front of the history
 //   - a loudness check files what it read under the hash of the file read,
 //     and still answers when the history will not take it
+//   - the measure-first step of Normalize (#142) takes the history's reading
+//     of exactly these bytes over the meter, measures what it has never seen
+//     — a take swapped in under the same name, size and date included — and
+//     leaves the card's timeline as it was, while a real normalize adds one row
 
 #include "support.hpp"
 
 #include "../app/history/SlotLoudness.h"
 #include "../app/history/WriteOptionsFactory.h"
+#include "../app/NormalizePlan.h"
 #include "../app/OperationsLog.h"
 
 #include <loopercat/Commands.hpp>
@@ -955,6 +960,137 @@ int main()
         CHECK(!broken.failure.empty());
 
         CHECK_THROWS(history::readSlotLoudness(volume, 10, *rec), "no audio to measure");
+    }
+
+    // --- the measure-first step of Normalize asks the history before the meter (#142) ---
+    //
+    // Theory: the bytes come off the card and are hashed; a reading the
+    // history holds for exactly that hash is the answer and nothing is
+    // measured — proven by planting a reading the meter could never take off
+    // these bytes and getting it back, dated as planted. Bytes the history has
+    // never seen are measured and filed under their own hash — even a take
+    // swapped in under the same name, size and date as one the history has a
+    // row and a reading for: what a slot's facts suggest (#141) is a guess,
+    // and a guess never answers here. No card in front of the history:
+    // measured, nothing filed, the store not opened. A history that cannot
+    // answer: measured around, the trouble reported. And the step opens no
+    // operation: after a take with nothing to do the card's timeline is as it
+    // was, while a real normalize then adds exactly one row.
+    {
+        constexpr double kTarget = -18.0;
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const fs::path take9 = volume::wavDir(volume, 9) / "009_1.WAV";
+        putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
+        const std::string hash = HistoryStore::contentHash(commands::readFileBytes(take9));
+        auto rec = recorderAt(tmp.path / "history");
+
+        // No card in front of the history: measured, nothing filed, not even opened to ask.
+        const auto cold = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        CHECK(!cold.recalled);
+        CHECK(!cold.kept);
+        CHECK(cold.failure.empty());
+        CHECK(cold.hash == hash);
+        CHECK(cold.reading.integratedLufs.has_value()
+              && std::abs(*cold.reading.integratedLufs - (-23.0)) <= 0.1);
+        CHECK(!fs::exists(tmp.path / "history" / "history.db"));
+
+        // The card connects and its first snapshot is taken, as the app takes
+        // it: the take's row now names it by name, size, date and hash. From
+        // here on the card's timeline is the oracle for "no row".
+        const auto first = rec->firstSeen(volume);
+        CHECK(first.has_value());
+        for (int slot = 1; first.has_value() && slot <= 99; ++slot)
+            rec->snapshotStep(*first, slot);
+        sqlite::Db& db = rec->store().db();
+        const auto timelineRows = [&rec] { return rec->store().cardTimeline().size(); };
+        const std::size_t rowsBefore = timelineRows();
+        const std::int64_t opsBefore = count(db, "SELECT count(*) FROM ops");
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 0); // a snapshot measures nothing
+
+        // A reading no meter would take off a -23 dBFS tone, planted under
+        // these bytes' hash: if it comes back, nothing was measured.
+        const wav::LoudnessReading planted { -40.0, 0.25f, -12.0, 0 };
+        constexpr std::int64_t kPlantedAt = 5;
+        rec->store().recordReading(hash, planted, kPlantedAt);
+        const auto recalled = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        CHECK(recalled.recalled);
+        CHECK(recalled.kept);
+        CHECK(recalled.failure.empty());
+        CHECK(recalled.hash == hash);
+        CHECK(recalled.reading.integratedLufs.has_value()
+              && std::abs(*recalled.reading.integratedLufs - (-40.0)) <= 1.0e-12);
+        CHECK(std::abs(recalled.reading.samplePeak - 0.25f) <= 1.0e-6f);
+        CHECK(std::abs(recalled.reading.truePeakDb - (-12.0)) <= 1.0e-12);
+        CHECK_EQ(recalled.reading.wildSamples, 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 1); // not filed anew
+        const auto row = rec->store().readingFor(hash);
+        CHECK(row.has_value() && row->measuredMs == kPlantedAt); // nor dated anew
+
+        // Another sound under the same name, the same size and the same date:
+        // everything a directory entry says matches the row, and the bytes do
+        // not. The step reads the bytes, so the planted -40 must not answer.
+        const auto sizeBefore = fs::file_size(take9);
+        const auto stampBefore = fs::last_write_time(take9);
+        putSineWav(volume, 9, "009_1.WAV", 44100, -30.0);
+        fs::last_write_time(take9, stampBefore);
+        CHECK(fs::file_size(take9) == sizeBefore);
+        CHECK(fs::last_write_time(take9) == stampBefore);
+        const std::string swappedHash = HistoryStore::contentHash(commands::readFileBytes(take9));
+        CHECK(swappedHash != hash);
+        const auto swapped = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        CHECK(!swapped.recalled);
+        CHECK(swapped.kept);
+        CHECK(swapped.failure.empty());
+        CHECK(swapped.hash == swappedHash);
+        CHECK(swapped.reading.integratedLufs.has_value()
+              && std::abs(*swapped.reading.integratedLufs - (-30.0)) <= 0.1);
+        CHECK(rec->store().readingFor(swappedHash).has_value());
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+        // ...and it is the history's answer from then on, to the last digit.
+        const auto again = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        CHECK(again.recalled);
+        CHECK(again.reading.integratedLufs.has_value() && swapped.reading.integratedLufs.has_value()
+              && std::abs(*again.reading.integratedLufs - *swapped.reading.integratedLufs) <= 1.0e-12);
+
+        // A take already at the target: read, filed, nothing to do — and the
+        // card's timeline has not moved. The old flow left a row here.
+        putSineWav(volume, 10, "010_1.WAV", 44100, kTarget);
+        const auto atTarget = history::recallOrReadSlotLoudness(volume, 10, *rec);
+        CHECK(!atTarget.recalled);
+        CHECK(atTarget.kept);
+        CHECK(normalizeplan::decide(10, atTarget.reading, kTarget).outcome
+              == normalizeplan::Plan::Outcome::nothingToDo);
+        CHECK_EQ(timelineRows(), rowsBefore);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops"), opsBefore);
+
+        // A take with something to do: the step opened nothing for it either...
+        putSineWav(volume, 11, "011_1.WAV", 44100, -28.0);
+        const auto quiet = history::recallOrReadSlotLoudness(volume, 11, *rec);
+        CHECK(normalizeplan::decide(11, quiet.reading, kTarget).outcome
+              == normalizeplan::Plan::Outcome::apply);
+        CHECK_EQ(timelineRows(), rowsBefore);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops"), opsBefore);
+        // ...and the normalize it leads to adds exactly one row.
+        CHECK_EQ(run(*rec, "op-142", "normalize", volume, [&] {
+                     commands::normalize(volume, 11, { .targetLufs = kTarget,
+                                                       .write = options(rec, "op-142") });
+                 }),
+                 std::string());
+        CHECK_EQ(timelineRows(), rowsBefore + 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops"), opsBefore + 1);
+
+        // The history cannot be asked: the bytes still can be, and the trouble is said.
+        db.exec("DROP TABLE loudness_readings");
+        const auto broken = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        CHECK(!broken.recalled);
+        CHECK(!broken.kept);
+        CHECK(!broken.failure.empty());
+        CHECK(broken.hash == swappedHash);
+        CHECK(broken.reading.integratedLufs.has_value()
+              && std::abs(*broken.reading.integratedLufs - (-30.0)) <= 0.1);
+
+        CHECK_THROWS(history::recallOrReadSlotLoudness(volume, 12, *rec), "no audio to measure");
     }
 
     // --- the wiring refuses to be built without what it needs ---
