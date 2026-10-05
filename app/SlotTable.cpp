@@ -89,6 +89,18 @@ int SlotTable::slotOfRow(int rowIndex) const
              : 0;
 }
 
+SlotTable::LoudnessCell SlotTable::LoudnessCell::fromHistory(LoudnessCell measured,
+                                                             juce::Time measuredAt)
+{
+    // The provenance leads: a player reading the hint learns first that
+    // this number was not read off the card today, then what it says.
+    measured.tooltip = "From the history: measured " + measuredAt.formatted("%d %b %Y %H:%M")
+                     + ", not re-measured now. Selecting the slot or Check loudness reads it again."
+                     + (measured.tooltip.isEmpty() ? juce::String() : " " + measured.tooltip);
+    measured.inferred = true;
+    return measured;
+}
+
 void SlotTable::setLoudness(int slot, LoudnessCell cell)
 {
     loudness_[slot] = std::move(cell);
@@ -245,6 +257,21 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
 {
     if (onSlotSelected && slotOfRow(lastRowSelected) > 0)
         onSlotSelected(slotOfRow(lastRowSelected));
+}
+
+// The LUFS cell carries its reading's explanation as a hover hint — where
+// the number came from first of all, when it came out of the history rather
+// than a read (#141). A read in flight explains nothing yet, and a row whose
+// cell is not drawn (no loop in the slot) has nothing to explain.
+juce::String SlotTable::getCellTooltip(int row, int columnId)
+{
+    const int slot = slotOfRow(row);
+    if (columnId != kLufs || slot <= 0 || !rows_[static_cast<std::size_t>(row)].info.hasAudio)
+        return {};
+    const auto found = loudness_.find(slot);
+    if (found == loudness_.end() || found->second.pending)
+        return {};
+    return found->second.tooltip;
 }
 
 void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
@@ -573,9 +600,14 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
             }
             return;
         }
+        // A number out of the history rather than a read (#141) wears the
+        // same ink, lighter: the column's own vocabulary for "less present"
+        // (the dash, the empty rows) rather than a mark, which in a 68 px
+        // number column would read as part of the number. The hint says why.
+        const float ink = known && found->second.inferred ? 0.6f : 1.0f;
         g.setColour(!known ? kDim.withAlpha(0.55f)
-                    : found->second.attention ? felitronics::appkit::brand::orange
-                                              : kText);
+                    : found->second.attention ? felitronics::appkit::brand::orange.withAlpha(ink)
+                                              : kText.withAlpha(ink));
         g.drawText(known ? found->second.text
                          : (loaded ? juce::String::fromUTF8("\xe2\x80\x94") : juce::String()),
                    area, juce::Justification::centredRight, true);
