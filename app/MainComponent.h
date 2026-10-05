@@ -36,6 +36,7 @@
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
 #include "history/TakeExport.h"
+#include "LoudnessReport.h"
 #include "NormalizeStep.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
@@ -299,21 +300,21 @@ private:
     void startNormalizeBatch(const std::vector<int>& slots, double target,
                              const juce::String& targetText);
     void endNormalizeBatch();
-    double currentTargetLufs();
+    // The normalize target as Settings holds it, read through the field's own
+    // rule (#142 review); empty when the stored text is not a target, which
+    // is reported once per launch. Out of the box, with nothing stored yet,
+    // it is kDefaultTargetLufs.
+    std::optional<double> currentTargetLufs();
+    void refuseNormalizeWithoutTarget(const juce::String& action);
+    bool unusableTargetReported = false;
+    juce::String unusableTargetText; // what the file held, for the sentence
 
     // Loudness reads (issue #61): one worker job per slot, read-only. The
     // inspector's Measure is a foreground read of one slot; the check is a
     // background run over a selection. Both land the same report.
-    struct LoudnessReport {
-        juce::String cellText; // the column: "-22.8", "damaged", "n/a"
-        juce::String rowText;  // the player row: "-22.8 LUFS · 4.8 dB below target -18"
-        juce::String noteText; // the toast: the row text plus the peak
-        juce::String tooltipText; // the hint: what the tight row cannot say
-        bool attention = false; // Normalize would change this — drawn to be noticed
-        bool damaged = false;
-    };
-    static LoudnessReport describeReading(const wav::LoudnessReading& reading, double targetLufs);
-    void enqueueLoudnessRead(int slot, double target, int batch);
+    using LoudnessReport = loudnessreport::Report;
+    // `target` empty: Settings holds no usable one, and readings carry no verdict.
+    void enqueueLoudnessRead(int slot, std::optional<double> target, int batch);
     // A reading the player's own pass took, into the history under the hash
     // of the bytes it metered (#140) — on the worker, the store's thread.
     void keepReading(std::string hash, wav::LoudnessReading reading);

@@ -48,7 +48,7 @@ public:
 
     struct ImportPrefs {
         bool normalizeOnUpload;
-        double targetLufs;
+        std::optional<double> targetLufs; // empty: the stored one is not a target
     };
 
     SettingsDialog(juce::AudioDeviceManager& devices, AppSettings& settings,
@@ -101,7 +101,7 @@ public:
         // knob (field report, 2026-09-01).
         target_.setInputRestrictions(6, "-0123456789.");
         target_.setJustification(juce::Justification::centredRight);
-        target_.setText(formatLufs(importPrefs_.targetLufs), juce::dontSendNotification);
+        target_.setText(targetText(), juce::dontSendNotification);
         target_.onReturnKey = [this] { parseTarget(); };
         target_.onFocusLost = [this] { parseTarget(); };
         addChildComponent(target_);
@@ -143,11 +143,7 @@ public:
 
     // "-18" for whole targets, "-17.5" otherwise — the number a player typed,
     // not a printf artefact. Shared with the slot menu's Normalize label.
-    static juce::String formatLufs(double lufs)
-    {
-        juce::String s(lufs, 1);
-        return s.endsWith(".0") ? s.dropLastCharacters(2) : s;
-    }
+    static juce::String formatLufs(double lufs) { return targetlufs::format(lufs); }
 
     void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff121218)); }
 
@@ -209,9 +205,16 @@ private:
     {
         // ReplayGain 2.0 fixes -18 LUFS = the RG 1.0 "89 dB" reference; the
         // scale is linear, so any target translates by the same +107 offset.
-        targetEquiv_.setText("= ReplayGain " + formatLufs(importPrefs_.targetLufs + 107.0)
-                                 + " dB",
+        // No usable target, no equivalent: the field is empty until one is typed.
+        targetEquiv_.setText(importPrefs_.targetLufs.has_value()
+                                 ? "= ReplayGain " + formatLufs(*importPrefs_.targetLufs + 107.0) + " dB"
+                                 : juce::String(),
                              juce::dontSendNotification);
+    }
+
+    juce::String targetText() const
+    {
+        return importPrefs_.targetLufs.has_value() ? formatLufs(*importPrefs_.targetLufs) : juce::String();
     }
 
     void parseTarget()
@@ -219,7 +222,7 @@ private:
         const std::optional<double> value = targetlufs::parse(target_.getText());
         if (!value.has_value()) {
             // Not a target — snap back to the stored one, visibly.
-            target_.setText(formatLufs(importPrefs_.targetLufs), juce::dontSendNotification);
+            target_.setText(targetText(), juce::dontSendNotification);
             return;
         }
         importPrefs_.targetLufs = *value;

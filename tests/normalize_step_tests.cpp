@@ -18,9 +18,14 @@
 //      ahead of the operation: no row, no archive copy, the take untouched
 //   4. one step per slot: a second request while the first is in flight is
 //      dropped, other slots go ahead, and an end without a start is a bug
+//   5. a stored target that is not one (a hand-edited "inf", a "nan" from a
+//      build whose field let it through) is reported as what the file holds,
+//      with no target put in its place; readings then carry no verdict —
+//      the number and the peak, nothing coloured, no word about a target
 
 #include "support.hpp"
 
+#include "../app/LoudnessReport.h"
 #include "../app/NormalizeStep.h"
 #include "../app/TargetLufs.h"
 #include "../app/history/WriteOptionsFactory.h"
@@ -320,6 +325,53 @@ int main()
         steps.end(6);
         CHECK_THROWS(steps.end(6), "no Normalize step for slot 6");
         CHECK_THROWS(steps.end(9), "no Normalize step for slot 9");
+    }
+
+    // --- 5. a stored target that is not one, and readings without a verdict ---
+    {
+        // What a settings file holds is text; read back through the field's
+        // rule, the text that is not a target is no target — none in its place.
+        const auto stored = [](const char* text) { return targetlufs::parse(juce::String(text)); };
+        CHECK(stored("-18").has_value() && near(*stored("-18"), -18.0, 1.0e-12));
+        CHECK(stored("-18.0").has_value() && near(*stored("-18.0"), -18.0, 1.0e-12));
+        for (const char* text : { "nan", "inf", "-inf", "-40", "0", "" })
+            CHECK(!stored(text).has_value());
+        CHECK_EQ(targetlufs::unusableStored("inf"),
+                 juce::String::fromUTF8("The normalize target in Settings is not a number LooperCat "
+                                        "can use (inf): set it again in Settings \xe2\x86\x92 Import"));
+
+        const wav::LoudnessReading quiet { -22.8, 0.1f, -20.0, 0 };
+        const wav::LoudnessReading peaky { -25.0, 0.89f, -1.0, 0 }; // nothing to gain against -18
+        const wav::LoudnessReading atTarget { -18.1, 0.3f, -9.0, 0 };
+
+        // The control: with a target, the verdict and its colour.
+        const loudnessreport::Report judged = loudnessreport::describe(quiet, -18.0);
+        CHECK(judged.attention);
+        CHECK(judged.rowText.contains("below target -18"));
+
+        // Without one: the number and the peak, no verdict, nothing coloured.
+        for (const auto& reading : { quiet, peaky, atTarget }) {
+            const loudnessreport::Report bare = loudnessreport::describe(reading, std::nullopt);
+            CHECK_EQ(bare.cellText, juce::String(*reading.integratedLufs, 1));
+            CHECK_EQ(bare.rowText, juce::String(*reading.integratedLufs, 1) + " LUFS");
+            CHECK(bare.noteText.contains(juce::String(reading.truePeakDb, 1) + " dBTP"));
+            CHECK(!bare.attention);
+            CHECK(!bare.damaged);
+            CHECK(!bare.rowText.contains("target"));
+            CHECK(!bare.noteText.contains("target"));
+            CHECK(!bare.rowText.contains("peak-limited"));
+            CHECK(bare.tooltipText.contains("Settings"));
+        }
+        // What is not a number stays what it was: a fact about the bytes.
+        const loudnessreport::Report silent =
+            loudnessreport::describe({ std::nullopt, 0.0f, -std::numeric_limits<double>::infinity(), 0 },
+                                     std::nullopt);
+        CHECK_EQ(silent.cellText, juce::String("n/a"));
+        CHECK(!silent.attention);
+        const loudnessreport::Report broken =
+            loudnessreport::describe({ 767.0, 2.4e38f, 400.0, 1234 }, std::nullopt);
+        CHECK_EQ(broken.cellText, juce::String("damaged"));
+        CHECK(broken.damaged);
     }
 
     return testkit::summary("normalize_step_tests");

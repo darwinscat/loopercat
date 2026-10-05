@@ -15,6 +15,11 @@
 // headroom against a live band's transients, quieter than -30 buries the loop
 // under any stage noise — both are typos, not choices.
 //
+// What the settings file holds is read back through the same rule (#142
+// review): a file written by a build whose field let "nan" through, or edited
+// by hand, holds text that is not a target, and it is reported as that — no
+// target is put in its place.
+//
 // JUCE-core only, so it is tested without a window
 // (tests/normalize_step_tests.cpp).
 //==============================================================================
@@ -34,6 +39,21 @@ inline std::optional<double> parse(const juce::String& text)
     if (!(value >= kMinLufs && value <= kMaxLufs))
         return std::nullopt;
     return value;
+}
+
+// A target as every label shows it: one decimal, none when it is whole.
+inline juce::String format(double lufs)
+{
+    juce::String s(lufs, 1);
+    return s.endsWith(".0") ? s.dropLastCharacters(2) : s;
+}
+
+// What the player is told, once per launch and on every Normalize asked for
+// meanwhile, when the stored text is not a target.
+inline juce::String unusableStored(const juce::String& stored)
+{
+    return "The normalize target in Settings is not a number LooperCat can use (" + stored
+         + juce::String::fromUTF8("): set it again in Settings \xe2\x86\x92 Import");
 }
 
 } // namespace loopercat::targetlufs

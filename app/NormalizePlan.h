@@ -47,7 +47,7 @@ struct Plan {
     bool cappedByPeak;   // the ceiling takes part of the boost (apply) or all of it (nothingToDo)
     // apply: the window's first line — "Measured -22.8 LUFS, this adds +4.7 dB";
     // refuse: the command's refusal, word for word; nothingToDo: empty — the
-    // reading's own words (MainComponent::describeReading) say it.
+    // reading's own words (loudnessreport::describe) say it.
     std::string words;
 };
 
