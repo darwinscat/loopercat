@@ -230,7 +230,8 @@ public:
 
     // What a real read of a take saw (#141): the file's name, size and stamp
     // on this card's slot, and the hash of the bytes read under them — the
-    // check job's read and the player's pass both have all of it.
+    // check job's read, the player's pass and a normalize's measurement all
+    // have all of it.
     // `readBegan` is newestOp() as it stood when the read began; the read is
     // filed after the slot's newest operation at or below it, and every
     // operation that records a body or a take in the slot with a higher

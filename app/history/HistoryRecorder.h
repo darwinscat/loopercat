@@ -86,6 +86,13 @@ public:
     bool sighted(const std::filesystem::path& volume, int slot, const std::string& name,
                  std::int64_t size, std::int64_t modifiedMs, const std::string& hash,
                  std::int64_t readBegan);
+    // What a command read inside an operation it is part of (normalize's
+    // measurement): the take's facts as one stat now gives them, under the
+    // hash of the bytes read, placed just before the operation's own rows
+    // so that anything it then records in the slot makes the read history.
+    // Nothing when the entry's size is not the bytes'.
+    void sightedInOperation(const std::string& opId, int slot, const std::string& fileName,
+                            std::int64_t size, const std::string& hash);
     // The newest operation the history has begun, by sequence, for a read
     // about to begin to note as its place (#141): absent until the store has
     // opened. Any thread — a read begins on the player's thread too. It

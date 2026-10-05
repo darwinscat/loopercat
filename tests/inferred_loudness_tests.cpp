@@ -41,6 +41,10 @@
 //     player read filed after an operation that ran during it does not
 //     outrank that operation (S8); a clock set back between a read and a
 //     clear does not let the read outlive the clear (S10)
+//   - a normalize that finds its slot at target read the bytes, and says
+//     so: the next connect answers what it measured, not the take a row
+//     named under the same facts (S12); one that writes makes its own read
+//     history by the rows it records
 //   - a migrated history (rows with no stamp) never infers through a row it
 //     vouched for by name and size: a file overwritten outside the app with
 //     one of the same size, then renamed, is not read as the old take
@@ -636,6 +640,51 @@ int main()
         CHECK_EQ(found.size(), 1u);
         CHECK(!found.empty() && quietReading && same(found.front().reading, quietReading->reading));
         CHECK(!found.empty() && !same(found.front().reading, measured.reading)); // never the take that is gone
+    }
+
+    // --- a normalize that finds the slot at target is a read too (review S12) ---
+    {
+        CHECK_EQ(run(*rec, "op-push-90", "push", volume, [&] {
+                     commands::push(volume, loud, 90, { .write = options(rec, "op-push-90") });
+                 }),
+                 std::string());
+        const history::SlotSighting pushed = sight(volume, 90);
+        // the pedal records the slot again: the quiet loop, the same frozen facts
+        const fs::path take90 = volume::wavDir(volume, 90) / pushed.take.name;
+        commands::writeFileBytes(take90, quietOnCard);
+        setStamp(take90, pushed.take.modifiedMs);
+        const history::SlotSighting frozen = sight(volume, 90);
+        const auto guessed = history::inferLoudness(store, card, { frozen }).found;
+        CHECK(guessed.size() == 1u && same(guessed.front().reading, measured.reading)); // fooled, as ever
+        // normalize to the quiet loop's own loudness: it measures, finds the
+        // slot at target, and writes nothing
+        CHECK(quietReading && quietReading->reading.integratedLufs);
+        commands::NormalizeResult atTarget;
+        CHECK_EQ(run(*rec, "op-normalize-90", "normalize", volume, [&] {
+                     atTarget = commands::normalize(volume, 90,
+                                                    { .targetLufs = *quietReading->reading.integratedLufs,
+                                                      .write = options(rec, "op-normalize-90") });
+                 }),
+                 std::string());
+        CHECK(!atTarget.applied);
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM take_sightings WHERE slot = 90"), 1);
+        // the next connect: what the normalize measured, not the loud take
+        const auto next = history::inferLoudness(store, card, { sight(volume, 90) }).found;
+        CHECK_EQ(next.size(), 1u);
+        CHECK(!next.empty() && same(next.front().reading, quietReading->reading));
+        CHECK(!next.empty() && !same(next.front().reading, measured.reading));
+        // a normalize that writes: its own rows make its read history — the
+        // facts it read under answer nothing, the new take is known by its row
+        commands::NormalizeResult written;
+        CHECK_EQ(run(*rec, "op-normalize-90b", "normalize", volume, [&] {
+                     written = commands::normalize(volume, 90,
+                                                   { .targetLufs = *quietReading->reading.integratedLufs + 6.0,
+                                                     .write = options(rec, "op-normalize-90b") });
+                 }),
+                 std::string());
+        CHECK(written.applied);
+        CHECK(history::inferLoudness(store, card, { frozen }).found.empty());
+        CHECK(history::inferLoudness(store, card, { sight(volume, 90) }).found.empty()); // nobody measured the new bytes
     }
 
     // --- the wall clock set back between a read and a later clear (review S10) ---

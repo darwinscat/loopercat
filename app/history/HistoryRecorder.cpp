@@ -258,6 +258,23 @@ bool HistoryRecorder::sighted(const std::filesystem::path& volume, int slot, con
     return true;
 }
 
+void HistoryRecorder::sightedInOperation(const std::string& opId, int slot, const std::string& fileName,
+                                         std::int64_t size, const std::string& hash)
+{
+    const Operation& op = operation(opId);
+    const std::optional<FileStat> seen = statFile(volume::wavDir(op.volume, slot) / fileName);
+    if (!seen || seen->size != size)
+        return; // the entry does not describe the bytes read: nothing to say about it
+    const std::optional<std::int64_t> card = store().cardFor(sessionMarker_);
+    if (!card)
+        throw Error("the open session's card " + sessionMarker_ + " is not in the history");
+    // Placed just before the operation it is part of: whatever the operation
+    // then records in the slot — the archived take, the landed one — has a
+    // higher sequence and makes the read history; an operation that changes
+    // nothing leaves it standing.
+    store().recordSighting(*card, slot, fileName, seen->size, seen->modifiedMs, hash, op.row - 1, clock_());
+}
+
 void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
 {
     const std::vector<int> slots = store().touchedSlots(op.row);
@@ -342,12 +359,17 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     // follows. Inside an operation the card's session is open, so the
     // reading always goes in; a store that cannot take it stops the command
     // here, before the card is touched, like every other hook.
-    options.journal.loudnessMeasured = [recorder, opId](int slot, const std::string&,
+    options.journal.loudnessMeasured = [recorder, opId](int slot, const std::string& fileName,
                                                         std::string_view bytes,
                                                         const wav::LoudnessReading& reading) {
-        if (!recorder->reading(HistoryStore::contentHash(bytes), reading))
+        const std::string hash = HistoryStore::contentHash(bytes);
+        if (!recorder->reading(hash, reading))
             throw Error("operation " + opId + " measured slot " + std::to_string(slot)
                         + " with no card session open to file the reading in");
+        // A measurement is a real read: what it saw goes in too, so a
+        // normalize that finds its slot at target tells the next connect
+        // which bytes the slot holds (#141, review S12).
+        recorder->sightedInOperation(opId, slot, fileName, static_cast<std::int64_t>(bytes.size()), hash);
         if (recorder->onMeasured)
             recorder->onMeasured(slot, reading);
     };
