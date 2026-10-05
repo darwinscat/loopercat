@@ -85,9 +85,20 @@ namespace detail {
 
 } // namespace detail
 
-inline Info readWavInfo(BytesView data)
+// The header of a file whose first bytes are `head` and whose whole size is
+// `fileSize`: the same chunk walk and the same refusals as over the whole
+// file, for a reader that must know whether this is a take the core would
+// accept without reading all of it (#140). Every chunk header and the fmt
+// body must lie inside `head`; a file whose chunk headers run past the probe
+// is refused as unreadable from it, never guessed at. readWavInfo(data) is
+// this with the whole file as the head.
+inline Info readWavInfo(BytesView head, std::int64_t fileSize)
 {
-    if (data.size() < 44 || !detail::chunkIdIs(data, 0, "RIFF") || !detail::chunkIdIs(data, 8, "WAVE"))
+    if (fileSize < static_cast<std::int64_t>(head.size()))
+        throw Error("header probe of " + std::to_string(head.size())
+                    + " bytes is longer than the file it is said to begin, "
+                    + std::to_string(fileSize) + " bytes");
+    if (head.size() < 44 || !detail::chunkIdIs(head, 0, "RIFF") || !detail::chunkIdIs(head, 8, "WAVE"))
         throw Error("not a RIFF/WAVE file");
 
     bool haveFmt = false;
@@ -95,31 +106,38 @@ inline Info readWavInfo(BytesView data)
     std::int64_t sampleRate = 0;
     std::int64_t dataBytes = -1;
     std::int64_t offset = 12;
-    const auto size = static_cast<std::int64_t>(data.size());
+    const std::int64_t size = fileSize;
+    const auto probe = static_cast<std::int64_t>(head.size());
     while (offset + 8 <= size) {
+        if (offset + 8 > probe)
+            throw Error("header probe of " + std::to_string(probe)
+                        + " bytes ends before the chunk at offset " + std::to_string(offset));
         const auto o = static_cast<std::size_t>(offset);
-        const std::int64_t chunkSize = detail::u32(data, o + 4);
-        // Every chunk body must lie inside the buffer BEFORE anything reads
+        const std::int64_t chunkSize = detail::u32(head, o + 4);
+        // Every chunk body must lie inside the file BEFORE anything reads
         // from it: a crafted or truncated size field must become an explicit
         // error, never an out-of-bounds read.
         if (offset + 8 + chunkSize > size)
             throw Error("truncated file: chunk at offset " + std::to_string(offset) + " claims "
                         + std::to_string(chunkSize) + " bytes, file has "
                         + std::to_string(size - offset - 8) + " left");
-        if (detail::chunkIdIs(data, o, "fmt ")) {
+        if (detail::chunkIdIs(head, o, "fmt ")) {
             // One fmt, one data — a file with duplicates is ambiguous (which
             // one would the pedal index?), so it is refused, not guessed at.
             if (haveFmt)
                 throw Error("malformed file: more than one fmt chunk");
             if (chunkSize < 16)
                 throw Error("malformed fmt chunk");
-            fmtTag = static_cast<int>(detail::u16(data, o + 8));
-            channels = static_cast<int>(detail::u16(data, o + 10));
-            sampleRate = detail::u32(data, o + 12);
-            blockAlign = static_cast<int>(detail::u16(data, o + 20));
-            bitsPerSample = static_cast<int>(detail::u16(data, o + 22));
+            if (offset + 8 + 16 > probe)
+                throw Error("header probe of " + std::to_string(probe)
+                            + " bytes ends inside the fmt chunk at offset " + std::to_string(offset));
+            fmtTag = static_cast<int>(detail::u16(head, o + 8));
+            channels = static_cast<int>(detail::u16(head, o + 10));
+            sampleRate = detail::u32(head, o + 12);
+            blockAlign = static_cast<int>(detail::u16(head, o + 20));
+            bitsPerSample = static_cast<int>(detail::u16(head, o + 22));
             haveFmt = true;
-        } else if (detail::chunkIdIs(data, o, "data")) {
+        } else if (detail::chunkIdIs(head, o, "data")) {
             if (dataBytes >= 0)
                 throw Error("malformed file: more than one data chunk");
             dataBytes = chunkSize;
@@ -145,6 +163,11 @@ inline Info readWavInfo(BytesView data)
 
     return { fmtTag, channels, static_cast<int>(sampleRate), bitsPerSample, blockAlign,
              dataBytes / blockAlign, dataBytes };
+}
+
+inline Info readWavInfo(BytesView data)
+{
+    return readWavInfo(data, static_cast<std::int64_t>(data.size()));
 }
 
 // The canonical rewrite of a frame range [startFrame, endFrame): RIFF + fmt +

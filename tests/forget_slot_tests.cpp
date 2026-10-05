@@ -95,7 +95,7 @@ static int runTests()
         const std::string only(3 * 1024 * 1024, 'x');
         const std::string shared(1024 * 1024, 'y');
         f.store.keepAudio(op, 4, 1, "one.wav", only, 10);
-        f.store.recordPresentAudio(op, 4, 1, "one.wav", static_cast<std::int64_t>(only.size()), HistoryStore::contentHash(only));
+        f.store.recordPresentAudio(op, 4, 1, "one.wav", static_cast<std::int64_t>(only.size()), HistoryStore::contentHash(only), 4000);
         f.store.keepAudio(op, 4, 2, "two.wav", shared, 10);
         const auto nine = f.op({9});
         f.store.keepAudio(nine, 9, 1, "same.wav", shared, 10);
