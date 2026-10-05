@@ -93,10 +93,15 @@ SlotTable::LoudnessCell SlotTable::LoudnessCell::fromHistory(LoudnessCell measur
                                                              juce::Time measuredAt)
 {
     // The provenance leads: a player reading the hint learns first that
-    // this number was not read off the card today, then what it says.
+    // this number was not read off the card today, then the one gesture
+    // that reads it on every card and every slot — the double-click on this
+    // very cell — then what the number says.
     measured.tooltip = "From the history: measured " + measuredAt.formatted("%d %b %Y %H:%M")
-                     + ", not re-measured now. Selecting the slot or Check loudness reads it again."
+                     + ", not re-measured. Double-click to measure it now."
                      + (measured.tooltip.isEmpty() ? juce::String() : " " + measured.tooltip);
+    // No attention: "Normalize would change this" is a verdict, and a guess
+    // passes none. The number alone, in light ink.
+    measured.attention = false;
     measured.inferred = true;
     return measured;
 }
@@ -148,6 +153,11 @@ void SlotTable::setOptionalColumns(bool oneShot, bool countIn, bool loudness)
     header.setColumnVisible(kOneShot, oneShot);
     header.setColumnVisible(kCountIn, countIn);
     header.setColumnVisible(kLufs, loudness);
+}
+
+bool SlotTable::loudnessColumnVisible() const
+{
+    return table_.getHeader().isColumnVisible(kLufs);
 }
 
 void SlotTable::selectSlot(int slot)
@@ -601,13 +611,14 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
             return;
         }
         // A number out of the history rather than a read (#141) wears the
-        // same ink, lighter: the column's own vocabulary for "less present"
+        // text ink, lighter: the column's own vocabulary for "less present"
         // (the dash, the empty rows) rather than a mark, which in a 68 px
-        // number column would read as part of the number. The hint says why.
-        const float ink = known && found->second.inferred ? 0.6f : 1.0f;
-        g.setColour(!known ? kDim.withAlpha(0.55f)
-                    : found->second.attention ? felitronics::appkit::brand::orange.withAlpha(ink)
-                                              : kText.withAlpha(ink));
+        // number column would read as part of the number. It never wears
+        // the attention colour (LoudnessCell::fromHistory). The hint says why.
+        g.setColour(!known                    ? kDim.withAlpha(0.55f)
+                    : found->second.inferred  ? kText.withAlpha(0.6f)
+                    : found->second.attention ? felitronics::appkit::brand::orange
+                                              : kText);
         g.drawText(known ? found->second.text
                          : (loaded ? juce::String::fromUTF8("\xe2\x80\x94") : juce::String()),
                    area, juce::Justification::centredRight, true);

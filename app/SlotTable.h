@@ -58,6 +58,7 @@ public:
     // The behaviour columns and the LUFS column are a preference (Settings ->
     // Columns): the pedal's own facts always show, these are opted into.
     void setOptionalColumns(bool oneShot, bool countIn, bool loudness);
+    bool loudnessColumnVisible() const;
 
     // The LUFS column's cells (issue #61): filled by a measure or a check,
     // cleared when the slot's audio changes. Keyed by slot, so they survive
@@ -70,15 +71,17 @@ public:
         bool damaged = false;
         juce::String tooltip {}; // the explanation the cell's and the player row's hint carry
         // The number came out of the history for the bytes the slot appears
-        // to hold, not out of a read of them (#141): drawn in lighter ink,
-        // its hint says so, and it is never what a decision is made on —
-        // Normalize reads the card's bytes whatever this cell says. Any real
-        // read of the slot replaces it with a measured cell.
+        // to hold, not out of a read of them (#141): drawn in lighter ink and
+        // never in the attention colour, its hint says so, and it is never
+        // what a decision is made on — Normalize reads the card's bytes
+        // whatever this cell says. Any real read of the slot replaces it
+        // with a measured cell.
         bool inferred = false;
 
         // The cell a measured reading would get, worn as inferred: the same
-        // words, the provenance first in its hint, and the flag set.
-        // `measuredAt` is when the history took the number.
+        // words, no attention, the provenance and the double-click first in
+        // its hint, and the flag set. `measuredAt` is when the history took
+        // the number.
         static LoudnessCell fromHistory(LoudnessCell measured, juce::Time measuredAt);
     };
     void setLoudness(int slot, LoudnessCell cell);

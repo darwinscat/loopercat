@@ -14,10 +14,12 @@
 //   - a table never told what it may do offers nothing
 //   - the permission table itself: everything for the RC-5, nothing for the
 //     two-track model or an unknown name, and the sentence names the RC-5
-//   - a LUFS cell out of the history (#141) is flagged inferred, its hint
-//     leads with where the number came from, a measured reading replaces
-//     it, a mutation's clearing takes it away, a dropped read does not; a
-//     read in flight and a slot with no loop have no hint
+//   - a LUFS cell out of the history (#141) is flagged inferred, wears no
+//     attention whatever the reading's verdict, its hint leads with where
+//     the number came from and the double-click that measures it, a
+//     measured reading replaces it, a mutation's clearing takes it away, a
+//     dropped read does not; a read in flight and a slot with no loop have
+//     no hint; the table says whether the LUFS column is shown
 
 #include "support.hpp"
 
@@ -186,20 +188,25 @@ int main()
                                                  false,
                                                  juce::String::fromUTF8("Peak -3.1 dBTP \xc2\xb7 target -18.0 LUFS.") };
         const juce::Time when(2026, 8, 14, 9, 30); // 14 Sep 2026 09:30, local: JUCE counts months from 0
-        // inferred: flagged, the reading's own words and verdict, the
-        // provenance first in the hint
+        // inferred: flagged, the reading's own words, no verdict — the
+        // measured reading asked for attention, a guess does not — and the
+        // provenance first in the hint, then the gesture that measures it
+        CHECK(measured.attention);
         table.setLoudness(slot, SlotTable::LoudnessCell::fromHistory(measured, when));
         const SlotTable::LoudnessCell* cell = table.loudnessFor(slot);
         CHECK(cell != nullptr);
         if (cell != nullptr) {
             CHECK(cell->inferred);
-            CHECK(cell->text == measured.text && cell->attention && cell->detail == measured.detail);
+            CHECK(cell->text == measured.text && cell->detail == measured.detail);
+            CHECK(!cell->attention);
             CHECK(!cell->pending && !cell->damaged);
         }
         const juce::String hint = model->getCellTooltip(row, lufsColumn);
         CHECK(hint.startsWith("From the history"));
         CHECK(hint.contains("measured 14 Sep 2026 09:30"));
         CHECK(hint.contains("not re-measured"));
+        CHECK(hint.contains("Double-click to measure it now."));
+        CHECK(!hint.contains("Check loudness")); // not on every card, so not promised
         CHECK(hint.endsWith(measured.tooltip));
         // a cell that was measured is never mistaken for one out of the history
         CHECK(!measured.inferred);
@@ -231,6 +238,11 @@ int main()
         table.clearAllLoudness();
         CHECK(table.loudnessFor(slot) == nullptr);
         CHECK(table.loudnessFor(emptySlot) == nullptr);
+        // whether the column is on screen, as the preference set it
+        table.setOptionalColumns(true, false, true);
+        CHECK(table.loudnessColumnVisible());
+        table.setOptionalColumns(true, false, false);
+        CHECK(!table.loudnessColumnVisible());
     }
 
     return testkit::summary("slot_table_harness");
