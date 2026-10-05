@@ -335,14 +335,18 @@ void PlayerPane::ReadPass::start(std::vector<juce::File> files, int slot)
 // The key a metered take is filed under (#140), or nothing. Nothing when the
 // core would not measure these bytes (JUCE decodes files the core refuses,
 // and pads a truncated one to its header's length — its number is then not
-// the core's), when the file changed under the pass (size or stamp differ
-// from before the decode: the number and the hash would be of two files),
-// and when the hash read stopped short. The hash is streamed, a second pass
-// over the file; a take of any length stays out of memory.
-std::string PlayerPane::ReadPass::fileKey(const juce::File& file, juce::int64 sizeBefore,
-                                          juce::Time modifiedBefore)
+// the core's), when JUCE did not decode the frames the core would measure
+// (a RIFF size field that ends early leaves it a reader of 0 frames over a
+// file the core reads whole), when the file changed under the pass (size or
+// stamp differ from before the decode: the number and the hash would be of
+// two files), and when the hash read stopped short. The hash is streamed, a
+// second pass over the file; a take of any length stays out of memory.
+std::string PlayerPane::ReadPass::fileKey(const juce::File& file,
+                                          const juce::AudioFormatReader& reader,
+                                          juce::int64 sizeBefore, juce::Time modifiedBefore)
 {
-    if (!readerloudness::coreWouldMeasure(file))
+    const auto info = readerloudness::measurableInfo(file);
+    if (!info || !readerloudness::decodesAsCore(reader, *info))
         return {};
     const auto hash = history::fileContentHash(file, [this] { return threadShouldExit(); });
     if (!hash)
@@ -426,7 +430,7 @@ void PlayerPane::ReadPass::run()
                 return;
             }
             reading = meter->reading();
-            hash = fileKey(files_[lane], sizeBefore, modifiedBefore);
+            hash = fileKey(files_[lane], *reader, sizeBefore, modifiedBefore);
             if (threadShouldExit())
                 return; // the hash read was cut short for a newer file
         }

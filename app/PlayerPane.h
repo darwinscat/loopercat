@@ -165,9 +165,10 @@ private:
     //
     // A metered take is then hashed in a second, streamed pass over the file
     // (history::fileContentHash), and the hash goes up with the reading only
-    // when the core would measure those very bytes (ReaderLoudness.h) and the
-    // file is still the one the decode began on. Otherwise the reading goes
-    // up alone: a number for the screen, none for the history.
+    // when the core would measure those very bytes, JUCE decoded the frames
+    // the core would (ReaderLoudness.h), and the file is still the one the
+    // decode began on. Otherwise the reading goes up alone: a number for the
+    // screen, none for the history.
     class ReadPass final : public juce::Thread
     {
     public:
@@ -181,8 +182,8 @@ private:
         void run() override;
 
     private:
-        std::string fileKey(const juce::File& file, juce::int64 sizeBefore,
-                            juce::Time modifiedBefore);
+        std::string fileKey(const juce::File& file, const juce::AudioFormatReader& reader,
+                            juce::int64 sizeBefore, juce::Time modifiedBefore);
 
         PlayerPane& owner_;
         std::vector<juce::File> files_;

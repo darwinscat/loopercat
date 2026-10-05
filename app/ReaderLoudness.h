@@ -9,8 +9,10 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 //==============================================================================
@@ -30,12 +32,23 @@
 //                      block is fed (mono into both channels, as the pedal
 //                      plays it) — shared by the pass and by the suite that
 //                      pins it to wav::measureLoudness bit for bit;
-//   coreWouldMeasure   the gate, from the file's first bytes and its size,
+//   measurableInfo     the gate, from the file's first bytes and its size,
 //                      no whole-file read: the core's own header walk with
 //                      the real size as its bound, then the upload gate, then
-//                      "has frames" — what wav::measureLoudness demands.
+//                      "has frames" — what wav::measureLoudness demands — and
+//                      what the core found: its Info;
+//   decodesAsCore      the other half of the proof. The gate says the core
+//                      would measure the file; it does not say JUCE decoded
+//                      the same frames. JUCE stops its chunk walk at the RIFF
+//                      size field and sizes the data chunk with the frame
+//                      size it knows when it meets it, so a RIFF size that
+//                      ends after fmt, or inside a LIST before data, or a
+//                      data chunk ahead of fmt, gives a reader of 0 frames
+//                      over a file the core reads whole. A number from that
+//                      reader is not the core's. The pass files only when the
+//                      reader's frame count, rate and channels are the core's.
 //
-// A take refused by the gate still gets its number on screen; it just does
+// A take refused by either still gets its number on screen; it just does
 // not get filed.
 //==============================================================================
 namespace loopercat::readerloudness
@@ -111,36 +124,51 @@ inline wav::LoudnessReading measure(juce::AudioFormatReader& reader)
     return meter.reading();
 }
 
-// Whether wav::measureLoudness would accept a file that begins with `head`
-// and is `fileSize` bytes long: a RIFF/WAVE whose every chunk lies inside
-// the file (the core's truncation check, against the real size), 44.1 kHz
-// stereo float32 (the upload gate), with frames to measure. A refusal is an
-// answer about the file, so it is a false, not a throw.
-inline bool coreWouldMeasure(wav::BytesView head, std::int64_t fileSize)
+// What the core makes of a file that begins with `head` and is `fileSize`
+// bytes long, when wav::measureLoudness would accept it: a RIFF/WAVE whose
+// every chunk lies inside the file (the core's truncation check, against the
+// real size), 44.1 kHz stereo float32 (the upload gate), with frames to
+// measure. Nothing when it would not — a refusal is an answer about the
+// file, not a throw.
+inline std::optional<wav::Info> measurableInfo(wav::BytesView head, std::int64_t fileSize)
 {
     try {
-        return wav::assertUploadable(wav::readWavInfo(head, fileSize)).frames > 0;
+        const wav::Info info = wav::assertUploadable(wav::readWavInfo(head, fileSize));
+        if (info.frames <= 0)
+            return std::nullopt;
+        return info;
     } catch (const Error&) {
-        return false;
+        return std::nullopt;
     }
 }
 
 // The same, off the file itself: its first kHeaderProbeBytes and its size.
 // A file that cannot be opened or read that far is not one to file.
-inline bool coreWouldMeasure(const juce::File& file)
+inline std::optional<wav::Info> measurableInfo(const juce::File& file)
 {
     juce::FileInputStream in(file);
     if (!in.openedOk())
-        return false;
+        return std::nullopt;
     const juce::int64 size = in.getTotalLength();
     if (size < 0)
-        return false;
+        return std::nullopt;
     std::vector<unsigned char> head(
         static_cast<std::size_t>(std::min<juce::int64>(kHeaderProbeBytes, size)));
     const int got = in.read(head.data(), static_cast<int>(head.size()));
     if (got != static_cast<int>(head.size()))
-        return false;
-    return coreWouldMeasure(wav::BytesView(head.data(), head.size()), size);
+        return std::nullopt;
+    return measurableInfo(wav::BytesView(head.data(), head.size()), size);
+}
+
+// Whether JUCE's reader decodes the very frames the core would measure: as
+// many of them, at the core's rate, in the core's channels. The rate is an
+// integer in a WAV header and comes back whole from either reader, so the
+// comparison is exact.
+inline bool decodesAsCore(const juce::AudioFormatReader& reader, const wav::Info& info)
+{
+    return reader.lengthInSamples == info.frames
+        && static_cast<int>(reader.numChannels) == info.channels
+        && static_cast<std::int64_t>(std::llround(reader.sampleRate)) == info.sampleRate;
 }
 
 } // namespace loopercat::readerloudness
