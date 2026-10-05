@@ -374,7 +374,9 @@ private:
     int checkId = 0;
     int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
     bool checkStopping = false;
-    std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
+    // The check's slots whose read has not landed: the cells a stop un-pends,
+    // and no others — another read's "…" is that read's to clear.
+    std::set<int> checkUnread;
     // The single-slot Normalize's first steps in flight (#142), one per slot.
     normalizestep::StepsInFlight normalizeSteps;
     PlayerPane player { engine };

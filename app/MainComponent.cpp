@@ -616,6 +616,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     endNormalizeBatch();
             }
             if (inCheck) {
+                checkUnread.erase(slot);
                 ++checkFailed;
                 if (checkDone + checkFailed >= checkTotal)
                     finishLoudnessCheck();
@@ -2591,6 +2592,7 @@ void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, 
     player.setLoudness(slot, report.rowText, report.attention, report.damaged,
                        report.tooltipText); // ignored unless that slot is loaded
     if (checkId != 0 && batch == checkId) {
+        checkUnread.erase(slot);
         if (report.attention)
             ++checkAttention;
         if (report.damaged)
@@ -2622,7 +2624,7 @@ void MainComponent::startLoudnessCheck(const std::vector<int>& slots)
     checkTotal = static_cast<int>(slots.size());
     checkDone = checkFailed = checkAttention = checkDamaged = 0;
     checkStopping = false;
-    checkSlots = slots;
+    checkUnread = std::set<int>(slots.begin(), slots.end());
     for (const int slot : slots)
         enqueueLoudnessRead(slot, target, checkId);
     toast.show("Checking the loudness of " + juce::String(checkTotal)
@@ -2636,8 +2638,12 @@ void MainComponent::stopLoudnessCheck()
     if (checkId == 0)
         return;
     checkTotal -= worker.cancelPending(checkId); // the dropped tail never reports back
-    for (const int slot : checkSlots)
-        table.clearPendingLoudness(slot); // …so its "…" cells go back to the dash
+    // …so its "…" cells go back to the dash: the check's own, not yet read.
+    // A cell a Normalize step is reading stays "…" — its answer is coming.
+    for (const int slot : checkUnread)
+        if (!normalizeSteps.contains(slot))
+            table.clearPendingLoudness(slot);
+    checkUnread.clear();
     checkStopping = true;
     if (checkDone + checkFailed >= checkTotal)
         finishLoudnessCheck(); // nothing in flight — over now
