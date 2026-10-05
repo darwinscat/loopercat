@@ -16,12 +16,17 @@
 //   - the pane asks the card every time: a card that changes under a loaded
 //     loop changes the buttons on the next layout, no reload needed
 //   - a pane never told what it may do offers nothing
+//   - the facts of the file go up with its hash and only with it (#141):
+//     name, size and stamp as one stat reads them; a file the meter cannot
+//     measure is said to the owner through onLoudnessFailed, and no reading
+//     comes up for it
 
 #include "support.hpp"
 
 #include "../app/CardPermissions.h"
 #include "../app/PlayerPane.h"
 #include "../app/history/ContentHash.h"
+#include "../app/history/FileTime.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -127,11 +132,16 @@ int main()
     // bytes, when the core would measure them — and empty when it would not.
     bool readCame = false;
     std::string readHash;
-    pane.onLoudnessRead = [&](int slot, const wav::LoudnessReading&, const std::string& hash) {
+    std::optional<TakeFacts> readSeen;
+    int failures = 0;
+    pane.onLoudnessRead = [&](int slot, const wav::LoudnessReading&, const std::string& hash,
+                              const std::optional<TakeFacts>& seen) {
         readCame = true;
         readHash = hash;
+        readSeen = seen;
         pane.setLoudness(slot, "-14.0 LUFS", false, false, "");
     };
+    pane.onLoudnessFailed = [&](int) { ++failures; };
 
     const auto load = [&] {
         readCame = false;
@@ -143,6 +153,7 @@ int main()
         CHECK(normalize->isEnabled()); // so a dropped press below is the card's doing
         CHECK(readCame);               // the number came up for the screen...
         CHECK(readHash.empty());       // ...with no key for the history: pcm16 is not the pedal's
+        CHECK(!readSeen.has_value());  // ...and so no sighting either
     };
 
     // --- a pane never told what it may do offers nothing ---
@@ -231,9 +242,40 @@ int main()
     settle(pane);
     CHECK(readCame);
     CHECK(readHash == floatHash); // the hash of the file's own bytes, every one of them
+    // ...and what the read saw: the file's name, size and stamp, as one stat has them
+    const auto floatStat = history::statFile(floatFile.getFullPathName().toStdString());
+    CHECK(floatStat.has_value());
+    CHECK(readSeen.has_value());
+    if (readSeen && floatStat) {
+        CHECK_EQ(readSeen->name, floatFile.getFileName().toStdString());
+        CHECK_EQ(readSeen->size, static_cast<std::int64_t>(floatBytes.size()));
+        CHECK_EQ(readSeen->size, floatStat->size);
+        CHECK_EQ(readSeen->modifiedMs, floatStat->modifiedMs);
+    }
+    CHECK_EQ(failures, 0);
+
+    // --- a file the meter cannot read: the owner is told, and no reading comes up ---
+    // 44 101 Hz does not cut into the meter's 100 ms sub-blocks; JUCE plays it.
+    const juce::File oddFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                   .getChildFile("loopercat_player_pane_harness_odd.wav");
+    {
+        testkit::WavSpec odd;
+        odd.sampleRate = 44101;
+        odd.frames = kFrames;
+        const auto oddBytes = testkit::syntheticWav(odd);
+        std::ofstream out(oddFile.getFullPathName().toStdString(), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(oddBytes.data()),
+                  static_cast<std::streamsize>(oddBytes.size()));
+    }
+    readCame = false;
+    pane.setSlot(3, oddFile, "03 Odd", false, kFrames);
+    settle(pane);
+    CHECK(!readCame);
+    CHECK_EQ(failures, 1);
 
     pane.clear();
     wavFile.deleteFile();
     floatFile.deleteFile();
+    oddFile.deleteFile();
     return testkit::summary("player_pane_harness");
 }

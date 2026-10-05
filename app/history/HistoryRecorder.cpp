@@ -39,6 +39,7 @@ HistoryStore& HistoryRecorder::store()
         openError_ = e.what();
         throw Error("the history is unavailable: " + openError_);
     }
+    published(store_->newestOp());
     return *store_;
 }
 
@@ -79,6 +80,7 @@ std::optional<HistoryRecorder::Snapshot> HistoryRecorder::firstSeen(const std::f
 {
     const auto session = sessionFor(volume);
     const auto op = store().firstSeen(session, opid::make("first-seen"), clock_());
+    published(op);
     if (store().opStatus(op) == "done") {
         snapshot_.reset();
         return std::nullopt;
@@ -161,6 +163,7 @@ void HistoryRecorder::begin(const std::string& opId, const std::string& kind,
     firstSeen(volume); // establish the baseline before a write can touch a newly minted card
     const std::int64_t session = *session_;
     ops_[opId] = Operation { store().beginOp(session, opId, kind, clock_()), kind, volume };
+    published(ops_[opId].row);
 }
 
 void HistoryRecorder::beginMaintenance(const std::string& opId, std::int64_t card)
@@ -171,6 +174,24 @@ void HistoryRecorder::beginMaintenance(const std::string& opId, std::int64_t car
     if (!session.step()) throw Error("no history session for this card");
     const auto row = store().beginOp(session.integer(0), opId, "forget-history", clock_());
     ops_[opId] = Operation { row, "forget-history", {} };
+    published(row);
+}
+
+std::optional<std::int64_t> HistoryRecorder::newestOp() const
+{
+    const std::int64_t newest = newestOp_.load();
+    if (newest < 0)
+        return std::nullopt;
+    return newest;
+}
+
+void HistoryRecorder::published(std::int64_t op)
+{
+    // Only ever forward: a read compared against it must never be placed
+    // before an operation that had already begun.
+    std::int64_t known = newestOp_.load();
+    while (op > known && !newestOp_.compare_exchange_weak(known, op)) {
+    }
 }
 
 void HistoryRecorder::subject(const std::string& opId, int slot)
@@ -224,6 +245,36 @@ bool HistoryRecorder::reading(const std::string& hash, const wav::LoudnessReadin
     return true;
 }
 
+bool HistoryRecorder::sighted(const std::filesystem::path& volume, int slot, const std::string& name,
+                              std::int64_t size, std::int64_t modifiedMs, const std::string& hash,
+                              std::int64_t readBegan)
+{
+    if (!sessionOn(volume))
+        return false;
+    const std::optional<std::int64_t> card = store().cardFor(sessionMarker_);
+    if (!card)
+        throw Error("the open session's card " + sessionMarker_ + " is not in the history");
+    store().recordSighting(*card, slot, name, size, modifiedMs, hash, readBegan, clock_());
+    return true;
+}
+
+void HistoryRecorder::sightedInOperation(const std::string& opId, int slot, const std::string& fileName,
+                                         std::int64_t size, const std::string& hash)
+{
+    const Operation& op = operation(opId);
+    const std::optional<FileStat> seen = statFile(volume::wavDir(op.volume, slot) / fileName);
+    if (!seen || seen->size != size)
+        return; // the entry does not describe the bytes read: nothing to say about it
+    const std::optional<std::int64_t> card = store().cardFor(sessionMarker_);
+    if (!card)
+        throw Error("the open session's card " + sessionMarker_ + " is not in the history");
+    // Placed just before the operation it is part of: whatever the operation
+    // then records in the slot — the archived take, the landed one — has a
+    // higher sequence and makes the read history; an operation that changes
+    // nothing leaves it standing.
+    store().recordSighting(*card, slot, fileName, seen->size, seen->modifiedMs, hash, op.row - 1, clock_());
+}
+
 void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
 {
     const std::vector<int> slots = store().touchedSlots(op.row);
@@ -236,16 +287,17 @@ void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
         const int from = swapped ? (slot == slots.front() ? slots.back() : slots.front()) : slot;
         const std::filesystem::path dir = volume::wavDir(op.volume, slot);
         for (const std::string& name : volume::listSlotWavs(op.volume, slot)) {
-            std::error_code ec;
-            const auto size = static_cast<std::int64_t>(std::filesystem::file_size(dir / name, ec));
-            if (ec)
-                throw Error("cannot measure " + (dir / name).string());
-            // The stamp is read once and asked of the earlier row too: a hash
-            // is carried over only for the very file that row saw.
-            const std::int64_t modified = modifiedMs(dir / name);
-            store().recordPresentAudio(op.row, slot, kTrack, name, size,
-                                       store().hashHeldBefore(op.row, from, name, size, modified),
-                                       modified);
+            // One stat for the size and the stamp, asked of the earlier row
+            // too: a hash is carried over only for the very file that row
+            // saw, and a hash a stampless row vouched for travels without a
+            // stamp (HistoryStore::heldBefore).
+            const std::optional<FileStat> seen = statFile(dir / name);
+            if (!seen)
+                throw Error("cannot read the directory entry of " + (dir / name).string());
+            const HistoryStore::Held held =
+                store().heldBefore(op.row, from, name, seen->size, seen->modifiedMs);
+            store().recordPresentAudio(op.row, slot, kTrack, name, seen->size, held.hash,
+                                       held.modifiedMs);
         }
     }
 }
@@ -307,12 +359,19 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     // follows. Inside an operation the card's session is open, so the
     // reading always goes in; a store that cannot take it stops the command
     // here, before the card is touched, like every other hook.
-    options.journal.loudnessMeasured = [recorder, opId](int slot, const std::string&,
+    options.journal.loudnessMeasured = [recorder, opId](int slot, const std::string& fileName,
                                                         std::string_view bytes,
                                                         const wav::LoudnessReading& reading) {
-        if (!recorder->reading(HistoryStore::contentHash(bytes), reading))
+        const std::string hash = HistoryStore::contentHash(bytes);
+        if (!recorder->reading(hash, reading))
             throw Error("operation " + opId + " measured slot " + std::to_string(slot)
                         + " with no card session open to file the reading in");
+        // A measurement is a real read: what it saw goes in too, so a
+        // normalize that finds its slot at target tells the next connect
+        // which bytes the slot holds (#141, review S12).
+        recorder->sightedInOperation(opId, slot, fileName, static_cast<std::int64_t>(bytes.size()), hash);
+        if (recorder->onMeasured)
+            recorder->onMeasured(slot, reading);
     };
     // The settings pair, before it is written: each changed section, its
     // text before and after (sysfile::sectionChanges, in the core). A throw

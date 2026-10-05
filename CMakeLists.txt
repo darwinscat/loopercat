@@ -737,6 +737,25 @@ target_link_libraries(reader_loudness_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME reader_loudness_tests COMMAND reader_loudness_tests)
 
+# A take's directory entry as the connect scan reads it (#141): name, size
+# and the platform's own stamp off the file system, no facts for an entry it
+# will not describe — and the real scan carrying them slot by slot without
+# reading audio. JUCE for the stamp and the worker's thread; no window.
+juce_add_console_app(take_facts_tests PRODUCT_NAME "take_facts_tests")
+target_sources(take_facts_tests PRIVATE tests/take_facts_tests.cpp)
+target_compile_definitions(take_facts_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(take_facts_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_events
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME take_facts_tests COMMAND take_facts_tests)
+
 # ----------------------------------------------------------------------------
 # The history store (issue #72): theory tests against real SQLite files — the
 # storage properties read back, atomicity of a take and its row, dedup,
@@ -778,6 +797,28 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
+
+# What the history says about a take it meets again without reading it (#141):
+# real commands recorded on a synthetic pedal, readings filed as Check
+# loudness files them, the takes sighted by their directory entries — and
+# asked of the store, which must write nothing for answering.
+juce_add_console_app(inferred_loudness_tests PRODUCT_NAME "inferred_loudness_tests")
+target_sources(inferred_loudness_tests PRIVATE tests/inferred_loudness_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(inferred_loudness_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(inferred_loudness_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME inferred_loudness_tests COMMAND inferred_loudness_tests)
 
 # First sighting, interruption and foreground writes on synthetic cards.
 juce_add_console_app(first_seen_tests PRODUCT_NAME "first_seen_tests")

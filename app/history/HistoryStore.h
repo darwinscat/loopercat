@@ -91,9 +91,10 @@ public:
     void recordBodies(std::int64_t op, const std::vector<commands::SlotChange>& changes);
     // `modifiedMs`: the landed file's modification time off the card's
     // directory entry, ms since the epoch — every row that says what a slot
-    // holds carries one from here on; only such rows older than store
-    // version 9 have none (#141). An archived take's row (keepAudio) names
-    // bytes on their way out of the slot and carries none.
+    // holds carries one, except rows older than store version 9 and the
+    // rows whose hash such a row vouched for by name and size (heldBefore,
+    // #141). An archived take's row (keepAudio) names bytes on their way out
+    // of the slot and carries none.
     void recordLanded(std::int64_t op, int slot, int track, const std::string& name,
                       std::string_view bytes, std::int64_t modifiedMs);
     void finishOp(std::int64_t op, OpStatus status, const std::string& note);
@@ -101,10 +102,11 @@ public:
     // The audio a slot holds AFTER an operation — the rows that make each
     // slot's timeline readable on its own. `hash` is absent when the store
     // has never seen those bytes: the file is then known by name and size,
-    // and no take can be fetched for it. `modifiedMs` as in recordLanded.
+    // and no take can be fetched for it. `modifiedMs` as in recordLanded,
+    // and absent only where heldBefore says the row may not carry one.
     void recordPresentAudio(std::int64_t op, int slot, int track, const std::string& name,
                             std::int64_t size, const std::optional<std::string>& hash,
-                            std::int64_t modifiedMs);
+                            std::optional<std::int64_t> modifiedMs);
 
     // --- loudness readings (#140): facts about bytes, under their hash ---
 
@@ -180,17 +182,90 @@ public:
     // Every slot an operation touched, by its body or its audio.
     std::vector<int> touchedSlots(std::int64_t op);
     bool hasAfterAudio(std::int64_t op, int slot);
-    // The hash the slot's newest row before `op` gives a file of this name —
-    // and only when that row carries a hash, its size is the file's, and its
-    // modification time is the file's now. A newer row without a hash is the
-    // last word (the file changed while the app was away), and a stamp or
-    // size that differ are another file under the same name: absent, never
+    // What a new row for a file of this name inherits from the newest word
+    // about it before `op`. First a real read of these very facts (name,
+    // size, stamp) that no earlier operation on the slot came after: the
+    // hash of the bytes it read, with the file's stamp. Otherwise the slot's
+    // newest row before `op`: that row's hash — only when it carries one,
+    // its size is the file's, and its modification time is the file's now —
+    // and the stamp the new row may carry. A newer row without a hash is the last
+    // word (the file changed while the app was away), and a stamp or size
+    // that differ are another file under the same name: no hash, never
     // guessed from an older row (#141 reads these hashes). A row written
     // before the store kept stamps (version 8 and older) is held to name and
-    // size alone, as it was written: migrated histories keep their slots
-    // restorable, and the risk stays with those rows.
+    // size alone, as it was written, so migrated histories keep their slots
+    // restorable — and the hash it vouches for is handed on with NO stamp,
+    // so the guess stays a guess: a stampless row never tells a connect
+    // which file is in the slot (hashOfSighting). The stamp is the file's
+    // otherwise, a row without a hash included.
+    struct Held {
+        std::optional<std::string> hash;
+        std::optional<std::int64_t> modifiedMs;
+    };
+    Held heldBefore(std::int64_t op, int slot, const std::string& name, std::int64_t size,
+                    std::int64_t modifiedMs);
+    // heldBefore's hash alone.
     std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, const std::string& name,
                                               std::int64_t size, std::int64_t modifiedMs);
+
+    // --- what a connect can tell from a directory entry (#141) ---
+
+    // The card a marker names, when the store has met it. A lookup and
+    // nothing else: card() above writes last_seen and the name, which a
+    // question about the history must not do.
+    std::optional<std::int64_t> cardFor(const std::string& markerId);
+
+    // A take as a connect scan sees it without reading it: the directory
+    // entry's name, size and stamp (TakeFacts.h), and the frame count the
+    // slot's config says the take has (WavLen).
+    struct TakeSighting {
+        std::string name;
+        std::int64_t size = 0;
+        std::int64_t modifiedMs = 0;
+        std::int64_t frames = 0;
+    };
+    // The highest operation sequence ever issued, 0 before the first: what a
+    // read that begins now comes after. It never goes down, and beginOp never
+    // issues a sequence at or below it — forgotten operations included.
+    std::int64_t newestOp();
+
+    // What a real read of a take saw (#141): the file's name, size and stamp
+    // on this card's slot, and the hash of the bytes read under them — the
+    // check job's read, the player's pass and a normalize's measurement all
+    // have all of it.
+    // `readBegan` is newestOp() as it stood when the read began; the read is
+    // filed after the slot's newest operation at or below it, and every
+    // operation that records a body or a take in the slot with a higher
+    // sequence makes it history — the order of operations, not of clocks.
+    // The same facts read again keep the newest read. Refused: a hash that
+    // is not 32 bytes, a negative `readBegan`, and (by the table) a slot
+    // outside 1..99.
+    void recordSighting(std::int64_t card, int slot, const std::string& name, std::int64_t size,
+                        std::int64_t modifiedMs, const std::string& hash, std::int64_t readBegan,
+                        std::int64_t nowMs);
+
+    // The hash of the take this card's slot holds, when the history can tell
+    // it is the one sighted, from the newest word about the slot:
+    //   - a read of these very facts (recordSighting) that no operation
+    //     recording a body or a take in the slot came after, by sequence:
+    //     its hash — the bytes were read under them;
+    //   - otherwise the slot's newest row for the file name on the first
+    //     track — the take the LUFS column measures — when it is that last
+    //     operation's own, the operation finished (or is the first
+    //     sighting, which commits slot by slot), it carries a hash, its size
+    //     and its stamp are the entry's, and the body recorded with it (the
+    //     newest at or before it) says the same WavLen.
+    // All of it or nothing: a row without a hash, with another size or
+    // stamp, or without a stamp at all (older than store version 9, or
+    // vouched for by such a row) answers nothing and no older row is asked
+    // instead; and once anything else about the slot was recorded after it
+    // — a clear, a swap, a failed write — the row answers nothing either.
+    // Unlike heldBefore, a stampless row gets no allowance here: nothing is
+    // at stake but a number on screen, and that number must not be a guess.
+    // Scoped to the card: another card's rows are another card's. A read:
+    // asking writes nothing.
+    std::optional<std::string> hashOfSighting(std::int64_t card, int slot,
+                                              const TakeSighting& seen);
 
     sqlite::Db& db() { return db_; }
 

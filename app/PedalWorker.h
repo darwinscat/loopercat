@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "TakeFacts.h"
+
 #include <loopercat/Catalog.hpp>
 #include <loopercat/Commands.hpp>
 #include <loopercat/DeviceProfile.hpp>
@@ -47,6 +49,11 @@ struct SlotRow
     std::string wavPath; // absolute path of track 1's first wav — what playback opens
     std::vector<std::string> trackPaths; // one per track the model has, in track order:
                                          // the track's first wav, or empty for no take
+    // What wavPath's directory entry says for free (#141): name, size, stamp
+    // — the take the LUFS column is about, as the history can recognise it
+    // without reading it. Absent for an empty slot, and for an entry the
+    // file system would not describe whole (TakeFacts.h).
+    std::optional<TakeFacts> take;
 
     bool operator==(const SlotRow&) const = default;
 };
@@ -247,8 +254,14 @@ public:
                         firstPath = trackPath;
                     trackPaths.push_back(std::move(trackPath));
                 }
+                // The first take's directory entry, read while the scan is
+                // already in its folder: no audio, and a take the entry will
+                // not describe simply carries no facts.
+                std::optional<TakeFacts> take;
+                if (!firstPath.empty())
+                    take = takeFacts(volume::fs::path(firstPath));
                 snapshot.slots.push_back({ std::move(info), std::move(files), std::move(firstPath),
-                                           std::move(trackPaths) });
+                                           std::move(trackPaths), std::move(take) });
             }
         } catch (const Error& e) {
             snapshot.error = e.what();

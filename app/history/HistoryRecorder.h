@@ -6,6 +6,7 @@
 #include "HistoryStore.h"
 #include <loopercat/CardMarker.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -75,6 +76,35 @@ public:
     // alone. Returns whether the reading went in; the store's own refusals
     // (a hash of the wrong length, a value that is not a number) throw.
     bool reading(const std::string& hash, const wav::LoudnessReading& reading);
+    // What a real read of a take on `volume` saw (#141): the file's name,
+    // size and stamp, and the hash of the bytes read under them — filed for
+    // the card whose session is open on that volume, and not otherwise: a
+    // read of another card, or of a card no session has opened yet, is not
+    // this history's to place. `readBegan` is newestOp() as it stood when
+    // the read began, which places the read among the operations
+    // (HistoryStore::recordSighting). Returns whether the sighting went in.
+    bool sighted(const std::filesystem::path& volume, int slot, const std::string& name,
+                 std::int64_t size, std::int64_t modifiedMs, const std::string& hash,
+                 std::int64_t readBegan);
+    // What a command read inside an operation it is part of (normalize's
+    // measurement): the take's facts as one stat now gives them, under the
+    // hash of the bytes read, placed just before the operation's own rows
+    // so that anything it then records in the slot makes the read history.
+    // Nothing when the entry's size is not the bytes'.
+    void sightedInOperation(const std::string& opId, int slot, const std::string& fileName,
+                            std::int64_t size, const std::string& hash);
+    // The newest operation the history has begun, by sequence, for a read
+    // about to begin to note as its place (#141): absent until the store has
+    // opened. Any thread — a read begins on the player's thread too. It
+    // moves only forward, with every operation this recorder begins; a lag
+    // behind the store only makes a read look older than it is, so it is
+    // set aside sooner, never trusted longer.
+    std::optional<std::int64_t> newestOp() const;
+    // Told what a command measured on its way (normalize, through
+    // withHistory), once the reading is filed: the slot and the reading of
+    // the bytes it holds before any write. Set before the worker starts;
+    // called on the worker thread.
+    std::function<void(int slot, const wav::LoudnessReading& reading)> onMeasured;
     // `error` empty = the job succeeded, and `note` is the line the job wrote
     // about itself ("normalized -3.2 dB", "already at -18.0 LUFS") — the only
     // record of an operation that decided to change nothing, and empty for the
@@ -141,9 +171,10 @@ private:
     // and a rename would leave no sign that the slot held a take at all.
     // Hashes are carried only where they are certain — from the slot's own
     // last state, or, for a swap, from the slot it exchanged with, and only
-    // when that state's size and stamp are the file's now. A file the store
-    // has never seen, or has seen change since, is recorded by name and
-    // size, with no hash.
+    // when that state's size and stamp are the file's now — or, from a row
+    // older than the stamps, on name and size, and then without a stamp of
+    // its own (HistoryStore::heldBefore). A file the store has never seen,
+    // or has seen change since, is recorded by name and size, with no hash.
     void recordWhatSlotsHold(const Operation& op);
     std::int64_t sessionFor(const std::filesystem::path& volume);
 
@@ -160,6 +191,10 @@ private:
     std::string sessionMarker_;
     std::optional<Snapshot> snapshot_;
     std::map<std::string, Operation> ops_;
+    // newestOp(): -1 until the store has opened. Written on the worker,
+    // read on any thread.
+    std::atomic<std::int64_t> newestOp_ { -1 };
+    void published(std::int64_t op);
 };
 
 // The one wiring from an operation's WriteOptions into the history, shared by

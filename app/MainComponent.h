@@ -5,6 +5,7 @@
 
 #include <loopercat/CardMarker.hpp>
 
+#include <map>
 #include <set>
 #include <loopercat/Connect.hpp>
 #include <loopercat/StorageRegister.hpp>
@@ -30,6 +31,7 @@
 #include "history/SlotRows.h"
 #include "history/TakeAudition.h"
 #include "history/HistoryRecorder.h"
+#include "history/InferredLoudness.h"
 #include "history/FirstSeenJob.h"
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
@@ -305,8 +307,15 @@ private:
     void enqueueLoudnessRead(int slot, double target, int batch);
     // A reading the player's own pass took, into the history under the hash
     // of the bytes it metered (#140) — on the worker, the store's thread.
-    void keepReading(std::string hash, wav::LoudnessReading reading);
+    void keepReading(std::string hash, wav::LoudnessReading reading, int slot,
+                     std::optional<TakeFacts> seen, std::optional<std::int64_t> readBegan);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
+    // The column from what the history already knows (#141): the slots with
+    // a take and an empty cell, put to the store by the facts the scan read
+    // off their directory entries — no audio read, no card needed. The
+    // player's slot is read instead; a read that failed is remembered.
+    void inferLoudnessFromHistory();
+    void readFailed(int slot);
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);
     void stopLoudnessCheck();
@@ -358,6 +367,16 @@ private:
     int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
     bool checkStopping = false;
     std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
+    // What the LUFS column from the history (#141) remembers for one
+    // connection: the files a real read failed on, by slot (message thread;
+    // readFailed), and the slots whose record could not be read and were
+    // logged already (touched by the worker's jobs only; a new set per card).
+    std::map<int, TakeFacts> unreadableTakes;
+    // Where the player's current read pass began among the history's
+    // operations (HistoryRecorder::newestOp), noted when it is started on
+    // the card's take; absent for a take played back out of the history.
+    std::optional<std::int64_t> playerReadBegan;
+    std::shared_ptr<std::set<int>> inferenceProblemsLogged = std::make_shared<std::set<int>>();
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)

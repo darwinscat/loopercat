@@ -58,6 +58,7 @@ public:
     // The behaviour columns and the LUFS column are a preference (Settings ->
     // Columns): the pedal's own facts always show, these are opted into.
     void setOptionalColumns(bool oneShot, bool countIn, bool loudness);
+    bool loudnessColumnVisible() const;
 
     // The LUFS column's cells (issue #61): filled by a measure or a check,
     // cleared when the slot's audio changes. Keyed by slot, so they survive
@@ -68,7 +69,20 @@ public:
         bool pending = false;   // a read is queued or in flight: "…", or the beacon
         juce::String detail {}; // the sentence the player row shows for this reading
         bool damaged = false;
-        juce::String tooltip {}; // the explanation the player row's hint carries
+        juce::String tooltip {}; // the explanation the cell's and the player row's hint carry
+        // The number came out of the history for the bytes the slot appears
+        // to hold, not out of a read of them (#141): drawn in lighter ink and
+        // never in the attention colour, its hint says so, and it is never
+        // what a decision is made on — Normalize reads the card's bytes
+        // whatever this cell says. Any real read of the slot replaces it
+        // with a measured cell.
+        bool inferred = false;
+
+        // The cell a measured reading would get, worn as inferred: the same
+        // words, no attention, the provenance and the double-click first in
+        // its hint, and the flag set. `measuredAt` is when the history took
+        // the number.
+        static LoudnessCell fromHistory(LoudnessCell measured, juce::Time measuredAt);
     };
     void setLoudness(int slot, LoudnessCell cell);
     void clearLoudness(int slot);
@@ -105,6 +119,7 @@ private:
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;
     void paintCell(juce::Graphics&, int row, int columnId, int width, int height, bool selected) override;
+    juce::String getCellTooltip(int row, int columnId) override; // the LUFS cell's hint
     void selectedRowsChanged(int lastRowSelected) override;
     void cellDoubleClicked(int row, int columnId, const juce::MouseEvent&) override;
     void cellClicked(int row, int columnId, const juce::MouseEvent&) override;

@@ -89,6 +89,23 @@ int SlotTable::slotOfRow(int rowIndex) const
              : 0;
 }
 
+SlotTable::LoudnessCell SlotTable::LoudnessCell::fromHistory(LoudnessCell measured,
+                                                             juce::Time measuredAt)
+{
+    // The provenance leads: a player reading the hint learns first that
+    // this number was not read off the card today, then the one gesture
+    // that reads it on every card and every slot — the double-click on this
+    // very cell — then what the number says.
+    measured.tooltip = "From the history: measured " + measuredAt.formatted("%d %b %Y %H:%M")
+                     + ", not re-measured. Double-click to measure it now."
+                     + (measured.tooltip.isEmpty() ? juce::String() : " " + measured.tooltip);
+    // No attention: "Normalize would change this" is a verdict, and a guess
+    // passes none. The number alone, in light ink.
+    measured.attention = false;
+    measured.inferred = true;
+    return measured;
+}
+
 void SlotTable::setLoudness(int slot, LoudnessCell cell)
 {
     loudness_[slot] = std::move(cell);
@@ -136,6 +153,11 @@ void SlotTable::setOptionalColumns(bool oneShot, bool countIn, bool loudness)
     header.setColumnVisible(kOneShot, oneShot);
     header.setColumnVisible(kCountIn, countIn);
     header.setColumnVisible(kLufs, loudness);
+}
+
+bool SlotTable::loudnessColumnVisible() const
+{
+    return table_.getHeader().isColumnVisible(kLufs);
 }
 
 void SlotTable::selectSlot(int slot)
@@ -245,6 +267,21 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
 {
     if (onSlotSelected && slotOfRow(lastRowSelected) > 0)
         onSlotSelected(slotOfRow(lastRowSelected));
+}
+
+// The LUFS cell carries its reading's explanation as a hover hint — where
+// the number came from first of all, when it came out of the history rather
+// than a read (#141). A read in flight explains nothing yet, and a row whose
+// cell is not drawn (no loop in the slot) has nothing to explain.
+juce::String SlotTable::getCellTooltip(int row, int columnId)
+{
+    const int slot = slotOfRow(row);
+    if (columnId != kLufs || slot <= 0 || !rows_[static_cast<std::size_t>(row)].info.hasAudio)
+        return {};
+    const auto found = loudness_.find(slot);
+    if (found == loudness_.end() || found->second.pending)
+        return {};
+    return found->second.tooltip;
 }
 
 void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
@@ -573,7 +610,13 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
             }
             return;
         }
-        g.setColour(!known ? kDim.withAlpha(0.55f)
+        // A number out of the history rather than a read (#141) wears the
+        // text ink, lighter: the column's own vocabulary for "less present"
+        // (the dash, the empty rows) rather than a mark, which in a 68 px
+        // number column would read as part of the number. It never wears
+        // the attention colour (LoudnessCell::fromHistory). The hint says why.
+        g.setColour(!known                    ? kDim.withAlpha(0.55f)
+                    : found->second.inferred  ? kText.withAlpha(0.6f)
                     : found->second.attention ? felitronics::appkit::brand::orange
                                               : kText);
         g.drawText(known ? found->second.text
