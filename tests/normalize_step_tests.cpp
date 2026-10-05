@@ -178,7 +178,7 @@ Work normalizes(const std::shared_ptr<HistoryRecorder>& rec, const std::string& 
     };
 }
 
-bool near(double a, double b, double slack) { return std::abs(a - b) <= slack; }
+bool closeTo(double a, double b, double slack) { return std::abs(a - b) <= slack; }
 
 } // namespace
 
@@ -187,8 +187,8 @@ int main()
     // --- 1. the target the player types ---
     {
         const auto parsed = [](const char* text) { return targetlufs::parse(juce::String(text)); };
-        CHECK(parsed("-18").has_value() && near(*parsed("-18"), -18.0, 1.0e-12));
-        CHECK(parsed("  -14.5 ").has_value() && near(*parsed("  -14.5 "), -14.5, 1.0e-12));
+        CHECK(parsed("-18").has_value() && closeTo(*parsed("-18"), -18.0, 1.0e-12));
+        CHECK(parsed("  -14.5 ").has_value() && closeTo(*parsed("  -14.5 "), -14.5, 1.0e-12));
         CHECK(parsed("-30").has_value()); // the window's edges are targets
         CHECK(parsed("-8").has_value());
         CHECK(!parsed("-30.1").has_value());
@@ -223,7 +223,7 @@ int main()
 
         const normalizestep::Step quiet = normalizestep::run(volume, 2, *rec, kTarget);
         CHECK(quiet.plan.outcome == Plan::Outcome::apply);
-        CHECK(near(quiet.plan.gainDb, 10.0, 0.1));
+        CHECK(closeTo(quiet.plan.gainDb, 10.0, 0.1));
         CHECK(quiet.plan.words.rfind("Measured -28.0 LUFS, this adds +", 0) == 0);
         CHECK(!quiet.read.recalled);
         CHECK(quiet.read.hash == HistoryStore::contentHash(
@@ -332,8 +332,8 @@ int main()
         // What a settings file holds is text; read back through the field's
         // rule, the text that is not a target is no target — none in its place.
         const auto stored = [](const char* text) { return targetlufs::parse(juce::String(text)); };
-        CHECK(stored("-18").has_value() && near(*stored("-18"), -18.0, 1.0e-12));
-        CHECK(stored("-18.0").has_value() && near(*stored("-18.0"), -18.0, 1.0e-12));
+        CHECK(stored("-18").has_value() && closeTo(*stored("-18"), -18.0, 1.0e-12));
+        CHECK(stored("-18.0").has_value() && closeTo(*stored("-18.0"), -18.0, 1.0e-12));
         for (const char* text : { "nan", "inf", "-inf", "-40", "0", "" })
             CHECK(!stored(text).has_value());
         CHECK_EQ(targetlufs::unusableStored("inf"),

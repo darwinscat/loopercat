@@ -158,7 +158,7 @@ CommandOutcome runCommand(const fs::path& volume, int slot, const commands::Writ
     }
 }
 
-bool near(double a, double b, double slack = kTiny) { return std::abs(a - b) <= slack; }
+bool closeTo(double a, double b, double slack = kTiny) { return std::abs(a - b) <= slack; }
 
 } // namespace
 
@@ -168,8 +168,8 @@ int main()
     {
         const Plan at = normalizeplan::decide(7, audio(kTarget, -6.0), kTarget);
         CHECK(at.outcome == Plan::Outcome::nothingToDo);
-        CHECK(near(at.measuredLufs, kTarget));
-        CHECK(near(at.gainDb, 0.0));
+        CHECK(closeTo(at.measuredLufs, kTarget));
+        CHECK(closeTo(at.gainDb, 0.0));
         CHECK(!at.cappedByPeak);
         CHECK(at.words.empty());
 
@@ -184,23 +184,23 @@ int main()
               == Plan::Outcome::nothingToDo);
         const Plan below = normalizeplan::decide(7, audio(kTarget - outside, -6.0), kTarget);
         CHECK(below.outcome == Plan::Outcome::apply);
-        CHECK(near(below.gainDb, outside));
+        CHECK(closeTo(below.gainDb, outside));
         const Plan above = normalizeplan::decide(7, audio(kTarget + outside, -6.0), kTarget);
         CHECK(above.outcome == Plan::Outcome::apply);
-        CHECK(near(above.gainDb, -outside));
+        CHECK(closeTo(above.gainDb, -outside));
 
         // The issue's own case: measured -14.1 against a -14.0 target is the
         // take the old flow asked about and then left alone. No window now.
         const Plan issue = normalizeplan::decide(7, audio(-14.1, -6.0), -14.0);
         CHECK(issue.outcome == Plan::Outcome::nothingToDo);
-        CHECK(near(issue.measuredLufs, -14.1));
+        CHECK(closeTo(issue.measuredLufs, -14.1));
         CHECK(!issue.cappedByPeak);
 
         // 0.9 LU off is outside a 0.2 LU tolerance: the command would write
         // +0.9 dB, so the window must open for it.
         const Plan nearly = normalizeplan::decide(7, audio(-18.9, -6.0), kTarget);
         CHECK(nearly.outcome == Plan::Outcome::apply);
-        CHECK(near(nearly.gainDb, 0.9));
+        CHECK(closeTo(nearly.gainDb, 0.9));
         CHECK(!nearly.cappedByPeak);
         CHECK_EQ(nearly.words, std::string("Measured -18.9 LUFS, this adds +0.9 dB"));
     }
@@ -209,21 +209,21 @@ int main()
     {
         const Plan boost = normalizeplan::decide(7, audio(-22.7, -8.0), kTarget);
         CHECK(boost.outcome == Plan::Outcome::apply);
-        CHECK(near(boost.measuredLufs, -22.7));
-        CHECK(near(boost.gainDb, 4.7));
+        CHECK(closeTo(boost.measuredLufs, -22.7));
+        CHECK(closeTo(boost.gainDb, 4.7));
         CHECK(!boost.cappedByPeak);
         CHECK_EQ(boost.words, std::string("Measured -22.7 LUFS, this adds +4.7 dB"));
 
         const Plan cut = normalizeplan::decide(7, audio(-12.3, -1.5), kTarget);
         CHECK(cut.outcome == Plan::Outcome::apply);
-        CHECK(near(cut.gainDb, -5.7));
+        CHECK(closeTo(cut.gainDb, -5.7));
         CHECK(!cut.cappedByPeak);
         CHECK_EQ(cut.words, std::string("Measured -12.3 LUFS, this cuts 5.7 dB"));
 
         // The ceiling is for boosts: a take already over it is cut in full.
         const Plan over = normalizeplan::decide(7, audio(-10.0, 0.3), kTarget);
         CHECK(over.outcome == Plan::Outcome::apply);
-        CHECK(near(over.gainDb, -8.0));
+        CHECK(closeTo(over.gainDb, -8.0));
         CHECK(!over.cappedByPeak);
     }
 
@@ -231,8 +231,8 @@ int main()
     {
         const Plan limited = normalizeplan::decide(7, audio(-25.0, loudness::kPeakCeilingDb), kTarget);
         CHECK(limited.outcome == Plan::Outcome::nothingToDo);
-        CHECK(near(limited.measuredLufs, -25.0));
-        CHECK(near(limited.gainDb, 0.0));
+        CHECK(closeTo(limited.measuredLufs, -25.0));
+        CHECK(closeTo(limited.gainDb, 0.0));
         CHECK(limited.cappedByPeak); // the reason: peak-limited, not at target
         CHECK(limited.words.empty());
 
@@ -242,7 +242,7 @@ int main()
 
         const Plan partial = normalizeplan::decide(7, audio(-25.0, -3.1), kTarget);
         CHECK(partial.outcome == Plan::Outcome::apply);
-        CHECK(near(partial.gainDb, 2.1));
+        CHECK(closeTo(partial.gainDb, 2.1));
         CHECK(partial.cappedByPeak);
         CHECK_EQ(partial.words,
                  std::string("Measured -25.0 LUFS, +2.1 dB possible: the -1 dBTP ceiling stops the rest"));
@@ -255,7 +255,7 @@ int main()
                                                   kTarget);
         CHECK(sliver.outcome == Plan::Outcome::nothingToDo);
         CHECK(sliver.cappedByPeak);
-        CHECK(near(sliver.gainDb, 0.0));
+        CHECK(closeTo(sliver.gainDb, 0.0));
         const double step = loudness::kSmallestGainDb;
         CHECK(normalizeplan::decide(7, audio(-25.0, loudness::kPeakCeilingDb - (step - 1.0e-3)),
                                     kTarget).outcome
@@ -264,7 +264,7 @@ int main()
             7, audio(-25.0, loudness::kPeakCeilingDb - (step + 1.0e-3)), kTarget);
         CHECK(justEnough.outcome == Plan::Outcome::apply);
         CHECK(justEnough.cappedByPeak);
-        CHECK(near(justEnough.gainDb, step + 1.0e-3, 1.0e-9));
+        CHECK(closeTo(justEnough.gainDb, step + 1.0e-3, 1.0e-9));
     }
 
     // --- 4. refusals, in the command's sentences; bugs throw ---
@@ -274,7 +274,7 @@ int main()
         CHECK(damaged.outcome == Plan::Outcome::refuse);
         CHECK_EQ(damaged.words, commands::normalizeDamagedRefusal(42, 3));
         CHECK(damaged.words.find("slot 42 contains 3 impossible sample value(s)") != std::string::npos);
-        CHECK(near(damaged.gainDb, 0.0));
+        CHECK(closeTo(damaged.gainDb, 0.0));
         // Garbage outranks silence: a reading with wild samples is refused
         // for them whatever else it says.
         const Plan garbage = normalizeplan::decide(42, { std::nullopt, 0.0f, -inf, 2 }, kTarget);
@@ -330,9 +330,9 @@ int main()
                 ++applied;
                 CHECK(command.result.has_value());
                 CHECK(command.result.has_value() && command.result->applied);
-                CHECK(command.result.has_value() && near(command.result->gainDb, plan.gainDb));
+                CHECK(command.result.has_value() && closeTo(command.result->gainDb, plan.gainDb));
                 CHECK(command.result.has_value()
-                      && near(command.result->measuredLufs, plan.measuredLufs));
+                      && closeTo(command.result->measuredLufs, plan.measuredLufs));
                 CHECK(command.result.has_value() && command.result->cappedByPeak == plan.cappedByPeak);
                 CHECK(plan.words.rfind("Measured ", 0) == 0u);
                 break;
@@ -342,7 +342,7 @@ int main()
                 CHECK(command.result.has_value() && !command.result->applied);
                 CHECK(command.result.has_value() && command.result->cappedByPeak == plan.cappedByPeak);
                 CHECK(command.result.has_value()
-                      && near(command.result->measuredLufs, plan.measuredLufs));
+                      && closeTo(command.result->measuredLufs, plan.measuredLufs));
                 break;
             case Plan::Outcome::refuse:
                 ++refused;
