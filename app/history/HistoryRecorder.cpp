@@ -326,6 +326,8 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
         if (!recorder->reading(HistoryStore::contentHash(bytes), reading))
             throw Error("operation " + opId + " measured slot " + std::to_string(slot)
                         + " with no card session open to file the reading in");
+        if (recorder->onMeasured)
+            recorder->onMeasured(slot, reading);
     };
     // The settings pair, before it is written: each changed section, its
     // text before and after (sysfile::sectionChanges, in the core). A throw

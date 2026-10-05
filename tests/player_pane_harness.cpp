@@ -17,7 +17,9 @@
 //     loop changes the buttons on the next layout, no reload needed
 //   - a pane never told what it may do offers nothing
 //   - the facts of the file go up with its hash and only with it (#141):
-//     name, size and stamp as one stat reads them
+//     name, size and stamp as one stat reads them; a file the meter cannot
+//     measure is said to the owner through onLoudnessFailed, and no reading
+//     comes up for it
 
 #include "support.hpp"
 
@@ -131,6 +133,7 @@ int main()
     bool readCame = false;
     std::string readHash;
     std::optional<TakeFacts> readSeen;
+    int failures = 0;
     pane.onLoudnessRead = [&](int slot, const wav::LoudnessReading&, const std::string& hash,
                               const std::optional<TakeFacts>& seen) {
         readCame = true;
@@ -138,6 +141,7 @@ int main()
         readSeen = seen;
         pane.setLoudness(slot, "-14.0 LUFS", false, false, "");
     };
+    pane.onLoudnessFailed = [&](int) { ++failures; };
 
     const auto load = [&] {
         readCame = false;
@@ -248,9 +252,30 @@ int main()
         CHECK_EQ(readSeen->size, floatStat->size);
         CHECK_EQ(readSeen->modifiedMs, floatStat->modifiedMs);
     }
+    CHECK_EQ(failures, 0);
+
+    // --- a file the meter cannot read: the owner is told, and no reading comes up ---
+    // 44 101 Hz does not cut into the meter's 100 ms sub-blocks; JUCE plays it.
+    const juce::File oddFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                   .getChildFile("loopercat_player_pane_harness_odd.wav");
+    {
+        testkit::WavSpec odd;
+        odd.sampleRate = 44101;
+        odd.frames = kFrames;
+        const auto oddBytes = testkit::syntheticWav(odd);
+        std::ofstream out(oddFile.getFullPathName().toStdString(), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(oddBytes.data()),
+                  static_cast<std::streamsize>(oddBytes.size()));
+    }
+    readCame = false;
+    pane.setSlot(3, oddFile, "03 Odd", false, kFrames);
+    settle(pane);
+    CHECK(!readCame);
+    CHECK_EQ(failures, 1);
 
     pane.clear();
     wavFile.deleteFile();
     floatFile.deleteFile();
+    oddFile.deleteFile();
     return testkit::summary("player_pane_harness");
 }

@@ -112,6 +112,9 @@ public:
     // them before the decode and again after the hash (#141): what the read
     // saw, for the history to know the file by its bytes next time. Present
     // exactly when the hash is.
+    // A pass that cannot measure the file says so on the row and tells the
+    // owner through onLoudnessFailed: a number the column showed for the
+    // slot without reading it must not outlive a read that failed.
     // The readout and Normalize… share the row with Trim and step aside
     // while a trim selection is active: the selection owns the row then,
     // and Normalize is whole-loop work that must not read as "the
@@ -119,6 +122,10 @@ public:
     std::function<void(int, const wav::LoudnessReading&, const std::string& contentHash,
                        const std::optional<TakeFacts>& seen)>
         onLoudnessRead;
+    std::function<void(int)> onLoudnessFailed; // the loaded slot's file could not be measured
+    // A reading for the loaded slot is on its way: the pane's own pass, or a
+    // check the owner announced with setLoudnessPending.
+    bool loudnessPending() const { return loudnessPending_; }
     void setLoudness(int slot, const juce::String& text, bool attention, bool damaged,
                      const juce::String& tooltip);
     void setLoudnessPending(int slot);

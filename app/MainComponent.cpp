@@ -371,6 +371,17 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         if (!hash.empty()) // empty: the core would not measure these bytes to this number
             keepReading(hash, reading, slot, seen);
     };
+    player.onLoudnessFailed = [this](int slot) { readFailed(slot); };
+    // A command that meters on its way (normalize, the bulk run included)
+    // read the slot's bytes: its number is a measurement, and it replaces
+    // whatever the cell showed — a write that follows clears it as any
+    // rewrite does (onJobResult). Worker thread; the alive token guards the hop.
+    recorder->onMeasured = [this, alive = uiAlive](int slot, const wav::LoudnessReading& reading) {
+        juce::MessageManager::callAsync([this, alive, slot, reading] {
+            if (*alive)
+                applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
+        });
+    };
     player.onNormalize = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
             normalizeSlot(slot, trimmedName(*row));
@@ -614,6 +625,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             if (description.startsWith("Check slot") && slot > 0) {
                 player.clearLoudness(slot);       // a failed read must not stay "measuring…"
                 table.clearPendingLoudness(slot); // …nor its cell "…"
+                readFailed(slot);                 // …nor the history refill it (#141)
             }
             if (inBatch) {
                 ++batchFailed;
@@ -1401,6 +1413,7 @@ void MainComponent::applyColumnPreferences()
         file == nullptr || file->getBoolValue(kOneShotColumnKey, true),
         file != nullptr && file->getBoolValue(kCountInColumnKey, false),
         file != nullptr && file->getBoolValue(kLoudnessColumnKey, false));
+    inferLoudnessFromHistory(); // the LUFS column just shown fills in from the history (#141)
 }
 
 void MainComponent::updateToolbar()
@@ -1718,7 +1731,8 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     const bool anotherVolume = latest.volume != snapshot.volume;
     if (anotherVolume) {
         table.clearAllLoudness(); // another card is another set of files; readings do not travel
-        inferenceProblemsLogged = std::make_shared<std::set<int>>(); // and its problems were its own (#141)
+        unreadableTakes.clear();  // ...and what failed to read was another card's (#141)
+        inferenceProblemsLogged = std::make_shared<std::set<int>>();
     }
     snapshot = latest;
     if (anotherVolume)
@@ -2472,6 +2486,19 @@ void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading, 
                      false }); // and it needs no card: the store is on this computer
 }
 
+// A real read of the slot's take failed (#141) — the player's pass, or a
+// Check: an inferred cell in its place goes, and the history is not asked
+// again about the file as the scan sees it now, for the rest of this
+// connection. A guess must not outlive a read that could not confirm it,
+// nor come back on the next snapshot to stand where the read failed.
+void MainComponent::readFailed(int slot)
+{
+    if (const SlotRow* row = slotRowFor(slot); row != nullptr && row->take)
+        unreadableTakes[slot] = *row->take;
+    if (const SlotTable::LoudnessCell* cell = table.loudnessFor(slot); cell != nullptr && cell->inferred)
+        table.clearLoudness(slot);
+}
+
 // The LUFS column from what the history already knows (#141). Every slot with
 // a take and nothing in its cell is put to the store by the facts the scan
 // read off its directory entry and the config — name, size, stamp, WavLen —
@@ -2480,6 +2507,13 @@ void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading, 
 // the store is on this computer. The card is named by its marker, read on
 // this mount, so a store still holding another card's session cannot answer
 // for this one; a card the history has never met knows nothing.
+//
+// Not for the slot loaded in the player: it is the one slot the app can
+// measure at once, and a guess there would sit beside a player that does not
+// re-read a file it already has (an Undo on another slot clears every cell,
+// this one's included). If nothing is reading it, the background read does.
+// Not while the LUFS column is hidden: nobody would see it. Not for a file a
+// read already failed on in this connection (readFailed).
 //
 // Hands off while a job runs, like restoreListening and for the same reason:
 // the job's rescan lands before its result clears the cells it moved, so the
@@ -2491,14 +2525,27 @@ void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading, 
 // it, and Normalize measures the card's bytes whatever the column shows.
 void MainComponent::inferLoudnessFromHistory()
 {
-    if (pedalBusy || !card || snapshot.state != lifecycle::State::connected || !snapshot.error.empty())
+    if (pedalBusy || !card || snapshot.state != lifecycle::State::connected || !snapshot.error.empty()
+        || !table.loudnessColumnVisible())
         return;
+    // A take, an empty cell, and not the very file a read failed on.
+    const auto blank = [this](const SlotRow& row) {
+        return row.take && row.info.hasAudio && table.loudnessFor(row.info.slot) == nullptr
+            && !(unreadableTakes.contains(row.info.slot) && unreadableTakes.at(row.info.slot) == *row.take);
+    };
+    const int loaded = player.currentSlot();
     std::vector<history::SlotSighting> sightings;
-    for (const SlotRow& row : snapshot.slots)
-        if (row.take && row.info.hasAudio && table.loudnessFor(row.info.slot) == nullptr)
-            sightings.push_back({ row.info.slot,
-                                  { row.take->name, row.take->size, row.take->modifiedMs,
-                                    row.info.frames } });
+    for (const SlotRow& row : snapshot.slots) {
+        if (!blank(row))
+            continue;
+        if (row.info.slot == loaded) {
+            if (!player.loudnessPending())
+                enqueueLoudnessRead(loaded, currentTargetLufs(), 0);
+            continue;
+        }
+        sightings.push_back({ row.info.slot,
+                              { row.take->name, row.take->size, row.take->modifiedMs, row.info.frames } });
+    }
     if (sightings.empty())
         return;
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -2536,14 +2583,16 @@ void MainComponent::inferLoudnessFromHistory()
                       return;
                   for (const Found& f : found) {
                       // The slot still shows the very take that was sighted,
-                      // and nothing landed in its cell meanwhile — a read, or
-                      // a mutation's clearing — both outrank the history.
+                      // nothing landed in its cell meanwhile — a read, or a
+                      // mutation's clearing, both outrank the history — and
+                      // it is not the slot the player has loaded since.
                       const SlotRow* row = safe->slotRowFor(f.sighted.slot);
                       const history::HistoryStore::TakeSighting& seen = f.sighted.take;
                       if (row == nullptr || !row->take || row->take->name != seen.name
                           || row->take->size != seen.size || row->take->modifiedMs != seen.modifiedMs
                           || row->info.frames != seen.frames
-                          || safe->table.loudnessFor(f.sighted.slot) != nullptr)
+                          || safe->table.loudnessFor(f.sighted.slot) != nullptr
+                          || f.sighted.slot == safe->player.currentSlot())
                           continue;
                       safe->table.setLoudness(
                           f.sighted.slot,

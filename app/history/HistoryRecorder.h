@@ -82,6 +82,11 @@ public:
     // this history's to place. Returns whether the sighting went in.
     bool sighted(const std::filesystem::path& volume, int slot, const std::string& name,
                  std::int64_t size, std::int64_t modifiedMs, const std::string& hash);
+    // Told what a command measured on its way (normalize, through
+    // withHistory), once the reading is filed: the slot and the reading of
+    // the bytes it holds before any write. Set before the worker starts;
+    // called on the worker thread.
+    std::function<void(int slot, const wav::LoudnessReading& reading)> onMeasured;
     // `error` empty = the job succeeded, and `note` is the line the job wrote
     // about itself ("normalized -3.2 dB", "already at -18.0 LUFS") — the only
     // record of an operation that decided to change nothing, and empty for the

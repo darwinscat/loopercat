@@ -467,6 +467,8 @@ void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> read
                      "Could not measure this file.");
         loudnessPending_ = false;
         updateLoudnessButtons();
+        if (onLoudnessFailed)
+            onLoudnessFailed(slot);
         return;
     }
     if (onLoudnessRead)

@@ -5,6 +5,7 @@
 
 #include <loopercat/CardMarker.hpp>
 
+#include <map>
 #include <set>
 #include <loopercat/Connect.hpp>
 #include <loopercat/StorageRegister.hpp>
@@ -311,8 +312,10 @@ private:
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
     // The column from what the history already knows (#141): the slots with
     // a take and an empty cell, put to the store by the facts the scan read
-    // off their directory entries — no audio read, no card needed.
+    // off their directory entries — no audio read, no card needed. The
+    // player's slot is read instead; a read that failed is remembered.
     void inferLoudnessFromHistory();
+    void readFailed(int slot);
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);
     void stopLoudnessCheck();
@@ -364,9 +367,11 @@ private:
     int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
     bool checkStopping = false;
     std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
-    // The slots whose record the LUFS column from the history (#141) could
-    // not read, logged already for this connection: touched by the worker's
-    // jobs only, and a new set per card.
+    // What the LUFS column from the history (#141) remembers for one
+    // connection: the files a real read failed on, by slot (message thread;
+    // readFailed), and the slots whose record could not be read and were
+    // logged already (touched by the worker's jobs only; a new set per card).
+    std::map<int, TakeFacts> unreadableTakes;
     std::shared_ptr<std::set<int>> inferenceProblemsLogged = std::make_shared<std::set<int>>();
     PlayerPane player { engine };
     juce::String deviceError;
