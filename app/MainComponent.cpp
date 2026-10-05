@@ -2438,8 +2438,10 @@ MainComponent::LoudnessReport MainComponent::describeReading(const wav::Loudness
                           ? loudness::normalizeGainDb(lufs, targetLufs, reading.truePeakDb,
                                                       loudness::kPeakCeilingDb)
                           : wanted;
-    const bool wouldChange = offTarget && std::abs(gain) > 1.0e-9;
-    const bool capped = wanted > 0.0 && gain + 1.0e-9 < wanted;
+    // The command's own lines (#142 review): a boost the ceiling leaves
+    // under kSmallestGainDb is nothing to gain, and colours nothing.
+    const bool wouldChange = offTarget && std::abs(gain) >= loudness::kSmallestGainDb;
+    const bool capped = wanted > 0.0 && gain < wanted;
     juce::String row = juce::String(lufs, 1) + juce::String::fromUTF8(" LUFS \xc2\xb7 ");
     if (!offTarget)
         row << "at target " << target;

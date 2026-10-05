@@ -13,8 +13,9 @@
 //      says it; a cut is the whole wanted gain and is never capped, even on a
 //      take already over the ceiling
 //   3. a quiet take already peaking at the ceiling is nothing to do, with the
-//      peak as the reason; one with some headroom gets exactly that much, and
-//      the words say so
+//      peak as the reason; so is one whose headroom is under the smallest gain
+//      worth writing (loudness::kSmallestGainDb); one with more headroom gets
+//      exactly that much, and the words say so
 //   4. bytes that are not audio are refused with their count, before anything
 //      is computed from them; silence and a take under one gating block are
 //      refused as unmeasurable; a target outside the command's window is a
@@ -23,7 +24,8 @@
 //   5. one to one with the command itself, on a synthetic card: wherever the
 //      command writes, the plan said apply with the same gain and the same
 //      cap; wherever it answers "nothing", the plan said so; wherever it
-//      throws, the plan refused in the very same sentence.
+//      throws, the plan refused in the very same sentence. And a take the
+//      command has just capped is nothing to do from then on, for both.
 
 #include "support.hpp"
 #include "archive_support.hpp"
@@ -244,6 +246,25 @@ int main()
         CHECK(partial.cappedByPeak);
         CHECK_EQ(partial.words,
                  std::string("Measured -25.0 LUFS, +2.1 dB possible: the -1 dBTP ceiling stops the rest"));
+
+        // Headroom under an audible step is no headroom: the smallest gain
+        // worth writing is the step "already at target" stands for. The
+        // review's case — 0.049 dB under the ceiling — is nothing to do, with
+        // the ceiling as the reason; a hair over the step is a boost.
+        const Plan sliver = normalizeplan::decide(7, audio(-25.0, loudness::kPeakCeilingDb - 0.049),
+                                                  kTarget);
+        CHECK(sliver.outcome == Plan::Outcome::nothingToDo);
+        CHECK(sliver.cappedByPeak);
+        CHECK(near(sliver.gainDb, 0.0));
+        const double step = loudness::kSmallestGainDb;
+        CHECK(normalizeplan::decide(7, audio(-25.0, loudness::kPeakCeilingDb - (step - 1.0e-3)),
+                                    kTarget).outcome
+              == Plan::Outcome::nothingToDo);
+        const Plan justEnough = normalizeplan::decide(
+            7, audio(-25.0, loudness::kPeakCeilingDb - (step + 1.0e-3)), kTarget);
+        CHECK(justEnough.outcome == Plan::Outcome::apply);
+        CHECK(justEnough.cappedByPeak);
+        CHECK(near(justEnough.gainDb, step + 1.0e-3, 1.0e-9));
     }
 
     // --- 4. refusals, in the command's sentences; bugs throw ---
@@ -329,10 +350,26 @@ int main()
         CHECK_EQ(applied, 3);   // quiet, capped, loud
         CHECK_EQ(untouched, 2); // at target, peaky
         CHECK_EQ(refused, 3);   // faint, short, damaged
-        // The capped take got its gain and now sits at the ceiling: whatever
-        // the plan says of it next, the ceiling is the reason.
-        CHECK(normalizeplan::decide(7, measureSlot(volume, 7), kTarget).cappedByPeak);
-        CHECK(normalizeplan::decide(2, measureSlot(volume, 2), kTarget).cappedByPeak);
+        // The capped take got its gain and now sits at the ceiling, give or
+        // take what float32 rounding leaves: the next Normalize has nothing to
+        // offer and the command nothing to write — not once, not on the third
+        // try (review of #142: a "+0.0 dB" window, the same bytes rewritten
+        // and a history row added each time).
+        const std::string cappedOnce = commands::readFileBytes(volume::wavDir(volume, 7) / "capped.wav");
+        for (int again = 1; again <= 3; ++again) {
+            const Plan next = normalizeplan::decide(7, measureSlot(volume, 7), kTarget);
+            CHECK(next.outcome == Plan::Outcome::nothingToDo);
+            CHECK(next.cappedByPeak);
+            const CommandOutcome rerun =
+                runCommand(volume, 7, writeOpts(tmp.path, "op-again-" + std::to_string(again)));
+            CHECK(rerun.result.has_value() && !rerun.result->applied);
+            CHECK(rerun.result.has_value() && rerun.result->cappedByPeak);
+            CHECK(rerun.result.has_value() && rerun.result->archivedOriginal.empty());
+        }
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 7) / "capped.wav") == cappedOnce);
+        const Plan peakyNext = normalizeplan::decide(2, measureSlot(volume, 2), kTarget);
+        CHECK(peakyNext.outcome == Plan::Outcome::nothingToDo);
+        CHECK(peakyNext.cappedByPeak);
 
         // A target the command refuses, the plan refuses in the same words —
         // and before any reading enters into it.

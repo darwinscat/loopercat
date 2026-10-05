@@ -993,8 +993,9 @@ struct NormalizeResult {
 // Two outcomes deliberately write NOTHING and say so instead of erroring —
 // they are answers, not failures, and a bulk apply must be able to walk over
 // them: already within kAlreadyAtTargetLu of the target (nothing audible to
-// gain), and a wanted boost fully swallowed by the peak ceiling (the loop
-// already peaks at -1 dBTP — there is nothing to give it). An unmeasurable
+// gain), and a wanted boost the peak ceiling cuts below kSmallestGainDb (the
+// loop already peaks at, or within an inaudible step of, -1 dBTP — there is
+// nothing to give it). An unmeasurable
 // slot — silence, or under one gating block — IS an error: the player asked
 // to normalize this slot, and no gain would do what they asked.
 inline NormalizeResult normalize(const fs::path& volume, int slot,
@@ -1048,9 +1049,11 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     const double gainDb = loudness::normalizeGainDb(result.measuredLufs, options.targetLufs,
                                                     reading.truePeakDb,
                                                     loudness::kPeakCeilingDb);
-    result.cappedByPeak = wanted > 0.0 && gainDb + loudness::kNoGainDb < wanted;
-    if (std::abs(gainDb) < loudness::kNoGainDb)
-        return result; // the ceiling ate the whole boost — rewriting would change nothing
+    // Exact on purpose: normalizeGainDb hands the wanted gain back untouched
+    // when the ceiling does not bite, so any shortfall is the ceiling's.
+    result.cappedByPeak = wanted > 0.0 && gainDb < wanted;
+    if (std::abs(gainDb) < loudness::kSmallestGainDb)
+        return result; // the ceiling left no audible boost — rewriting would change nothing
 
     const wav::Bytes rewritten = wav::withGainDb(rawView, gainDb, segment(0.45, 0.60));
 

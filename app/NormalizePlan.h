@@ -22,7 +22,7 @@
 //
 // The rule is the command's, piece by piece — its target window, its two
 // refusals, loudness::kAlreadyAtTargetLu, loudness::normalizeGainDb under
-// loudness::kPeakCeilingDb, loudness::kNoGainDb — so a case the command
+// loudness::kPeakCeilingDb, loudness::kSmallestGainDb — so a case the command
 // treats as "write nothing" can never open the window, and the sentence a
 // refusal shows is the one the job would have failed with. It decides
 // nothing FOR the command: that one measures the card's bytes again before
@@ -89,8 +89,8 @@ inline Plan decide(int slot, const wav::LoudnessReading& reading, double targetL
         return { Plan::Outcome::nothingToDo, measured, 0.0, false, {} };
     const double gainDb = loudness::normalizeGainDb(measured, targetLufs, reading.truePeakDb,
                                                     loudness::kPeakCeilingDb);
-    const bool capped = wanted > 0.0 && gainDb + loudness::kNoGainDb < wanted;
-    if (std::abs(gainDb) < loudness::kNoGainDb)
+    const bool capped = wanted > 0.0 && gainDb < wanted;
+    if (std::abs(gainDb) < loudness::kSmallestGainDb)
         return { Plan::Outcome::nothingToDo, measured, 0.0, capped, {} };
 
     std::string words = "Measured " + detail::oneDecimal(measured) + " LUFS, ";

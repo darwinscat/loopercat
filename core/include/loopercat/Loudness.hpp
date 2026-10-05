@@ -64,11 +64,17 @@ inline constexpr double kPeakCeilingDb = -1.0;
 // import path and the on-card normalize command.
 inline constexpr double kAlreadyAtTargetLu = 0.2;
 
-// A gain under this is no gain: the ceiling swallowed the whole boost, and a
-// rewrite would change the file's date and nothing anyone can hear. Shared by
-// the on-card normalize command and the plan it is asked for first (#142), so
-// the two never disagree about a boost swallowed whole.
-inline constexpr double kNoGainDb = 1.0e-9;
+// The smallest gain worth writing is the step "already at target" stands
+// for: a gain under kAlreadyAtTargetLu is as inaudible as a loudness that
+// close to the target, and writing it would spend an archive copy, a pedal
+// write generation and a history row on nothing. A threshold of 1e-9 dB
+// looked like "no gain" and was not one: a capped take lands a few
+// hundredths of a dB under the ceiling once its samples are float32 again,
+// so every further Normalize offered "+0.0 dB", rewrote the same bytes and
+// added a row (review of #142). Shared by the on-card command, the plan it
+// is asked for first, and the LUFS column's colouring, so none of them
+// offers what another would not write.
+inline constexpr double kSmallestGainDb = kAlreadyAtTargetLu;
 
 // Honest audio never leaves [-8, +8]: float32 masters peak a little over 1,
 // and nothing musical is 18 dB past that. A sample beyond it — or not a
