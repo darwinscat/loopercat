@@ -6,6 +6,7 @@
 #include "HistoryStore.h"
 #include <loopercat/CardMarker.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -79,9 +80,19 @@ public:
     // size and stamp, and the hash of the bytes read under them — filed for
     // the card whose session is open on that volume, and not otherwise: a
     // read of another card, or of a card no session has opened yet, is not
-    // this history's to place. Returns whether the sighting went in.
+    // this history's to place. `readBegan` is newestOp() as it stood when
+    // the read began, which places the read among the operations
+    // (HistoryStore::recordSighting). Returns whether the sighting went in.
     bool sighted(const std::filesystem::path& volume, int slot, const std::string& name,
-                 std::int64_t size, std::int64_t modifiedMs, const std::string& hash);
+                 std::int64_t size, std::int64_t modifiedMs, const std::string& hash,
+                 std::int64_t readBegan);
+    // The newest operation the history has begun, by sequence, for a read
+    // about to begin to note as its place (#141): absent until the store has
+    // opened. Any thread — a read begins on the player's thread too. It
+    // moves only forward, with every operation this recorder begins; a lag
+    // behind the store only makes a read look older than it is, so it is
+    // set aside sooner, never trusted longer.
+    std::optional<std::int64_t> newestOp() const;
     // Told what a command measured on its way (normalize, through
     // withHistory), once the reading is filed: the slot and the reading of
     // the bytes it holds before any write. Set before the worker starts;
@@ -173,6 +184,10 @@ private:
     std::string sessionMarker_;
     std::optional<Snapshot> snapshot_;
     std::map<std::string, Operation> ops_;
+    // newestOp(): -1 until the store has opened. Written on the worker,
+    // read on any thread.
+    std::atomic<std::int64_t> newestOp_ { -1 };
+    void published(std::int64_t op);
 };
 
 // The one wiring from an operation's WriteOptions into the history, shared by

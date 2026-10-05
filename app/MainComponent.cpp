@@ -368,8 +368,13 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading,
                                    const std::string& hash, const std::optional<TakeFacts>& seen) {
         applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
+        // What the pass saw is a sighting of the slot's take only when the
+        // pane holds that take off the card — not a take played back out of
+        // the history, which is a file on this computer (#141).
+        const SlotRow* row = slotRowFor(slot);
+        const bool cardTake = row != nullptr && utf8(row->wavPath) == player.currentPath();
         if (!hash.empty()) // empty: the core would not measure these bytes to this number
-            keepReading(hash, reading, slot, seen);
+            keepReading(hash, reading, slot, cardTake ? seen : std::nullopt, playerReadBegan);
     };
     player.onLoudnessFailed = [this](int slot) { readFailed(slot); };
     // A command that meters on its way (normalize, the bulk run included)
@@ -667,8 +672,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                                // pushed that file onto the card.
                                && !(description.startsWith("Normalize")
                                     && description.contains("file untouched"));
-        if (description.startsWith("Trim"))
+        if (description.startsWith("Trim")) {
+            playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
             player.reload(); // same path, new bytes — fresh reader + thumbnail
+        }
         // A reading belongs to the audio, not the memory: a rename, a tempo
         // or a flag leaves it standing. Only a rewrite of the WAV itself
         // moves the audio on — push, trim, downmix, a normalize that applied,
@@ -1337,8 +1344,10 @@ void MainComponent::playArchivedTake(int slot, std::string hash, juce::String ti
                                  .frames;
                          const juce::File opened(juce::String(file->string()));
                          juce::MessageManager::callAsync([safe, opened, title, slot, frames, alive] {
-                             if (*alive && safe != nullptr)
+                             if (*alive && safe != nullptr) {
+                                 safe->playerReadBegan.reset(); // a file on this computer, not the card's
                                  safe->player.setSlot(slot, opened, title, false, frames);
+                             }
                          });
                      },
                      nullptr, 0, true, true, false });
@@ -1885,13 +1894,17 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
             player.clear(); // no take on any track: nothing to listen to
             return;
         }
-        if (firstPath != player.currentPath())
+        if (firstPath != player.currentPath()) {
+            playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
             player.setTracks(row.info.slot, tracks, title, row.info.oneShot);
+        }
     } else {
         const juce::String path = utf8(row.wavPath);
-        if (path != player.currentPath())
+        if (path != player.currentPath()) {
+            playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
             player.setSlot(row.info.slot, juce::File(path), title, row.info.oneShot,
                            row.info.frames);
+        }
     }
     player.setTempoNote(tempoNoteFor(row.info));
     // The loudness readout follows the loaded loop: whatever the column knows
@@ -2462,18 +2475,21 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
 // reads no card and tells nobody anything: the words are already on screen,
 // and a history with no card in front of it simply takes nothing. What the
 // pass saw goes with it (#141): the file's facts under the hash, filed for
-// the card mounted now, so the next connect knows the file by its bytes.
+// the card mounted now, so the next connect knows the file by its bytes —
+// placed among the operations by where the read began, not by when this job
+// runs: a foreground operation may have jumped ahead of it meanwhile.
 void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading, int slot,
-                                std::optional<TakeFacts> seen)
+                                std::optional<TakeFacts> seen, std::optional<std::int64_t> readBegan)
 {
     worker.enqueue({ "Keep a loudness reading",
                      0,
                      [rec = recorder, key = std::move(hash), reading, slot, facts = std::move(seen),
-                      mounted = volume::fs::path(snapshot.volume),
+                      began = readBegan, mounted = volume::fs::path(snapshot.volume),
                       logDir = settings.dataDir()](const volume::fs::path&) {
                          try {
-                             if (rec->reading(key, reading) && facts)
-                                 rec->sighted(mounted, slot, facts->name, facts->size, facts->modifiedMs, key);
+                             if (rec->reading(key, reading) && facts && began)
+                                 rec->sighted(mounted, slot, facts->name, facts->size, facts->modifiedMs, key,
+                                              *began);
                          } catch (const std::exception& e) {
                              oplog::append(logDir, "loudness reading not kept in the history: "
                                                        + juce::String::fromUTF8(e.what()));

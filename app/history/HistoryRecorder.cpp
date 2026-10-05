@@ -39,6 +39,7 @@ HistoryStore& HistoryRecorder::store()
         openError_ = e.what();
         throw Error("the history is unavailable: " + openError_);
     }
+    published(store_->newestOp());
     return *store_;
 }
 
@@ -79,6 +80,7 @@ std::optional<HistoryRecorder::Snapshot> HistoryRecorder::firstSeen(const std::f
 {
     const auto session = sessionFor(volume);
     const auto op = store().firstSeen(session, opid::make("first-seen"), clock_());
+    published(op);
     if (store().opStatus(op) == "done") {
         snapshot_.reset();
         return std::nullopt;
@@ -161,6 +163,7 @@ void HistoryRecorder::begin(const std::string& opId, const std::string& kind,
     firstSeen(volume); // establish the baseline before a write can touch a newly minted card
     const std::int64_t session = *session_;
     ops_[opId] = Operation { store().beginOp(session, opId, kind, clock_()), kind, volume };
+    published(ops_[opId].row);
 }
 
 void HistoryRecorder::beginMaintenance(const std::string& opId, std::int64_t card)
@@ -171,6 +174,24 @@ void HistoryRecorder::beginMaintenance(const std::string& opId, std::int64_t car
     if (!session.step()) throw Error("no history session for this card");
     const auto row = store().beginOp(session.integer(0), opId, "forget-history", clock_());
     ops_[opId] = Operation { row, "forget-history", {} };
+    published(row);
+}
+
+std::optional<std::int64_t> HistoryRecorder::newestOp() const
+{
+    const std::int64_t newest = newestOp_.load();
+    if (newest < 0)
+        return std::nullopt;
+    return newest;
+}
+
+void HistoryRecorder::published(std::int64_t op)
+{
+    // Only ever forward: a read compared against it must never be placed
+    // before an operation that had already begun.
+    std::int64_t known = newestOp_.load();
+    while (op > known && !newestOp_.compare_exchange_weak(known, op)) {
+    }
 }
 
 void HistoryRecorder::subject(const std::string& opId, int slot)
@@ -225,14 +246,15 @@ bool HistoryRecorder::reading(const std::string& hash, const wav::LoudnessReadin
 }
 
 bool HistoryRecorder::sighted(const std::filesystem::path& volume, int slot, const std::string& name,
-                              std::int64_t size, std::int64_t modifiedMs, const std::string& hash)
+                              std::int64_t size, std::int64_t modifiedMs, const std::string& hash,
+                              std::int64_t readBegan)
 {
     if (!sessionOn(volume))
         return false;
     const std::optional<std::int64_t> card = store().cardFor(sessionMarker_);
     if (!card)
         throw Error("the open session's card " + sessionMarker_ + " is not in the history");
-    store().recordSighting(*card, slot, name, size, modifiedMs, hash, clock_());
+    store().recordSighting(*card, slot, name, size, modifiedMs, hash, readBegan, clock_());
     return true;
 }
 

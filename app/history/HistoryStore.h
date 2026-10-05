@@ -182,10 +182,13 @@ public:
     // Every slot an operation touched, by its body or its audio.
     std::vector<int> touchedSlots(std::int64_t op);
     bool hasAfterAudio(std::int64_t op, int slot);
-    // What a new row for a file of this name inherits from the slot's newest
-    // row before `op`: that row's hash — only when it carries one, its size
-    // is the file's, and its modification time is the file's now — and the
-    // stamp the new row may carry. A newer row without a hash is the last
+    // What a new row for a file of this name inherits from the newest word
+    // about it before `op`. First a real read of these very facts (name,
+    // size, stamp) that no earlier operation on the slot came after: the
+    // hash of the bytes it read, with the file's stamp. Otherwise the slot's
+    // newest row before `op`: that row's hash — only when it carries one,
+    // its size is the file's, and its modification time is the file's now —
+    // and the stamp the new row may carry. A newer row without a hash is the last
     // word (the file changed while the app was away), and a stamp or size
     // that differ are another file under the same name: no hash, never
     // guessed from an older row (#141 reads these hashes). A row written
@@ -221,18 +224,29 @@ public:
         std::int64_t modifiedMs = 0;
         std::int64_t frames = 0;
     };
+    // The newest operation's sequence, 0 before the first: what a read that
+    // begins now comes after.
+    std::int64_t newestOp();
+
     // What a real read of a take saw (#141): the file's name, size and stamp
     // on this card's slot, and the hash of the bytes read under them — the
-    // check job's read and the player's pass both have all of it. The same
-    // facts read again keep the newest hash. Refused: a hash that is not 32
-    // bytes, and (by the table) a slot outside 1..99.
+    // check job's read and the player's pass both have all of it.
+    // `readBegan` is newestOp() as it stood when the read began; the read is
+    // filed after the slot's newest operation at or below it, and every
+    // operation that records a body or a take in the slot with a higher
+    // sequence makes it history — the order of operations, not of clocks.
+    // The same facts read again keep the newest read. Refused: a hash that
+    // is not 32 bytes, a negative `readBegan`, and (by the table) a slot
+    // outside 1..99.
     void recordSighting(std::int64_t card, int slot, const std::string& name, std::int64_t size,
-                        std::int64_t modifiedMs, const std::string& hash, std::int64_t nowMs);
+                        std::int64_t modifiedMs, const std::string& hash, std::int64_t readBegan,
+                        std::int64_t nowMs);
 
     // The hash of the take this card's slot holds, when the history can tell
     // it is the one sighted, from the newest word about the slot:
-    //   - a read of these very facts (recordSighting) made after the slot's
-    //     last operation: its hash — the bytes were read under them;
+    //   - a read of these very facts (recordSighting) that no operation
+    //     recording a body or a take in the slot came after, by sequence:
+    //     its hash — the bytes were read under them;
     //   - otherwise the slot's newest row for the file name on the first
     //     track — the take the LUFS column measures — when it is that last
     //     operation's own, the operation finished (or is the first

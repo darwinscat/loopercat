@@ -26,7 +26,9 @@
 // with the hash of the bytes read under them, so the next connect knows the
 // file in the slot by the bytes, not by a row that only named it — when the
 // file stood still under the read (one stat before, one after, and the bytes
-// as long as the entry said), and not otherwise.
+// as long as the entry said), and not otherwise. The read is placed among the
+// operations by the newest one begun when it started (newestOp): on the
+// worker nothing can begin while it runs.
 //
 // The read is the job; the filing is its tail. A history with no card in
 // front of it takes nothing (`kept` false, no failure), and a store that
@@ -53,6 +55,7 @@ inline SlotLoudness readSlotLoudness(const volume::fs::path& volume, int slot,
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
         throw Error("slot " + std::to_string(slot) + " has no audio to measure");
+    const std::optional<std::int64_t> began = recorder.newestOp();
     const volume::fs::path file = volume::wavDir(volume, slot) / files.front();
     const std::optional<FileStat> before = statFile(file);
     const std::string raw = commands::readFileBytes(file);
@@ -65,8 +68,9 @@ inline SlotLoudness readSlotLoudness(const volume::fs::path& volume, int slot,
                          && before->size == static_cast<std::int64_t>(raw.size());
     try {
         out.kept = recorder.reading(out.hash, out.reading);
-        if (out.kept && stoodStill)
-            recorder.sighted(volume, slot, files.front(), before->size, before->modifiedMs, out.hash);
+        if (out.kept && stoodStill && began)
+            recorder.sighted(volume, slot, files.front(), before->size, before->modifiedMs, out.hash,
+                             *began);
     } catch (const std::exception& e) {
         out.failure = e.what(); // the store's refusal, or anything else the filing threw
     }

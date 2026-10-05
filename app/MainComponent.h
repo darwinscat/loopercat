@@ -308,7 +308,7 @@ private:
     // A reading the player's own pass took, into the history under the hash
     // of the bytes it metered (#140) — on the worker, the store's thread.
     void keepReading(std::string hash, wav::LoudnessReading reading, int slot,
-                     std::optional<TakeFacts> seen);
+                     std::optional<TakeFacts> seen, std::optional<std::int64_t> readBegan);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
     // The column from what the history already knows (#141): the slots with
     // a take and an empty cell, put to the store by the facts the scan read
@@ -372,6 +372,10 @@ private:
     // readFailed), and the slots whose record could not be read and were
     // logged already (touched by the worker's jobs only; a new set per card).
     std::map<int, TakeFacts> unreadableTakes;
+    // Where the player's current read pass began among the history's
+    // operations (HistoryRecorder::newestOp), noted when it is started on
+    // the card's take; absent for a take played back out of the history.
+    std::optional<std::int64_t> playerReadBegan;
     std::shared_ptr<std::set<int>> inferenceProblemsLogged = std::make_shared<std::set<int>>();
     PlayerPane player { engine };
     juce::String deviceError;

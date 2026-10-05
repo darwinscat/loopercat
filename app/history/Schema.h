@@ -60,13 +60,18 @@
 //   take_sightings
 //                what a real read of a take saw (#141): the directory
 //                entry's name, size and stamp, the hash of the bytes read
-//                under them, and when. A connect believes the newest word
-//                about a slot, and a read is one: the pedal stamps what it
-//                records off a clock that does not keep the date, so a loop
-//                of the same length recorded again can carry the very same
-//                name, size and stamp as the take a row names, and only a
-//                read of the bytes tells the two apart. By card and slot;
-//                forgetting a slot's history takes its sightings with it.
+//                under them, and the slot's newest operation when the read
+//                began (since_op; NULL when none had touched the slot). A
+//                connect believes the newest word about a slot, and a read
+//                is one: the pedal stamps what it records off a clock that
+//                does not keep the date, so a loop of the same length
+//                recorded again can carry the very same name, size and
+//                stamp as the take a row names, and only a read of the bytes
+//                tells the two apart. The order is the operations' sequence,
+//                never a clock: a read is history once an operation with a
+//                higher sequence recorded a body or a take in the slot. By
+//                card and slot; forgetting a slot's history, or a first
+//                sighting photographing it, takes its sightings with it.
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -230,8 +235,10 @@ ALTER TABLE slot_audio ADD COLUMN modified INTEGER;
 )sql",
 R"sql(
 -- What a real read of a take saw (#141), by card and slot: the directory
--- entry's facts and the hash of the bytes read under them. One row per file
--- the slot was seen to hold; the same facts read again keep the newest hash.
+-- entry's facts, the hash of the bytes read under them, and the slot's
+-- newest operation when the read began (NULL: none had touched it), which
+-- orders the read among the operations. One row per file the slot was seen
+-- to hold; the same facts read again keep the newest read.
 CREATE TABLE take_sightings(
     card     INTEGER NOT NULL REFERENCES cards(id),
     slot     INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
@@ -239,6 +246,7 @@ CREATE TABLE take_sightings(
     size     INTEGER NOT NULL CHECK (size >= 0),
     modified INTEGER NOT NULL,
     hash     BLOB    NOT NULL CHECK (length(hash) = 32),
+    since_op INTEGER CHECK (since_op IS NULL OR since_op >= 1),
     at       INTEGER NOT NULL,
     PRIMARY KEY (card, slot, name, size, modified)
 ) STRICT;

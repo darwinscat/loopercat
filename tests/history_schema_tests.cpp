@@ -410,18 +410,25 @@ int main()
         CHECK_EQ(count(db, "SELECT modified FROM slot_audio WHERE slot = 4"), 1'700'000'000'000);
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE slot = 5 AND modified IS NULL"), 1);
         // the new table takes a read the way the store files one, and holds its rules
-        migrated.recordSighting(1, 4, "004_1.WAV", 3000, 1'700'000'000'000, std::string(32, 'h'), 3);
+        // ...placed after the slot's newest operation the read came after: the
+        // v9 push touched slot 4, so a read begun after it stands on it
+        migrated.recordSighting(1, 4, "004_1.WAV", 3000, 1'700'000'000'000, std::string(32, 'h'),
+                                migrated.newestOp(), 3);
         CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 1);
-        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, 1, x'00', 1)"), "CHECK");
+        CHECK_EQ(count(db, "SELECT since_op FROM take_sightings WHERE slot = 4"), 1);
+        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, 1, x'00', NULL, 1)"), "CHECK");
         CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 0, 'x', 1, 1, x'"
-                             + std::string(64, 'a') + "', 1)"),
+                             + std::string(64, 'a') + "', NULL, 1)"),
                      "CHECK");
         CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (9, 4, 'x', 1, 1, x'"
-                             + std::string(64, 'a') + "', 1)"),
+                             + std::string(64, 'a') + "', NULL, 1)"),
                      "FOREIGN KEY");
         CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, NULL, x'"
-                             + std::string(64, 'a') + "', 1)"),
+                             + std::string(64, 'a') + "', NULL, 1)"),
                      "NOT NULL");
+        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, 1, x'"
+                             + std::string(64, 'a') + "', 0, 1)"),
+                     "CHECK"); // no operation has sequence 0: none is NULL
         CHECK_EQ(count(db, "SELECT count(*) FROM pragma_foreign_key_check"), 0);
     }
     {

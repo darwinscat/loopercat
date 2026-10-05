@@ -33,8 +33,14 @@
 //     hands what it measured on through the recorder, once, for its slot
 //   - and a real read corrects it (review S3): after Check loudness reads the
 //     new bytes under the same facts, the next inference answers their
-//     reading, never the old one — and a read whose bytes have no reading
-//     answers nothing
+//     reading, never the old one — nor after an operation that followed the
+//     read (S3d: a rename hands the read's hash on) — and a read whose bytes
+//     have no reading answers nothing
+//   - reads are placed among the operations by sequence, never by clock: a
+//     first sighting resumed after a read photographs the slot anew (S7); a
+//     player read filed after an operation that ran during it does not
+//     outrank that operation (S8); a clock set back between a read and a
+//     clear does not let the read outlive the clear (S10)
 //   - a migrated history (rows with no stamp) never infers through a row it
 //     vouched for by name and size: a file overwritten outside the app with
 //     one of the same size, then renamed, is not read as the old take
@@ -468,9 +474,21 @@ int main()
         CHECK_EQ(corrected.size(), 1u);
         CHECK(!corrected.empty() && same(corrected.front().reading, checked.reading));
         CHECK(!corrected.empty() && !same(corrected.front().reading, measured.reading));
+        // S3d: an operation after the read — a rename, twice — hands the
+        // read's word on; the old take does not come back
+        for (const char* name : { "Renamed", "Again" }) {
+            const std::string opId = std::string("op-rename-12-") + name;
+            CHECK_EQ(run(*rec, opId, "rename", volume, [&] {
+                         commands::rename(volume, 12, name, options(rec, opId));
+                     }),
+                     std::string());
+            const auto renamed = history::inferLoudness(store, card, { sight(volume, 12) }).found;
+            CHECK_EQ(renamed.size(), 1u);
+            CHECK(!renamed.empty() && same(renamed.front().reading, checked.reading));
+        }
         // a read whose bytes have no reading on file answers nothing — not the old take
         store.recordSighting(card, 12, again.take.name, again.take.size, again.take.modifiedMs,
-                             HistoryStore::contentHash("bytes nobody measured"), tick());
+                             HistoryStore::contentHash("bytes nobody measured"), store.newestOp(), tick());
         CHECK(history::inferLoudness(store, card, { again }).found.empty());
     }
 
@@ -538,6 +556,111 @@ int main()
         CHECK(!both.problems.empty() && both.problems.front().slot == 15 && !both.problems.front().what.empty());
         CHECK_EQ(both.found.size(), 1u); // slot 7, read and measured after its trim
         CHECK(!both.found.empty() && both.found.front().sighted.slot == 7);
+    }
+
+    // The quiet loop as the card holds it, and what the history measured it at.
+    const std::string quietOnCard =
+        commands::readFileBytes(volume::wavDir(volume, 4) / volume::listSlotWavs(volume, 4).front());
+    const std::optional<HistoryStore::StoredReading> quietReading =
+        store.readingFor(HistoryStore::contentHash(quietOnCard));
+    CHECK(quietReading.has_value());
+
+    // --- a read before an interrupted first sighting resumes (review S7) ---
+    // The baseline's operation keeps the sequence of the connect it began on;
+    // a slot it photographs on a later connect is newer than a read between.
+    {
+        const fs::path src = tmp.path / "060_1.WAV";
+        writeSine(src, 88200, -20.0);
+        commands::WriteOptions bare; // the pedal recorded it: nothing told the history
+        bare.journal.bodiesChanging = [](const std::vector<commands::SlotChange>&) {};
+        commands::push(volume, src, 60, { .write = bare });
+        const auto baseline = rec->firstSeen(volume); // still running, slot 60 not reached
+        CHECK(baseline.has_value());
+        const history::SlotSighting seen = sight(volume, 60);
+        const history::SlotLoudness read60 = history::readSlotLoudness(volume, 60, *rec);
+        CHECK(read60.kept);
+        const auto before = history::inferLoudness(store, card, { seen }).found;
+        CHECK(before.size() == 1u && same(before.front().reading, read60.reading)); // the read's word
+        rec->disconnect(); // the baseline is interrupted before slot 60
+        // the pedal records slot 60 again: the same length, name and frozen stamp
+        const fs::path take60 = volume::wavDir(volume, 60) / "060_1.WAV";
+        commands::writeFileBytes(take60, quietOnCard);
+        setStamp(take60, seen.take.modifiedMs);
+        CHECK_EQ(sight(volume, 60).take.modifiedMs, seen.take.modifiedMs);
+        const auto resumed = rec->firstSeen(volume); // the next connect resumes it
+        CHECK(resumed.has_value());
+        if (resumed)
+            rec->snapshotStep(*resumed, 60); // and photographs slot 60's bytes now
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM take_sightings WHERE slot = 60"), 0);
+        const auto after = history::inferLoudness(store, card, { sight(volume, 60) }).found;
+        CHECK_EQ(after.size(), 1u);
+        CHECK(!after.empty() && quietReading && same(after.front().reading, quietReading->reading));
+        CHECK(!after.empty() && !same(after.front().reading, read60.reading));
+    }
+
+    // --- a read filed after an operation that ran during it (review S8) ---
+    // The player's pass reads on its own thread; its filing is a background
+    // job that a foreground operation jumps ahead of. Facts equal across the
+    // operation (FAT's two-second step) are simulated by restamping.
+    {
+        const fs::path src = tmp.path / "s70.wav";
+        writeSine(src, 88200, -20.0);
+        CHECK_EQ(run(*rec, "op-push-70", "push", volume, [&] {
+                     commands::push(volume, src, 70, { .write = options(rec, "op-push-70") });
+                 }),
+                 std::string());
+        const fs::path take70 = volume::wavDir(volume, 70) / "s70.wav";
+        const history::SlotSighting read = sight(volume, 70); // the pass's facts
+        const std::string readHash = HistoryStore::contentHash(commands::readFileBytes(take70));
+        const std::optional<std::int64_t> began = rec->newestOp(); // where the pass's read began
+        CHECK(began.has_value());
+        // the foreground operation: another take under the same name and size
+        const fs::path srcQuiet = tmp.path / "q70" / "s70.wav";
+        fs::create_directories(srcQuiet.parent_path());
+        writeSine(srcQuiet, 88200, -28.0);
+        CHECK_EQ(run(*rec, "op-push-70b", "push", volume, [&] {
+                     commands::push(volume, srcQuiet, 70, { .force = true, .write = options(rec, "op-push-70b") });
+                 }),
+                 std::string());
+        setStamp(take70, read.take.modifiedMs); // the write landed in the same two-second step
+        sqlite::Statement same70(store.db(), "UPDATE slot_audio SET modified = ?1 WHERE slot = 70 AND side = 'after' "
+                                             "AND op = (SELECT max(op) FROM slot_audio WHERE slot = 70)");
+        same70.bind(1, read.take.modifiedMs).run();
+        const history::SlotSighting now70 = sight(volume, 70);
+        CHECK(now70.take.name == read.take.name && now70.take.size == read.take.size
+              && now70.take.modifiedMs == read.take.modifiedMs);
+        // the pass's filing job runs now, after the operation
+        CHECK(began && rec->sighted(volume, 70, read.take.name, read.take.size, read.take.modifiedMs,
+                                    readHash, *began));
+        const auto found = history::inferLoudness(store, card, { sight(volume, 70) }).found;
+        CHECK_EQ(found.size(), 1u);
+        CHECK(!found.empty() && quietReading && same(found.front().reading, quietReading->reading));
+        CHECK(!found.empty() && !same(found.front().reading, measured.reading)); // never the take that is gone
+    }
+
+    // --- the wall clock set back between a read and a later clear (review S10) ---
+    {
+        const fs::path src = tmp.path / "s80.wav";
+        writeSine(src, 88200, -20.0);
+        CHECK_EQ(run(*rec, "op-push-80", "push", volume, [&] {
+                     commands::push(volume, src, 80, { .write = options(rec, "op-push-80") });
+                 }),
+                 std::string());
+        const history::SlotSighting seen = sight(volume, 80);
+        CHECK(history::readSlotLoudness(volume, 80, *rec).kept); // a read of the loud loop
+        CHECK_EQ(history::inferLoudness(store, card, { seen }).found.size(), 1u);
+        clockAt -= 3'600'000; // the computer's clock goes back an hour
+        CHECK_EQ(run(*rec, "op-clear-80", "clear", volume, [&] {
+                     commands::clear(volume, { 80 }, { .write = options(rec, "op-clear-80") });
+                 }),
+                 std::string());
+        // the pedal records a new loop into slot 80 under the old facts
+        fs::create_directories(volume::wavDir(volume, 80));
+        const fs::path take80 = volume::wavDir(volume, 80) / "s80.wav";
+        commands::writeFileBytes(take80, quietOnCard);
+        setStamp(take80, seen.take.modifiedMs);
+        CHECK(history::inferLoudness(store, card, { sight(volume, 80) }).found.empty());
+        CHECK(history::inferLoudness(store, card, { seen }).found.empty());
     }
 
     return testkit::summary("inferred_loudness_tests");
