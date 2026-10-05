@@ -5,7 +5,9 @@
 
 #include <loopercat/CardMarker.hpp>
 
+#include <optional>
 #include <set>
+#include <string>
 #include <loopercat/Connect.hpp>
 #include <loopercat/StorageRegister.hpp>
 
@@ -34,7 +36,7 @@
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
 #include "history/TakeExport.h"
-#include "NormalizePlan.h"
+#include "NormalizeStep.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
 #include "RhythmPane.h"
@@ -283,8 +285,16 @@ private:
     void clearSlot(int slot);
     void downmixSlot(int slot, const juce::String& name, wav::Placement placement);
     void normalizeSlot(int slot, const juce::String& name);
+    // The first step has ended, however it ended (#142); `stoppedAtGate`:
+    // the worker refused it before it read a byte, so no answer is coming.
+    void endNormalizeStep(int slot, bool stoppedAtGate);
+    void refuseNormalize(int slot, const juce::String& why);
+    // `measuredHash`: the single-slot path's — the bytes its first step
+    // measured, the only ones the job may write over (#142). Absent for the
+    // bulk apply, which asked once for whatever each slot holds.
     void enqueueNormalize(int slot, double target, int batch = 0,
-                          std::shared_ptr<std::atomic<int>> filePermille = nullptr);
+                          std::shared_ptr<std::atomic<int>> filePermille = nullptr,
+                          std::optional<std::string> measuredHash = std::nullopt);
     void showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition);
     void startNormalizeBatch(const std::vector<int>& slots, double target,
                              const juce::String& targetText);
@@ -312,7 +322,8 @@ private:
     // words for the column and the row, and what the command would do with
     // it — a toast, a refusal, or the window with the numbers in hand.
     void offerNormalize(int slot, const juce::String& name, double target,
-                        const LoudnessReport& report, const normalizeplan::Plan& plan);
+                        const LoudnessReport& report, const normalizeplan::Plan& plan,
+                        const std::string& measuredHash);
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);
     void stopLoudnessCheck();
@@ -364,6 +375,8 @@ private:
     int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
     bool checkStopping = false;
     std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
+    // The single-slot Normalize's first steps in flight (#142), one per slot.
+    normalizestep::StepsInFlight normalizeSteps;
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)

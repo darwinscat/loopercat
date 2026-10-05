@@ -1964,10 +1964,14 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     const double normalizeTarget = settings.file() != nullptr
         ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
         : kDefaultTargetLufs;
+    // Greyed while the slot's reading is pending, as the player's button is:
+    // the answer it would wait for is already on its way (#142).
+    const SlotTable::LoudnessCell* reading = table.loudnessFor(slot);
+    const bool readPending = (reading != nullptr && reading->pending) || normalizeSteps.contains(slot);
     menu.addItem(9,
                  "Normalize to " + SettingsDialog::formatLufs(normalizeTarget)
                      + juce::String::fromUTF8(" LUFS\xe2\x80\xa6"),
-                 occupied);
+                 occupied && !readPending);
     // The read-only counterpart (issue #61), and the way to stop a running
     // background check from wherever the player happens to right-click.
     if (checkId != 0)
@@ -2249,60 +2253,102 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
 // nothing; it does not come through here.
 void MainComponent::normalizeSlot(int slot, const juce::String& name)
 {
+    // One step per slot: a second request while the first still reads would
+    // open a second window over the same take. The menu item and the
+    // player's button are greyed meanwhile; this catches what slips past.
+    if (!normalizeSteps.start(slot))
+        return;
     const double target = currentTargetLufs();
     table.setLoudness(slot, { juce::String::fromUTF8("\xe2\x80\xa6"), false, true });
     player.setLoudnessPending(slot); // ignored unless that slot is loaded
     juce::Component::SafePointer<MainComponent> safe(this);
-    worker.enqueue(
-        { "Check slot " + juce::String(slot) + " before normalizing",
-          slot,
-          [slot, name, target, safe, rec = recorder,
-           logDir = settings.dataDir()](const volume::fs::path& volumePath) {
-              // A stored reading serves only if a plan can be made of it;
-              // one that cannot is measured over once.
-              const history::SlotLoudness read = history::recallOrReadSlotLoudness(
-                  volumePath, slot, *rec, [slot, target](const wav::LoudnessReading& known) {
-                      try {
-                          (void) normalizeplan::decide(slot, known, target);
-                          return true;
-                      } catch (const Error&) {
-                          return false;
-                      }
-                  });
-              if (!read.failure.empty())
-                  oplog::append(logDir, "slot " + juce::String(slot)
-                                            + " loudness reading not kept in the history: "
-                                            + utf8(read.failure));
-              const LoudnessReport report = describeReading(read.reading, target);
-              const normalizeplan::Plan plan = normalizeplan::decide(slot, read.reading, target);
-              // The line the old flow left in a history row goes to the log
-              // instead: the only record of a normalize that was not offered.
-              if (plan.outcome != normalizeplan::Plan::Outcome::apply)
-                  oplog::append(logDir, "normalize slot " + juce::String(slot) + " not offered: "
-                                            + (plan.words.empty() ? report.noteText
-                                                                  : utf8(plan.words)));
-              juce::MessageManager::callAsync([safe, slot, name, target, report, plan] {
-                  if (safe != nullptr)
-                      safe->offerNormalize(slot, name, target, report, plan);
-              });
-          },
-          nullptr, 0, /*background=*/true, /*quiet=*/true });
+    // Named as the job it leads to: a refusal at the worker's gate reads
+    // "Normalize slot N: …" like every other refusal of this action.
+    PedalWorker::Job step {
+        "Normalize slot " + juce::String(slot),
+        slot,
+        [slot, name, target, safe, rec = recorder,
+         logDir = settings.dataDir()](const volume::fs::path& volumePath) {
+            try {
+                const normalizestep::Step done = normalizestep::run(volumePath, slot, *rec, target);
+                if (!done.read.failure.empty())
+                    oplog::append(logDir, "slot " + juce::String(slot)
+                                              + " loudness reading not kept in the history: "
+                                              + utf8(done.read.failure));
+                const LoudnessReport report = describeReading(done.read.reading, target);
+                // The line the old flow left in a history row goes to the log
+                // instead: the only record of a normalize that was not offered.
+                if (done.plan.outcome != normalizeplan::Plan::Outcome::apply)
+                    oplog::append(logDir, "normalize slot " + juce::String(slot) + " not offered: "
+                                              + (done.plan.words.empty() ? report.noteText
+                                                                         : utf8(done.plan.words)));
+                juce::MessageManager::callAsync(
+                    [safe, slot, name, target, report, plan = done.plan, hash = done.read.hash] {
+                        if (safe != nullptr)
+                            safe->offerNormalize(slot, name, target, report, plan, hash);
+                    });
+            } catch (const std::exception& e) {
+                // No plan can be made of this take — none in the slot, bytes
+                // that are not the pedal's, a card that will not be read: the
+                // job would have refused it, and so does this, in one voice
+                // with the plan's own refusals. Nothing was opened to close.
+                const juce::String why = juce::String::fromUTF8(e.what());
+                oplog::append(logDir, "normalize slot " + juce::String(slot) + " not offered: " + why);
+                juce::MessageManager::callAsync([safe, slot, why] {
+                    if (safe != nullptr) {
+                        safe->table.clearPendingLoudness(slot); // the read will never land
+                        safe->player.clearLoudness(slot);
+                        safe->refuseNormalize(slot, why);
+                    }
+                });
+            }
+        },
+        nullptr,
+        0,
+        true, // background: read-only, never a reason to lock the UI
+        true  // quiet: what it found is said by offerNormalize, a refusal by the banner
+    };
+    // However the step ends — offered, refused, or stopped at the worker's
+    // gate before it read a byte — `after` runs, and posts after the step's
+    // own answer: the slot is free for the next request from then on.
+    step.after = [safe, slot](const std::string& error) {
+        juce::MessageManager::callAsync([safe, slot, stopped = !error.empty()] {
+            if (safe != nullptr)
+                safe->endNormalizeStep(slot, stopped);
+        });
+    };
+    worker.enqueue(std::move(step));
+}
+
+void MainComponent::endNormalizeStep(int slot, bool stoppedAtGate)
+{
+    normalizeSteps.end(slot);
+    if (stoppedAtGate) {
+        // The gate's own banner already says why; the "…" must not stay.
+        table.clearPendingLoudness(slot);
+        player.clearLoudness(slot);
+    }
+}
+
+void MainComponent::refuseNormalize(int slot, const juce::String& why)
+{
+    // Where every refused mutation lands, worded as the job would have
+    // failed — and it stays until the next job succeeds, unlike a toast:
+    // the fix for a damaged take is a re-push, and the reason must outlive
+    // the click. The job would have left a failed row too; this leaves none.
+    banners.showError(banners::Source::job, "Normalize slot " + juce::String(slot) + ": " + why);
 }
 
 void MainComponent::offerNormalize(int slot, const juce::String& name, double target,
-                                   const LoudnessReport& report, const normalizeplan::Plan& plan)
+                                   const LoudnessReport& report, const normalizeplan::Plan& plan,
+                                   const std::string& measuredHash)
 {
     applyLoudnessReport(slot, report, 0); // the take was read: the column and the row show it
     const juce::String label = name.isEmpty() ? juce::String(slot)
                                               : juce::String(slot) + " (" + name + ")";
     switch (plan.outcome) {
     case normalizeplan::Plan::Outcome::refuse:
-        // Where every refused mutation lands, worded as the job would have
-        // failed — and it stays until the next job succeeds, unlike a toast:
-        // the player has a take to re-push, and the reason must outlive the
-        // click. The job would have left a failed row too; this leaves none.
-        banners.showError(banners::Source::job,
-                          "Normalize slot " + juce::String(slot) + ": " + utf8(plan.words));
+        refuseNormalize(slot, utf8(plan.words));
         return;
     case normalizeplan::Plan::Outcome::nothingToDo:
         toast.show("Nothing to normalize in slot " + label + ": " + report.noteText);
@@ -2314,7 +2360,10 @@ void MainComponent::offerNormalize(int slot, const juce::String& name, double ta
     juce::AlertWindow::showAsync(
         juce::MessageBoxOptions()
             .withIconType(juce::MessageBoxIconType::WarningIcon)
-            .withTitle("Normalize slot " + label + " to " + targetText + "?")
+            // A capped boost stops short of the target by design: the title
+            // says where it heads, the first line how far it gets.
+            .withTitle("Normalize slot " + label + (plan.cappedByPeak ? " toward " : " to ")
+                       + targetText + "?")
             // The numbers lead; the sentence after them holds for a capped
             // boost too, which lands short of the target by design.
             .withMessage(utf8(plan.words)
@@ -2325,9 +2374,9 @@ void MainComponent::offerNormalize(int slot, const juce::String& name, double ta
                              "that is your undo."))
             .withButton("Normalize")
             .withButton("Cancel"),
-        [this, slot, target](int button) {
+        [this, slot, target, measuredHash](int button) {
             if (button == 1)
-                enqueueNormalize(slot, target);
+                enqueueNormalize(slot, target, 0, nullptr, measuredHash);
         });
 }
 
@@ -2337,12 +2386,13 @@ void MainComponent::offerNormalize(int slot, const juce::String& name, double ta
 // Batch jobs carry the batch id (for crediting and cancel) and feed the
 // overlay's current-file bar through `filePermille` (issue #61).
 void MainComponent::enqueueNormalize(int slot, double target, int batch,
-                                     std::shared_ptr<std::atomic<int>> filePermille)
+                                     std::shared_ptr<std::atomic<int>> filePermille,
+                                     std::optional<std::string> measuredHash)
 {
     releasePlayerIfHolding(slot, slot); // the rewrite happens under preview (issue #26)
     auto note = std::make_shared<juce::String>();
     const auto options = makeWriteOptions();
-    worker.enqueue(recorded(
+    PedalWorker::Job job = recorded(
         "normalize", options,
         { "Normalize slot " + juce::String(slot), slot,
           [slot, target, note, filePermille, options,
@@ -2361,7 +2411,13 @@ void MainComponent::enqueueNormalize(int slot, double target, int batch,
               *note = describeNormalize(result, target);
               oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
           },
-          note, batch }));
+          note, batch });
+    // The single-slot path was answered for the bytes its first step
+    // measured (#142): anything else in the slot by now is refused before
+    // the operation opens. The bulk apply asked once for whatever is there.
+    if (measuredHash.has_value())
+        job.before = normalizestep::guardedBefore(slot, *measuredHash, std::move(job.before));
+    worker.enqueue(std::move(job));
 }
 
 // Batch takeover (issue #61): the overlay swallows every click until the last
