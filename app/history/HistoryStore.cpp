@@ -417,10 +417,20 @@ std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slo
     read.bind(1, op).bind(2, slot).bindText(3, name);
     if (!read.step())
         return std::nullopt;
-    if (read.isNull(0) || read.isNull(2))
-        return std::nullopt; // no hash, or a stamp the store never asked for: uncertain
-    if (read.integer(1) != size || read.integer(2) != modifiedMs)
-        return std::nullopt; // the same name on a different file
+    if (read.isNull(0))
+        return std::nullopt; // no hash: the file changed while the app was away
+    if (read.integer(1) != size)
+        return std::nullopt; // the same name on a file of another size
+    // A row from before the store kept stamps (version 8 and older) can be
+    // asked only what it knows, name and size — the rule those rows were
+    // written under. Without it every slot of a migrated history would stand
+    // hash-less until audio landed in it, and nothing recorded there could be
+    // restored from the History window. The staleness this allows stays
+    // confined to those rows: a stamped row is held to its stamp.
+    if (read.isNull(2))
+        return read.blob(0);
+    if (read.integer(2) != modifiedMs)
+        return std::nullopt; // the same name and size on another file
     return read.blob(0);
 }
 

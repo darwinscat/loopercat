@@ -181,12 +181,14 @@ public:
     std::vector<int> touchedSlots(std::int64_t op);
     bool hasAfterAudio(std::int64_t op, int slot);
     // The hash the slot's newest row before `op` gives a file of this name —
-    // and only when that row carries a hash, and its size and modification
-    // time are the file's now. A newer row without a hash is the last word
-    // (the file changed while the app was away), a row without a stamp
-    // (older than store version 9) cannot vouch for the file, and a stamp
-    // or size that differ are another file under the same name: all of them
-    // absent, never guessed from an older row (#141 reads these hashes).
+    // and only when that row carries a hash, its size is the file's, and its
+    // modification time is the file's now. A newer row without a hash is the
+    // last word (the file changed while the app was away), and a stamp or
+    // size that differ are another file under the same name: absent, never
+    // guessed from an older row (#141 reads these hashes). A row written
+    // before the store kept stamps (version 8 and older) is held to name and
+    // size alone, as it was written: migrated histories keep their slots
+    // restorable, and the risk stays with those rows.
     std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, const std::string& name,
                                               std::int64_t size, std::int64_t modifiedMs);
 

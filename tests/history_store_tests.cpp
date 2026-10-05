@@ -719,8 +719,9 @@ int main()
     // about that file. It vouches for the file in front of the recorder only
     // when it carries a hash and its size and stamp are the file's now. A
     // newer row without a hash means the file changed while the app was away,
-    // and no older row may speak over it; a row from before the store kept
-    // stamps cannot vouch for anything.
+    // and no older row may speak over it. A row from before the store kept
+    // stamps is held to the rule it was written under, name and size — the
+    // one allowance, so a migrated history's slots stay restorable.
     {
         TempDir tmp;
         Ready r(tmp.path);
@@ -747,10 +748,16 @@ int main()
         const auto later = r.store.beginOp(r.session, "op-later", "rename", 4000);
         CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 2000).has_value());
         CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 1000).has_value()); // not even for the old stamp
-        // a row from before the store kept stamps cannot vouch for a file
+        // a row from before the store kept stamps is asked only what it knows:
+        // name and size carry its hash, whatever stamp the file has now; a
+        // different size is still another file
         sqlite::Statement unstamp(r.store.db(), "UPDATE slot_audio SET modified = NULL WHERE slot = 7");
         unstamp.run();
-        CHECK(!r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 1000).has_value());
+        CHECK(r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 1000) == HistoryStore::contentHash(take(3000, 152)));
+        CHECK(r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 987654321) == HistoryStore::contentHash(take(3000, 152)));
+        CHECK(!r.store.hashHeldBefore(later, 7, "007_1.WAV", 2999, 1000).has_value());
+        // and a stamped row stays held to its stamp: the allowance is for old rows only
+        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 1000).has_value());
         // another card's rows are another card's
         r.store.finishOp(later, OpStatus::done, "");
         const auto other = r.store.openSession(r.store.card("other", "RC-5", "Other", 5000), 5000);

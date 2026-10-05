@@ -638,6 +638,74 @@ int main()
     }
 
     {
+        // A history migrated from version 8 or older (every preview tester's)
+        // has rows with no stamp. Its slots must stay restorable: the newest
+        // such row carries its hash on name and size, as it was written —
+        // while a stamped row beside it is still held to its stamp.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 5, "005_1.WAV", 132300);
+        putWav(volume, 6, "006_1.WAV", 132300);
+        const fs::path fileFive = volume::wavDir(volume, 5) / "005_1.WAV";
+        const fs::path fileSix = volume::wavDir(volume, 6) / "006_1.WAV";
+        const std::string five = commands::readFileBytes(fileFive);
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(run(*rec, "op-old", "rename", volume, [&] {
+                     commands::rename(volume, 5, "Old", options(rec, "op-old"));
+                     commands::rename(volume, 6, "Older", options(rec, "op-old"));
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        // the rows as a pre-v9 store left them: no stamp
+        db.exec("UPDATE slot_audio SET modified = NULL");
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE modified IS NOT NULL"), 0);
+        // slot 5 untouched: the next rename carries the hash on name and size alone
+        CHECK_EQ(run(*rec, "op-five", "rename", volume, [&] {
+                     commands::rename(volume, 5, "Five", options(rec, "op-five"));
+                 }),
+                 std::string());
+        {
+            sqlite::Statement rowFive(db, "SELECT hex(a.hash), a.modified IS NULL FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                          "WHERE o.id = 'op-five' AND a.slot = 5 AND a.side = 'after'");
+            CHECK(rowFive.step());
+            std::string hexFive;
+            for (const char c : HistoryStore::contentHash(five)) {
+                static constexpr char digits[] = "0123456789ABCDEF";
+                const auto b = static_cast<unsigned char>(c);
+                hexFive += digits[b >> 4];
+                hexFive += digits[b & 0xF];
+            }
+            CHECK_EQ(rowFive.text(0), hexFive);
+            CHECK_EQ(rowFive.integer(1), 0); // and the new row is stamped
+        }
+        // slot 6 re-recorded in place, same size: the old row still vouches by
+        // name and size — the allowance's price, confined to pre-v9 rows —
+        // and from here on the slot's rows are stamped and held to it
+        std::string six = commands::readFileBytes(fileSix);
+        six.back() = static_cast<char>(six.back() ^ 0x5a);
+        commands::writeFileBytes(fileSix, six);
+        CHECK(juce::File(juce::String(fileSix.string())).setLastModificationTime(juce::Time(1'600'000'000'000)));
+        CHECK_EQ(run(*rec, "op-six", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six", options(rec, "op-six"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six' AND a.slot = 6 AND a.hash IS NOT NULL AND a.modified = 1600000000000"),
+                 1);
+        // now re-record again under the stamped row: another stamp, no hash
+        six.back() = static_cast<char>(six.back() ^ 0x3c);
+        commands::writeFileBytes(fileSix, six);
+        CHECK(juce::File(juce::String(fileSix.string())).setLastModificationTime(juce::Time(1'600'000'010'000)));
+        CHECK_EQ(run(*rec, "op-six-again", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six again", options(rec, "op-six-again"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six-again' AND a.slot = 6 AND a.hash IS NULL AND a.modified = 1600000010000"),
+                 1);
+    }
+
+    {
         // A failed operation is not written down as a state. The failure that
         // discriminates is one whose audio hooks never fire — a rename cannot
         // touch a take — and that still gets far enough to be announced: the
