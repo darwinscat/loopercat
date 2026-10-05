@@ -277,7 +277,7 @@ void HistoryStore::finishOp(std::int64_t op, OpStatus status, const std::string&
 void HistoryStore::recordPresentAudio(std::int64_t op, int slot, int track,
                                       const std::string& name, std::int64_t size,
                                       const std::optional<std::string>& hash,
-                                      std::int64_t modifiedMs)
+                                      std::optional<std::int64_t> modifiedMs)
 {
     sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash, modified) "
                                "VALUES (?1, ?2, 'after', ?3, ?4, ?5, ?6, ?7)");
@@ -286,7 +286,10 @@ void HistoryStore::recordPresentAudio(std::int64_t op, int slot, int track,
         row.bindBlob(6, *hash);
     else
         row.bindNull(6);
-    row.bind(7, modifiedMs);
+    if (modifiedMs)
+        row.bind(7, *modifiedMs);
+    else
+        row.bindNull(7);
     row.run();
 }
 
@@ -402,9 +405,8 @@ bool HistoryStore::hasAfterAudio(std::int64_t op, int slot)
     return read.step();
 }
 
-std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot,
-                                                        const std::string& name, std::int64_t size,
-                                                        std::int64_t modifiedMs)
+HistoryStore::Held HistoryStore::heldBefore(std::int64_t op, int slot, const std::string& name,
+                                            std::int64_t size, std::int64_t modifiedMs)
 {
     // The newest row for this file name, whatever it says: a row with no
     // hash is the slot's last word about the file, and an older row with
@@ -417,22 +419,33 @@ std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slo
                                 "ORDER BY op DESC LIMIT 1");
     read.bind(1, op).bind(2, slot).bindText(3, name);
     if (!read.step())
-        return std::nullopt;
+        return { std::nullopt, modifiedMs };
     if (read.isNull(0))
-        return std::nullopt; // no hash: the file changed while the app was away
+        return { std::nullopt, modifiedMs }; // no hash: the file changed while the app was away
     if (read.integer(1) != size)
-        return std::nullopt; // the same name on a file of another size
+        return { std::nullopt, modifiedMs }; // the same name on a file of another size
     // A row from before the store kept stamps (version 8 and older) can be
     // asked only what it knows, name and size — the rule those rows were
     // written under. Without it every slot of a migrated history would stand
     // hash-less until audio landed in it, and nothing recorded there could be
-    // restored from the History window. The staleness this allows stays
-    // confined to those rows: a stamped row is held to its stamp.
+    // restored from the History window. The hash it vouches for goes on
+    // WITHOUT the file's stamp: a stamp beside it would turn a guess by name
+    // and size into a row that names the very file it saw, and #141 trusts
+    // such a row (a file overwritten outside the app with one of the same
+    // size, then renamed, read as the old take). So the allowance stays with
+    // those rows and the rows they vouch for, until audio lands in the slot.
     if (read.isNull(2))
-        return read.blob(0);
+        return { read.blob(0), std::nullopt };
     if (read.integer(2) != modifiedMs)
-        return std::nullopt; // the same name and size on another file
-    return read.blob(0);
+        return { std::nullopt, modifiedMs }; // the same name and size on another file
+    return { read.blob(0), modifiedMs };
+}
+
+std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot,
+                                                        const std::string& name, std::int64_t size,
+                                                        std::int64_t modifiedMs)
+{
+    return heldBefore(op, slot, name, size, modifiedMs).hash;
 }
 
 std::optional<std::int64_t> HistoryStore::cardFor(const std::string& markerId)
@@ -444,12 +457,57 @@ std::optional<std::int64_t> HistoryStore::cardFor(const std::string& markerId)
     return find.integer(0);
 }
 
+void HistoryStore::recordSighting(std::int64_t card, int slot, const std::string& name,
+                                  std::int64_t size, std::int64_t modifiedMs,
+                                  const std::string& hash, std::int64_t nowMs)
+{
+    if (hash.size() != 32)
+        throw Error("a content hash is 32 bytes, not " + std::to_string(hash.size()));
+    sqlite::Statement row(db_, "INSERT INTO take_sightings(card, slot, name, size, modified, hash, at) "
+                               "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) "
+                               "ON CONFLICT(card, slot, name, size, modified) "
+                               "DO UPDATE SET hash = excluded.hash, at = excluded.at");
+    row.bind(1, card).bind(2, slot).bindText(3, name).bind(4, size).bind(5, modifiedMs)
+        .bindBlob(6, hash).bind(7, nowMs).run();
+}
+
 std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int slot,
                                                         const TakeSighting& seen)
 {
     constexpr int kFirstTrack = 1; // the take the LUFS column measures (SlotLoudness.h)
+    // The slot's last operation on this card: the newest that recorded
+    // anything about it, a body or a take, either side.
+    struct Touch {
+        std::int64_t op;
+        std::int64_t at;
+    };
+    std::optional<Touch> last;
+    {
+        sqlite::Statement read(db_, "SELECT o.seq, o.at FROM ops o JOIN sessions s ON s.id = o.session "
+                                    "WHERE s.card = ?1 AND o.seq IN (SELECT op FROM slot_changes WHERE slot = ?2 "
+                                    "UNION SELECT op FROM slot_audio WHERE slot = ?2) "
+                                    "ORDER BY o.seq DESC LIMIT 1");
+        read.bind(1, card).bind(2, slot);
+        if (read.step())
+            last = Touch { read.integer(0), read.integer(1) };
+    }
+    // A read of these very facts since then is the newest word: the bytes
+    // were hashed under them, so it outranks a row that only named the file
+    // — the pedal's clock can give a new recording the old row's facts, and
+    // a read is how the history learns that. WavLen is not asked of a read:
+    // the hash is of the bytes themselves. A read older than the slot's last
+    // operation is history (a clear, a swap, a write came after it).
+    {
+        sqlite::Statement read(db_, "SELECT hash, at FROM take_sightings WHERE card = ?1 AND slot = ?2 "
+                                    "AND name = ?3 AND size = ?4 AND modified = ?5");
+        read.bind(1, card).bind(2, slot).bindText(3, seen.name).bind(4, seen.size).bind(5, seen.modifiedMs);
+        if (read.step() && (!last || read.integer(1) > last->at))
+            return read.blob(0);
+    }
+    if (!last)
+        return std::nullopt; // the history never recorded this slot
     // The newest row for this file on this card's slot, whatever it says.
-    sqlite::Statement row(db_, "SELECT a.op, a.hash, a.size, a.modified FROM slot_audio a "
+    sqlite::Statement row(db_, "SELECT a.op, a.hash, a.size, a.modified, o.status, o.kind FROM slot_audio a "
                                "JOIN ops o ON o.seq = a.op JOIN sessions s ON s.id = o.session "
                                "WHERE s.card = ?1 AND a.slot = ?2 AND a.side = 'after' "
                                "AND a.track = ?3 AND a.name = ?4 ORDER BY a.op DESC LIMIT 1");
@@ -464,12 +522,13 @@ std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int s
     // row never saw. The pedal stamps what it records with a clock that does
     // not keep the date (it read May 1 2019 on 2026-08-10, hardware), so two
     // of its recordings of one length can carry the same three facts.
-    sqlite::Statement later(db_, "SELECT 1 FROM (SELECT op FROM slot_changes WHERE slot = ?2 AND op > ?3 "
-                                 "UNION ALL SELECT op FROM slot_audio WHERE slot = ?2 AND op > ?3) t "
-                                 "JOIN ops o ON o.seq = t.op JOIN sessions s ON s.id = o.session "
-                                 "WHERE s.card = ?1 LIMIT 1");
-    later.bind(1, card).bind(2, slot).bind(3, op);
-    if (later.step())
+    if (op != last->op)
+        return std::nullopt;
+    // Only a finished operation says what the slot holds: a write that failed
+    // after its take landed left the card wherever the failure did. A first
+    // sighting is the exception — it commits each slot whole, body and takes,
+    // so its rows stand while it is still running or was interrupted.
+    if (row.text(4) != "done" && row.text(5) != "snapshot")
         return std::nullopt;
     if (row.isNull(1))
         return std::nullopt; // the bytes were strange to the store when it last looked
@@ -477,7 +536,8 @@ std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int s
         return std::nullopt;
     // Stored and sighted stamps are the same platform number for the same
     // file, so equal or not — FAT's two-second steps make a tolerance a way
-    // of mistaking two files for one. A row without a stamp cannot match.
+    // of mistaking two files for one. A row without a stamp cannot match:
+    // older than version 9, or vouched for by such a row.
     if (row.isNull(3) || row.integer(3) != seen.modifiedMs)
         return std::nullopt;
     const std::string hash = row.blob(1);
@@ -861,6 +921,10 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
     if (plan.inFlight) throw Error("the slot's history is still being recorded; try again when it finishes");
     if (plan.hasHolds() && !confirmHolds)
         throw Error("clearing pinned entries or Undo/Redo targets needs a separate confirmation");
+    // What reads saw in the slot (#141) goes with what the operations said:
+    // a forgotten slot leaves nothing that names its takes.
+    sqlite::Statement sightings(db_, "DELETE FROM take_sightings WHERE card = ?1 AND slot = ?2");
+    sightings.bind(1, cardId).bind(2, slot).run();
     if (!plan.operations.empty()) {
         // A forgotten slot is only an omission of the FIRST SIGHTING when the
         // snapshot is what recorded it. A slot the snapshot never reached must

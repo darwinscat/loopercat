@@ -53,8 +53,20 @@
 //                the name and the size it tells a later connect whether the
 //                file in the slot is still the one that was measured,
 //                without reading it (#141). NULL on `after` rows older than
-//                the column, and on `before` rows: an archived take is
+//                the column, on the rows whose hash such a row vouched for
+//                by name and size alone (HistoryStore::heldBefore: a guess
+//                stays a guess), and on `before` rows: an archived take is
 //                leaving its slot, and no connect will meet it there.
+//   take_sightings
+//                what a real read of a take saw (#141): the directory
+//                entry's name, size and stamp, the hash of the bytes read
+//                under them, and when. A connect believes the newest word
+//                about a slot, and a read is one: the pedal stamps what it
+//                records off a clock that does not keep the date, so a loop
+//                of the same length recorded again can carry the very same
+//                name, size and stamp as the take a row names, and only a
+//                read of the bytes tells the two apart. By card and slot;
+//                forgetting a slot's history takes its sightings with it.
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -78,7 +90,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 9;
+inline constexpr std::int64_t kVersion = 10;
 
 // Version 5 is the first supported store. Future steps append to this array;
 // kSteps[N] creates version kBaseVersion + N in the same transaction.
@@ -215,6 +227,21 @@ CREATE TABLE loudness_readings(
 -- the rows that say what a slot holds. NULL on those written before this
 -- version, and on the rows of archived takes.
 ALTER TABLE slot_audio ADD COLUMN modified INTEGER;
+)sql",
+R"sql(
+-- What a real read of a take saw (#141), by card and slot: the directory
+-- entry's facts and the hash of the bytes read under them. One row per file
+-- the slot was seen to hold; the same facts read again keep the newest hash.
+CREATE TABLE take_sightings(
+    card     INTEGER NOT NULL REFERENCES cards(id),
+    slot     INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
+    name     TEXT    NOT NULL,
+    size     INTEGER NOT NULL CHECK (size >= 0),
+    modified INTEGER NOT NULL,
+    hash     BLOB    NOT NULL CHECK (length(hash) = 32),
+    at       INTEGER NOT NULL,
+    PRIMARY KEY (card, slot, name, size, modified)
+) STRICT;
 )sql",
 };
 

@@ -75,6 +75,13 @@ public:
     // alone. Returns whether the reading went in; the store's own refusals
     // (a hash of the wrong length, a value that is not a number) throw.
     bool reading(const std::string& hash, const wav::LoudnessReading& reading);
+    // What a real read of a take on `volume` saw (#141): the file's name,
+    // size and stamp, and the hash of the bytes read under them — filed for
+    // the card whose session is open on that volume, and not otherwise: a
+    // read of another card, or of a card no session has opened yet, is not
+    // this history's to place. Returns whether the sighting went in.
+    bool sighted(const std::filesystem::path& volume, int slot, const std::string& name,
+                 std::int64_t size, std::int64_t modifiedMs, const std::string& hash);
     // `error` empty = the job succeeded, and `note` is the line the job wrote
     // about itself ("normalized -3.2 dB", "already at -18.0 LUFS") — the only
     // record of an operation that decided to change nothing, and empty for the
@@ -141,9 +148,10 @@ private:
     // and a rename would leave no sign that the slot held a take at all.
     // Hashes are carried only where they are certain — from the slot's own
     // last state, or, for a swap, from the slot it exchanged with, and only
-    // when that state's size and stamp are the file's now. A file the store
-    // has never seen, or has seen change since, is recorded by name and
-    // size, with no hash.
+    // when that state's size and stamp are the file's now — or, from a row
+    // older than the stamps, on name and size, and then without a stamp of
+    // its own (HistoryStore::heldBefore). A file the store has never seen,
+    // or has seen change since, is recorded by name and size, with no hash.
     void recordWhatSlotsHold(const Operation& op);
     std::int64_t sessionFor(const std::filesystem::path& volume);
 

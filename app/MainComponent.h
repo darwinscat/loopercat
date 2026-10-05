@@ -306,7 +306,8 @@ private:
     void enqueueLoudnessRead(int slot, double target, int batch);
     // A reading the player's own pass took, into the history under the hash
     // of the bytes it metered (#140) — on the worker, the store's thread.
-    void keepReading(std::string hash, wav::LoudnessReading reading);
+    void keepReading(std::string hash, wav::LoudnessReading reading, int slot,
+                     std::optional<TakeFacts> seen);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
     // The column from what the history already knows (#141): the slots with
     // a take and an empty cell, put to the store by the facts the scan read
@@ -363,6 +364,10 @@ private:
     int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
     bool checkStopping = false;
     std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
+    // The slots whose record the LUFS column from the history (#141) could
+    // not read, logged already for this connection: touched by the worker's
+    // jobs only, and a new set per card.
+    std::shared_ptr<std::set<int>> inferenceProblemsLogged = std::make_shared<std::set<int>>();
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)

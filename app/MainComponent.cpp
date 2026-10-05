@@ -366,10 +366,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     // and so did the hash of what it read — the history keeps the number
     // under it (#140), after the words are on screen.
     player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading,
-                                   const std::string& hash) {
+                                   const std::string& hash, const std::optional<TakeFacts>& seen) {
         applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
         if (!hash.empty()) // empty: the core would not measure these bytes to this number
-            keepReading(hash, reading);
+            keepReading(hash, reading, slot, seen);
     };
     player.onNormalize = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
@@ -1716,8 +1716,10 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
 {
     const lifecycle::State previousState = snapshot.state;
     const bool anotherVolume = latest.volume != snapshot.volume;
-    if (anotherVolume)
+    if (anotherVolume) {
         table.clearAllLoudness(); // another card is another set of files; readings do not travel
+        inferenceProblemsLogged = std::make_shared<std::set<int>>(); // and its problems were its own (#141)
+    }
     snapshot = latest;
     if (anotherVolume)
         refreshUndoOffer(); // what Undo offers is read for the card in front of it
@@ -2444,15 +2446,20 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
 // The player's pass metered the loaded loop on its own thread; the history
 // is the worker's, so the number crosses over as a job of its own — one that
 // reads no card and tells nobody anything: the words are already on screen,
-// and a history with no card in front of it simply takes nothing.
-void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading)
+// and a history with no card in front of it simply takes nothing. What the
+// pass saw goes with it (#141): the file's facts under the hash, filed for
+// the card mounted now, so the next connect knows the file by its bytes.
+void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading, int slot,
+                                std::optional<TakeFacts> seen)
 {
     worker.enqueue({ "Keep a loudness reading",
                      0,
-                     [rec = recorder, key = std::move(hash), reading,
+                     [rec = recorder, key = std::move(hash), reading, slot, facts = std::move(seen),
+                      mounted = volume::fs::path(snapshot.volume),
                       logDir = settings.dataDir()](const volume::fs::path&) {
                          try {
-                             rec->reading(key, reading);
+                             if (rec->reading(key, reading) && facts)
+                                 rec->sighted(mounted, slot, facts->name, facts->size, facts->modifiedMs, key);
                          } catch (const std::exception& e) {
                              oplog::append(logDir, "loudness reading not kept in the history: "
                                                        + juce::String::fromUTF8(e.what()));
@@ -2499,18 +2506,27 @@ void MainComponent::inferLoudnessFromHistory()
         { "Read loudness readings from the history",
           0,
           [rec = recorder, markerId = card->id, sightings, target = currentTargetLufs(), safe,
+           logged = inferenceProblemsLogged, logDir = settings.dataDir(),
            alive = uiAlive](const volume::fs::path&) {
               const std::optional<std::int64_t> cardRow = rec->store().cardFor(markerId);
               if (!cardRow)
                   return;
+              const history::Inference inference = history::inferLoudness(rec->store(), *cardRow, sightings);
+              // A slot whose record could not be read answers nothing; it is
+              // said in the log once a connection, not on every snapshot.
+              for (const history::SlotProblem& problem : inference.problems)
+                  if (logged->insert(problem.slot).second)
+                      oplog::append(logDir, "slot " + juce::String(problem.slot)
+                                                + ": the history's record of its take could not be read "
+                                                  "for the LUFS column: "
+                                                + juce::String::fromUTF8(problem.what.c_str()));
               struct Found {
                   history::SlotSighting sighted;
                   LoudnessReport report;
                   std::int64_t measuredMs;
               };
               std::vector<Found> found;
-              for (const history::InferredReading& inferred :
-                   history::inferLoudness(rec->store(), *cardRow, sightings))
+              for (const history::InferredReading& inferred : inference.found)
                   found.push_back({ inferred.sighted, describeReading(inferred.reading, target),
                                     inferred.measuredMs });
               if (found.empty())

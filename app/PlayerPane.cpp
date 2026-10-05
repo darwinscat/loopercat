@@ -332,26 +332,38 @@ void PlayerPane::ReadPass::start(std::vector<juce::File> files, int slot)
     startThread();
 }
 
+namespace {
+std::filesystem::path pathOf(const juce::File& file)
+{
+    const juce::String full = file.getFullPathName();
+    const char* utf8 = full.toRawUTF8();
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(utf8)));
+}
+} // namespace
+
 // The key a metered take is filed under (#140), or nothing. Nothing when the
 // core would not measure these bytes (JUCE decodes files the core refuses,
 // and pads a truncated one to its header's length — its number is then not
 // the core's), when JUCE did not decode the frames the core would measure
 // (a RIFF size field that ends early leaves it a reader of 0 frames over a
-// file the core reads whole), when the file changed under the pass (size or
-// stamp differ from before the decode: the number and the hash would be of
-// two files), and when the hash read stopped short. The hash is streamed, a
-// second pass over the file; a take of any length stays out of memory.
+// file the core reads whole), when the file changed under the pass (its one
+// stat — size and stamp — differs from before the decode, or there was none:
+// the number and the hash would be of two files), and when the hash read
+// stopped short. The hash is streamed, a second pass over the file; a take
+// of any length stays out of memory.
 std::string PlayerPane::ReadPass::fileKey(const juce::File& file,
                                           const juce::AudioFormatReader& reader,
-                                          juce::int64 sizeBefore, juce::Time modifiedBefore)
+                                          const std::optional<history::FileStat>& before)
 {
+    if (!before)
+        return {};
     const auto info = readerloudness::measurableInfo(file);
     if (!info || !readerloudness::decodesAsCore(reader, *info))
         return {};
     const auto hash = history::fileContentHash(file, [this] { return threadShouldExit(); });
     if (!hash)
         return {};
-    if (file.getSize() != sizeBefore || file.getLastModificationTime() != modifiedBefore)
+    if (history::statFile(pathOf(file)) != before)
         return {};
     return *hash;
 }
@@ -361,10 +373,11 @@ void PlayerPane::ReadPass::run()
     const int slot = slot_;
     juce::Component::SafePointer<PlayerPane> owner(&owner_);
     const auto finish = [owner, slot](std::optional<wav::LoudnessReading> reading,
-                                      std::string hash) {
-        juce::MessageManager::callAsync([owner, slot, reading, key = std::move(hash)] {
+                                      std::string hash, std::optional<TakeFacts> seen) {
+        juce::MessageManager::callAsync([owner, slot, reading, key = std::move(hash),
+                                         facts = std::move(seen)] {
             if (owner != nullptr)
-                owner->passFinished(slot, reading, key);
+                owner->passFinished(slot, reading, key, facts);
         });
     };
     // The meter measures one loop; a multi-track memory draws its lanes and
@@ -372,21 +385,22 @@ void PlayerPane::ReadPass::run()
     const bool measure = files_.size() == 1;
     std::optional<wav::LoudnessReading> reading;
     std::string hash; // of the bytes metered: the key the reading is filed under (#140)
+    std::optional<TakeFacts> seen; // the file the hash is of, as its stat read it (#141)
     for (std::size_t lane = 0; lane < files_.size() && lane < 2; ++lane) {
         juce::AudioThumbnail& thumbnail = owner_.thumbnailFor(static_cast<int>(lane));
         if (files_[lane] == juce::File()) {
             thumbnail.reset(2, 44100.0, 0); // a track without a take: an empty lane, drawn
             continue;
         }
-        // What the file was before the decode began: a replace under the pass
-        // shows as a changed size or stamp afterwards, and then nothing is filed.
-        const juce::int64 sizeBefore = files_[lane].getSize();
-        const juce::Time modifiedBefore = files_[lane].getLastModificationTime();
+        // What the file was before the decode began, from one stat: a
+        // replace under the pass shows as a changed size or stamp afterwards,
+        // and then nothing is filed.
+        const std::optional<history::FileStat> before = history::statFile(pathOf(files_[lane]));
         std::unique_ptr<juce::AudioFormatReader> reader(
             owner_.engine_.formats().createReaderFor(files_[lane]));
         if (reader == nullptr || reader->numChannels < 1) {
             if (measure)
-                finish(std::nullopt, {});
+                finish(std::nullopt, {}, std::nullopt);
             return;
         }
         const int channels = static_cast<int>(reader->numChannels);
@@ -426,21 +440,25 @@ void PlayerPane::ReadPass::run()
             return; // stopped for a newer file: no verdict, and no message
         if (measure) {
             if (position < total || !metered) {
-                finish(std::nullopt, {}); // a short read is not a reading
+                finish(std::nullopt, {}, std::nullopt); // a short read is not a reading
                 return;
             }
             reading = meter->reading();
-            hash = fileKey(files_[lane], *reader, sizeBefore, modifiedBefore);
+            hash = fileKey(files_[lane], *reader, before);
             if (threadShouldExit())
                 return; // the hash read was cut short for a newer file
+            if (!hash.empty()) // fileKey proved `before` is the file the hash is of; the
+                               // name spelled as the scan spells it (TakeFacts.h)
+                seen = TakeFacts { pathOf(files_[lane]).filename().string(), before->size,
+                                   before->modifiedMs };
         }
     }
     if (measure)
-        finish(reading, hash);
+        finish(reading, hash, seen);
 }
 
 void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> reading,
-                              std::string contentHash)
+                              std::string contentHash, std::optional<TakeFacts> seen)
 {
     if (slot != slot_)
         return; // the pass for a slot no longer loaded
@@ -452,7 +470,7 @@ void PlayerPane::passFinished(int slot, std::optional<wav::LoudnessReading> read
         return;
     }
     if (onLoudnessRead)
-        onLoudnessRead(slot, *reading, contentHash); // the owner answers with setLoudness
+        onLoudnessRead(slot, *reading, contentHash, seen); // the owner answers with setLoudness
 }
 
 // The readout sits right after the name and takes what is left of the row

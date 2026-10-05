@@ -30,6 +30,17 @@
 //     store still knows nothing about the bytes really there, so a step that
 //     reads and hashes them must measure, and normalize, which reads them,
 //     decides by them against a target the guess says is already met
+//   - and a real read corrects it (review S3): after Check loudness reads the
+//     new bytes under the same facts, the next inference answers their
+//     reading, never the old one — and a read whose bytes have no reading
+//     answers nothing
+//   - a migrated history (rows with no stamp) never infers through a row it
+//     vouched for by name and size: a file overwritten outside the app with
+//     one of the same size, then renamed, is not read as the old take
+//     (review S1), while the slot stays restorable; on a v9 history the
+//     same steps carry no hash at all
+//   - a slot whose recorded body cannot be read answers nothing and is
+//     reported by its slot; the other slots are still answered
 
 #include "support.hpp"
 
@@ -230,7 +241,7 @@ int main()
     // --- the measured take is recognised on sight; the other is nothing ---
     {
         const auto before = rows(store.db());
-        const auto found = history::inferLoudness(store, card, { sight(volume, 3), sight(volume, 4) });
+        const auto found = history::inferLoudness(store, card, { sight(volume, 3), sight(volume, 4) }).found;
         CHECK_EQ(found.size(), 1u);
         if (!found.empty()) {
             CHECK_EQ(found.front().sighted.slot, 3);
@@ -252,7 +263,7 @@ int main()
     {
         CHECK(!store.cardFor("never-met").has_value());
         const auto other = store.card("other-card", "RC-5", "Other", 5);
-        CHECK(history::inferLoudness(store, other, { sight(volume, 3) }).empty());
+        CHECK(history::inferLoudness(store, other, { sight(volume, 3) }).found.empty());
         store.selectCard(card);
     }
 
@@ -262,7 +273,7 @@ int main()
                      commands::rename(volume, 3, "Intro", options(rec, "op-rename"));
                  }),
                  std::string());
-        const auto found = history::inferLoudness(store, card, { sight(volume, 3) });
+        const auto found = history::inferLoudness(store, card, { sight(volume, 3) }).found;
         CHECK_EQ(found.size(), 1u);
         CHECK(!found.empty() && same(found.front().reading, measured.reading));
     }
@@ -276,13 +287,13 @@ int main()
         CHECK(volume::listSlotWavs(volume, 3).empty()); // the take went to 7
         const auto moved = sight(volume, 7);
         CHECK_EQ(moved.take.name, std::string("loud.wav"));
-        const auto found = history::inferLoudness(store, card, { moved });
+        const auto found = history::inferLoudness(store, card, { moved }).found;
         CHECK_EQ(found.size(), 1u);
         CHECK(!found.empty() && same(found.front().reading, measured.reading));
         // the slot it left: the swap is that slot's last word, whatever the facts
         history::SlotSighting left = moved;
         left.slot = 3;
-        CHECK(history::inferLoudness(store, card, { left }).empty());
+        CHECK(history::inferLoudness(store, card, { left }).found.empty());
     }
 
     // --- a swap renames a take under the pedal's own name: nothing follows ---
@@ -295,20 +306,20 @@ int main()
                  std::string());
         const history::SlotLoudness five = history::readSlotLoudness(volume, 5, *rec);
         CHECK(five.kept);
-        CHECK_EQ(history::inferLoudness(store, card, { sight(volume, 5) }).size(), 1u);
+        CHECK_EQ(history::inferLoudness(store, card, { sight(volume, 5) }).found.size(), 1u);
         CHECK_EQ(run(*rec, "op-swap-5-8", "swap", volume, [&] {
                      commands::swap(volume, 5, 8, options(rec, "op-swap-5-8"));
                  }),
                  std::string());
         const auto renamed = sight(volume, 8);
         CHECK_EQ(renamed.take.name, std::string("008_1.WAV")); // retitled to its new address
-        CHECK(history::inferLoudness(store, card, { renamed }).empty());
+        CHECK(history::inferLoudness(store, card, { renamed }).found.empty());
         // the same bytes under the old name, asked of either slot: nothing
         history::SlotSighting asBefore = renamed;
         asBefore.take.name = "005_1.WAV";
-        CHECK(history::inferLoudness(store, card, { asBefore }).empty());
+        CHECK(history::inferLoudness(store, card, { asBefore }).found.empty());
         asBefore.slot = 5;
-        CHECK(history::inferLoudness(store, card, { asBefore }).empty());
+        CHECK(history::inferLoudness(store, card, { asBefore }).found.empty());
         // the reading itself is still in the history, under the bytes
         CHECK(store.readingFor(five.hash).has_value());
     }
@@ -323,18 +334,18 @@ int main()
         const history::SlotSighting trimmed = sight(volume, 7);
         CHECK_EQ(trimmed.take.frames, 44100);
         CHECK(trimmed.take.size < whole.take.size);
-        CHECK(history::inferLoudness(store, card, { trimmed }).empty());
-        CHECK(history::inferLoudness(store, card, { whole }).empty()); // the old facts: the newest row is the last word
+        CHECK(history::inferLoudness(store, card, { trimmed }).found.empty());
+        CHECK(history::inferLoudness(store, card, { whole }).found.empty()); // the old facts: the newest row is the last word
         // a read measures the new take and files it: recognised from then on
         const history::SlotLoudness again = history::readSlotLoudness(volume, 7, *rec);
         CHECK(again.kept);
-        const auto found = history::inferLoudness(store, card, { trimmed });
+        const auto found = history::inferLoudness(store, card, { trimmed }).found;
         CHECK_EQ(found.size(), 1u);
         CHECK(!found.empty() && same(found.front().reading, again.reading));
         // and a stamp one step off is another file: nothing
         history::SlotSighting later = trimmed;
         later.take.modifiedMs += 2000; // FAT's step
-        CHECK(history::inferLoudness(store, card, { later }).empty());
+        CHECK(history::inferLoudness(store, card, { later }).found.empty());
     }
 
     // --- the same bytes in another slot: their reading travels with them ---
@@ -345,7 +356,7 @@ int main()
                  }),
                  std::string());
         const history::SlotSighting pushed = sight(volume, 10);
-        const auto found = history::inferLoudness(store, card, { pushed });
+        const auto found = history::inferLoudness(store, card, { pushed }).found;
         CHECK_EQ(found.size(), 1u); // never measured in slot 10, measured as bytes in slot 3
         CHECK(!found.empty() && same(found.front().reading, measured.reading));
         CHECK_EQ(run(*rec, "op-clear-10", "clear", volume, [&] {
@@ -358,7 +369,7 @@ int main()
         // same length off a clock that does not keep the date. The history
         // saw the slot emptied after its row: that row is not the slot's
         // word any more.
-        CHECK(history::inferLoudness(store, card, { pushed }).empty());
+        CHECK(history::inferLoudness(store, card, { pushed }).found.empty());
     }
 
     // --- fooled, and harmless: the decision reads the bytes (#142) ---
@@ -384,7 +395,7 @@ int main()
         CHECK_EQ(after.take.frames, before.take.frames);
         // The limit the issue names: the inference cannot tell, and says the
         // loud take's number for the quiet take's bytes.
-        const auto fooled = history::inferLoudness(store, card, { after });
+        const auto fooled = history::inferLoudness(store, card, { after }).found;
         CHECK_EQ(fooled.size(), 1u);
         CHECK(!fooled.empty() && same(fooled.front().reading, measured.reading));
         // What a decision asks instead: the store, by the hash of the bytes
@@ -415,6 +426,107 @@ int main()
         // while the loud take's reading stands as it was
         const auto loudStill = store.readingFor(measured.hash);
         CHECK(loudStill && same(loudStill->reading, measured.reading));
+    }
+
+    // --- a real read corrects the guess (review S3) ---
+    {
+        CHECK_EQ(run(*rec, "op-push-12", "push", volume, [&] {
+                     commands::push(volume, loud, 12, { .write = options(rec, "op-push-12") });
+                 }),
+                 std::string());
+        const history::SlotSighting before = sight(volume, 12);
+        // the pedal records the slot again, the same length, off a clock that
+        // does not keep the date: the same name, size, stamp and WavLen
+        const fs::path take12 = volume::wavDir(volume, 12) / before.take.name;
+        commands::writeFileBytes(take12, commands::readFileBytes(
+                                             volume::wavDir(volume, 4) / volume::listSlotWavs(volume, 4).front()));
+        setStamp(take12, before.take.modifiedMs);
+        const history::SlotSighting again = sight(volume, 12);
+        CHECK_EQ(again.take.modifiedMs, before.take.modifiedMs);
+        CHECK_EQ(again.take.size, before.take.size);
+        const auto guessed = history::inferLoudness(store, card, { again }).found;
+        CHECK(guessed.size() == 1u && same(guessed.front().reading, measured.reading)); // fooled, as before
+        // Check loudness reads the bytes: the new reading, and what the read saw
+        const history::SlotLoudness checked = history::readSlotLoudness(volume, 12, *rec);
+        CHECK(checked.kept);
+        CHECK(checked.failure.empty());
+        CHECK(checked.hash != measured.hash);
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM take_sightings WHERE slot = 12"), 1);
+        // the next connect: the read's word, never the old take's
+        const auto corrected = history::inferLoudness(store, card, { again }).found;
+        CHECK_EQ(corrected.size(), 1u);
+        CHECK(!corrected.empty() && same(corrected.front().reading, checked.reading));
+        CHECK(!corrected.empty() && !same(corrected.front().reading, measured.reading));
+        // a read whose bytes have no reading on file answers nothing — not the old take
+        store.recordSighting(card, 12, again.take.name, again.take.size, again.take.modifiedMs,
+                             HistoryStore::contentHash("bytes nobody measured"), tick());
+        CHECK(history::inferLoudness(store, card, { again }).found.empty());
+    }
+
+    // --- a migrated history never infers through a row it vouched for (review S1) ---
+    {
+        CHECK_EQ(run(*rec, "op-push-13", "push", volume, [&] {
+                     commands::push(volume, loud, 13, { .write = options(rec, "op-push-13") });
+                 }),
+                 std::string());
+        // the push's row as a store older than version 9 left it: no stamp
+        store.db().exec("UPDATE slot_audio SET modified = NULL WHERE slot = 13");
+        // overwritten outside the app: another loop, the same size, a new stamp
+        const history::SlotSighting pushed = sight(volume, 13);
+        const fs::path take13 = volume::wavDir(volume, 13) / pushed.take.name;
+        const std::string quietBytes =
+            commands::readFileBytes(volume::wavDir(volume, 4) / volume::listSlotWavs(volume, 4).front());
+        commands::writeFileBytes(take13, quietBytes);
+        setStamp(take13, pushed.take.modifiedMs + 4000);
+        CHECK_EQ(run(*rec, "op-rename-13", "rename", volume, [&] {
+                     commands::rename(volume, 13, "Thirteen", options(rec, "op-rename-13"));
+                 }),
+                 std::string());
+        // the rename's row: the old hash, vouched for by name and size so the
+        // slot stays restorable — and no stamp beside it
+        {
+            sqlite::Statement row(store.db(), "SELECT a.hash, a.modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                              "WHERE o.id = 'op-rename-13' AND a.slot = 13 AND a.side = 'after'");
+            CHECK(row.step());
+            CHECK(!row.isNull(0) && row.blob(0) == measured.hash);
+            CHECK(row.isNull(1));
+        }
+        // and the connect does not read the quiet loop as the loud one
+        CHECK(history::inferLoudness(store, card, { sight(volume, 13) }).found.empty());
+        // the v9 control: the same steps on a stamped row carry no hash at all
+        CHECK_EQ(run(*rec, "op-push-14", "push", volume, [&] {
+                     commands::push(volume, loud, 14, { .write = options(rec, "op-push-14") });
+                 }),
+                 std::string());
+        const history::SlotSighting stamped = sight(volume, 14);
+        const fs::path take14 = volume::wavDir(volume, 14) / stamped.take.name;
+        commands::writeFileBytes(take14, quietBytes);
+        setStamp(take14, stamped.take.modifiedMs + 4000);
+        CHECK_EQ(run(*rec, "op-rename-14", "rename", volume, [&] {
+                     commands::rename(volume, 14, "Fourteen", options(rec, "op-rename-14"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                   "WHERE o.id = 'op-rename-14' AND a.slot = 14 AND a.hash IS NULL "
+                                   "AND a.modified IS NOT NULL"),
+                 1);
+        CHECK(history::inferLoudness(store, card, { sight(volume, 14) }).found.empty());
+    }
+
+    // --- one slot's unreadable record: that slot answers nothing, the others still answer ---
+    {
+        CHECK_EQ(run(*rec, "op-push-15", "push", volume, [&] {
+                     commands::push(volume, loud, 15, { .write = options(rec, "op-push-15") });
+                 }),
+                 std::string());
+        const history::SlotSighting fifteen = sight(volume, 15);
+        CHECK_EQ(history::inferLoudness(store, card, { fifteen }).found.size(), 1u);
+        store.db().exec("UPDATE slot_changes SET after_body = x'6e6f742061206d656d6f7279' WHERE slot = 15");
+        const history::Inference both = history::inferLoudness(store, card, { fifteen, sight(volume, 7) });
+        CHECK_EQ(both.problems.size(), 1u);
+        CHECK(!both.problems.empty() && both.problems.front().slot == 15 && !both.problems.front().what.empty());
+        CHECK_EQ(both.found.size(), 1u); // slot 7, read and measured after its trim
+        CHECK(!both.found.empty() && both.found.front().sighted.slot == 7);
     }
 
     return testkit::summary("inferred_loudness_tests");

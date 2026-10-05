@@ -224,6 +224,18 @@ bool HistoryRecorder::reading(const std::string& hash, const wav::LoudnessReadin
     return true;
 }
 
+bool HistoryRecorder::sighted(const std::filesystem::path& volume, int slot, const std::string& name,
+                              std::int64_t size, std::int64_t modifiedMs, const std::string& hash)
+{
+    if (!sessionOn(volume))
+        return false;
+    const std::optional<std::int64_t> card = store().cardFor(sessionMarker_);
+    if (!card)
+        throw Error("the open session's card " + sessionMarker_ + " is not in the history");
+    store().recordSighting(*card, slot, name, size, modifiedMs, hash, clock_());
+    return true;
+}
+
 void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
 {
     const std::vector<int> slots = store().touchedSlots(op.row);
@@ -236,16 +248,17 @@ void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
         const int from = swapped ? (slot == slots.front() ? slots.back() : slots.front()) : slot;
         const std::filesystem::path dir = volume::wavDir(op.volume, slot);
         for (const std::string& name : volume::listSlotWavs(op.volume, slot)) {
-            std::error_code ec;
-            const auto size = static_cast<std::int64_t>(std::filesystem::file_size(dir / name, ec));
-            if (ec)
-                throw Error("cannot measure " + (dir / name).string());
-            // The stamp is read once and asked of the earlier row too: a hash
-            // is carried over only for the very file that row saw.
-            const std::int64_t modified = modifiedMs(dir / name);
-            store().recordPresentAudio(op.row, slot, kTrack, name, size,
-                                       store().hashHeldBefore(op.row, from, name, size, modified),
-                                       modified);
+            // One stat for the size and the stamp, asked of the earlier row
+            // too: a hash is carried over only for the very file that row
+            // saw, and a hash a stampless row vouched for travels without a
+            // stamp (HistoryStore::heldBefore).
+            const std::optional<FileStat> seen = statFile(dir / name);
+            if (!seen)
+                throw Error("cannot read the directory entry of " + (dir / name).string());
+            const HistoryStore::Held held =
+                store().heldBefore(op.row, from, name, seen->size, seen->modifiedMs);
+            store().recordPresentAudio(op.row, slot, kTrack, name, seen->size, held.hash,
+                                       held.modifiedMs);
         }
     }
 }

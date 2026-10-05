@@ -8,6 +8,7 @@
 #include <loopercat/Normalize.hpp>
 
 #include <cstdint>
+#include <exception>
 #include <optional>
 #include <string>
 #include <vector>
@@ -22,6 +23,11 @@
 // (readingFor, #140). A slot the history cannot vouch for, or whose bytes it
 // never measured, is simply not in the answer: a dash stays a dash, never a
 // guess.
+//
+// One slot whose record cannot be read — a stored body the parser refuses,
+// a row the store will not give back — answers nothing and is reported by
+// its slot in `problems`; the other slots are still asked. (A store that
+// cannot be opened fails before any of this, as every history read does.)
 //
 // A read and nothing else — no row is written, no reading filed, no
 // operation opened. What comes back informs the eye (SlotTable::LoudnessCell::
@@ -47,18 +53,32 @@ struct InferredReading {
     std::int64_t measuredMs = 0; // when the bytes were measured
 };
 
-inline std::vector<InferredReading> inferLoudness(HistoryStore& store, std::int64_t card,
-                                                  const std::vector<SlotSighting>& sightings)
+struct SlotProblem {
+    int slot = 0;
+    std::string what;
+};
+
+struct Inference {
+    std::vector<InferredReading> found;
+    std::vector<SlotProblem> problems;
+};
+
+inline Inference inferLoudness(HistoryStore& store, std::int64_t card,
+                               const std::vector<SlotSighting>& sightings)
 {
-    std::vector<InferredReading> out;
+    Inference out;
     for (const SlotSighting& sighted : sightings) {
-        const std::optional<std::string> hash = store.hashOfSighting(card, sighted.slot, sighted.take);
-        if (!hash)
-            continue;
-        const std::optional<HistoryStore::StoredReading> stored = store.readingFor(*hash);
-        if (!stored)
-            continue;
-        out.push_back({ sighted, stored->reading, stored->measuredMs });
+        try {
+            const std::optional<std::string> hash = store.hashOfSighting(card, sighted.slot, sighted.take);
+            if (!hash)
+                continue;
+            const std::optional<HistoryStore::StoredReading> stored = store.readingFor(*hash);
+            if (!stored)
+                continue;
+            out.found.push_back({ sighted, stored->reading, stored->measuredMs });
+        } catch (const std::exception& e) {
+            out.problems.push_back({ sighted.slot, e.what() });
+        }
     }
     return out;
 }

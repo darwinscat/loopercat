@@ -3,13 +3,16 @@
 
 #pragma once
 
+#include "FileTime.h"
 #include "HistoryRecorder.h"
 
 #include <loopercat/Commands.hpp>
 #include <loopercat/Normalize.hpp>
 #include <loopercat/Volume.hpp>
 
+#include <cstdint>
 #include <exception>
+#include <optional>
 #include <string>
 
 //==============================================================================
@@ -18,6 +21,12 @@
 // the take's bytes come off the card once and are measured, and the reading
 // is filed in the history under the hash of those very bytes (#140) before
 // the caller turns it into words.
+//
+// It files what the read saw too (#141): the file's name, size and stamp
+// with the hash of the bytes read under them, so the next connect knows the
+// file in the slot by the bytes, not by a row that only named it — when the
+// file stood still under the read (one stat before, one after, and the bytes
+// as long as the entry said), and not otherwise.
 //
 // The read is the job; the filing is its tail. A history with no card in
 // front of it takes nothing (`kept` false, no failure), and a store that
@@ -44,13 +53,20 @@ inline SlotLoudness readSlotLoudness(const volume::fs::path& volume, int slot,
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
         throw Error("slot " + std::to_string(slot) + " has no audio to measure");
-    const std::string raw = commands::readFileBytes(volume::wavDir(volume, slot) / files.front());
+    const volume::fs::path file = volume::wavDir(volume, slot) / files.front();
+    const std::optional<FileStat> before = statFile(file);
+    const std::string raw = commands::readFileBytes(file);
+    const std::optional<FileStat> after = statFile(file);
     SlotLoudness out;
     out.reading = wav::measureLoudness(
         wav::BytesView(reinterpret_cast<const unsigned char*>(raw.data()), raw.size()));
     out.hash = HistoryStore::contentHash(raw);
+    const bool stoodStill = before && after && *before == *after
+                         && before->size == static_cast<std::int64_t>(raw.size());
     try {
         out.kept = recorder.reading(out.hash, out.reading);
+        if (out.kept && stoodStill)
+            recorder.sighted(volume, slot, files.front(), before->size, before->modifiedMs, out.hash);
     } catch (const std::exception& e) {
         out.failure = e.what(); // the store's refusal, or anything else the filing threw
     }

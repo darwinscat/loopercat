@@ -5,6 +5,7 @@
 
 #include "AudioEngine.h"
 #include "CardPermissions.h"
+#include "TakeFacts.h"
 
 #include <loopercat/Normalize.hpp>
 
@@ -107,11 +108,16 @@ public:
     // too. The owner turns it into words (target, damage) and feeds them
     // back through setLoudness; a read-only check running elsewhere lands
     // the same way.
+    // With the hash go the file's name, size and stamp as one stat read
+    // them before the decode and again after the hash (#141): what the read
+    // saw, for the history to know the file by its bytes next time. Present
+    // exactly when the hash is.
     // The readout and Normalize… share the row with Trim and step aside
     // while a trim selection is active: the selection owns the row then,
     // and Normalize is whole-loop work that must not read as "the
     // selection". All setters ignore a slot that is not the loaded one.
-    std::function<void(int, const wav::LoudnessReading&, const std::string& contentHash)>
+    std::function<void(int, const wav::LoudnessReading&, const std::string& contentHash,
+                       const std::optional<TakeFacts>& seen)>
         onLoudnessRead;
     void setLoudness(int slot, const juce::String& text, bool attention, bool damaged,
                      const juce::String& tooltip);
@@ -156,7 +162,7 @@ private:
     void updateLoudnessButtons();
     void layoutReadout();
     void passFinished(int slot, std::optional<wav::LoudnessReading> reading,
-                      std::string contentHash); // message thread
+                      std::string contentHash, std::optional<TakeFacts> seen); // message thread
 
     // The one read pass over a loaded file: waveform blocks into the
     // thumbnail, samples into the meter, then the reading up to the pane. A
@@ -183,7 +189,7 @@ private:
 
     private:
         std::string fileKey(const juce::File& file, const juce::AudioFormatReader& reader,
-                            juce::int64 sizeBefore, juce::Time modifiedBefore);
+                            const std::optional<history::FileStat>& before);
 
         PlayerPane& owner_;
         std::vector<juce::File> files_;
