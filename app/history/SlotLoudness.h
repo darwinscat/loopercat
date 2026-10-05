@@ -61,23 +61,27 @@ struct SlotLoudness {
 };
 
 // Whether a reading could have come off the meter at all (review of #142):
-// a sample peak is a finite magnitude; an integrated loudness, when there is
-// one, is a finite number above the -70 LUFS absolute gate (the meter
-// answers "unmeasurable" at the gate and below), and a take loud enough to
-// measure has a finite true peak; no field is NaN. Anything else in the
-// store was put there by something other than this meter, and is measured
-// again rather than believed.
+// no field is NaN and no count negative; a sample peak is a magnitude,
+// finite — or +inf beside impossible samples, which is how the meter
+// reports a +inf sample, and what the store keeps of it; an integrated
+// loudness, when there is one, is a finite number above the -70 LUFS
+// absolute gate (the meter answers "unmeasurable" at the gate and below),
+// and a take loud enough to measure has a true peak that is finite, or
+// +inf beside impossible samples. Anything else in the store was put there
+// by something other than this meter, and is measured again rather than
+// believed.
 inline bool plausibleReading(const wav::LoudnessReading& reading)
 {
-    if (!(reading.samplePeak >= 0.0f) || !std::isfinite(reading.samplePeak))
+    if (reading.wildSamples < 0 || std::isnan(reading.samplePeak) || std::isnan(reading.truePeakDb))
         return false;
-    if (reading.wildSamples < 0 || std::isnan(reading.truePeakDb))
+    const bool damaged = reading.wildSamples > 0;
+    if (reading.samplePeak < 0.0f || (std::isinf(reading.samplePeak) && !damaged))
         return false;
     if (!reading.integratedLufs.has_value())
         return true;
     const double lufs = *reading.integratedLufs;
     return std::isfinite(lufs) && lufs > loudness::kAbsoluteGateLufs
-        && std::isfinite(reading.truePeakDb);
+        && (std::isfinite(reading.truePeakDb) || (damaged && reading.truePeakDb > 0.0));
 }
 
 namespace detail {

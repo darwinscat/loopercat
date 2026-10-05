@@ -1132,6 +1132,19 @@ int main()
         CHECK(!history::plausibleReading({ -80.0, 0.03f, -29.5, 0 }));
         CHECK(!history::plausibleReading({ std::nullopt, 0.0f, nan, 0 }));
         CHECK(!history::plausibleReading({ -30.0, 0.03f, -29.5, -1 }));
+        // An infinite peak is how the meter reports a +inf sample: plausible
+        // beside impossible samples, and only there. NaN never is.
+        const float infF = std::numeric_limits<float>::infinity();
+        const float nanF = std::numeric_limits<float>::quiet_NaN();
+        CHECK(history::plausibleReading({ 767.0, infF, 400.0, 3 }));
+        CHECK(history::plausibleReading({ std::nullopt, infF, inf, 2 }));
+        CHECK(history::plausibleReading({ 767.0, infF, inf, 3 }));
+        CHECK(!history::plausibleReading({ std::nullopt, infF, -6.0, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, inf, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, -inf, 4 })); // a loud take has a peak
+        CHECK(!history::plausibleReading({ -30.0, nanF, -29.5, 5 }));
+        CHECK(!history::plausibleReading({ std::nullopt, nanF, inf, 2 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, nan, 5 }));
 
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
@@ -1185,6 +1198,42 @@ int main()
         CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
         CHECK_EQ(asked, 0); // an implausible row is never put to the caller
 
+        // A damaged reading with an infinite peak, as the meter reports one,
+        // is what the store keeps and what recall believes: planted under
+        // these bytes, it comes back, not measured again.
+        rec->store().recordReading(hash, { 767.0, std::numeric_limits<float>::infinity(), 400.0, 3 },
+                                   kPlantedAt);
+        const auto damagedRow = history::recallOrReadSlotLoudness(volume, 9, *rec, counting);
+        CHECK(damagedRow.recalled);
+        CHECK(std::isinf(damagedRow.reading.samplePeak));
+        CHECK_EQ(damagedRow.reading.wildSamples, 3);
+        CHECK_EQ(asked, 1);
+        // And a real take with a +inf sample: measured once, filed, and
+        // recalled from then on — not measured and filed again on every ask.
+        {
+            const fs::path damagedTake = volume::wavDir(volume, 9) / "009_1.WAV";
+            std::string bytes = commands::readFileBytes(damagedTake);
+            constexpr std::size_t kFirstSample = 44; // RIFF 12 + fmt 24 + data header 8
+            const auto bits = std::bit_cast<std::uint32_t>(std::numeric_limits<float>::infinity());
+            for (std::size_t i = 0; i < 4; ++i)
+                bytes[kFirstSample + i] = static_cast<char>((bits >> (8 * i)) & 0xffu);
+            commands::writeFileBytes(damagedTake, bytes);
+            const auto fresh = history::recallOrReadSlotLoudness(volume, 9, *rec, counting);
+            CHECK(!fresh.recalled);
+            CHECK(fresh.kept);
+            CHECK(fresh.reading.wildSamples > 0);
+            CHECK(std::isinf(fresh.reading.samplePeak));
+            const auto filed = rec->store().readingFor(fresh.hash);
+            CHECK(filed.has_value());
+            const auto later = history::recallOrReadSlotLoudness(volume, 9, *rec, counting);
+            CHECK(later.recalled);
+            CHECK(filed.has_value() && rec->store().readingFor(fresh.hash).has_value()
+                  && rec->store().readingFor(fresh.hash)->measuredMs == filed->measuredMs);
+            putSineWav(volume, 9, "009_1.WAV", 44100, -30.0); // the clean take back
+            CHECK(HistoryStore::contentHash(commands::readFileBytes(damagedTake)) == hash);
+        }
+        asked = 0;
+
         // A plausible row the caller cannot use: asked once, about that row
         // only, and measured over.
         rec->store().recordReading(hash, { -40.0, 0.25f, -12.0, 0 }, kPlantedAt);
@@ -1196,7 +1245,8 @@ int main()
         CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, refusing)));
         CHECK_EQ(putToCaller.size(), 1u);
         CHECK(!putToCaller.empty() && std::abs(putToCaller.front() - (-40.0)) <= 1.0e-12);
-        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 1);
+        // Replaced, not added: the clean take's row and the damaged take's.
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
 
         // The ask refused, the filing allowed: nothing is filed, so nothing
         // was tried, and the trouble named is the ask's.
