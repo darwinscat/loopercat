@@ -86,7 +86,7 @@ int main()
     table.setSize(900, 400);
     std::vector<SlotRow> rows;
     for (auto& info : catalog::listSlots(testkit::syntheticMemoryText()))
-        rows.push_back({ std::move(info), "", "", { "" } });
+        rows.push_back({ std::move(info), "", "", { "" }, std::nullopt });
     table.setRows(rows);
 
     juce::TableListBox* box = listBoxOf(table);
