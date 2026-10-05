@@ -30,6 +30,7 @@
 #include "history/SlotRows.h"
 #include "history/TakeAudition.h"
 #include "history/HistoryRecorder.h"
+#include "history/InferredLoudness.h"
 #include "history/FirstSeenJob.h"
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
@@ -307,6 +308,10 @@ private:
     // of the bytes it metered (#140) — on the worker, the store's thread.
     void keepReading(std::string hash, wav::LoudnessReading reading);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
+    // The column from what the history already knows (#141): the slots with
+    // a take and an empty cell, put to the store by the facts the scan read
+    // off their directory entries — no audio read, no card needed.
+    void inferLoudnessFromHistory();
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);
     void stopLoudnessCheck();

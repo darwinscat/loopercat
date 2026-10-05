@@ -593,6 +593,12 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             refreshUndoOffer();
             if (historyHost != nullptr && historyHost->isVisible())
                 feedHistoryWindow();
+            // The job's result cleared the cells of the audio it moved, and
+            // the history may know those bytes (an undo put a measured take
+            // back); the rescan that came first still saw the old cells. The
+            // job that read the card's name ends here too, so this is also
+            // where a freshly named card is first asked about.
+            inferLoudnessFromHistory();
         }
     };
     worker.onJobResult = [this](juce::String description, juce::String error, int batch,
@@ -1806,6 +1812,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     updateInspector();
 
     restoreListening();
+    inferLoudnessFromHistory(); // the dashes the history can fill, off the worker
 }
 
 // A mutation releases the preview of the slot it rewrites (issue #26 —
@@ -1873,10 +1880,12 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
     player.setTempoNote(tempoNoteFor(row.info));
     // The loudness readout follows the loaded loop: whatever the column knows
     // about it — a check's answer, a read in flight — shows in the player row.
+    // Not a number out of the history (#141): the pane's own pass is reading
+    // these very bytes now, and its answer replaces the inferred cell too.
     if (const SlotTable::LoudnessCell* cell = table.loudnessFor(row.info.slot)) {
         if (cell->pending)
             player.setLoudnessPending(row.info.slot);
-        else
+        else if (!cell->inferred)
             player.setLoudness(row.info.slot, cell->detail, cell->attention, cell->damaged,
                                cell->tooltip);
     }
@@ -2454,6 +2463,86 @@ void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading)
                      true,      // background: the player did not ask to wait for it
                      true,      // quiet: it has nothing to say, and it does not fail
                      false }); // and it needs no card: the store is on this computer
+}
+
+// The LUFS column from what the history already knows (#141). Every slot with
+// a take and nothing in its cell is put to the store by the facts the scan
+// read off its directory entry and the config — name, size, stamp, WavLen —
+// and a reading the history has for those very bytes lands as an inferred
+// cell. Off the message thread and without the card, like the history reads:
+// the store is on this computer. The card is named by its marker, read on
+// this mount, so a store still holding another card's session cannot answer
+// for this one; a card the history has never met knows nothing.
+//
+// Hands off while a job runs, like restoreListening and for the same reason:
+// the job's rescan lands before its result clears the cells it moved, so the
+// busy drop is the hook after a job, and the snapshot hook covers mounts and
+// idle rescans.
+//
+// What lands informs the eye and decides nothing: a read that came first
+// outranks it on arrival, every real read replaces it, every mutation clears
+// it, and Normalize measures the card's bytes whatever the column shows.
+void MainComponent::inferLoudnessFromHistory()
+{
+    if (pedalBusy || !card || snapshot.state != lifecycle::State::connected || !snapshot.error.empty())
+        return;
+    std::vector<history::SlotSighting> sightings;
+    for (const SlotRow& row : snapshot.slots)
+        if (row.take && row.info.hasAudio && table.loudnessFor(row.info.slot) == nullptr)
+            sightings.push_back({ row.info.slot,
+                                  { row.take->name, row.take->size, row.take->modifiedMs,
+                                    row.info.frames } });
+    if (sightings.empty())
+        return;
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue(
+        { "Read loudness readings from the history",
+          0,
+          [rec = recorder, markerId = card->id, sightings, target = currentTargetLufs(), safe,
+           alive = uiAlive](const volume::fs::path&) {
+              const std::optional<std::int64_t> cardRow = rec->store().cardFor(markerId);
+              if (!cardRow)
+                  return;
+              struct Found {
+                  history::SlotSighting sighted;
+                  LoudnessReport report;
+                  std::int64_t measuredMs;
+              };
+              std::vector<Found> found;
+              for (const history::InferredReading& inferred :
+                   history::inferLoudness(rec->store(), *cardRow, sightings))
+                  found.push_back({ inferred.sighted, describeReading(inferred.reading, target),
+                                    inferred.measuredMs });
+              if (found.empty())
+                  return;
+              juce::MessageManager::callAsync([safe, alive, markerId, found] {
+                  if (!*alive || safe == nullptr || !safe->card || safe->card->id != markerId)
+                      return;
+                  for (const Found& f : found) {
+                      // The slot still shows the very take that was sighted,
+                      // and nothing landed in its cell meanwhile — a read, or
+                      // a mutation's clearing — both outrank the history.
+                      const SlotRow* row = safe->slotRowFor(f.sighted.slot);
+                      const history::HistoryStore::TakeSighting& seen = f.sighted.take;
+                      if (row == nullptr || !row->take || row->take->name != seen.name
+                          || row->take->size != seen.size || row->take->modifiedMs != seen.modifiedMs
+                          || row->info.frames != seen.frames
+                          || safe->table.loudnessFor(f.sighted.slot) != nullptr)
+                          continue;
+                      safe->table.setLoudness(
+                          f.sighted.slot,
+                          SlotTable::LoudnessCell::fromHistory(
+                              { f.report.cellText, f.report.attention, false, f.report.rowText,
+                                f.report.damaged, f.report.tooltipText },
+                              juce::Time(f.measuredMs)));
+                  }
+              });
+          },
+          nullptr,
+          0,
+          true,      // background: nobody sat down to wait for it
+          true,      // quiet: the column is the report; a failure still speaks
+          false }); // and it needs no card: the store is on this computer
 }
 
 void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)
