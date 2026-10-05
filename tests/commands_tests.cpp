@@ -383,6 +383,20 @@ std::string slotChangesOnCard(const std::string& before, const std::string& afte
 
 int main()
 {
+    // Only a regular file is read as bytes: a folder or a missing path is
+    // refused with our own error, never a stream exception from the library
+    // (libstdc++ opens a folder and throws from its first read).
+    {
+        TempDir tmp;
+        const fs::path folder = tmp.path / "002_1.WAV";
+        fs::create_directories(folder);
+        CHECK_THROWS(commands::readFileBytes(folder), "not a file");
+        CHECK_THROWS(commands::readFileBytes(folder, [](double) {}), "not a file");
+        CHECK_THROWS(commands::readFileBytes(tmp.path / "nowhere.wav"), "not a file");
+        commands::writeFileBytes(tmp.path / "take.wav", "RIFF");
+        CHECK_EQ(commands::readFileBytes(tmp.path / "take.wav"), std::string("RIFF"));
+    }
+
     // A missing journal refuses before any byte on the card changes.
     {
         TempDir tmp;
