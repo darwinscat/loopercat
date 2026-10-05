@@ -834,10 +834,14 @@ int main()
         const fs::path volume = makePedal(tmp.path);
         putWav(volume, 4, "take.wav", 132300);
         const fs::path takeFile = volume::wavDir(volume, 4) / "take.wav";
-        // a stamp of the test's choosing, with milliseconds, years in the past
-        const std::int64_t stamped = 1'600'000'000'123;
-        CHECK(juce::File(juce::String(takeFile.string())).setLastModificationTime(juce::Time(stamped)));
-        CHECK_EQ(fileStamp(takeFile), stamped); // the file system kept it to the millisecond
+        // a stamp of the test's choosing, years in the past, with milliseconds
+        // the file system may or may not keep: macOS and Windows keep them,
+        // JUCE on Linux sets and reads whole seconds. The rows are held to what
+        // the directory entry says, so that is what the test compares against.
+        const std::int64_t chosen = 1'600'000'000'123;
+        CHECK(juce::File(juce::String(takeFile.string())).setLastModificationTime(juce::Time(chosen)));
+        const std::int64_t stamped = fileStamp(takeFile);
+        CHECK(stamped <= chosen && chosen - stamped < 1000); // the stamp took, at most rounded down to a second
         auto rec = recorderAt(tmp.path / "history");
         CHECK_EQ(run(*rec, "op-rename", "rename", volume, [&] {
                      commands::rename(volume, 4, "Stamped", options(rec, "op-rename"));
