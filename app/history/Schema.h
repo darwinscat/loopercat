@@ -72,6 +72,12 @@
 //                higher sequence recorded a body or a take in the slot. By
 //                card and slot; forgetting a slot's history, or a first
 //                sighting photographing it, takes its sightings with it.
+//   op_sequence  the highest operation sequence ever issued, one row, moved
+//                by every insert into ops (a trigger). Sequences are what
+//                orders a read among operations (take_sightings), so none
+//                is ever issued twice: forgetting a slot's history can drop
+//                the newest operations whole, and a sequence taken from
+//                max(seq) would hand their numbers out again (#141).
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -250,6 +256,20 @@ CREATE TABLE take_sightings(
     at       INTEGER NOT NULL,
     PRIMARY KEY (card, slot, name, size, modified)
 ) STRICT;
+-- The highest operation sequence ever issued (#141): one row, never lower,
+-- so a sequence is never handed out twice even when the newest operations
+-- are forgotten whole. Started from what the store holds; every insert
+-- into ops moves it.
+CREATE TABLE op_sequence(
+    one  INTEGER PRIMARY KEY CHECK (one = 1),
+    last INTEGER NOT NULL CHECK (last >= 0)
+) STRICT;
+INSERT INTO op_sequence(one, last)
+    SELECT 1, max(coalesce((SELECT max(seq) FROM ops), 0), coalesce((SELECT max(undo_floor) FROM cards), 0));
+CREATE TRIGGER op_sequence_moves AFTER INSERT ON ops
+BEGIN
+    UPDATE op_sequence SET last = max(last, NEW.seq) WHERE one = 1;
+END;
 )sql",
 };
 

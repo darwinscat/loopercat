@@ -198,9 +198,12 @@ void HistoryStore::closeSession(std::int64_t session, std::int64_t nowMs)
 std::int64_t HistoryStore::beginOp(std::int64_t session, const std::string& opId,
                                    const std::string& kind, std::int64_t atMs)
 {
+    // The next sequence past every one ever issued (op_sequence, which the
+    // insert itself moves): never a number a forgotten operation had, and
+    // past the Undo floor as before.
     sqlite::Statement add(db_, "INSERT INTO ops(seq, id, session, kind, actor, status, at) "
-                               "VALUES (max(coalesce((SELECT max(seq) FROM ops), 0), "
-                               "coalesce((SELECT max(undo_floor) FROM cards), 0)) + 1, ?1, ?2, ?3, 'app', 'pending', ?4)");
+                               "VALUES ((SELECT max(last, coalesce((SELECT max(undo_floor) FROM cards), 0)) + 1 "
+                               "FROM op_sequence WHERE one = 1), ?1, ?2, ?3, 'app', 'pending', ?4)");
     add.bindText(1, opId).bind(2, session).bindText(3, kind).bind(4, atMs).run();
     return db_.lastInsertRowid();
 }
@@ -480,9 +483,9 @@ std::optional<std::int64_t> HistoryStore::cardFor(const std::string& markerId)
 
 std::int64_t HistoryStore::newestOp()
 {
-    sqlite::Statement read(db_, "SELECT coalesce(max(seq), 0) FROM ops");
+    sqlite::Statement read(db_, "SELECT last FROM op_sequence WHERE one = 1");
     if (!read.step())
-        throw Error("the history could not say its newest operation");
+        throw Error("the history has no operation sequence");
     return read.integer(0);
 }
 

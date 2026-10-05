@@ -187,7 +187,7 @@ int main()
             CHECK_EQ(count(db, "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
             CHECK_THROWS(db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id) VALUES ('RC-5', '', 0, 0, NULL)"), "NOT NULL");
             CHECK_EQ(schema::pragmaInteger(db, "user_version"), 10);
-            CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 12);
+            CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 13);
             CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'legacy_files'"), 0);
             const auto session = fresh.openSession(fresh.card("test-RC-5", "RC-5", "Card", 1000), 1000);
             const auto op = fresh.beginOp(session, "first", "clear", 1000);
@@ -407,6 +407,9 @@ int main()
         CHECK_EQ(schema::pragmaInteger(db, "user_version"), 10);
         CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'take_sightings'"), 1);
         CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 0);
+        // the sequence starts where the store stood: one operation, number 1
+        CHECK_EQ(count(db, "SELECT last FROM op_sequence"), 1);
+        CHECK_EQ(migrated.newestOp(), 1);
         CHECK_EQ(count(db, "SELECT modified FROM slot_audio WHERE slot = 4"), 1'700'000'000'000);
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE slot = 5 AND modified IS NULL"), 1);
         // the new table takes a read the way the store files one, and holds its rules
@@ -429,6 +432,15 @@ int main()
         CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, 1, x'"
                              + std::string(64, 'a') + "', 0, 1)"),
                      "CHECK"); // no operation has sequence 0: none is NULL
+        // one row, never a second; every insert into ops moves it, a direct
+        // one too, and the next operation the store begins is past it
+        CHECK_THROWS(db.exec("INSERT INTO op_sequence VALUES (2, 5)"), "CHECK");
+        CHECK_THROWS(db.exec("INSERT INTO op_sequence VALUES (1, 5)"), "UNIQUE");
+        db.exec("INSERT INTO ops(seq, id, session, kind, actor, status, at) VALUES (40, 'v10-direct', 1, 'push', 'app', 'done', 5)");
+        CHECK_EQ(migrated.newestOp(), 40);
+        db.exec("DELETE FROM ops WHERE seq = 40");
+        CHECK_EQ(migrated.newestOp(), 40);
+        CHECK_EQ(migrated.beginOp(1, "v10-next", "push", 6), 41);
         CHECK_EQ(count(db, "SELECT count(*) FROM pragma_foreign_key_check"), 0);
     }
     {

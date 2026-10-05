@@ -1101,5 +1101,43 @@ int main()
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM loudness_readings"), 0);
     }
 
+    // --- the operations' sequence never goes back (#141, review S11b) ---
+    //
+    // Theory: a sequence orders a read among operations, so none is ever
+    // issued twice. Forgetting a slot's history drops operations whole when
+    // the slot held their only state — the newest ones included — and the
+    // next operation must still take a sequence above every one ever
+    // issued, across a reopen too. newestOp says the highest ever issued.
+    {
+        TempDir tmp;
+        std::int64_t newest = 0;
+        std::int64_t after = 0;
+        {
+            Ready r(tmp.path);
+            const std::int64_t card = *r.store.selectedCard();
+            CHECK_EQ(r.store.newestOp(), 0);
+            for (const char* id : { "op-a", "op-b", "op-c" }) {
+                const auto op = r.store.beginOp(r.session, id, "rename", 2000);
+                r.store.recordBodies(op, { { 40, testkit::syntheticSlotBody("Before"),
+                                             testkit::syntheticSlotBody("After") } });
+                r.store.finishOp(op, OpStatus::done, "");
+                CHECK(op > newest);
+                newest = op;
+            }
+            CHECK_EQ(r.store.newestOp(), newest);
+            r.store.forgetSlot(card, 40, 3000, true);
+            CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM ops"), 0); // forgotten whole, the newest too
+            CHECK_EQ(count(r.store.db(), "SELECT coalesce(max(seq), 0) FROM ops"), 0);
+            CHECK_EQ(r.store.newestOp(), newest); // the high-water mark stays
+            after = r.store.beginOp(r.session, "op-after", "rename", 4000);
+            CHECK(after > newest);
+            CHECK_EQ(r.store.newestOp(), after);
+        }
+        HistoryStore reopened(tmp.path); // the first store is closed by now
+        CHECK_EQ(reopened.newestOp(), after);
+        const auto session = reopened.openSession(reopened.card("test-RC-5", "RC-5", "BOSS RC-5", 5000), 5000);
+        CHECK(reopened.beginOp(session, "op-reopened", "rename", 5000) > after);
+    }
+
     return testkit::summary("history_store_tests");
 }

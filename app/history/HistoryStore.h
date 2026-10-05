@@ -224,8 +224,9 @@ public:
         std::int64_t modifiedMs = 0;
         std::int64_t frames = 0;
     };
-    // The newest operation's sequence, 0 before the first: what a read that
-    // begins now comes after.
+    // The highest operation sequence ever issued, 0 before the first: what a
+    // read that begins now comes after. It never goes down, and beginOp never
+    // issues a sequence at or below it — forgotten operations included.
     std::int64_t newestOp();
 
     // What a real read of a take saw (#141): the file's name, size and stamp
