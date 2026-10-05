@@ -6,6 +6,7 @@
 #include "AppSettings.h"
 #include "HistoryStoragePanel.h"
 #include "TabStrip.h"
+#include "TargetLufs.h"
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
 
@@ -49,11 +50,6 @@ public:
         bool normalizeOnUpload;
         double targetLufs;
     };
-
-    // The target field refuses values outside this window: hotter than -8
-    // leaves no headroom against a live band's transients, quieter than -30
-    // buries the loop under any stage noise — both are typos, not choices.
-    static constexpr double kMinTargetLufs = -30.0, kMaxTargetLufs = -8.0;
 
     SettingsDialog(juce::AudioDeviceManager& devices, AppSettings& settings,
                    Columns columns, std::function<void(Columns)> onColumnsChanged,
@@ -220,16 +216,14 @@ private:
 
     void parseTarget()
     {
-        // Unparsable text reads as 0.0, and 0 sits outside the window like
-        // every other non-target — one range check rejects both.
-        const double value = target_.getText().trim().getDoubleValue();
-        if (value < kMinTargetLufs || value > kMaxTargetLufs) {
+        const std::optional<double> value = targetlufs::parse(target_.getText());
+        if (!value.has_value()) {
             // Not a target — snap back to the stored one, visibly.
             target_.setText(formatLufs(importPrefs_.targetLufs), juce::dontSendNotification);
             return;
         }
-        importPrefs_.targetLufs = value;
-        target_.setText(formatLufs(value), juce::dontSendNotification);
+        importPrefs_.targetLufs = *value;
+        target_.setText(formatLufs(*value), juce::dontSendNotification);
         refreshEquivalence();
         commitImport();
     }

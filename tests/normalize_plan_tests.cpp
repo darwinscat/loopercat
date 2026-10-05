@@ -286,8 +286,13 @@ int main()
         CHECK_EQ(silent.words, commands::normalizeUnmeasurableRefusal(42));
         CHECK(silent.words.find("slot 42 is silent or shorter") != std::string::npos);
 
-        // The command's target window, edges excluded: 0.0 is an unset field.
-        for (const double target : { 0.0, loudness::kPeakCeilingDb, loudness::kAbsoluteGateLufs, 5.0 })
+        // The command's target window, edges excluded: 0.0 is an unset field;
+        // NaN and the infinities are not targets either — NaN fails every
+        // comparison, so a window asked in the negative would let it through
+        // and offer "this cuts nan dB".
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        for (const double target : { 0.0, loudness::kPeakCeilingDb, loudness::kAbsoluteGateLufs, 5.0,
+                                     nan, inf, -inf })
             CHECK_THROWS(normalizeplan::decide(7, audio(-23.0, -6.0), target), "between -70 and -1");
         CHECK(normalizeplan::decide(7, audio(-23.0, -6.0), loudness::kPeakCeilingDb - 0.1).outcome
               == Plan::Outcome::apply);
@@ -372,16 +377,25 @@ int main()
         CHECK(peakyNext.cappedByPeak);
 
         // A target the command refuses, the plan refuses in the same words —
-        // and before any reading enters into it.
-        const CommandOutcome badTarget = runCommand(volume, 1, writeOpts(tmp.path, "op-bad"), 0.0);
-        CHECK(!badTarget.result.has_value());
-        std::string planRefusal;
-        try {
-            (void) normalizeplan::decide(1, measureSlot(volume, 1), 0.0);
-        } catch (const Error& e) {
-            planRefusal = e.what();
+        // and before any reading enters into it. NaN and the infinities too,
+        // and the take is untouched by any of them.
+        const std::string quietBefore = commands::readFileBytes(volume::wavDir(volume, 6) / "quiet.wav");
+        for (const double target : { 0.0, std::numeric_limits<double>::quiet_NaN(),
+                                     std::numeric_limits<double>::infinity(),
+                                     -std::numeric_limits<double>::infinity() }) {
+            const CommandOutcome badTarget =
+                runCommand(volume, 6, writeOpts(tmp.path, "op-bad"), target);
+            CHECK(!badTarget.result.has_value());
+            CHECK(badTarget.refusal.find("between -70 and -1") != std::string::npos);
+            std::string planRefusal;
+            try {
+                (void) normalizeplan::decide(6, measureSlot(volume, 6), target);
+            } catch (const Error& e) {
+                planRefusal = e.what();
+            }
+            CHECK_EQ(planRefusal, badTarget.refusal);
         }
-        CHECK_EQ(planRefusal, badTarget.refusal);
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 6) / "quiet.wav") == quietBefore);
     }
 
     return testkit::summary("normalize_plan_tests");

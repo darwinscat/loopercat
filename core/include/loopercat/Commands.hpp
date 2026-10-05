@@ -941,9 +941,12 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
 // unset field reads as, and no loudness war ever pushed a target past -1 or
 // under -70. The command refuses it before it reads a byte, and the
 // measure-first step of the single-slot action (#142) refuses it the same way.
+// Asked in the positive: NaN fails every comparison, so "outside" spelled as
+// two comparisons let it through, and the gain it made filled a take with
+// NaN samples (review of #142, P1).
 inline void requireNormalizeTarget(double targetLufs)
 {
-    if (targetLufs >= loudness::kPeakCeilingDb || targetLufs <= loudness::kAbsoluteGateLufs)
+    if (!(targetLufs < loudness::kPeakCeilingDb && targetLufs > loudness::kAbsoluteGateLufs))
         throw Error("normalize target must sit between -70 and -1 LUFS, got "
                     + std::to_string(targetLufs));
 }
