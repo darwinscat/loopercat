@@ -64,6 +64,12 @@ inline constexpr double kPeakCeilingDb = -1.0;
 // import path and the on-card normalize command.
 inline constexpr double kAlreadyAtTargetLu = 0.2;
 
+// A gain under this is no gain: the ceiling swallowed the whole boost, and a
+// rewrite would change the file's date and nothing anyone can hear. Shared by
+// the on-card normalize command and the plan it is asked for first (#142), so
+// the two never disagree about a boost swallowed whole.
+inline constexpr double kNoGainDb = 1.0e-9;
+
 // Honest audio never leaves [-8, +8]: float32 masters peak a little over 1,
 // and nothing musical is 18 dB past that. A sample beyond it — or not a
 // number at all — is bytes that are not audio. Seen on hardware 2026-09-02:
