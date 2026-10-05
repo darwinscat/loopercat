@@ -2235,21 +2235,82 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
 // existed. Destructive in the same sense as the fold (the original loudness
 // stops being recoverable from the file), so it asks first and keeps the
 // original in the history. The target is the shared one from Settings → Import.
+//
+// It measures before it asks (#142). Nothing on the card says how loud a
+// loop is, and finding out is the expensive half of the job — so the first
+// step is a background read like Check loudness: the history is asked for a
+// reading of these very bytes (#140) and the meter runs only when it knows
+// nothing. No operation opens for it: a take with nothing to do is a toast
+// and no window; one the command would refuse is refused here, in its words;
+// one it would rewrite gets the window with the numbers in hand. The command
+// still measures the card's bytes again before it writes — the authority
+// stays with the job, and a take replaced between the two steps is caught
+// there. The bulk apply asks once and steps over every slot that needs
+// nothing; it does not come through here.
 void MainComponent::normalizeSlot(int slot, const juce::String& name)
 {
-    const double target = settings.file() != nullptr
-        ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
-        : kDefaultTargetLufs;
+    const double target = currentTargetLufs();
+    table.setLoudness(slot, { juce::String::fromUTF8("\xe2\x80\xa6"), false, true });
+    player.setLoudnessPending(slot); // ignored unless that slot is loaded
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue(
+        { "Check slot " + juce::String(slot) + " before normalizing",
+          slot,
+          [slot, name, target, safe, rec = recorder,
+           logDir = settings.dataDir()](const volume::fs::path& volumePath) {
+              const history::SlotLoudness read =
+                  history::recallOrReadSlotLoudness(volumePath, slot, *rec);
+              if (!read.failure.empty())
+                  oplog::append(logDir, "slot " + juce::String(slot)
+                                            + " loudness reading not kept in the history: "
+                                            + utf8(read.failure));
+              const LoudnessReport report = describeReading(read.reading, target);
+              const normalizeplan::Plan plan = normalizeplan::decide(slot, read.reading, target);
+              // The line the old flow left in a history row goes to the log
+              // instead: the only record of a normalize that was not offered.
+              if (plan.outcome != normalizeplan::Plan::Outcome::apply)
+                  oplog::append(logDir, "normalize slot " + juce::String(slot) + " not offered: "
+                                            + (plan.words.empty() ? report.noteText
+                                                                  : utf8(plan.words)));
+              juce::MessageManager::callAsync([safe, slot, name, target, report, plan] {
+                  if (safe != nullptr)
+                      safe->offerNormalize(slot, name, target, report, plan);
+              });
+          },
+          nullptr, 0, /*background=*/true, /*quiet=*/true });
+}
+
+void MainComponent::offerNormalize(int slot, const juce::String& name, double target,
+                                   const LoudnessReport& report, const normalizeplan::Plan& plan)
+{
+    applyLoudnessReport(slot, report, 0); // the take was read: the column and the row show it
     const juce::String label = name.isEmpty() ? juce::String(slot)
                                               : juce::String(slot) + " (" + name + ")";
+    switch (plan.outcome) {
+    case normalizeplan::Plan::Outcome::refuse:
+        // Where every refused mutation lands, worded as the job would have
+        // failed — and it stays until the next job succeeds, unlike a toast:
+        // the player has a take to re-push, and the reason must outlive the
+        // click. The job would have left a failed row too; this leaves none.
+        banners.showError(banners::Source::job,
+                          "Normalize slot " + juce::String(slot) + ": " + utf8(plan.words));
+        return;
+    case normalizeplan::Plan::Outcome::nothingToDo:
+        toast.show("Nothing to normalize in slot " + label + ": " + report.noteText);
+        return;
+    case normalizeplan::Plan::Outcome::apply:
+        break;
+    }
     const juce::String targetText = SettingsDialog::formatLufs(target) + " LUFS";
-
     juce::AlertWindow::showAsync(
         juce::MessageBoxOptions()
             .withIconType(juce::MessageBoxIconType::WarningIcon)
             .withTitle("Normalize slot " + label + " to " + targetText + "?")
-            .withMessage(juce::String::fromUTF8(
-                             "One constant gain lands the whole loop at the target loudness "
+            // The numbers lead; the sentence after them holds for a capped
+            // boost too, which lands short of the target by design.
+            .withMessage(utf8(plan.words)
+                         + juce::String::fromUTF8(
+                             ". One constant gain over the whole loop "
                              "\xe2\x80\x94 nothing else about the sound changes.\n\n"
                              "The current WAV is kept in the history \xe2\x80\x94 "
                              "that is your undo."))

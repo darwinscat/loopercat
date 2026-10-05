@@ -34,6 +34,7 @@
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
 #include "history/TakeExport.h"
+#include "NormalizePlan.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
 #include "RhythmPane.h"
@@ -307,6 +308,11 @@ private:
     // of the bytes it metered (#140) — on the worker, the store's thread.
     void keepReading(std::string hash, wav::LoudnessReading reading);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
+    // The single-slot Normalize's first step has landed (#142): the reading as
+    // words for the column and the row, and what the command would do with
+    // it — a toast, a refusal, or the window with the numbers in hand.
+    void offerNormalize(int slot, const juce::String& name, double target,
+                        const LoudnessReport& report, const normalizeplan::Plan& plan);
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);
     void stopLoudnessCheck();
