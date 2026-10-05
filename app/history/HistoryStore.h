@@ -192,6 +192,39 @@ public:
     std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, const std::string& name,
                                               std::int64_t size, std::int64_t modifiedMs);
 
+    // --- what a connect can tell from a directory entry (#141) ---
+
+    // The card a marker names, when the store has met it. A lookup and
+    // nothing else: card() above writes last_seen and the name, which a
+    // question about the history must not do.
+    std::optional<std::int64_t> cardFor(const std::string& markerId);
+
+    // A take as a connect scan sees it without reading it: the directory
+    // entry's name, size and stamp (TakeFacts.h), and the frame count the
+    // slot's config says the take has (WavLen).
+    struct TakeSighting {
+        std::string name;
+        std::int64_t size = 0;
+        std::int64_t modifiedMs = 0;
+        std::int64_t frames = 0;
+    };
+    // The hash of the take this card's slot holds, when the history can tell
+    // it is the one sighted: the slot's newest row for the file name on the
+    // first track — the take the LUFS column measures — carries a hash, its
+    // size and its stamp are the entry's, and the body recorded with it (the
+    // newest at or before that row) says the same WavLen. All four or
+    // nothing, and only from the slot's last word: a row without a hash,
+    // with another size or stamp, or without a stamp at all (older than
+    // store version 9) answers nothing and no older row is asked instead;
+    // and once anything else about the slot was recorded after that row — a
+    // clear, a swap, a failed write — the row answers nothing either. Unlike
+    // hashHeldBefore, a stampless row gets no allowance here: nothing is at
+    // stake but a number on screen, and that number must not be a guess.
+    // Scoped to the card: another card's rows are another card's. A read:
+    // asking writes nothing.
+    std::optional<std::string> hashOfSighting(std::int64_t card, int slot,
+                                              const TakeSighting& seen);
+
     sqlite::Db& db() { return db_; }
 
     // --- Undo and Redo over the timeline (Undo.h): the store's side ---

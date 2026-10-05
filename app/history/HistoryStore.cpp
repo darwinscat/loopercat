@@ -7,6 +7,7 @@
 #include "Schema.h"
 #include "Undo.h"
 
+#include <loopercat/Rc0.hpp>
 #include <loopercat/SystemFile.hpp>
 
 #include <algorithm>
@@ -432,6 +433,69 @@ std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slo
     if (read.integer(2) != modifiedMs)
         return std::nullopt; // the same name and size on another file
     return read.blob(0);
+}
+
+std::optional<std::int64_t> HistoryStore::cardFor(const std::string& markerId)
+{
+    sqlite::Statement find(db_, "SELECT id FROM cards WHERE marker_id = ?1");
+    find.bindText(1, markerId);
+    if (!find.step())
+        return std::nullopt;
+    return find.integer(0);
+}
+
+std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int slot,
+                                                        const TakeSighting& seen)
+{
+    constexpr int kFirstTrack = 1; // the take the LUFS column measures (SlotLoudness.h)
+    // The newest row for this file on this card's slot, whatever it says.
+    sqlite::Statement row(db_, "SELECT a.op, a.hash, a.size, a.modified FROM slot_audio a "
+                               "JOIN ops o ON o.seq = a.op JOIN sessions s ON s.id = o.session "
+                               "WHERE s.card = ?1 AND a.slot = ?2 AND a.side = 'after' "
+                               "AND a.track = ?3 AND a.name = ?4 ORDER BY a.op DESC LIMIT 1");
+    row.bind(1, card).bind(2, slot).bind(3, kFirstTrack).bindText(4, seen.name);
+    if (!row.step())
+        return std::nullopt;
+    const std::int64_t op = row.integer(0);
+    // Anything recorded about the slot after that row makes it history: an
+    // operation that left the slot empty (a clear, a swap with an empty slot,
+    // an undo of a push) or failed half-way writes no row for the file, and a
+    // file met there later under the old name, size and stamp is a file the
+    // row never saw. The pedal stamps what it records with a clock that does
+    // not keep the date (it read May 1 2019 on 2026-08-10, hardware), so two
+    // of its recordings of one length can carry the same three facts.
+    sqlite::Statement later(db_, "SELECT 1 FROM (SELECT op FROM slot_changes WHERE slot = ?2 AND op > ?3 "
+                                 "UNION ALL SELECT op FROM slot_audio WHERE slot = ?2 AND op > ?3) t "
+                                 "JOIN ops o ON o.seq = t.op JOIN sessions s ON s.id = o.session "
+                                 "WHERE s.card = ?1 LIMIT 1");
+    later.bind(1, card).bind(2, slot).bind(3, op);
+    if (later.step())
+        return std::nullopt;
+    if (row.isNull(1))
+        return std::nullopt; // the bytes were strange to the store when it last looked
+    if (row.integer(2) != seen.size)
+        return std::nullopt;
+    // Stored and sighted stamps are the same platform number for the same
+    // file, so equal or not — FAT's two-second steps make a tolerance a way
+    // of mistaking two files for one. A row without a stamp cannot match.
+    if (row.isNull(3) || row.integer(3) != seen.modifiedMs)
+        return std::nullopt;
+    const std::string hash = row.blob(1);
+    // The body the slot had when that row was written: the newest recorded
+    // at or before it, since an operation that rewrites the take without
+    // touching the memory (a normalize) records no body of its own. A slot
+    // with no body on record — its history forgotten, or its first sighting
+    // failed — has nothing to check WavLen against, and so answers nothing.
+    sqlite::Statement body(db_, "SELECT c.after_body FROM slot_changes c "
+                                "JOIN ops o ON o.seq = c.op JOIN sessions s ON s.id = o.session "
+                                "WHERE s.card = ?1 AND c.slot = ?2 AND c.op <= ?3 "
+                                "AND c.after_body IS NOT NULL ORDER BY c.op DESC LIMIT 1");
+    body.bind(1, card).bind(2, slot).bind(3, op);
+    if (!body.step())
+        return std::nullopt;
+    if (rc0::sectionField(body.blob(0), rc0::trackSectionName(kFirstTrack), "WavLen") != seen.frames)
+        return std::nullopt;
+    return hash;
 }
 
 std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)

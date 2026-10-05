@@ -798,6 +798,28 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
+# What the history says about a take it meets again without reading it (#141):
+# real commands recorded on a synthetic pedal, readings filed as Check
+# loudness files them, the takes sighted by their directory entries — and
+# asked of the store, which must write nothing for answering.
+juce_add_console_app(inferred_loudness_tests PRODUCT_NAME "inferred_loudness_tests")
+target_sources(inferred_loudness_tests PRIVATE tests/inferred_loudness_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(inferred_loudness_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(inferred_loudness_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME inferred_loudness_tests COMMAND inferred_loudness_tests)
+
 # First sighting, interruption and foreground writes on synthetic cards.
 juce_add_console_app(first_seen_tests PRODUCT_NAME "first_seen_tests")
 target_sources(first_seen_tests PRIVATE tests/first_seen_tests.cpp
