@@ -6,10 +6,14 @@
 #include "HistoryRecorder.h"
 
 #include <loopercat/Commands.hpp>
+#include <loopercat/Loudness.hpp>
 #include <loopercat/Normalize.hpp>
 #include <loopercat/Volume.hpp>
 
+#include <cmath>
 #include <exception>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,9 +37,15 @@
 // and only bytes it has never measured are measured. Exactly these bytes —
 // the key is the content hash, so what the history infers about a slot from
 // a name, a size and a date (#141) never answers here: a guess may inform the
-// eye, never a decision. A history that cannot be asked — no card in front
-// of it, a store that will not answer — is measured around, and the trouble
-// goes in `failure` as a filing's would.
+// eye, never a decision. Nor does a stored reading the meter could not have
+// taken (plausibleReading), nor one the caller cannot use (`serves`): the
+// bytes in hand are measured once and the fresh reading is filed over it.
+// A history that cannot be asked — no card in front of it, a store that
+// will not answer — is measured around; a store that would not answer is not
+// asked a second time to file, and the trouble goes in `failure`.
+//
+// `failure` says why the history does not hold the reading, and only then:
+// it is empty whenever `kept` is true.
 //
 // Worker thread, like every read of the card and every write to the store.
 //==============================================================================
@@ -47,8 +57,28 @@ struct SlotLoudness {
     std::string hash;      // of the bytes measured — the key the reading is filed under
     bool kept = false;     // the history holds the reading now
     bool recalled = false; // the history held it already, for these very bytes: nothing was measured
-    std::string failure;   // the store's refusal, when it refused; empty otherwise
+    std::string failure;   // why the history does not hold it: it could not be asked, or refused it
 };
+
+// Whether a reading could have come off the meter at all (review of #142):
+// a sample peak is a finite magnitude; an integrated loudness, when there is
+// one, is a finite number above the -70 LUFS absolute gate (the meter
+// answers "unmeasurable" at the gate and below), and a take loud enough to
+// measure has a finite true peak; no field is NaN. Anything else in the
+// store was put there by something other than this meter, and is measured
+// again rather than believed.
+inline bool plausibleReading(const wav::LoudnessReading& reading)
+{
+    if (!(reading.samplePeak >= 0.0f) || !std::isfinite(reading.samplePeak))
+        return false;
+    if (reading.wildSamples < 0 || std::isnan(reading.truePeakDb))
+        return false;
+    if (!reading.integratedLufs.has_value())
+        return true;
+    const double lufs = *reading.integratedLufs;
+    return std::isfinite(lufs) && lufs > loudness::kAbsoluteGateLufs
+        && std::isfinite(reading.truePeakDb);
+}
 
 namespace detail {
 
@@ -70,12 +100,17 @@ namespace detail {
         return take;
     }
 
+    inline void measure(const TakeBytes& take, SlotLoudness& out)
+    {
+        out.reading = wav::measureLoudness(wav::BytesView(
+            reinterpret_cast<const unsigned char*>(take.raw.data()), take.raw.size()));
+    }
+
     // Measure the bytes and file the reading under their hash; the filing's
     // trouble is reported beside the reading, never thrown over it.
     inline void measureAndFile(const TakeBytes& take, HistoryRecorder& recorder, SlotLoudness& out)
     {
-        out.reading = wav::measureLoudness(wav::BytesView(
-            reinterpret_cast<const unsigned char*>(take.raw.data()), take.raw.size()));
+        measure(take, out);
         try {
             out.kept = recorder.reading(out.hash, out.reading);
         } catch (const std::exception& e) {
@@ -95,8 +130,12 @@ inline SlotLoudness readSlotLoudness(const volume::fs::path& volume, int slot,
     return out;
 }
 
-inline SlotLoudness recallOrReadSlotLoudness(const volume::fs::path& volume, int slot,
-                                             HistoryRecorder& recorder)
+// `serves`: whether the caller can use a stored reading — for Normalize,
+// whether the plan can be made of it. Asked of a plausible stored reading
+// only, and never of the fresh one: a rejected reading is measured over once.
+inline SlotLoudness recallOrReadSlotLoudness(
+    const volume::fs::path& volume, int slot, HistoryRecorder& recorder,
+    const std::function<bool(const wav::LoudnessReading&)>& serves)
 {
     const detail::TakeBytes take = detail::readTake(volume, slot);
     SlotLoudness out;
@@ -104,14 +143,21 @@ inline SlotLoudness recallOrReadSlotLoudness(const volume::fs::path& volume, int
     // Asked only under the condition a reading is filed under — a session
     // open for this card — so the store is never opened for the asking alone.
     if (recorder.sessionOn(volume)) {
+        std::optional<HistoryStore::StoredReading> known;
         try {
-            if (const auto known = recorder.store().readingFor(out.hash)) {
-                out.reading = known->reading;
-                out.kept = out.recalled = true;
-                return out;
-            }
+            known = recorder.store().readingFor(out.hash);
         } catch (const std::exception& e) {
-            out.failure = e.what(); // the history could not be asked; the bytes still can be
+            // The bytes can still be measured, and are; the store is not asked
+            // again to file the reading — a locked one would hold the worker
+            // through a second busy timeout for the same answer.
+            out.failure = std::string("the history could not be asked: ") + e.what();
+            detail::measure(take, out);
+            return out;
+        }
+        if (known.has_value() && plausibleReading(known->reading) && serves(known->reading)) {
+            out.reading = known->reading;
+            out.kept = out.recalled = true;
+            return out;
         }
     }
     detail::measureAndFile(take, recorder, out);

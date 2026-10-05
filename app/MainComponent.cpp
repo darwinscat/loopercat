@@ -2258,8 +2258,17 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
           slot,
           [slot, name, target, safe, rec = recorder,
            logDir = settings.dataDir()](const volume::fs::path& volumePath) {
-              const history::SlotLoudness read =
-                  history::recallOrReadSlotLoudness(volumePath, slot, *rec);
+              // A stored reading serves only if a plan can be made of it;
+              // one that cannot is measured over once.
+              const history::SlotLoudness read = history::recallOrReadSlotLoudness(
+                  volumePath, slot, *rec, [slot, target](const wav::LoudnessReading& known) {
+                      try {
+                          (void) normalizeplan::decide(slot, known, target);
+                          return true;
+                      } catch (const Error&) {
+                          return false;
+                      }
+                  });
               if (!read.failure.empty())
                   oplog::append(logDir, "slot " + juce::String(slot)
                                             + " loudness reading not kept in the history: "

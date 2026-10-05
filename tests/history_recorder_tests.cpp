@@ -26,6 +26,9 @@
 //     of exactly these bytes over the meter, measures what it has never seen
 //     — a take swapped in under the same name, size and date included — and
 //     leaves the card's timeline as it was, while a real normalize adds one row
+//   - a stored reading the meter could not have taken, or one the caller
+//     cannot use, is measured over once and replaced; a store that cannot be
+//     asked is not asked again to file; the trouble named is the one that was
 
 #include "support.hpp"
 
@@ -41,9 +44,11 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -984,9 +989,10 @@ int main()
         putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
         const std::string hash = HistoryStore::contentHash(commands::readFileBytes(take9));
         auto rec = recorderAt(tmp.path / "history");
+        const auto any = [](const wav::LoudnessReading&) { return true; };
 
         // No card in front of the history: measured, nothing filed, not even opened to ask.
-        const auto cold = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        const auto cold = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
         CHECK(!cold.recalled);
         CHECK(!cold.kept);
         CHECK(cold.failure.empty());
@@ -1013,7 +1019,7 @@ int main()
         const wav::LoudnessReading planted { -40.0, 0.25f, -12.0, 0 };
         constexpr std::int64_t kPlantedAt = 5;
         rec->store().recordReading(hash, planted, kPlantedAt);
-        const auto recalled = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        const auto recalled = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
         CHECK(recalled.recalled);
         CHECK(recalled.kept);
         CHECK(recalled.failure.empty());
@@ -1038,7 +1044,7 @@ int main()
         CHECK(fs::last_write_time(take9) == stampBefore);
         const std::string swappedHash = HistoryStore::contentHash(commands::readFileBytes(take9));
         CHECK(swappedHash != hash);
-        const auto swapped = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        const auto swapped = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
         CHECK(!swapped.recalled);
         CHECK(swapped.kept);
         CHECK(swapped.failure.empty());
@@ -1048,7 +1054,7 @@ int main()
         CHECK(rec->store().readingFor(swappedHash).has_value());
         CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
         // ...and it is the history's answer from then on, to the last digit.
-        const auto again = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        const auto again = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
         CHECK(again.recalled);
         CHECK(again.reading.integratedLufs.has_value() && swapped.reading.integratedLufs.has_value()
               && std::abs(*again.reading.integratedLufs - *swapped.reading.integratedLufs) <= 1.0e-12);
@@ -1056,7 +1062,7 @@ int main()
         // A take already at the target: read, filed, nothing to do — and the
         // card's timeline has not moved. The old flow left a row here.
         putSineWav(volume, 10, "010_1.WAV", 44100, kTarget);
-        const auto atTarget = history::recallOrReadSlotLoudness(volume, 10, *rec);
+        const auto atTarget = history::recallOrReadSlotLoudness(volume, 10, *rec, any);
         CHECK(!atTarget.recalled);
         CHECK(atTarget.kept);
         CHECK(normalizeplan::decide(10, atTarget.reading, kTarget).outcome
@@ -1066,7 +1072,7 @@ int main()
 
         // A take with something to do: the step opened nothing for it either...
         putSineWav(volume, 11, "011_1.WAV", 44100, -28.0);
-        const auto quiet = history::recallOrReadSlotLoudness(volume, 11, *rec);
+        const auto quiet = history::recallOrReadSlotLoudness(volume, 11, *rec, any);
         CHECK(normalizeplan::decide(11, quiet.reading, kTarget).outcome
               == normalizeplan::Plan::Outcome::apply);
         CHECK_EQ(timelineRows(), rowsBefore);
@@ -1082,15 +1088,146 @@ int main()
 
         // The history cannot be asked: the bytes still can be, and the trouble is said.
         db.exec("DROP TABLE loudness_readings");
-        const auto broken = history::recallOrReadSlotLoudness(volume, 9, *rec);
+        const auto broken = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
         CHECK(!broken.recalled);
         CHECK(!broken.kept);
-        CHECK(!broken.failure.empty());
+        CHECK(broken.failure.rfind("the history could not be asked: ", 0) == 0);
         CHECK(broken.hash == swappedHash);
         CHECK(broken.reading.integratedLufs.has_value()
               && std::abs(*broken.reading.integratedLufs - (-30.0)) <= 0.1);
 
-        CHECK_THROWS(history::recallOrReadSlotLoudness(volume, 12, *rec), "no audio to measure");
+        CHECK_THROWS(history::recallOrReadSlotLoudness(volume, 12, *rec, any), "no audio to measure");
+    }
+
+    // --- a stored reading the meter could not have taken is measured over (#142 review) ---
+    //
+    // Theory: the store is believed for what the meter can say and nothing
+    // else. A row planted past recordReading's checks — an infinite loudness,
+    // a loudness beside a peak that is not finite, a sample peak that is not
+    // finite, a loudness at or under the -70 LUFS gate — is no answer: the
+    // bytes are measured once and the fresh reading replaces the row. A
+    // plausible row the caller cannot use is measured over the same way, the
+    // caller asked once and never about the fresh reading. A store that cannot
+    // be asked is not asked again to file — shown with an authorizer that
+    // refuses the ask and lets a filing through: no row appears. `failure`
+    // is set only when nothing was kept, and says which of the two failed.
+    {
+        // What the meter can and cannot say, on its own.
+        const double inf = std::numeric_limits<double>::infinity();
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        CHECK(history::plausibleReading({ -30.0, 0.03f, -29.5, 0 }));
+        CHECK(history::plausibleReading({ std::nullopt, 0.0f, -inf, 0 }));   // digital silence
+        CHECK(history::plausibleReading({ std::nullopt, 0.5f, -6.0, 0 }));   // under one gating block
+        CHECK(history::plausibleReading({ 767.0, 2.4e38f, 400.0, 1234 }));   // damaged, as read
+        CHECK(!history::plausibleReading({ inf, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -inf, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ nan, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, -inf, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, inf, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, nan, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, -0.5f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, std::numeric_limits<float>::infinity(), -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, std::numeric_limits<float>::quiet_NaN(), -29.5, 0 }));
+        CHECK(!history::plausibleReading({ loudness::kAbsoluteGateLufs, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -80.0, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ std::nullopt, 0.0f, nan, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, -29.5, -1 }));
+
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 9, "009_1.WAV", 44100, -30.0);
+        const std::string hash = HistoryStore::contentHash(
+            commands::readFileBytes(volume::wavDir(volume, 9) / "009_1.WAV"));
+        auto rec = recorderAt(tmp.path / "history");
+        rec->selectVolume(volume);
+        sqlite::Db& db = rec->store().db();
+        const auto any = [](const wav::LoudnessReading&) { return true; };
+        constexpr std::int64_t kPlantedAt = 7;
+        const auto plant = [&db, &hash](std::optional<double> lufs, double samplePeak, double truePeak) {
+            sqlite::Statement put(db, "INSERT OR REPLACE INTO loudness_readings"
+                                      "(hash, integrated_lufs, sample_peak, true_peak_dbtp, wild_samples, measured) "
+                                      "VALUES (?1, ?2, ?3, ?4, 0, 7)");
+            put.bindBlob(1, hash);
+            if (lufs.has_value())
+                put.bindReal(2, *lufs);
+            else
+                put.bindNull(2);
+            put.bindReal(3, samplePeak).bindReal(4, truePeak).run();
+        };
+        const auto measuredFresh = [&](const history::SlotLoudness& read) {
+            const auto row = rec->store().readingFor(hash);
+            return !read.recalled && read.kept && read.failure.empty() && read.hash == hash
+                && read.reading.integratedLufs.has_value()
+                && std::abs(*read.reading.integratedLufs - (-30.0)) <= 0.1
+                && row.has_value() && row->measuredMs != kPlantedAt
+                && row->reading.integratedLufs.has_value()
+                && std::abs(*row->reading.integratedLufs - *read.reading.integratedLufs) <= 1.0e-12;
+        };
+
+        int asked = 0;
+        const auto counting = [&asked](const wav::LoudnessReading&) {
+            ++asked;
+            return true;
+        };
+        plant(inf, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-inf, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-30.0, 0.03, -inf);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-30.0, 0.03, inf);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-30.0, inf, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(loudness::kAbsoluteGateLufs, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-80.0, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        CHECK_EQ(asked, 0); // an implausible row is never put to the caller
+
+        // A plausible row the caller cannot use: asked once, about that row
+        // only, and measured over.
+        rec->store().recordReading(hash, { -40.0, 0.25f, -12.0, 0 }, kPlantedAt);
+        std::vector<double> putToCaller;
+        const auto refusing = [&putToCaller](const wav::LoudnessReading& known) {
+            putToCaller.push_back(known.integratedLufs.value_or(0.0));
+            return false;
+        };
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, refusing)));
+        CHECK_EQ(putToCaller.size(), 1u);
+        CHECK(!putToCaller.empty() && std::abs(putToCaller.front() - (-40.0)) <= 1.0e-12);
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 1);
+
+        // The ask refused, the filing allowed: nothing is filed, so nothing
+        // was tried, and the trouble named is the ask's.
+        db.exec("DELETE FROM loudness_readings");
+        const auto denySelect = [](void*, int action, const char*, const char*, const char*,
+                                   const char*) { return action == SQLITE_SELECT ? SQLITE_DENY : SQLITE_OK; };
+        sqlite3_set_authorizer(db.raw(), denySelect, nullptr);
+        const auto unasked = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        // The control: under the same authorizer a filing goes through.
+        const std::string other = HistoryStore::contentHash("another take");
+        rec->store().recordReading(other, { -20.0, 0.5f, -3.0, 0 }, 9);
+        sqlite3_set_authorizer(db.raw(), nullptr, nullptr);
+        CHECK(!unasked.recalled);
+        CHECK(!unasked.kept);
+        CHECK(unasked.failure.rfind("the history could not be asked: ", 0) == 0);
+        CHECK(unasked.reading.integratedLufs.has_value()
+              && std::abs(*unasked.reading.integratedLufs - (-30.0)) <= 0.1);
+        CHECK(!rec->store().readingFor(hash).has_value());
+        CHECK(rec->store().readingFor(other).has_value());
+
+        // The ask answered, the filing refused: the trouble named is the filing's.
+        const auto denyInsert = [](void*, int action, const char*, const char*, const char*,
+                                   const char*) { return action == SQLITE_INSERT ? SQLITE_DENY : SQLITE_OK; };
+        sqlite3_set_authorizer(db.raw(), denyInsert, nullptr);
+        const auto unfiled = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        sqlite3_set_authorizer(db.raw(), nullptr, nullptr);
+        CHECK(!unfiled.recalled);
+        CHECK(!unfiled.kept);
+        CHECK(!unfiled.failure.empty());
+        CHECK(unfiled.failure.rfind("the history could not be asked", 0) != 0);
+        CHECK(!rec->store().readingFor(hash).has_value());
     }
 
     // --- the wiring refuses to be built without what it needs ---
