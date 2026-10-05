@@ -188,7 +188,12 @@ Three ways to use it:
   target*. Off by default: off means files the pedal accepts are written
   byte-exact, as always. On, every pushed file lands at the target.
 - **One slot** — right-click a loaded slot → **Normalize to -18 LUFS…**. The
-  original WAV is kept in the history — that is your undo.
+  loop is measured first (a reading the history already holds for that very
+  file is reused), so the question comes with the numbers: "Measured -22.8
+  LUFS, this adds +4.8 dB". A loop already at the target, or one whose peaks
+  leave nothing to gain, gets a note instead of a question, and nothing is
+  written or added to the history. When it does write, the original WAV is
+  kept in the history — that is your undo.
 - **Several slots** — Cmd/Ctrl-click or Shift-click rows to select them,
   right-click the selection → **Normalize N slots…**. Each loop gets its own
   gain; loops already at the target are left untouched. While the batch runs,
@@ -207,7 +212,11 @@ A few things worth knowing:
   loop's true peak would hit -1 dBTP — the peak of the waveform between the
   samples, the one a DAC actually reconstructs — so a quiet-but-peaky track
   lands a little short of target instead of distorting; the toast says so
-  when it happens.
+  when it happens. A boost the ceiling would cut to less than 0.2 dB — the
+  same step as "already at the target" — is no boost: the loop is left
+  alone, and a batch counts it among the untouched ones. So a loop Normalize
+  has just capped stays put on the next run instead of being rewritten for
+  nothing.
 - To check where a loop sits without changing anything: select it and look at
   the player row — as the waveform finishes loading, the loudness appears
   after the name with how far it sits from the target (the same read draws

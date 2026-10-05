@@ -306,6 +306,16 @@ void HistoryStore::recordReading(const std::string& hash, const wav::LoudnessRea
     if (reading.samplePeak < 0.0f)
         throw Error("a sample peak is a magnitude and cannot be negative, got "
                     + std::to_string(reading.samplePeak));
+    // A loudness, when there is one, is a finite number, and the take it was
+    // measured off had a peak: -inf belongs to silence, which measures none.
+    // Either would read back as a reading no meter takes (review of #142).
+    if (reading.integratedLufs.has_value()) {
+        if (std::isinf(*reading.integratedLufs))
+            throw Error("an integrated loudness is a finite number of LUFS, got "
+                        + std::to_string(*reading.integratedLufs));
+        if (std::isinf(reading.truePeakDb) && reading.truePeakDb < 0.0)
+            throw Error("a take loud enough to measure has a true peak; -inf dBTP is silence's");
+    }
     sqlite::Statement put(db_, "INSERT INTO loudness_readings"
                                "(hash, integrated_lufs, sample_peak, true_peak_dbtp, wild_samples, measured) "
                                "VALUES (?1, ?2, ?3, ?4, ?5, ?6) "

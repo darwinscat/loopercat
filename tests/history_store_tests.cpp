@@ -664,6 +664,16 @@ int main()
                      "negative");
         CHECK_THROWS(store.recordReading(HistoryStore::contentHash("neg-peak"), { -20.0, -1.0e-30f, -3.0, 0 }, 1),
                      "negative");
+        // a loudness is a finite number, and a take loud enough to have one
+        // had a peak: -inf dBTP is silence's (review of #142) — while silence
+        // itself, with no loudness, keeps its -inf (above)
+        const double inf = std::numeric_limits<double>::infinity();
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("inf-lufs"), { inf, 0.5f, -3.0, 0 }, 1),
+                     "finite number of LUFS");
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("-inf-lufs"), { -inf, 0.5f, -3.0, 0 }, 1),
+                     "finite number of LUFS");
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("no-peak"), { -20.0, 0.5f, -inf, 0 }, 1),
+                     "-inf dBTP");
         CHECK_EQ(count(store.db(), "SELECT count(*) FROM loudness_readings"), 3);
         // the table refuses on its own what the method refuses
         CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'00', NULL, 0.0, 0.0, 0, 1)"), "CHECK");
