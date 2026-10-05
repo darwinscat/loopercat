@@ -630,7 +630,6 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             if (description.startsWith("Check slot") && slot > 0) {
                 player.clearLoudness(slot);       // a failed read must not stay "measuring…"
                 table.clearPendingLoudness(slot); // …nor its cell "…"
-                readFailed(slot);                 // …nor the history refill it (#141)
             }
             if (inBatch) {
                 ++batchFailed;
@@ -2447,6 +2446,20 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
     player.setLoudnessPending(slot); // ignored unless that slot is loaded
     auto note = std::make_shared<juce::String>();
     juce::Component::SafePointer<MainComponent> safe(this);
+    // A read that failed on the file itself is remembered (readFailed, #141);
+    // one the lifecycle gate turned away — the pedal leaving, a ghost mount —
+    // never reached the file and says nothing about it. `before` runs only
+    // once the gate has let the job through to the card.
+    auto reached = std::make_shared<bool>(false);
+    auto markReached = [reached](const volume::fs::path&) { *reached = true; };
+    auto rememberFailure = [safe, slot, reached, alive = uiAlive](const std::string& error) {
+        if (error.empty() || !*reached)
+            return;
+        juce::MessageManager::callAsync([safe, slot, alive] {
+            if (*alive && safe != nullptr)
+                safe->readFailed(slot);
+        });
+    };
     worker.enqueue(
         { "Check slot " + juce::String(slot) + " loudness",
           slot,
@@ -2467,7 +2480,8 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
                       safe->applyLoudnessReport(slot, report, batch);
               });
           },
-          note, batch, /*background=*/true });
+          note, batch, /*background=*/true, /*quiet=*/false, /*needsVolume=*/true,
+          std::move(markReached), std::move(rememberFailure) });
 }
 
 // The player's pass metered the loaded loop on its own thread; the history
@@ -2528,6 +2542,8 @@ void MainComponent::readFailed(int slot)
 // measure at once, and a guess there would sit beside a player that does not
 // re-read a file it already has (an Undo on another slot clears every cell,
 // this one's included). If nothing is reading it, the background read does.
+// A multi-track memory playing as a mix is not measured by the player, and
+// is asked of the history like any other slot.
 // Not while the LUFS column is hidden: nobody would see it. Not for a file a
 // read already failed on in this connection (readFailed).
 //
@@ -2550,11 +2566,18 @@ void MainComponent::inferLoudnessFromHistory()
             && !(unreadableTakes.contains(row.info.slot) && unreadableTakes.at(row.info.slot) == *row.take);
     };
     const int loaded = player.currentSlot();
+    // The player measures the one file it loads; a multi-track memory plays
+    // as a mix and is measured by nobody, so it is any other slot here — no
+    // read on its behalf (track 1's number is not the mix's, and a banner
+    // for a read nobody asked for helps nobody).
+    const auto playerMeasures = [loaded](const SlotRow& row) {
+        return row.info.slot == loaded && row.info.tracks.size() <= 1;
+    };
     std::vector<history::SlotSighting> sightings;
     for (const SlotRow& row : snapshot.slots) {
         if (!blank(row))
             continue;
-        if (row.info.slot == loaded) {
+        if (playerMeasures(row)) {
             if (!player.loudnessPending())
                 enqueueLoudnessRead(loaded, currentTargetLufs(), 0);
             continue;
@@ -2608,7 +2631,7 @@ void MainComponent::inferLoudnessFromHistory()
                           || row->take->size != seen.size || row->take->modifiedMs != seen.modifiedMs
                           || row->info.frames != seen.frames
                           || safe->table.loudnessFor(f.sighted.slot) != nullptr
-                          || f.sighted.slot == safe->player.currentSlot())
+                          || (f.sighted.slot == safe->player.currentSlot() && row->info.tracks.size() <= 1))
                           continue;
                       safe->table.setLoudness(
                           f.sighted.slot,
@@ -2628,6 +2651,7 @@ void MainComponent::inferLoudnessFromHistory()
 
 void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)
 {
+    unreadableTakes.erase(slot); // a real read of the slot succeeded: its file is readable (#141)
     table.setLoudness(slot, { report.cellText, report.attention, false, report.rowText,
                               report.damaged, report.tooltipText });
     player.setLoudness(slot, report.rowText, report.attention, report.damaged,
