@@ -7,10 +7,13 @@
 //
 //   - a regular file: its name, its size, and the platform's own stamp,
 //     exactly — the number the history stores for the same file
+//   - one stat gives the size and the stamp together (history::statFile),
+//     the stamp JUCE gives for the same file, to the millisecond; a stamp of
+//     zero is a stamp, told apart from no answer at all — JUCE's getter
+//     cannot tell the two apart, which is why the facts no longer ask it
 //   - an entry the file system will not describe as a take — a folder under
-//     the take's name, a name with no file behind it, a link to nothing, a
-//     file whose stamp reads as the epoch (what the platform answers for a
-//     file it cannot stat) — has no facts, and no throw
+//     the take's name, a name with no file behind it, a link to nothing —
+//     has no facts, and no throw
 //   - the scan reads no audio for any of this: a take that is not a WAV at
 //     all is sighted like any other, and a slot whose entry gives no facts
 //     keeps its name on screen while the scan carries on, no error
@@ -83,7 +86,8 @@ std::int64_t stampOf(const fs::path& file)
 
 #if !defined(_WIN32)
 // A file stamped at the epoch, set the POSIX way: JUCE's own setter reads a
-// zero time as "leave it as it is".
+// zero time as "leave it as it is", and its getter answers zero for a file
+// it cannot stat.
 bool stampAtEpoch(const fs::path& file)
 {
     const struct utimbuf epoch { 0, 0 };
@@ -110,6 +114,9 @@ int main()
             CHECK(facts->modifiedMs > 0);
             CHECK(*facts == (TakeFacts { "001_1.WAV", 16, stampOf(file) }));
         }
+        // the one stat behind them says the same, size and stamp together
+        CHECK(history::statFile(file) == (history::FileStat { 16, stampOf(file) }));
+        CHECK_EQ(history::modifiedMs(file), stampOf(file));
         // asked again of the unchanged file: the very same facts, to the
         // millisecond — the history compares them for equality
         CHECK(takeFacts(file) == facts);
@@ -122,15 +129,15 @@ int main()
         CHECK(!takeFacts(folder).has_value());
         CHECK(!takeFacts(tmp.path / "003_1.WAV").has_value()); // nothing behind the name
         CHECK(!takeFacts(tmp.path / "nowhere" / "004_1.WAV").has_value()); // nor a folder for it
+        CHECK_THROWS(history::modifiedMs(tmp.path / "003_1.WAV"), "cannot read the modification time");
 #if !defined(_WIN32) // the epoch stamp is set through POSIX, and a symbolic
                       // link needs a privilege a Windows test run lacks
-        // a file whose stamp is the epoch: JUCE answers the same for a file
-        // it cannot stat, so the stamp says nothing, and nothing is claimed
-        const fs::path unstamped = tmp.path / "005_1.WAV";
-        commands::writeFileBytes(unstamped, "sixteen bytes!!!");
-        CHECK(stampAtEpoch(unstamped));
-        CHECK_EQ(stampOf(unstamped), 0);
-        CHECK(!takeFacts(unstamped).has_value());
+        // a file stamped at the epoch is described as the stat has it: zero
+        // is the file's stamp, not "could not tell"
+        const fs::path epochal = tmp.path / "005_1.WAV";
+        commands::writeFileBytes(epochal, "sixteen bytes!!!");
+        CHECK(stampAtEpoch(epochal));
+        CHECK(takeFacts(epochal) == (std::optional<TakeFacts>(TakeFacts { "005_1.WAV", 16, 0 })));
         // a link whose target is gone: no regular file behind the name
         const fs::path dangling = tmp.path / "006_1.WAV";
         fs::create_symlink(tmp.path / "gone.wav", dangling);
@@ -146,9 +153,7 @@ int main()
         fs::create_directories(volume::wavDir(volume, 2) / "002_1.WAV"); // a folder under the take's name
 #if !defined(_WIN32)
         fs::create_directories(volume::wavDir(volume, 4));
-        const fs::path unstamped = volume::wavDir(volume, 4) / "004_1.WAV";
-        commands::writeFileBytes(unstamped, "RIFF but not a WAV");
-        CHECK(stampAtEpoch(unstamped)); // no stamp to tell
+        fs::create_symlink(tmp.path / "gone.wav", volume::wavDir(volume, 4) / "004_1.WAV"); // a link to nothing
 #endif
         PedalWorker scanner(volume.string(), [](const PedalSnapshot&) {});
         const PedalSnapshot seen = scanner.scanOnce();

@@ -5,8 +5,6 @@
 
 #include "history/FileTime.h"
 
-#include <loopercat/Error.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -20,15 +18,15 @@
 // slot's WavLen these facts identify a take well enough for the history to
 // say what it already knows about those bytes (HistoryStore::hashOfSighting).
 //
-// The stamp is read the way the store writes it (history::modifiedMs): the
-// platform's own number, exactly, because the history compares two sightings
-// of one unchanged file for equality — FAT keeps it at two-second steps, and a
-// tolerance would make two files one.
+// The facts come from one stat (history::statFile), read the way the store
+// writes them: the platform's own stamp, exactly, because the history
+// compares two sightings of one unchanged file for equality — FAT keeps it
+// at two-second steps, and a tolerance would make two files one.
 //
-// An entry the file system will not describe whole — not a regular file, no
-// size, no stamp — has no facts: the slot keeps its name on screen and
-// nothing is inferred about it, rather than the whole scan failing on one
-// take.
+// An entry the file system will not describe whole — not a regular file, a
+// link to nothing, a name with nothing behind it — has no facts: the slot
+// keeps its name on screen and nothing is inferred about it, rather than the
+// whole scan failing on one take.
 //==============================================================================
 namespace loopercat
 {
@@ -44,18 +42,10 @@ struct TakeFacts
 
 inline std::optional<TakeFacts> takeFacts(const std::filesystem::path& file)
 {
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(file, ec) || ec)
+    const std::optional<history::FileStat> stat = history::statFile(file);
+    if (!stat)
         return std::nullopt;
-    const std::uintmax_t size = std::filesystem::file_size(file, ec);
-    if (ec)
-        return std::nullopt;
-    try {
-        return TakeFacts { file.filename().string(), static_cast<std::int64_t>(size),
-                           history::modifiedMs(file) };
-    } catch (const Error&) {
-        return std::nullopt; // the platform gave no stamp for it
-    }
+    return TakeFacts { file.filename().string(), stat->size, stat->modifiedMs };
 }
 
 } // namespace loopercat
