@@ -29,7 +29,8 @@
 //     very same name, size, stamp and WavLen fools the inference — and the
 //     store still knows nothing about the bytes really there, so a step that
 //     reads and hashes them must measure, and normalize, which reads them,
-//     decides by them against a target the guess says is already met
+//     decides by them against a target the guess says is already met — and
+//     hands what it measured on through the recorder, once, for its slot
 //   - and a real read corrects it (review S3): after Check loudness reads the
 //     new bytes under the same facts, the next inference answers their
 //     reading, never the old one — and a read whose bytes have no reading
@@ -61,6 +62,7 @@
 #include <memory>
 #include <numbers>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace loopercat;
@@ -408,6 +410,11 @@ int main()
         // is nothing to do. It reads the bytes, finds the quiet loop, and
         // raises it.
         const double guessed = *measured.reading.integratedLufs;
+        // and whoever shows the column is told what the command measured
+        std::vector<std::pair<int, wav::LoudnessReading>> told;
+        rec->onMeasured = [&told](int slot, const wav::LoudnessReading& reading) {
+            told.emplace_back(slot, reading);
+        };
         commands::NormalizeResult result;
         CHECK_EQ(run(*rec, "op-normalize-11", "normalize", volume, [&] {
                      result = commands::normalize(volume, 11,
@@ -415,7 +422,11 @@ int main()
                                                     .write = options(rec, "op-normalize-11") });
                  }),
                  std::string());
+        rec->onMeasured = nullptr;
         CHECK(result.applied);
+        CHECK_EQ(told.size(), 1u);
+        CHECK(!told.empty() && told.front().first == 11 && told.front().second.integratedLufs
+              && std::abs(*told.front().second.integratedLufs - result.measuredLufs) <= 1.0e-9);
         CHECK(result.measuredLufs < guessed - 6.0); // -28 dBFS against -20: about 8 LU apart
         CHECK(result.gainDb > 6.0);
         // and the history learned the truth about those bytes from the bytes
