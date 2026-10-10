@@ -5,6 +5,7 @@
 
 #include "AudioEngine.h"
 #include "CardPermissions.h"
+#include "TakeFacts.h"
 
 #include <loopercat/Normalize.hpp>
 
@@ -14,6 +15,7 @@
 
 #include <array>
 #include <optional>
+#include <string>
 #include <vector>
 
 //==============================================================================
@@ -98,13 +100,32 @@ public:
     // loads in ONE background pass that feeds both the waveform and a
     // BS.1770 meter, and hands the reading up through onLoudnessRead the
     // moment the waveform is complete — no second read off the card, no
-    // button. The owner turns it into words (target, damage) and feeds them
+    // button. With it goes the content hash of the bytes it metered
+    // (history::contentHash), when the core would measure those bytes to
+    // the same number — the pedal's own stereo float32, whole — and empty
+    // otherwise: a reading is a fact about bytes, and the owner files it in
+    // the history under that key (#140) only when it is the core's fact
+    // too. The owner turns it into words (target, damage) and feeds them
     // back through setLoudness; a read-only check running elsewhere lands
-    // the same way. The readout and Normalize… share the row with Trim and
-    // step aside while a trim selection is active: the selection owns the
-    // row then, and Normalize is whole-loop work that must not read as "the
+    // the same way.
+    // With the hash go the file's name, size and stamp as one stat read
+    // them before the decode and again after the hash (#141): what the read
+    // saw, for the history to know the file by its bytes next time. Present
+    // exactly when the hash is.
+    // A pass that cannot measure the file says so on the row and tells the
+    // owner through onLoudnessFailed: a number the column showed for the
+    // slot without reading it must not outlive a read that failed.
+    // The readout and Normalize… share the row with Trim and step aside
+    // while a trim selection is active: the selection owns the row then,
+    // and Normalize is whole-loop work that must not read as "the
     // selection". All setters ignore a slot that is not the loaded one.
-    std::function<void(int, const wav::LoudnessReading&)> onLoudnessRead;
+    std::function<void(int, const wav::LoudnessReading&, const std::string& contentHash,
+                       const std::optional<TakeFacts>& seen)>
+        onLoudnessRead;
+    std::function<void(int)> onLoudnessFailed; // the loaded slot's file could not be measured
+    // A reading for the loaded slot is on its way: the pane's own pass, or a
+    // check the owner announced with setLoudnessPending.
+    bool loudnessPending() const { return loudnessPending_; }
     void setLoudness(int slot, const juce::String& text, bool attention, bool damaged,
                      const juce::String& tooltip);
     void setLoudnessPending(int slot);
@@ -147,12 +168,20 @@ private:
     void updateTransportRow();
     void updateLoudnessButtons();
     void layoutReadout();
-    void passFinished(int slot, std::optional<wav::LoudnessReading> reading); // message thread
+    void passFinished(int slot, std::optional<wav::LoudnessReading> reading,
+                      std::string contentHash, std::optional<TakeFacts> seen); // message thread
 
     // The one read pass over a loaded file: waveform blocks into the
     // thumbnail, samples into the meter, then the reading up to the pane. A
     // new load or a clear stops it between blocks — browsing fast through
     // slots must not queue a card's worth of reads.
+    //
+    // A metered take is then hashed in a second, streamed pass over the file
+    // (history::fileContentHash), and the hash goes up with the reading only
+    // when the core would measure those very bytes, JUCE decoded the frames
+    // the core would (ReaderLoudness.h), and the file is still the one the
+    // decode began on. Otherwise the reading goes up alone: a number for the
+    // screen, none for the history.
     class ReadPass final : public juce::Thread
     {
     public:
@@ -166,6 +195,9 @@ private:
         void run() override;
 
     private:
+        std::string fileKey(const juce::File& file, const juce::AudioFormatReader& reader,
+                            const std::optional<history::FileStat>& before);
+
         PlayerPane& owner_;
         std::vector<juce::File> files_;
         int slot_ = 0;

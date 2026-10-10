@@ -372,6 +372,28 @@ int main()
                                                std::numeric_limits<double>::quiet_NaN(),
                                                loudness::kPeakCeilingDb),
                      "finite peak");
+        // A measured loudness, target or ceiling that is not a finite number
+        // makes no gain — refused whether the gain would be a boost or a cut,
+        // and whatever the peak says. A NaN target is what a settings file
+        // from before the field refused one reads back (review of #142).
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        for (const double bad : { nan, inf, -inf }) {
+            CHECK_THROWS(loudness::normalizeGainDb(-30.0, bad, -6.0, loudness::kPeakCeilingDb),
+                         "finite figures");
+            CHECK_THROWS(loudness::normalizeGainDb(-10.0, bad, 0.0, loudness::kPeakCeilingDb),
+                         "finite figures");
+            CHECK_THROWS(loudness::normalizeGainDb(bad, -18.0, -6.0, loudness::kPeakCeilingDb),
+                         "finite figures");
+            CHECK_THROWS(loudness::normalizeGainDb(-30.0, -18.0, -6.0, bad), "finite figures");
+        }
+        // ...and a call with figures that are numbers is what it always was.
+        CHECK_NEAR(loudness::normalizeGainDb(-30.0, -18.0, -6.0, loudness::kPeakCeilingDb), 5.0,
+                   1e-12);
+        CHECK_NEAR(loudness::normalizeGainDb(-23.0, -18.0, -20.0, loudness::kPeakCeilingDb), 5.0,
+                   1e-12);
+        CHECK_NEAR(loudness::normalizeGainDb(-12.0, -18.0, 3.0, loudness::kPeakCeilingDb), -6.0,
+                   1e-12);
     }
 
     return testkit::summary("loudness");

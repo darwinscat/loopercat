@@ -20,11 +20,18 @@
 // back the row a player acted on. Whoever opens it feeds it, and hears back
 // through four callbacks: pin, export, restore, play.
 //
-// Every row wears the slots it touched as badges; clicking one filters the
-// timeline to that slot, and "All slots" widens it again. A swap is one row
-// with two badges. The buttons sit under the list, for the selected row —
-// a row is a sentence, not a form — and offer only what the row can do:
-// nothing plays a take the store no longer keeps.
+// Every row wears the slots it touched as badges — up to the three that fit
+// before its sentence; clicking one filters the timeline to that slot, and
+// "All slots" widens it again. A swap is one row with two badges. Past three
+// the row says it in words: a "+N" chip counts the rest of a many-slot
+// operation, and a first-sighting snapshot wears none — "99 slots" stands
+// where its badges would be (#143). Which badges a row shows is one answer
+// (HistoryBadges.h), read by the painting and the hit test alike, and the
+// slot the timeline is filtered to is never the one behind the chip. What
+// the row cuts short or counts is whole in the row's hint. The buttons sit
+// under the list, for the selected row — a row is a sentence, not a form —
+// and offer only what the row can do: nothing plays a take the store no
+// longer keeps.
 //
 // A pin toggled here shows at once and goes out through onPin; the window's
 // own flag is a promise, not the truth. The owner records the pin and calls
@@ -57,6 +64,9 @@ public:
 
     // The whole timeline, oldest first. The selection follows the row a
     // player was looking at; otherwise the newest visible row is selected.
+    // A row's slots are the pedal's — 1..99, ascending, each once, as the
+    // store hands them; a row that says otherwise is refused by its op, and
+    // the window keeps what it was showing.
     void show(std::vector<Row> rows);
     void setBusy(bool busy); // a worker job is running: the offers wait
 
@@ -87,8 +97,23 @@ public:
     juce::String pinButtonText() const { return pin_.getButtonText(); }
     juce::String emptyText() const { return empty_.isVisible() ? empty_.getText() : juce::String(); }
     // The slot whose badge sits under x in a visible row, if any: what a
-    // click there filters to.
+    // click there filters to. The "+N" chip and the sentence are nobody's.
     std::optional<int> badgeAt(int visibleIndex, int x) const;
+    // A click at x in a visible row, callable without a mouse: a badge
+    // filters to its slot; anywhere else the click was only a selection.
+    void clickAt(int visibleIndex, int x);
+    // A double-click at x in a visible row, callable without a mouse: past
+    // the badge strip it plays the row's take; inside the strip — a badge,
+    // the chip, the words — it does nothing, the first click having answered.
+    void doubleClickAt(int visibleIndex, int x);
+    // What the badge strip reads, left to right — the badges' numbers and
+    // the chip, or the words a row counted in words wears instead — for
+    // whoever checks the row without painting it.
+    juce::String badgeStripText(int visibleIndex) const;
+    // The row's whole line for its hint — when, the slots the strip only
+    // counts, action, detail, state, audio, the pin — including what a
+    // narrow row cut short.
+    juce::String hintAt(int visibleIndex) const;
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -100,6 +125,7 @@ private:
     void selectedRowsChanged(int lastRowSelected) override;
     void listBoxItemClicked(int row, const juce::MouseEvent&) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override;
+    juce::String getTooltipForRow(int row) override;
 
     void rebuildVisible(std::int64_t keepSelectedOp);
     void updateOffers();

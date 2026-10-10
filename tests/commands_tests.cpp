@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <numbers>
 #include <optional>
@@ -383,6 +384,20 @@ std::string slotChangesOnCard(const std::string& before, const std::string& afte
 
 int main()
 {
+    // Only a regular file is read as bytes: a folder or a missing path is
+    // refused with our own error, never a stream exception from the library
+    // (libstdc++ opens a folder and throws from its first read).
+    {
+        TempDir tmp;
+        const fs::path folder = tmp.path / "002_1.WAV";
+        fs::create_directories(folder);
+        CHECK_THROWS(commands::readFileBytes(folder), "not a file");
+        CHECK_THROWS(commands::readFileBytes(folder, [](double) {}), "not a file");
+        CHECK_THROWS(commands::readFileBytes(tmp.path / "nowhere.wav"), "not a file");
+        commands::writeFileBytes(tmp.path / "take.wav", "RIFF");
+        CHECK_EQ(commands::readFileBytes(tmp.path / "take.wav"), std::string("RIFF"));
+    }
+
     // A missing journal refuses before any byte on the card changes.
     {
         TempDir tmp;
@@ -1064,6 +1079,80 @@ int main()
                      "out of range");
     }
 
+    // --- setCountIn at a beat whose pattern list is not charted (#149) ---
+    //
+    // The P0 as it was found on the card: the pedal's own Rock2 at 6/4 is
+    // stored as 3, and "count-in on" over it wrote 57, a 4/4 number. Now the
+    // transaction is refused and the volume is byte-identical afterwards —
+    // both memory files, and the whole batch: one refused slot refuses the
+    // write for every slot in it. The count alone is still written at 6/4.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        {
+            std::string text = commands::readMemory(volume);
+            const auto rhythm = [&text](int slot, const char* tag, long long value) {
+                text = rc0::replaceSlotBody(
+                    text, slot,
+                    rc0::setSectionField(rc0::slotBody(text, slot), rc0::kSectionRhythm, tag, value));
+            };
+            // Slot 5: silent at 6/4 with the pedal's Rock2. Slot 6: the same,
+            // playing. Slot 7: the app's own count-in shape, moved to 6/4.
+            rhythm(5, "Beat", 4);
+            rhythm(5, "Pattern", 3);
+            rhythm(6, "Beat", 4);
+            rhythm(6, "Pattern", 3);
+            rhythm(6, "State", rc0::kRhythmStateOn);
+            rhythm(7, "Beat", 4);
+            rhythm(7, "Pattern", rc0::kRhythmPatternBlank);
+            rhythm(7, "State", rc0::kRhythmStateOn);
+            rhythm(7, "PlayCount", rc0::kRhythmPlayCount1Meas);
+            for (const int fileNo : { 1, 2 })
+                commands::writeFileBytes(volume::memoryPath(volume, fileNo),
+                                         rc0::setTailMarker(text, fileNo));
+        }
+        const auto pair = [&volume] {
+            return std::pair { commands::readFileBytes(volume::memoryPath(volume, 1)),
+                               commands::readFileBytes(volume::memoryPath(volume, 2)) };
+        };
+        const auto before = pair();
+
+        CHECK_THROWS(commands::setCountIn(volume, { 5 }, true, writeOpts(tmp.path)), "at 6/4");
+        CHECK(pair() == before);
+        CHECK_EQ(rc0::field(rc0::slotBody(commands::readMemory(volume), 5), "Pattern"), 3);
+        // A 4/4 slot ahead of it in the batch does not land first.
+        CHECK_THROWS(commands::setCountIn(volume, { 3, 5 }, true, writeOpts(tmp.path)), "at 6/4");
+        CHECK(pair() == before);
+        CHECK(!catalog::readSlot(commands::readMemory(volume), 3).countIn);
+        // Off over the borrowed section is the other refused path.
+        CHECK_THROWS(commands::setCountIn(volume, { 7 }, false, writeOpts(tmp.path)), "at 6/4");
+        CHECK(pair() == before);
+        // On where it already is: nothing to write, nothing refused.
+        commands::setCountIn(volume, { 7 }, true, writeOpts(tmp.path));
+        CHECK(rc0::slotBody(commands::readMemory(volume), 7)
+              == rc0::slotBody(std::string(before.first.begin(), before.first.end()), 7));
+
+        // The count alone at 6/4: over a playing rhythm, on and then off move
+        // PlayCount and nothing else — the pedal's 3 stays 3.
+        commands::setCountIn(volume, { 6 }, true, writeOpts(tmp.path));
+        {
+            const std::string text = commands::readMemory(volume);
+            const std::string body = rc0::slotBody(text, 6);
+            CHECK_EQ(rc0::field(body, "PlayCount"), rc0::kRhythmPlayCount1Meas);
+            CHECK_EQ(rc0::field(body, "Pattern"), 3);
+            CHECK_EQ(rc0::field(body, "State"), rc0::kRhythmStateOn);
+            CHECK_EQ(rc0::field(body, "Beat"), 4);
+            CHECK(catalog::readSlot(text, 6).countIn);
+        }
+        commands::setCountIn(volume, { 6 }, false, writeOpts(tmp.path));
+        {
+            const std::string body = rc0::slotBody(commands::readMemory(volume), 6);
+            CHECK_EQ(rc0::field(body, "PlayCount"), 0);
+            CHECK_EQ(rc0::field(body, "Pattern"), 3);
+            CHECK_EQ(rc0::field(body, "State"), rc0::kRhythmStateOn);
+        }
+    }
+
     // --- push: validate-then-write, canonical bytes, full config ---
 
     {
@@ -1121,6 +1210,129 @@ int main()
         CHECK_EQ(forced.archived.size(), 1u);
         CHECK(commands::readFileBytes(keptTake(tmp.path, replacing, 9, forced.archived.front()))
               == pushed);
+    }
+
+    // --- push lands the file under the name it is told (issue #139) ---
+    //
+    // The caller decides what a converted upload is called; push writes
+    // exactly that, and refuses a name that is not a bare .wav file name
+    // before a byte moves — the slot and the archive stay as they were.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const auto wavBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 });
+        // The file push is handed carries a working name that must NOT reach the card.
+        const fs::path source = tmp.path / "converted.wav";
+        commands::writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(wavBytes.data()),
+                                                          wavBytes.size()));
+
+        const auto landed = commands::push(volume, source, 9,
+                                           { .landedName = "song-pedal.wav", .write = writeOpts(tmp.path) });
+        CHECK_EQ(landed.dest.filename().string(), "song-pedal.wav");
+        CHECK(fs::exists(landed.dest));
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(landed.dest.parent_path() / "converted.wav"));
+
+        // The pedal's own case for the extension is a name too.
+        const auto upper = commands::push(volume, source, 10,
+                                          { .landedName = "TAKE.WAV", .write = writeOpts(tmp.path) });
+        CHECK_EQ(upper.dest.filename().string(), "TAKE.WAV");
+
+        // Absent: the name of the file push was handed, as before.
+        const auto plain = commands::push(volume, source, 11, { .write = writeOpts(tmp.path) });
+        CHECK_EQ(plain.dest.filename().string(), "converted.wav");
+
+        // Refusals, each before any write: an empty slot stays empty, no
+        // folder appears, and the volume is byte-identical.
+        const auto before = volumeBytes(volume);
+        for (const std::string bad : { "sub/song.wav", "sub\\song.wav", "/song.wav", "song.wav/" })
+            CHECK_THROWS(commands::push(volume, source, 12,
+                                        { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         "bare file name");
+        for (const std::string bad : { "song.mp3", "song", "song.wav.bak", "wav", "" })
+            CHECK_THROWS(commands::push(volume, source, 12,
+                                        { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         "end in .wav");
+        CHECK_THROWS(commands::push(volume, source, 12,
+                                    { .landedName = ".wav", .write = writeOpts(tmp.path) }),
+                     "name in front of .wav");
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(volume::wavDir(volume, 12)));
+
+        // On an occupied slot with force: the refusal comes before the
+        // archive is handed anything and before the old take moves.
+        const commands::WriteOptions replacing = writeOpts(tmp.path, "op-bad-name");
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .landedName = "song.mp3", .force = true, .write = replacing }),
+                     "end in .wav");
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(tmp.path / "archive" / replacing.opId));
+        CHECK(volumeBytes(volume) == before);
+
+        // The review's P0: a name longer than the card can take used to pass
+        // the up-front check, so push archived and removed the old take and
+        // then failed at the write — an empty slot folder under a config that
+        // says it holds audio. The cap is 238 UTF-16 units: what Windows's
+        // MAX_PATH (260, terminator included) leaves under the 21-character
+        // card folder — FAT's own 255 is not the binding limit. A
+        // 252-character stem plus .wav: refused before the archive is
+        // touched, the old take stays, the card is byte-identical.
+        const commands::WriteOptions longName = writeOpts(tmp.path, "op-long-name");
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .landedName = std::string(252, 'n') + ".wav", .force = true,
+                                      .write = longName }),
+                     "at most 238");
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(tmp.path / "archive" / longName.opId));
+        CHECK(volumeBytes(volume) == before);
+        // The name that passed every check and still failed on Windows:
+        // 239 units. 238 passes, 239 is refused. The file itself is not
+        // written here, where a host temp path plus the name would exceed
+        // what a Windows runner allows.
+        commands::assertLandedName(std::string(234, 'n') + ".wav");
+        CHECK_THROWS(commands::assertLandedName(std::string(235, 'n') + ".wav"), "239");
+        CHECK_THROWS(commands::assertLandedName(std::string(251, 'n') + ".wav"), "at most 238");
+        // units, not bytes: 200 "é" are 400 bytes and 200 units
+        std::string accented;
+        for (int i = 0; i < 200; ++i)
+            accented += "\xc3\xa9";
+        commands::assertLandedName(accented + ".wav");
+        ++testkit::checksRun; // the two names above were accepted
+
+        // Names every host of the card can create and the card's own sweep
+        // leaves alone — anything else is refused up front, with the slot
+        // and the card as they were.
+        for (const auto& [bad, why] : std::vector<std::pair<std::string, std::string>> {
+                 { "ta:ke.wav", "cannot contain \":\"" },
+                 { "take?.wav", "cannot contain \"?\"" },
+                 { "<take>.wav", "cannot contain \"<\"" },
+                 { "take|2.wav", "cannot contain \"|\"" },
+                 { "ta\"ke.wav", "cannot contain \"\"\"" },
+                 { "take*.wav", "cannot contain \"*\"" },
+                 { std::string("take\x01.wav"), "control character" },
+                 { std::string("take\t.wav"), "control character" },
+                 { "._take.wav", "card sweep deletes" },
+                 { ".take.wav", "start with a dot" },
+                 { "con.wav", "Windows reserves" },
+                 { "CON.wav", "Windows reserves" },
+                 { "LPT1.wav", "Windows reserves" },
+                 { "Com9.take.wav", "Windows reserves" },
+                 { "nul.wav", "Windows reserves" } }) {
+            CHECK_THROWS(commands::push(volume, source, 12, { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         why);
+            CHECK_THROWS(commands::push(volume, source, 9,
+                                        { .landedName = bad, .force = true, .write = writeOpts(tmp.path) }),
+                         why);
+        }
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(volume::wavDir(volume, 12)));
+        CHECK(volumeBytes(volume) == before);
+        // ...and what only looks reserved is not: a word that starts with a
+        // device name, COM10, a mark after the stem
+        for (const char* fine : { "console.wav", "COM10.wav", "aux-pedal.wav", "My Song (take 2).wav",
+                                  "caf\xc3\xa9 \xe2\x80\x93 live.wav" })
+            commands::assertLandedName(fine);
+        ++testkit::checksRun; // all accepted
     }
 
     // --- push failure leaves the volume byte-identical ---
@@ -2286,10 +2498,97 @@ int main()
         // A default-constructed target (0.0) is a bug wearing a number.
         CHECK_THROWS(commands::normalize(volume, 6, { .write = writeOpts(tmp.path) }),
                      "between -70 and -1");
+        // So is a number that is not one, or not finite: NaN fails every
+        // comparison, and a NaN gain would fill the take with NaN samples.
+        for (const double target : { std::numeric_limits<double>::quiet_NaN(),
+                                     std::numeric_limits<double>::infinity(),
+                                     -std::numeric_limits<double>::infinity() })
+            CHECK_THROWS(commands::normalize(volume, 6, { .targetLufs = target,
+                                                          .write = writeOpts(tmp.path) }),
+                         "between -70 and -1");
 
         // Every answer and every refusal above left the volume byte-identical.
         CHECK(volumeBytes(volume) == before);
         CHECK(!fs::exists(tmp.path / "archive")); // and no archive copy was spent
+    }
+
+    // --- normalize tells the journal what it measured, of the bytes it measured (#140) ---
+    //
+    // Theory: the reading is of the take as the command found it — reported
+    // once, with those very bytes, before anything about the take changes,
+    // and whether or not a write follows. A take refused as not audio is no
+    // reading. A journal without the hook changes nothing about the command.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineFloatWav(volume, 6, "quiet.wav", 44100, -28.0);
+        putSineFloatWav(volume, 7, "attarget.wav", 44100, -18.0);
+        putSineFloatWav(volume, 4, "faint.wav", 44100, -100.0);           // under the -70 gate
+        putSineFloatWav(volume, 8, "damaged.wav", 44100, -23.0, 1.0e20f); // one impossible sample
+        struct Heard {
+            int slot;
+            std::string name;
+            std::string bytes;
+            wav::LoudnessReading reading;
+        };
+        std::vector<Heard> heard;
+        const auto listening = [&](commands::WriteOptions options) {
+            options.journal.loudnessMeasured = [&](int slot, const std::string& name,
+                                                   std::string_view bytes,
+                                                   const wav::LoudnessReading& reading) {
+                heard.push_back({ slot, name, std::string(bytes), reading });
+            };
+            return options;
+        };
+
+        // a gain is written: the journal heard the take BEFORE it, byte for byte
+        const std::string quiet = commands::readFileBytes(volume::wavDir(volume, 6) / "quiet.wav");
+        const auto applied = commands::normalize(
+            volume, 6, { .targetLufs = -18.0, .write = listening(writeOpts(tmp.path)) });
+        CHECK(applied.applied);
+        CHECK_EQ(heard.size(), 1u);
+        if (heard.size() == 1u) {
+            CHECK_EQ(heard[0].slot, 6);
+            CHECK_EQ(heard[0].name, std::string("quiet.wav"));
+            CHECK(heard[0].bytes == quiet);
+            CHECK(heard[0].bytes != commands::readFileBytes(volume::wavDir(volume, 6) / "quiet.wav"));
+            CHECK(heard[0].reading.integratedLufs.has_value()
+                  && std::abs(*heard[0].reading.integratedLufs - (-28.0)) <= 0.1);
+            CHECK_EQ(heard[0].reading.wildSamples, 0);
+        }
+
+        // nothing to write: measured all the same, reported once
+        heard.clear();
+        const std::string atTargetBytes =
+            commands::readFileBytes(volume::wavDir(volume, 7) / "attarget.wav");
+        const auto atTarget = commands::normalize(
+            volume, 7, { .targetLufs = -18.0, .write = listening(writeOpts(tmp.path)) });
+        CHECK(!atTarget.applied);
+        CHECK_EQ(heard.size(), 1u);
+        CHECK(heard.size() == 1u && heard[0].slot == 7 && heard[0].bytes == atTargetBytes);
+        CHECK(heard.size() == 1u && heard[0].reading.integratedLufs.has_value()
+              && std::abs(*heard[0].reading.integratedLufs - (-18.0)) <= 0.1);
+
+        // silence: the command refuses to act, and what it measured is still a
+        // measurement — "nothing to measure" is an answer about these bytes
+        heard.clear();
+        CHECK_THROWS(commands::normalize(volume, 4, { .targetLufs = -18.0,
+                                                      .write = listening(writeOpts(tmp.path)) }),
+                     "silent or shorter");
+        CHECK_EQ(heard.size(), 1u);
+        CHECK(heard.size() == 1u && !heard[0].reading.integratedLufs.has_value());
+
+        // bytes that are not audio: refused, and no reading is reported of them
+        heard.clear();
+        CHECK_THROWS(commands::normalize(volume, 8, { .targetLufs = -18.0,
+                                                      .write = listening(writeOpts(tmp.path)) }),
+                     "impossible sample");
+        CHECK(heard.empty());
+
+        // a journal without the hook: the command measures and writes as before
+        putSineFloatWav(volume, 9, "plain.wav", 44100, -28.0);
+        CHECK(commands::normalize(volume, 9, { .targetLufs = -18.0, .write = writeOpts(tmp.path) })
+                  .applied);
     }
 
     // --- a real card: a mutation changes what it exists to write, and no other byte ---

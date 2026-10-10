@@ -5,7 +5,10 @@
 
 #include <loopercat/CardMarker.hpp>
 
+#include <map>
+#include <optional>
 #include <set>
+#include <string>
 #include <loopercat/Connect.hpp>
 #include <loopercat/StorageRegister.hpp>
 
@@ -17,6 +20,7 @@
 #include "BannerStrip.h"
 #include "BatchOverlay.h"
 #include "DeviceWatcher.h"
+#include "FirstSnapshotNotice.h"
 #include "LooperMark.h"
 #include "PedalLight.h"
 #include "PedalBook.h"
@@ -24,15 +28,19 @@
 #include "PedalPresence.h"
 #include "PedalWorker.h"
 #include "HistoryPane.h"
+#include "HintDelay.h"
 #include "HistoryWindow.h"
 #include "HistoryWindowHost.h"
 #include "history/SlotRows.h"
 #include "history/TakeAudition.h"
 #include "history/HistoryRecorder.h"
+#include "history/InferredLoudness.h"
 #include "history/FirstSeenJob.h"
 #include "history/UndoRun.h"
 #include "history/CardRestore.h"
 #include "history/TakeExport.h"
+#include "LoudnessReport.h"
+#include "NormalizeStep.h"
 #include "PlayerPane.h"
 #include "QuitGate.h"
 #include "RhythmPane.h"
@@ -197,6 +205,7 @@ private:
     // the endpoint Connect chose. A click on the name renames the card.
     void readCardName();
     void snapshotNext(const std::shared_ptr<history::FirstSeenRun>& run, int slot);
+    void tellDeparture(const juce::String& told); // the pedal has gone: the toast's last word
     void cardNamed(marker::Card card, bool minted, std::string sweepNote);
     void renamePedal();
     void savePedalBook();
@@ -273,7 +282,7 @@ private:
                              std::vector<std::string> hashes);
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
-    void editRhythm(int slot, usecases::rhythm::Edits edits);
+    void editRhythm(int slot, long long beat, usecases::rhythm::Edits edits);
     void editPlayStop(int slot, usecases::playstop::Edits edits);
     void releasePlayerIfHolding(int slotA, int slotB);
     void choosePushWav(int slot, bool slotOccupied);
@@ -281,35 +290,61 @@ private:
     void clearSlot(int slot);
     void downmixSlot(int slot, const juce::String& name, wav::Placement placement);
     void normalizeSlot(int slot, const juce::String& name);
+    // The first step has ended, however it ended (#142); `stoppedAtGate`:
+    // the worker refused it before it read a byte, so no answer is coming.
+    void endNormalizeStep(int slot, const juce::String& description, const JobOutcome& outcome);
+    void refuseNormalize(int slot, const juce::String& why);
+    // `measuredHash`: the single-slot path's — the bytes its first step
+    // measured, the only ones the job may write over (#142). Absent for the
+    // bulk apply, which asked once for whatever each slot holds.
     void enqueueNormalize(int slot, double target, int batch = 0,
-                          std::shared_ptr<std::atomic<int>> filePermille = nullptr);
+                          std::shared_ptr<std::atomic<int>> filePermille = nullptr,
+                          std::optional<std::string> measuredHash = std::nullopt);
     void showSlotsMenu(std::vector<int> slots, juce::Point<int> screenPosition);
     void startNormalizeBatch(const std::vector<int>& slots, double target,
                              const juce::String& targetText);
     void endNormalizeBatch();
-    double currentTargetLufs();
+    // The normalize target as Settings holds it, read through the field's own
+    // rule (#142 review); empty when the stored text is not a target, which
+    // is reported once per launch. Out of the box, with nothing stored yet,
+    // it is kDefaultTargetLufs.
+    std::optional<double> currentTargetLufs();
+    void refuseNormalizeWithoutTarget(const juce::String& action);
+    bool unusableTargetReported = false;
+    juce::String unusableTargetText; // what the file held, for the sentence
 
     // Loudness reads (issue #61): one worker job per slot, read-only. The
     // inspector's Measure is a foreground read of one slot; the check is a
     // background run over a selection. Both land the same report.
-    struct LoudnessReport {
-        juce::String cellText; // the column: "-22.8", "damaged", "n/a"
-        juce::String rowText;  // the player row: "-22.8 LUFS · 4.8 dB below target -18"
-        juce::String noteText; // the toast: the row text plus the peak
-        juce::String tooltipText; // the hint: what the tight row cannot say
-        bool attention = false; // Normalize would change this — drawn to be noticed
-        bool damaged = false;
-    };
-    static LoudnessReport describeReading(const wav::LoudnessReading& reading, double targetLufs);
-    void enqueueLoudnessRead(int slot, double target, int batch);
+    using LoudnessReport = loudnessreport::Report;
+    // `target` empty: Settings holds no usable one, and readings carry no verdict.
+    void enqueueLoudnessRead(int slot, std::optional<double> target, int batch);
+    // A reading the player's own pass took, into the history under the hash
+    // of the bytes it metered (#140) — on the worker, the store's thread.
+    void keepReading(std::string hash, wav::LoudnessReading reading, int slot,
+                     std::optional<TakeFacts> seen, std::optional<std::int64_t> readBegan);
     void applyLoudnessReport(int slot, const LoudnessReport& report, int batch);
+    // The single-slot Normalize's first step has landed (#142): the reading as
+    // words for the column and the row, and what the command would do with
+    // it — a toast, a refusal, or the window with the numbers in hand.
+    void offerNormalize(int slot, const juce::String& name, double target,
+                        const LoudnessReport& report, const normalizeplan::Plan& plan,
+                        const std::string& measuredHash);
+    // The column from what the history already knows (#141): the slots with
+    // a take and an empty cell, put to the store by the facts the scan read
+    // off their directory entries — no audio read, no card needed. The
+    // player's slot is read instead; a read that failed is remembered.
+    void inferLoudnessFromHistory();
+    void readFailed(int slot);
     void measureSlotLoudness(int slot);
     void startLoudnessCheck(const std::vector<int>& slots);
     void stopLoudnessCheck();
     void finishLoudnessCheck();
     commands::WriteOptions makeWriteOptions();
+    // `alsoAbout`: the slots the operation is about beyond the job's own —
+    // a swap's second slot (#144).
     PedalWorker::Job recorded(const char* kind, const commands::WriteOptions& options,
-                              PedalWorker::Job job);
+                              PedalWorker::Job job, std::vector<int> alsoAbout = {});
 
     // Declaration order is lifetime order: settings outlives the checker
     // (its Config captures it), the checker outlives the badge; the engine
@@ -331,13 +366,15 @@ private:
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
-    TabStrip bottomTabs { { "Audio", "Properties", "Rhythm", "History" } };
+    // The strip names the slot ahead of its tabs (#145): one place, true
+    // for Audio, Properties, Rhythm and History alike.
+    TabStrip bottomTabs { { "Audio", "Properties", "Rhythm", "History" }, TabStrip::Lead::label };
     HistoryPane history;
     SlotInspector inspector;
     RhythmPane rhythmPane;
     Toast toast;
     BatchOverlay batchOverlay;
-    juce::TooltipWindow tooltips { this, 600 }; // hover hints (the player's loudness readout first)
+    juce::TooltipWindow tooltips { this, kHintDelayMs }; // hover hints (the player's loudness readout first)
 
     // The running batch (issue #61): id 0 = none. Results are credited by the
     // id the worker hands back, never by parsing descriptions.
@@ -351,7 +388,21 @@ private:
     int checkId = 0;
     int checkTotal = 0, checkDone = 0, checkFailed = 0, checkAttention = 0, checkDamaged = 0;
     bool checkStopping = false;
-    std::vector<int> checkSlots; // to un-pend the cells of a dropped tail
+    // The check's slots whose read has not landed: the cells a stop un-pends,
+    // and no others — another read's "…" is that read's to clear.
+    std::set<int> checkUnread;
+    // The single-slot Normalize's first steps in flight (#142), one per slot.
+    normalizestep::StepsInFlight normalizeSteps;
+    // What the LUFS column from the history (#141) remembers for one
+    // connection: the files a real read failed on, by slot (message thread;
+    // readFailed), and the slots whose record could not be read and were
+    // logged already (touched by the worker's jobs only; a new set per card).
+    std::map<int, TakeFacts> unreadableTakes;
+    // Where the player's current read pass began among the history's
+    // operations (HistoryRecorder::newestOp), noted when it is started on
+    // the card's take; absent for a take played back out of the history.
+    std::optional<std::int64_t> playerReadBegan;
+    std::shared_ptr<std::set<int>> inferenceProblemsLogged = std::make_shared<std::set<int>>();
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
@@ -372,6 +423,7 @@ private:
     std::shared_ptr<history::FirstSeenRun> firstSeenRun;
     bool firstSeenSettled = false;
     std::string firstSeenProblem;
+    FirstSnapshotNotice firstSeenNotice; // an interruption waiting for the departure's toast (#146)
     int firstSeenCount = 0;
     int cardGeneration = 0;
     bool cardNameSettled = false;       // read, minted, or given up — for the seam

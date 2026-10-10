@@ -6,8 +6,10 @@
 #include "HistoryStore.h"
 #include "SlotStory.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 //==============================================================================
@@ -27,10 +29,35 @@ struct Row {
     std::int64_t op = 0;
     std::int64_t at = 0;
     story::Line line;
+    // What the operation's own outcome or origin adds — "failed",
+    // "interrupted", "still running", "recorded on the pedal" — and empty
+    // for a plain finished operation of the app's. The same words the
+    // History window wears: a row that did not finish must not read as
+    // something that happened.
+    std::string state;
     bool playable = false;   // its take's bytes are in the store
     bool restorable = false; // its state can be put back onto the card
     std::string takeHash;    // the bytes Play would sound, empty when there are none
 };
+
+// The words for an operation's outcome or origin, shared by the slot's rows
+// and the card's so the two views never disagree about what did not happen.
+inline std::string stateWords(const std::string& status, const std::string& actor)
+{
+    if (status == "failed")
+        return "failed";
+    if (status == "interrupted")
+        return "interrupted";
+    if (status == "pending")
+        return "still running";
+    if (actor == "pedal")
+        return "recorded on the pedal";
+    return {};
+}
+
+// What a row says when the operation was about the slot and finished with
+// no word for what it did there: nothing, by its own account.
+inline constexpr std::string_view kNothingChanged = "nothing changed";
 
 // The rows of one slot, in the order the store gave them (oldest first).
 //
@@ -49,6 +76,11 @@ struct Row {
 inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
 {
     const bool hasTake = entry.takeHash.has_value() || !entry.takeName.empty();
+    // A row that only names the slot recorded nothing here; one that says so
+    // and carries a state or a take is not the store's — refused, not read.
+    if (entry.subjectOnly && (entry.beforeBody || entry.afterBody || hasTake))
+        throw Error("operation " + std::to_string(entry.op)
+                    + " names the slot as its subject and still recorded a state in it");
 
     // Only a take the operation LEFT in the slot can be the one on the card.
     // A row whose take is the one it archived — a clear, an undo that emptied
@@ -70,7 +102,18 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                              .swappedWith = entry.swappedWith,
                              .takeName = entry.takeName,
                              .take = take,
+                             .status = entry.status,
                              .note = entry.note });
+    row.state = stateWords(entry.status, entry.actor);
+    // A row that did not finish carries its reason where its numbers would
+    // be: what it recorded on the way is not what the slot came to hold.
+    if (entry.status != "done" && !entry.note.empty())
+        row.line.detail = entry.note;
+    // A finished operation that was about the slot and has no word for what
+    // it did there did nothing there — said plainly, so "Renamed" with no
+    // name after it does not read as a change.
+    if (entry.subjectOnly && entry.status == "done" && row.line.detail.empty())
+        row.line.detail = std::string(kNothingChanged);
     row.playable = entry.takeKept;
     row.restorable = !newest && entry.afterBody.has_value() && (!hasTake || entry.takeKept);
     if (entry.takeKept && entry.takeHash)
@@ -78,19 +121,29 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     return row;
 }
 
+// The state the slot is in is the last row that recorded one. A row that
+// only names the slot — an operation that was about it and changed nothing
+// (#144) — is not a state: it leaves the slot where the row before it put
+// it, and that row keeps saying "in the slot now".
 inline std::vector<Row> forSlot(const std::vector<HistoryStore::TimelineEntry>& entries)
 {
+    std::size_t newest = entries.size();
+    for (std::size_t i = 0; i < entries.size(); ++i)
+        if (!entries[i].subjectOnly)
+            newest = i;
     std::vector<Row> out;
     out.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i)
-        out.push_back(one(entries[i], i + 1 == entries.size()));
+        out.push_back(one(entries[i], i == newest));
     return out;
 }
 
 // --- the whole card (the History window, #73) ---
 
 // One row per operation, over the same facts and the same words as the
-// slot's rows: one model, two views. A swap is one row with two slots.
+// slot's rows: one model, two views. A swap is one row with two slots. An
+// operation that was about a slot and changed nothing (#144) is a row with
+// that slot's badge, its own words, and no take.
 //
 // What the row offers: Play when any take it holds is kept (the first kept
 // one is what plays; Export takes the same bytes); Restore when it recorded
@@ -117,13 +170,27 @@ struct CardRow {
     std::string action;
     std::string detail;
     std::string state;
-    std::vector<Take> takes; // one per touched slot, ascending
+    std::vector<Take> takes;   // one per touched slot, ascending
+    std::vector<int> subjects; // the slots the operation was about (#144), ascending
 
-    std::vector<int> slots() const
+    // The slots the operation recorded a state or a take in, ascending —
+    // what a restore of the row acts on. A subject is not among them.
+    std::vector<int> touchedSlots() const
     {
         std::vector<int> out;
         for (const Take& take : takes)
             out.push_back(take.slot);
+        return out;
+    }
+    // Every slot the row wears as a badge: the ones the operation touched
+    // and the ones it was about, ascending, each once. A subject adds a
+    // badge and nothing else — no take to play, no state to put back.
+    std::vector<int> slots() const
+    {
+        std::vector<int> out = touchedSlots();
+        out.insert(out.end(), subjects.begin(), subjects.end());
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
         return out;
     }
     bool playable() const
@@ -172,14 +239,8 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
         row.actor = entry.actor;
         row.status = entry.status;
         row.pinned = entry.pinned;
-        if (entry.status == "failed")
-            row.state = "failed";
-        else if (entry.status == "interrupted")
-            row.state = "interrupted";
-        else if (entry.status == "pending")
-            row.state = "still running";
-        else if (entry.actor == "pedal")
-            row.state = "recorded on the pedal";
+        row.subjects = entry.subjects;
+        row.state = stateWords(entry.status, entry.actor);
 
         for (const HistoryStore::CardEntry::Slot& touched : entry.slots) {
             const Row slotRow = one(touched.facts, touched.newest);
@@ -227,9 +288,11 @@ inline std::vector<CardRow> forCard(const std::vector<HistoryStore::CardEntry>& 
             // Nothing recorded about any slot: the words story::tell has for
             // the operation itself, including a kind this build has no words for.
             const story::Line bare = story::tell({ .kind = entry.kind, .take = story::Take::none,
-                                                   .note = entry.note });
+                                                   .status = entry.status, .note = entry.note });
             row.action = bare.action;
             row.detail = bare.detail.empty() ? entry.note : bare.detail; // a failed op's reason
+            if (row.detail.empty() && entry.status == "done" && !entry.subjects.empty())
+                row.detail = std::string(kNothingChanged); // about a slot, and did nothing there
         }
         out.push_back(std::move(row));
     }
