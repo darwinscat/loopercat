@@ -104,6 +104,9 @@ The gear in the top row opens the app's own settings:
 - **Audio** — which interface and outputs the preview plays through.
 - **Columns** — which behaviour lamps the slot table shows. The pedal's own
   facts (name, duration, bars, tempo, file) are always there.
+- **Import** — what happens to a file on its way to the pedal: normalization
+  (see [Normalize](#normalize)) and the mark a converted upload carries (see
+  [Moving audio](#moving-audio)).
 
 ## Editing a slot
 
@@ -240,6 +243,22 @@ A few things worth knowing:
   gapless — no encoder-delay silence before the downbeat, no gap at the loop
   seam); when replacing, the old loop is kept in the history.
 - **Pull to folder…** — copy a loop off the pedal as a standard WAV.
+
+A file the pedal takes as it is (44.1 kHz, stereo, 32-bit float WAV) lands
+under its own name, byte for byte. One that had to be rebuilt — a 48 kHz or
+24-bit export, a mono take, an MP3, or a file normalization rewrote — lands
+as `<your name>-pedal.wav`: `song.mp3` becomes `song-pedal.wav`. The mark is
+there on purpose. The bytes in that slot are not the bytes of your file (they
+were resampled, spread to two channels, re-quantised, maybe gain-adjusted), and
+a take pulled back a month later should say so at a glance. The push toast and
+the history row spell out what changed, e.g. `48000 Hz, 24-bit, mono →
+44100 Hz, 32-bit float, stereo`. A float export that differs only in its
+header (the WAVE_FORMAT_EXTENSIBLE shape DAWs write) is repacked, not rebuilt:
+it lands as `<your name>.wav`, every sample intact, with no mark. The suffix
+is yours: Settings → **Import** →
+*Mark uploads converted for the pedal with*. Clear it and converted uploads
+land under their own name (with a `.wav` extension — the audio inside is a
+WAV, whatever the source was).
 
 ## Swap
 

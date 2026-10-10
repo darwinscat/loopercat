@@ -255,6 +255,11 @@ loopercat_core_test(connect_gate_tests)
 # What the app remembers about the pedals it has met (issue #98): pure, so
 # it is a core suite though it lives in app/.
 loopercat_core_test(pedal_book_tests)
+# What a file name on the card may be (FatName.hpp): FAT's rules and Windows's.
+loopercat_core_test(fat_name_tests)
+# The name a pushed file lands under (issue #139): pure, so it is a core
+# suite though it lives in app/.
+loopercat_core_test(upload_mark_tests)
 # The empty window's words about the bus, by the profile table's read gate.
 loopercat_core_test(pedal_presence_tests)
 loopercat_core_test(params_tests)
@@ -714,6 +719,25 @@ target_link_libraries(wav_import_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME wav_import_tests COMMAND wav_import_tests)
+
+# ----------------------------------------------------------------------------
+# The upload preferences (issues #53, #139) in the app's own PropertiesFile:
+# defaults for an untouched file, round trips through a fresh open, a mark
+# cleared to nothing staying nothing.
+# ----------------------------------------------------------------------------
+juce_add_console_app(import_prefs_tests PRODUCT_NAME "import_prefs_tests")
+target_sources(import_prefs_tests PRIVATE tests/import_prefs_tests.cpp)
+target_compile_definitions(import_prefs_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(import_prefs_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME import_prefs_tests COMMAND import_prefs_tests)
 
 # ----------------------------------------------------------------------------
 # The history store (issue #72): theory tests against real SQLite files — the

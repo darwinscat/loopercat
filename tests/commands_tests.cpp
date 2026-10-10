@@ -1197,6 +1197,129 @@ int main()
               == pushed);
     }
 
+    // --- push lands the file under the name it is told (issue #139) ---
+    //
+    // The caller decides what a converted upload is called; push writes
+    // exactly that, and refuses a name that is not a bare .wav file name
+    // before a byte moves — the slot and the archive stay as they were.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const auto wavBytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 });
+        // The file push is handed carries a working name that must NOT reach the card.
+        const fs::path source = tmp.path / "converted.wav";
+        commands::writeFileBytes(source, std::string_view(reinterpret_cast<const char*>(wavBytes.data()),
+                                                          wavBytes.size()));
+
+        const auto landed = commands::push(volume, source, 9,
+                                           { .landedName = "song-pedal.wav", .write = writeOpts(tmp.path) });
+        CHECK_EQ(landed.dest.filename().string(), "song-pedal.wav");
+        CHECK(fs::exists(landed.dest));
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(landed.dest.parent_path() / "converted.wav"));
+
+        // The pedal's own case for the extension is a name too.
+        const auto upper = commands::push(volume, source, 10,
+                                          { .landedName = "TAKE.WAV", .write = writeOpts(tmp.path) });
+        CHECK_EQ(upper.dest.filename().string(), "TAKE.WAV");
+
+        // Absent: the name of the file push was handed, as before.
+        const auto plain = commands::push(volume, source, 11, { .write = writeOpts(tmp.path) });
+        CHECK_EQ(plain.dest.filename().string(), "converted.wav");
+
+        // Refusals, each before any write: an empty slot stays empty, no
+        // folder appears, and the volume is byte-identical.
+        const auto before = volumeBytes(volume);
+        for (const std::string bad : { "sub/song.wav", "sub\\song.wav", "/song.wav", "song.wav/" })
+            CHECK_THROWS(commands::push(volume, source, 12,
+                                        { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         "bare file name");
+        for (const std::string bad : { "song.mp3", "song", "song.wav.bak", "wav", "" })
+            CHECK_THROWS(commands::push(volume, source, 12,
+                                        { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         "end in .wav");
+        CHECK_THROWS(commands::push(volume, source, 12,
+                                    { .landedName = ".wav", .write = writeOpts(tmp.path) }),
+                     "name in front of .wav");
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(volume::wavDir(volume, 12)));
+
+        // On an occupied slot with force: the refusal comes before the
+        // archive is handed anything and before the old take moves.
+        const commands::WriteOptions replacing = writeOpts(tmp.path, "op-bad-name");
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .landedName = "song.mp3", .force = true, .write = replacing }),
+                     "end in .wav");
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(tmp.path / "archive" / replacing.opId));
+        CHECK(volumeBytes(volume) == before);
+
+        // The review's P0: a name longer than the card can take used to pass
+        // the up-front check, so push archived and removed the old take and
+        // then failed at the write — an empty slot folder under a config that
+        // says it holds audio. The cap is 238 UTF-16 units: what Windows's
+        // MAX_PATH (260, terminator included) leaves under the 21-character
+        // card folder — FAT's own 255 is not the binding limit. A
+        // 252-character stem plus .wav: refused before the archive is
+        // touched, the old take stays, the card is byte-identical.
+        const commands::WriteOptions longName = writeOpts(tmp.path, "op-long-name");
+        CHECK_THROWS(commands::push(volume, source, 9,
+                                    { .landedName = std::string(252, 'n') + ".wav", .force = true,
+                                      .write = longName }),
+                     "at most 238");
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(tmp.path / "archive" / longName.opId));
+        CHECK(volumeBytes(volume) == before);
+        // The name that passed every check and still failed on Windows:
+        // 239 units. 238 passes, 239 is refused. The file itself is not
+        // written here, where a host temp path plus the name would exceed
+        // what a Windows runner allows.
+        commands::assertLandedName(std::string(234, 'n') + ".wav");
+        CHECK_THROWS(commands::assertLandedName(std::string(235, 'n') + ".wav"), "239");
+        CHECK_THROWS(commands::assertLandedName(std::string(251, 'n') + ".wav"), "at most 238");
+        // units, not bytes: 200 "é" are 400 bytes and 200 units
+        std::string accented;
+        for (int i = 0; i < 200; ++i)
+            accented += "\xc3\xa9";
+        commands::assertLandedName(accented + ".wav");
+        ++testkit::checksRun; // the two names above were accepted
+
+        // Names every host of the card can create and the card's own sweep
+        // leaves alone — anything else is refused up front, with the slot
+        // and the card as they were.
+        for (const auto& [bad, why] : std::vector<std::pair<std::string, std::string>> {
+                 { "ta:ke.wav", "cannot contain \":\"" },
+                 { "take?.wav", "cannot contain \"?\"" },
+                 { "<take>.wav", "cannot contain \"<\"" },
+                 { "take|2.wav", "cannot contain \"|\"" },
+                 { "ta\"ke.wav", "cannot contain \"\"\"" },
+                 { "take*.wav", "cannot contain \"*\"" },
+                 { std::string("take\x01.wav"), "control character" },
+                 { std::string("take\t.wav"), "control character" },
+                 { "._take.wav", "card sweep deletes" },
+                 { ".take.wav", "start with a dot" },
+                 { "con.wav", "Windows reserves" },
+                 { "CON.wav", "Windows reserves" },
+                 { "LPT1.wav", "Windows reserves" },
+                 { "Com9.take.wav", "Windows reserves" },
+                 { "nul.wav", "Windows reserves" } }) {
+            CHECK_THROWS(commands::push(volume, source, 12, { .landedName = bad, .write = writeOpts(tmp.path) }),
+                         why);
+            CHECK_THROWS(commands::push(volume, source, 9,
+                                        { .landedName = bad, .force = true, .write = writeOpts(tmp.path) }),
+                         why);
+        }
+        CHECK(volume::listSlotWavs(volume, 9) == std::vector<std::string> { "song-pedal.wav" });
+        CHECK(!fs::exists(volume::wavDir(volume, 12)));
+        CHECK(volumeBytes(volume) == before);
+        // ...and what only looks reserved is not: a word that starts with a
+        // device name, COM10, a mark after the stem
+        for (const char* fine : { "console.wav", "COM10.wav", "aux-pedal.wav", "My Song (take 2).wav",
+                                  "caf\xc3\xa9 \xe2\x80\x93 live.wav" })
+            commands::assertLandedName(fine);
+        ++testkit::checksRun; // all accepted
+    }
+
     // --- push failure leaves the volume byte-identical ---
 
     {

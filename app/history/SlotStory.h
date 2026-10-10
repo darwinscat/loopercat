@@ -54,6 +54,10 @@ struct Facts {
     std::optional<int> swappedWith;
     std::string takeName; // the take the slot held after the operation
     Take take = Take::none;
+    // The operation's status as the store records it ("done", "failed",
+    // "interrupted"): a note is the job's own words only when the job
+    // finished — a failed operation's note is its error.
+    std::string status;
     std::string note;
 };
 
@@ -98,6 +102,26 @@ inline std::string trimmedName(const std::string& body)
     return name;
 }
 
+// The sentences of a job's note other than `fact`: a push's note is
+// "<conversion>; <normalization>; <note-length fact>", each present only
+// when it has something to say, and the fact has its own place in the line.
+inline std::string sentencesBesides(const std::string& note, std::string_view fact)
+{
+    constexpr std::string_view kJoin = "; ";
+    std::string out;
+    std::size_t at = 0;
+    while (at <= note.size()) {
+        const std::size_t end = note.find(kJoin, at);
+        const std::string part = note.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        if (!part.empty() && part != fact)
+            out += (out.empty() ? "" : std::string(kJoin)) + part;
+        if (end == std::string::npos)
+            break;
+        at = end + kJoin.size();
+    }
+    return out;
+}
+
 inline Line tell(const Facts& facts)
 {
     Line line;
@@ -130,6 +154,14 @@ inline Line tell(const Facts& facts)
             (void) was;
             line.detail += " - " + minutes(now) + " - " + bpm(tempoTenths(*facts.afterBody));
         }
+        // What the job said about the take on its way in — the rebuild's
+        // facts, the normalization's — after the numbers (issue #139): the
+        // row and the toast tell the same story. Only for a job that
+        // finished: a failed one's note is its error, and the row's state
+        // already says it failed.
+        if (facts.status == "done")
+            if (const std::string said = sentencesBesides(facts.note, kNoteLengthReplaced); !said.empty())
+                line.detail += (line.detail.empty() ? "" : " - ") + said;
         sayNoteLength();
     } else if (facts.kind == "trim") {
         line.action = "Trimmed";
