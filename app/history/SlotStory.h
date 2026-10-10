@@ -180,11 +180,16 @@ inline Line tell(const Facts& facts)
             line.detail = bpm(tempoTenths(*facts.beforeBody)) + " -> "
                 + bpm(tempoTenths(*facts.afterBody));
     } else if (facts.kind == "oneshot") {
-        line.action = std::string("One Shot ")
-            + (bodies && track(*facts.afterBody, "One") == 1 ? "on" : "off");
+        // On or off is read from the body the operation left. Without one —
+        // an attempt that failed, or one that found nothing to change — the
+        // row names the switch and claims no setting.
+        line.action = "One Shot";
+        if (bodies)
+            line.action += track(*facts.afterBody, "One") == 1 ? " on" : " off";
     } else if (facts.kind == "countin") {
-        line.action = std::string("Play Count-In ")
-            + (bodies && usecases::countin::isOn(*facts.afterBody) ? "on" : "off");
+        line.action = "Play Count-In";
+        if (bodies)
+            line.action += usecases::countin::isOn(*facts.afterBody) ? " on" : " off";
     } else if (facts.kind == "swap") {
         line.action = "Swapped";
         if (facts.swappedWith)

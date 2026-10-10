@@ -31,6 +31,7 @@ public:
         juce::String when;   // "21:54", or "23 Sep 21:54" once it is not today
         juce::String action; // "Trimmed"
         juce::String detail; // "4:36 -> 0:39"
+        juce::String state;  // "failed", "interrupted", "recorded on the pedal", or empty
         juce::String audio;  // "take kept"
         bool playable = false;   // its take's bytes are in the store
         bool restorable = false; // its state can go back onto the card

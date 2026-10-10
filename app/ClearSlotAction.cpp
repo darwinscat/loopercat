@@ -57,8 +57,9 @@ void request(int slot, bool hasTake, std::shared_ptr<history::HistoryRecorder> r
                 commands::clear(volumePath, { slot }, { .write = options });
             }
         };
-        job.before = [rec, id = options.opId](const volume::fs::path& volumePath) {
+        job.before = [rec, id = options.opId, slot](const volume::fs::path& volumePath) {
             rec->begin(id, "clear", volumePath);
+            rec->subject(id, slot); // about this slot, whatever the clear then finds there (#144)
         };
         job.after = [rec, id = options.opId](const JobOutcome& outcome) {
             rec->finish(id, outcome.error());
