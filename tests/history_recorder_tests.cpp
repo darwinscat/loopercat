@@ -993,6 +993,88 @@ int main()
         CHECK_THROWS(history::readSlotLoudness(volume, 10, *rec), "no audio to measure");
     }
 
+    // --- what the read saw is filed beside the reading, on both paths, and a
+    //     refused sighting never masquerades as the reading's trouble (#141 on #140) ---
+    //
+    // Theory (SlotLoudness.h, PR #160 glue): a sighting goes in only when the
+    // reading was kept, and names the file the read opened, the entry's size
+    // and stamp, the hash of the bytes, and the newest operation begun when
+    // the read began — none, on a store no operation has touched. The recall
+    // path files the very same row: the bytes were read either way. A store
+    // that takes the reading and refuses the sighting says so in
+    // `sightingFailure`, with `kept` true and `failure` empty, on both paths.
+    // No session: nothing kept, and no sighting trouble invented.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const fs::path take = volume::wavDir(volume, 9) / "009_1.WAV";
+        putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
+        const std::string hash = HistoryStore::contentHash(commands::readFileBytes(take));
+        const auto hex = [](const std::string& bytes) {
+            static constexpr char digits[] = "0123456789ABCDEF";
+            std::string out;
+            for (const unsigned char c : bytes) {
+                out += digits[c >> 4];
+                out += digits[c & 15];
+            }
+            return out;
+        };
+        auto rec = recorderAt(tmp.path / "history");
+        rec->selectVolume(volume); // a session open, and not one operation begun
+        sqlite::Db& db = rec->store().db();
+        const std::string theRow = "SELECT count(*) FROM take_sightings WHERE slot = 9 AND name = '009_1.WAV'"
+                                   " AND size = " + std::to_string(fs::file_size(take))
+                                 + " AND modified = " + std::to_string(history::modifiedMs(take))
+                                 + " AND hex(hash) = '" + hex(hash) + "' AND since_op IS NULL";
+
+        // Read path, on a store with no operation: the sighting stands on none.
+        const auto cold = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(cold.kept);
+        CHECK(cold.failure.empty());
+        CHECK(cold.sightingFailure.empty());
+        CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 1);
+        CHECK_EQ(count(db, theRow), 1);
+
+        // Recall path: the row gone, the reading recalled, the same row back.
+        db.exec("DELETE FROM take_sightings");
+        const auto any = [](const wav::LoudnessReading&) { return true; };
+        const auto recalled = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(recalled.recalled);
+        CHECK(recalled.kept);
+        CHECK(recalled.failure.empty());
+        CHECK(recalled.sightingFailure.empty());
+        CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 1);
+        CHECK_EQ(count(db, theRow), 1);
+
+        // The store takes the reading and refuses the sighting, on both paths:
+        // the reading is kept and the trouble is the sighting's alone.
+        db.exec("DELETE FROM loudness_readings");
+        db.exec("DROP TABLE take_sightings");
+        const auto readRefused = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(readRefused.kept);
+        CHECK(!readRefused.recalled);
+        CHECK(readRefused.failure.empty());
+        CHECK(!readRefused.sightingFailure.empty());
+        CHECK(rec->store().readingFor(hash).has_value());
+        const auto recallRefused = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(recallRefused.recalled);
+        CHECK(recallRefused.kept);
+        CHECK(recallRefused.failure.empty());
+        CHECK(!recallRefused.sightingFailure.empty());
+
+        // No session: nothing kept, nothing refused.
+        rec->disconnect();
+        const auto unkept = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(!unkept.kept);
+        CHECK(unkept.failure.empty());
+        CHECK(unkept.sightingFailure.empty());
+        const auto unkeptRecall = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(!unkeptRecall.recalled);
+        CHECK(!unkeptRecall.kept);
+        CHECK(unkeptRecall.failure.empty());
+        CHECK(unkeptRecall.sightingFailure.empty());
+    }
+
     // --- the measure-first step of Normalize asks the history before the meter (#142) ---
     //
     // Theory: the bytes come off the card and are hashed; a reading the

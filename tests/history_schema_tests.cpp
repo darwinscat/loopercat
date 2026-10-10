@@ -323,6 +323,59 @@ int main()
         CHECK_EQ(count(db, "SELECT count(*) FROM op_subjects"), 1);
     }
     {
+        // Review of PR #160: three steps from three branches (v8, v9, v10)
+        // run as one. A v7 file whose LAST step fails is left at v7 whole —
+        // the v8 and v9 steps that already ran go back with it, no table and
+        // no column of theirs stays (Schema.h: "never between two"). The
+        // same file, once the obstacle is gone, migrates on the next open,
+        // each step once; and the sequence starts past a forgotten card's
+        // Undo floor, not at max(seq) (#141).
+        TempDir tmp;
+        {
+            auto db = sqlite::Db::open(tmp.path / "history.db");
+            db.exec("PRAGMA page_size = 16384");
+            db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+            db.exec(schema::kSteps[0]); db.exec(schema::kSteps[1]); db.exec(schema::kSteps[2]);
+            db.exec("PRAGMA user_version = 7");
+            db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id, undo_floor) VALUES ('RC-5', 'A', 1, 1, 'v7', 50)");
+            db.exec("INSERT INTO sessions(card, connected_at) VALUES (1, 1)");
+            db.exec("INSERT INTO ops(id, session, kind, actor, status, at) VALUES ('v7-trim', 1, 'trim', 'app', 'done', 2)");
+            db.exec("INSERT INTO slot_changes(op, slot, before_body, after_body) VALUES (1, 4, x'61', x'62')");
+            db.exec("INSERT INTO slot_audio(op, slot, side, track, name, size, hash) VALUES (1, 4, 'after', 1, '004_1.WAV', 3000, NULL)");
+            db.exec("CREATE TABLE take_sightings(stray INTEGER)"); // the v10 step cannot create its table
+        }
+        CHECK_THROWS(HistoryStore(tmp.path), "take_sightings already exists");
+        {
+            auto db = sqlite::Db::open(tmp.path / "history.db");
+            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 7);
+            CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name IN "
+                               "('op_subjects', 'op_subjects_by_slot', 'loudness_readings', 'op_sequence', 'op_sequence_moves')"),
+                     0);
+            CHECK_EQ(count(db, "SELECT count(*) FROM pragma_table_info('slot_audio') WHERE name = 'modified'"), 0);
+            CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes"), 1);
+            CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio"), 1);
+            CHECK_EQ(count(db, "SELECT count(*) FROM pragma_integrity_check WHERE integrity_check = 'ok'"), 1);
+            CHECK_THROWS(HistoryStore(tmp.path), "take_sightings already exists"); // and again, the same
+            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 7);
+            db.exec("DROP TABLE take_sightings");
+        }
+        HistoryStore migrated(tmp.path);
+        migrated.selectCard(1);
+        auto& db = migrated.db();
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 10);
+        CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'op_subjects'"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'loudness_readings'"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'take_sightings'"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM pragma_table_info('slot_audio') WHERE name = 'modified'"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE modified IS NULL"), 1);
+        CHECK_EQ(migrated.slotTimeline(4).size(), 1u);
+        CHECK_EQ(count(db, "SELECT count(*) FROM op_sequence"), 1);
+        CHECK_EQ(count(db, "SELECT last FROM op_sequence"), 50); // the floor, not max(seq) = 1
+        CHECK_EQ(migrated.newestOp(), 50);
+        CHECK_EQ(migrated.beginOp(1, "v10-past-the-floor", "push", 3), 51);
+        CHECK_EQ(count(db, "SELECT count(*) FROM pragma_foreign_key_check"), 0);
+    }
+    {
         // A real v8 file opens at v10 with an empty readings table and every
         // take row it had, each with no modification time: the store did not
         // ask for one then, and a migration cannot invent what nobody read
