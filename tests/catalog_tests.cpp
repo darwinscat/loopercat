@@ -54,6 +54,21 @@ int main()
         std::string body14 = rc0::slotBody(text, 14);
         body14 = rc0::setField(body14, "Pattern", 11);
         text = rc0::replaceSlotBody(text, 14, body14);
+
+        // Slot 15: the same shape at 6/4 (Beat 4), where the number 11 is
+        // not a name we know and the count's borrow would write a 4/4 number
+        // (#149). Slot 16: 6/4 with the rhythm playing, where the count
+        // alone is still the player's.
+        std::string body15 = rc0::slotBody(text, 15);
+        body15 = rc0::setField(body15, "Pattern", 11);
+        body15 = rc0::setField(body15, "Beat", 4);
+        text = rc0::replaceSlotBody(text, 15, body15);
+
+        std::string body16 = rc0::slotBody(text, 16);
+        body16 = rc0::setField(body16, "State", rc0::kRhythmStateOn);
+        body16 = rc0::setField(body16, "Pattern", 11);
+        body16 = rc0::setField(body16, "Beat", 4);
+        text = rc0::replaceSlotBody(text, 16, body16);
     }
 
     const auto slots = catalog::listSlots(text);
@@ -105,6 +120,17 @@ int main()
     CHECK(slots.at(13).countInTakesPattern);
     CHECK(!slots.at(12).countInTakesPattern);
     CHECK(!slots.at(0).countInTakesPattern);
+
+    // At 6/4 the count's borrow is refused rather than warned about: slot 15
+    // carries the refusal of its next click (on) and no warning; slot 16's
+    // next click moves the count alone and carries nothing; a 4/4 slot
+    // carries nothing either way.
+    CHECK(slots.at(14).countInRefused == usecases::countin::Refusal::onBorrowsSection);
+    CHECK(!slots.at(14).countInTakesPattern);
+    CHECK(!slots.at(14).rhythm.patternCharted);
+    CHECK(!slots.at(15).countInRefused.has_value());
+    CHECK(!slots.at(13).countInRefused.has_value());
+    CHECK(!slots.at(0).countInRefused.has_value());
 
     // readSlot agrees with listSlots.
     CHECK(catalog::readSlot(text, 7) == slots.at(6));

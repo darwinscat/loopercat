@@ -85,7 +85,21 @@ int main()
     SlotTable table;
     table.setSize(900, 400);
     std::vector<SlotRow> rows;
-    for (auto& info : catalog::listSlots(testkit::syntheticMemoryText()))
+    // Slot 2 (row 1) sits at 6/4 (Beat 4) with its rhythm silent: the
+    // count-in's "on" there would write a 4/4 pattern number, which the core
+    // refuses (#149). Slot 3 (row 2) is at 6/4 with the rhythm playing,
+    // where the count alone is still the player's.
+    std::string text = testkit::syntheticMemoryText();
+    const auto set = [&text](int slot, const char* tag, long long value) {
+        text = rc0::replaceSlotBody(
+            text, slot, rc0::setSectionField(rc0::slotBody(text, slot), "RHYTHM", tag, value));
+    };
+    set(2, "Beat", 4);
+    set(2, "Pattern", 3);
+    set(3, "Beat", 4);
+    set(3, "Pattern", 3);
+    set(3, "State", rc0::kRhythmStateOn);
+    for (auto& info : catalog::listSlots(text))
         rows.push_back({ std::move(info), "", "", { "" } });
     table.setRows(rows);
 
@@ -156,6 +170,21 @@ int main()
     table.onRenameCommitted = nullptr;
     doubleClick(nameColumn);
     CHECK_EQ(activations, 1); // unchanged: the edit path, no play
+
+    // A Count-In dot whose click the core would refuse is a lamp on an RC-5
+    // too, and its hover says why in the card's words; a dot that can be
+    // clicked, and every other cell, says nothing.
+    model->cellClicked(1, countInColumn, clickAt(table));
+    CHECK_EQ(countInClicks, 1);
+    CHECK(model->getCellTooltip(1, countInColumn).contains("6/4"));
+    CHECK(model->getCellTooltip(1, countInColumn).contains("switch the rhythm on first"));
+    model->cellClicked(2, countInColumn, clickAt(table));
+    CHECK_EQ(countInClicks, 2);
+    CHECK(model->getCellTooltip(2, countInColumn).isEmpty());
+    CHECK(model->getCellTooltip(0, countInColumn).isEmpty());
+    CHECK(model->getCellTooltip(1, oneShotColumn).isEmpty());
+    model->cellClicked(1, oneShotColumn, clickAt(table)); // One Shot is not beat-relative
+    CHECK_EQ(oneShotClicks, 2);
 
     // A right-click is the context menu on either card — a read of the
     // situation, never a write — so it is not gated here.

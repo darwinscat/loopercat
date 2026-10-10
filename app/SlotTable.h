@@ -108,6 +108,7 @@ private:
     void selectedRowsChanged(int lastRowSelected) override;
     void cellDoubleClicked(int row, int columnId, const juce::MouseEvent&) override;
     void cellClicked(int row, int columnId, const juce::MouseEvent&) override;
+    juce::String getCellTooltip(int row, int columnId) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int>& selectedRows) override;
 
     // Internal row drag (the swap gesture). File drags use the interface above.

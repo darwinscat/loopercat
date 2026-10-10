@@ -273,7 +273,7 @@ private:
                              std::vector<std::string> hashes);
     void toggleOneShot(int slot, bool currentlyOn);
     void toggleCountIn(int slot, bool currentlyOn);
-    void editRhythm(int slot, usecases::rhythm::Edits edits);
+    void editRhythm(int slot, long long beat, usecases::rhythm::Edits edits);
     void editPlayStop(int slot, usecases::playstop::Edits edits);
     void releasePlayerIfHolding(int slotA, int slotB);
     void choosePushWav(int slot, bool slotOccupied);
