@@ -183,11 +183,11 @@ int main()
         {
             HistoryStore fresh(tmp.path);
             auto& db = fresh.db();
-            CHECK_EQ(schema::kVersion, 9);
+            CHECK_EQ(schema::kVersion, 10);
             CHECK_EQ(count(db, "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
             CHECK_THROWS(db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id) VALUES ('RC-5', '', 0, 0, NULL)"), "NOT NULL");
-            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 9);
-            CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 11);
+            CHECK_EQ(schema::pragmaInteger(db, "user_version"), 10);
+            CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table'"), 13);
             CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'legacy_files'"), 0);
             const auto session = fresh.openSession(fresh.card("test-RC-5", "RC-5", "Card", 1000), 1000);
             const auto op = fresh.beginOp(session, "first", "clear", 1000);
@@ -203,7 +203,7 @@ int main()
             CHECK_THROWS(db.exec("INSERT INTO system_changes VALUES (1, 'CTL', 'c', 'd')"), "UNIQUE");
         }
         HistoryStore reopened(tmp.path);
-        CHECK_EQ(schema::pragmaInteger(reopened.db(), "user_version"), 9);
+        CHECK_EQ(schema::pragmaInteger(reopened.db(), "user_version"), 10);
         CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM ops WHERE pinned = 1"), 1);
         CHECK(reopened.takeBytes(HistoryStore::contentHash("take bytes")) == "take bytes");
         CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM system_changes"), 1);
@@ -231,7 +231,7 @@ int main()
             db.exec("INSERT INTO slot_changes VALUES (1, 3, x'6265666f7265', x'6166746572')");
         }
         HistoryStore migrated(tmp.path);
-        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 9);
+        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 10);
         CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM cards WHERE marker_id IS NULL"), 0);
         CHECK_EQ(count(migrated.db(), "SELECT [notnull] FROM pragma_table_info('cards') WHERE name = 'marker_id'"), 1);
         CHECK_THROWS(migrated.db().exec("UPDATE cards SET marker_id = NULL"), "NOT NULL");
@@ -266,7 +266,7 @@ int main()
         }
         HistoryStore migrated(tmp.path);
         migrated.selectCard(1);
-        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 9);
+        CHECK_EQ(schema::pragmaInteger(migrated.db(), "user_version"), 10);
         CHECK_EQ(count(migrated.db(), "SELECT undo_floor FROM cards"), 0);
         CHECK_EQ(count(migrated.db(), "SELECT count(*) FROM forgotten_slots"), 0);
         CHECK(migrated.offeredTargets().undo == 1);
@@ -294,7 +294,7 @@ int main()
         HistoryStore migrated(tmp.path);
         migrated.selectCard(1);
         auto& db = migrated.db();
-        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 9);
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 10);
         CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'op_subjects'"), 1);
         CHECK_EQ(count(db, "SELECT count(*) FROM op_subjects"), 0);
         CHECK(migrated.subjects(2).empty());
@@ -323,7 +323,7 @@ int main()
         CHECK_EQ(count(db, "SELECT count(*) FROM op_subjects"), 1);
     }
     {
-        // A real v8 file opens at v9 with an empty readings table and every
+        // A real v8 file opens at v10 with an empty readings table and every
         // take row it had, each with no modification time: the store did not
         // ask for one then, and a migration cannot invent what nobody read
         // off the card (#140, #141). Rows written from here on carry one.
@@ -345,7 +345,7 @@ int main()
         HistoryStore migrated(tmp.path);
         migrated.selectCard(1);
         auto& db = migrated.db();
-        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 9);
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 10);
         CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'loudness_readings'"), 1);
         CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 0);
         CHECK_EQ(count(db, "SELECT count(*) FROM pragma_table_info('slot_audio') WHERE name = 'modified'"), 1);
@@ -377,10 +377,71 @@ int main()
                              + "', 'loud', 0.0, 0.0, 0, 1)"),
                      ""); // STRICT: a word is not a REAL
         CHECK_EQ(count(db, "SELECT count(*) FROM pragma_foreign_key_check"), 0);
-        // and a store already at v9 is left exactly as it is
+        // and a store already at the current version is left exactly as it is
         const std::string before = commands::readFileBytes(tmp.path / "history.db");
         schema::migrate(db);
         CHECK(commands::readFileBytes(tmp.path / "history.db") == before);
+    }
+    {
+        // A real v9 file opens at v10 with an empty sightings table and every
+        // row it had as it was, stamps and NULLs alike: what a read saw is
+        // only ever what a read saw, and no read is invented (#141).
+        TempDir tmp;
+        {
+            auto db = sqlite::Db::open(tmp.path / "history.db");
+            db.exec("PRAGMA page_size = 16384");
+            db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+            for (int step = 0; step < 5; ++step)
+                db.exec(schema::kSteps[step]);
+            db.exec("PRAGMA user_version = 9");
+            db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id, undo_floor) VALUES ('RC-5', 'A', 1, 1, 'v9', 0)");
+            db.exec("INSERT INTO sessions(card, connected_at) VALUES (1, 1)");
+            db.exec("INSERT INTO ops(id, session, kind, actor, status, at) VALUES ('v9-push', 1, 'push', 'app', 'done', 2)");
+            db.exec("INSERT INTO slot_audio(op, slot, side, track, name, size, hash, modified) "
+                    "VALUES (1, 4, 'after', 1, '004_1.WAV', 3000, NULL, 1700000000000)");
+            db.exec("INSERT INTO slot_audio(op, slot, side, track, name, size, hash, modified) "
+                    "VALUES (1, 5, 'after', 1, '005_1.WAV', 3000, NULL, NULL)");
+        }
+        HistoryStore migrated(tmp.path);
+        auto& db = migrated.db();
+        CHECK_EQ(schema::pragmaInteger(db, "user_version"), 10);
+        CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name = 'take_sightings'"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 0);
+        // the sequence starts where the store stood: one operation, number 1
+        CHECK_EQ(count(db, "SELECT last FROM op_sequence"), 1);
+        CHECK_EQ(migrated.newestOp(), 1);
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio WHERE slot = 4"), 1'700'000'000'000);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE slot = 5 AND modified IS NULL"), 1);
+        // the new table takes a read the way the store files one, and holds its rules
+        // ...placed after the slot's newest operation the read came after: the
+        // v9 push touched slot 4, so a read begun after it stands on it
+        migrated.recordSighting(1, 4, "004_1.WAV", 3000, 1'700'000'000'000, std::string(32, 'h'),
+                                migrated.newestOp(), 3);
+        CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 1);
+        CHECK_EQ(count(db, "SELECT since_op FROM take_sightings WHERE slot = 4"), 1);
+        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, 1, x'00', NULL, 1)"), "CHECK");
+        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 0, 'x', 1, 1, x'"
+                             + std::string(64, 'a') + "', NULL, 1)"),
+                     "CHECK");
+        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (9, 4, 'x', 1, 1, x'"
+                             + std::string(64, 'a') + "', NULL, 1)"),
+                     "FOREIGN KEY");
+        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, NULL, x'"
+                             + std::string(64, 'a') + "', NULL, 1)"),
+                     "NOT NULL");
+        CHECK_THROWS(db.exec("INSERT INTO take_sightings VALUES (1, 4, 'x', 1, 1, x'"
+                             + std::string(64, 'a') + "', 0, 1)"),
+                     "CHECK"); // no operation has sequence 0: none is NULL
+        // one row, never a second; every insert into ops moves it, a direct
+        // one too, and the next operation the store begins is past it
+        CHECK_THROWS(db.exec("INSERT INTO op_sequence VALUES (2, 5)"), "CHECK");
+        CHECK_THROWS(db.exec("INSERT INTO op_sequence VALUES (1, 5)"), "UNIQUE");
+        db.exec("INSERT INTO ops(seq, id, session, kind, actor, status, at) VALUES (40, 'v10-direct', 1, 'push', 'app', 'done', 5)");
+        CHECK_EQ(migrated.newestOp(), 40);
+        db.exec("DELETE FROM ops WHERE seq = 40");
+        CHECK_EQ(migrated.newestOp(), 40);
+        CHECK_EQ(migrated.beginOp(1, "v10-next", "push", 6), 41);
+        CHECK_EQ(count(db, "SELECT count(*) FROM pragma_foreign_key_check"), 0);
     }
     {
         TempDir freshDir, migratedDir;

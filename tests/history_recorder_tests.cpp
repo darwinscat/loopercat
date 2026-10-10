@@ -651,7 +651,9 @@ int main()
         // A history migrated from version 8 or older (every preview tester's)
         // has rows with no stamp. Its slots must stay restorable: the newest
         // such row carries its hash on name and size, as it was written —
-        // while a stamped row beside it is still held to its stamp.
+        // and the row it hands the hash to carries no stamp either, so a
+        // guess by name and size never becomes a row a connect trusts to
+        // name the very file (#141, review S1).
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
         putWav(volume, 5, "005_1.WAV", 132300);
@@ -686,11 +688,11 @@ int main()
                 hexFive += digits[b & 0xF];
             }
             CHECK_EQ(rowFive.text(0), hexFive);
-            CHECK_EQ(rowFive.integer(1), 0); // and the new row is stamped
+            CHECK_EQ(rowFive.integer(1), 1); // and the new row carries no stamp: a guess stays one
         }
         // slot 6 re-recorded in place, same size: the old row still vouches by
-        // name and size — the allowance's price, confined to pre-v9 rows —
-        // and from here on the slot's rows are stamped and held to it
+        // name and size — the allowance's price — and the row it vouches for
+        // is stampless too, so the price is paid in restorability alone
         std::string six = commands::readFileBytes(fileSix);
         six.back() = static_cast<char>(six.back() ^ 0x5a);
         commands::writeFileBytes(fileSix, six);
@@ -700,9 +702,11 @@ int main()
                  }),
                  std::string());
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
-                           "WHERE o.id = 'op-six' AND a.slot = 6 AND a.hash IS NOT NULL AND a.modified = 1600000000000"),
+                           "WHERE o.id = 'op-six' AND a.slot = 6 AND a.hash IS NOT NULL AND a.modified IS NULL"),
                  1);
-        // now re-record again under the stamped row: another stamp, no hash
+        // re-recorded again: the newest row is still a stampless one, so the
+        // slot stays in the allowance — vouched by name and size, no stamp —
+        // until audio lands in it
         six.back() = static_cast<char>(six.back() ^ 0x3c);
         commands::writeFileBytes(fileSix, six);
         CHECK(juce::File(juce::String(fileSix.string())).setLastModificationTime(juce::Time(1'600'000'010'000)));
@@ -711,7 +715,25 @@ int main()
                  }),
                  std::string());
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
-                           "WHERE o.id = 'op-six-again' AND a.slot = 6 AND a.hash IS NULL AND a.modified = 1600000010000"),
+                           "WHERE o.id = 'op-six-again' AND a.slot = 6 AND a.hash IS NOT NULL AND a.modified IS NULL"),
+                 1);
+        // audio landing ends the allowance: a trim lands its own hash with
+        // its stamp, and the next row is held to both
+        CHECK_EQ(run(*rec, "op-six-trim", "trim", volume, [&] {
+                     commands::trim(volume, 6, 0, 66150, { .write = options(rec, "op-six-trim") });
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six-trim' AND a.slot = 6 AND a.side = 'after' "
+                           "AND a.hash IS NOT NULL AND a.modified IS NOT NULL"),
+                 1);
+        CHECK_EQ(run(*rec, "op-six-named", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six named", options(rec, "op-six-named"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six-named' AND a.slot = 6 AND a.hash IS NOT NULL "
+                           "AND a.modified IS NOT NULL"),
                  1);
     }
 

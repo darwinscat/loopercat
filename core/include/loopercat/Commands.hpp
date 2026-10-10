@@ -50,6 +50,14 @@ namespace fs = std::filesystem;
 inline std::string readFileBytes(const fs::path& path,
                                  const std::function<void(double)>& progress = {})
 {
+    // Only a regular file is bytes. A folder under a take's name opens as a
+    // stream on Linux, and libstdc++ then throws std::ios_base::failure from
+    // the first read ("Is a directory") instead of failing the stream: an
+    // exception none of our callers expects, which ended the connect scan's
+    // doctor pass. Refused here in our own words, before a stream exists.
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec))
+        throw Error("cannot read " + path.string() + ": not a file");
     std::ifstream in(path, std::ios::binary);
     if (!in)
         throw Error("cannot read " + path.string());

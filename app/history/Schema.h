@@ -53,8 +53,31 @@
 //                the name and the size it tells a later connect whether the
 //                file in the slot is still the one that was measured,
 //                without reading it (#141). NULL on `after` rows older than
-//                the column, and on `before` rows: an archived take is
+//                the column, on the rows whose hash such a row vouched for
+//                by name and size alone (HistoryStore::heldBefore: a guess
+//                stays a guess), and on `before` rows: an archived take is
 //                leaving its slot, and no connect will meet it there.
+//   take_sightings
+//                what a real read of a take saw (#141): the directory
+//                entry's name, size and stamp, the hash of the bytes read
+//                under them, and the slot's newest operation when the read
+//                began (since_op; NULL when none had touched the slot). A
+//                connect believes the newest word about a slot, and a read
+//                is one: the pedal stamps what it records off a clock that
+//                does not keep the date, so a loop of the same length
+//                recorded again can carry the very same name, size and
+//                stamp as the take a row names, and only a read of the bytes
+//                tells the two apart. The order is the operations' sequence,
+//                never a clock: a read is history once an operation with a
+//                higher sequence recorded a body or a take in the slot. By
+//                card and slot; forgetting a slot's history, or a first
+//                sighting photographing it, takes its sightings with it.
+//   op_sequence  the highest operation sequence ever issued, one row, moved
+//                by every insert into ops (a trigger). Sequences are what
+//                orders a read among operations (take_sightings), so none
+//                is ever issued twice: forgetting a slot's history can drop
+//                the newest operations whole, and a sequence taken from
+//                max(seq) would hand their numbers out again (#141).
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -78,7 +101,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 9;
+inline constexpr std::int64_t kVersion = 10;
 
 // Version 5 is the first supported store. Future steps append to this array;
 // kSteps[N] creates version kBaseVersion + N in the same transaction.
@@ -215,6 +238,38 @@ CREATE TABLE loudness_readings(
 -- the rows that say what a slot holds. NULL on those written before this
 -- version, and on the rows of archived takes.
 ALTER TABLE slot_audio ADD COLUMN modified INTEGER;
+)sql",
+R"sql(
+-- What a real read of a take saw (#141), by card and slot: the directory
+-- entry's facts, the hash of the bytes read under them, and the slot's
+-- newest operation when the read began (NULL: none had touched it), which
+-- orders the read among the operations. One row per file the slot was seen
+-- to hold; the same facts read again keep the newest read.
+CREATE TABLE take_sightings(
+    card     INTEGER NOT NULL REFERENCES cards(id),
+    slot     INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 99),
+    name     TEXT    NOT NULL,
+    size     INTEGER NOT NULL CHECK (size >= 0),
+    modified INTEGER NOT NULL,
+    hash     BLOB    NOT NULL CHECK (length(hash) = 32),
+    since_op INTEGER CHECK (since_op IS NULL OR since_op >= 1),
+    at       INTEGER NOT NULL,
+    PRIMARY KEY (card, slot, name, size, modified)
+) STRICT;
+-- The highest operation sequence ever issued (#141): one row, never lower,
+-- so a sequence is never handed out twice even when the newest operations
+-- are forgotten whole. Started from what the store holds; every insert
+-- into ops moves it.
+CREATE TABLE op_sequence(
+    one  INTEGER PRIMARY KEY CHECK (one = 1),
+    last INTEGER NOT NULL CHECK (last >= 0)
+) STRICT;
+INSERT INTO op_sequence(one, last)
+    SELECT 1, max(coalesce((SELECT max(seq) FROM ops), 0), coalesce((SELECT max(undo_floor) FROM cards), 0));
+CREATE TRIGGER op_sequence_moves AFTER INSERT ON ops
+BEGIN
+    UPDATE op_sequence SET last = max(last, NEW.seq) WHERE one = 1;
+END;
 )sql",
 };
 

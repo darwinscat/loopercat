@@ -366,10 +366,26 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     // and so did the hash of what it read — the history keeps the number
     // under it (#140), after the words are on screen.
     player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading,
-                                   const std::string& hash) {
+                                   const std::string& hash, const std::optional<TakeFacts>& seen) {
         applyLoudnessReport(slot, loudnessreport::describe(reading, currentTargetLufs()), 0);
+        // What the pass saw is a sighting of the slot's take only when the
+        // pane holds that take off the card — not a take played back out of
+        // the history, which is a file on this computer (#141).
+        const SlotRow* row = slotRowFor(slot);
+        const bool cardTake = row != nullptr && utf8(row->wavPath) == player.currentPath();
         if (!hash.empty()) // empty: the core would not measure these bytes to this number
-            keepReading(hash, reading);
+            keepReading(hash, reading, slot, cardTake ? seen : std::nullopt, playerReadBegan);
+    };
+    player.onLoudnessFailed = [this](int slot) { readFailed(slot); };
+    // A command that meters on its way (normalize, the bulk run included)
+    // read the slot's bytes: its number is a measurement, and it replaces
+    // whatever the cell showed — a write that follows clears it as any
+    // rewrite does (onJobResult). Worker thread; the alive token guards the hop.
+    recorder->onMeasured = [this, alive = uiAlive](int slot, const wav::LoudnessReading& reading) {
+        juce::MessageManager::callAsync([this, alive, slot, reading] {
+            if (*alive)
+                applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
+        });
     };
     player.onNormalize = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
@@ -593,6 +609,12 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             refreshUndoOffer();
             if (historyHost != nullptr && historyHost->isVisible())
                 feedHistoryWindow();
+            // The job's result cleared the cells of the audio it moved, and
+            // the history may know those bytes (an undo put a measured take
+            // back); the rescan that came first still saw the old cells. The
+            // job that read the card's name ends here too, so this is also
+            // where a freshly named card is first asked about.
+            inferLoudnessFromHistory();
         }
     };
     worker.onJobResult = [this](juce::String description, const JobOutcome& outcome, int batch,
@@ -658,8 +680,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                                // pushed that file onto the card.
                                && !(description.startsWith("Normalize")
                                     && description.contains("file untouched"));
-        if (description.startsWith("Trim"))
+        if (description.startsWith("Trim")) {
+            playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
             player.reload(); // same path, new bytes — fresh reader + thumbnail
+        }
         // A reading belongs to the audio, not the memory: a rename, a tempo
         // or a flag leaves it standing. Only a rewrite of the WAV itself
         // moves the audio on — push, trim, downmix, a normalize that applied,
@@ -1333,8 +1357,10 @@ void MainComponent::playArchivedTake(int slot, std::string hash, juce::String ti
                                  .frames;
                          const juce::File opened(juce::String(file->string()));
                          juce::MessageManager::callAsync([safe, opened, title, slot, frames, alive] {
-                             if (*alive && safe != nullptr)
+                             if (*alive && safe != nullptr) {
+                                 safe->playerReadBegan.reset(); // a file on this computer, not the card's
                                  safe->player.setSlot(slot, opened, title, false, frames);
+                             }
                          });
                      },
                      nullptr, 0, true, true, false });
@@ -1409,6 +1435,7 @@ void MainComponent::applyColumnPreferences()
         file == nullptr || file->getBoolValue(kOneShotColumnKey, true),
         file != nullptr && file->getBoolValue(kCountInColumnKey, false),
         file != nullptr && file->getBoolValue(kLoudnessColumnKey, false));
+    inferLoudnessFromHistory(); // the LUFS column just shown fills in from the history (#141)
 }
 
 void MainComponent::updateToolbar()
@@ -1750,8 +1777,11 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
 {
     const lifecycle::State previousState = snapshot.state;
     const bool anotherVolume = latest.volume != snapshot.volume;
-    if (anotherVolume)
+    if (anotherVolume) {
         table.clearAllLoudness(); // another card is another set of files; readings do not travel
+        unreadableTakes.clear();  // ...and what failed to read was another card's (#141)
+        inferenceProblemsLogged = std::make_shared<std::set<int>>();
+    }
     snapshot = latest;
     if (anotherVolume)
         refreshUndoOffer(); // what Undo offers is read for the card in front of it
@@ -1866,6 +1896,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     updateInspector();
 
     restoreListening();
+    inferLoudnessFromHistory(); // the dashes the history can fill, off the worker
 }
 
 // A mutation releases the preview of the slot it rewrites (issue #26 —
@@ -1922,21 +1953,27 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
             player.clear(); // no take on any track: nothing to listen to
             return;
         }
-        if (firstPath != player.currentPath())
+        if (firstPath != player.currentPath()) {
+            playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
             player.setTracks(row.info.slot, tracks, title, row.info.oneShot);
+        }
     } else {
         const juce::String path = utf8(row.wavPath);
-        if (path != player.currentPath())
+        if (path != player.currentPath()) {
+            playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
             player.setSlot(row.info.slot, juce::File(path), title, row.info.oneShot,
                            row.info.frames);
+        }
     }
     player.setTempoNote(tempoNoteFor(row.info));
     // The loudness readout follows the loaded loop: whatever the column knows
     // about it — a check's answer, a read in flight — shows in the player row.
+    // Not a number out of the history (#141): the pane's own pass is reading
+    // these very bytes now, and its answer replaces the inferred cell too.
     if (const SlotTable::LoudnessCell* cell = table.loudnessFor(row.info.slot)) {
         if (cell->pending)
             player.setLoudnessPending(row.info.slot);
-        else
+        else if (!cell->inferred)
             player.setLoudness(row.info.slot, cell->detail, cell->attention, cell->damaged,
                                cell->tooltip);
     }
@@ -2380,6 +2417,10 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
                     oplog::append(logDir, "slot " + juce::String(slot)
                                               + " loudness reading not kept in the history: "
                                               + utf8(done.read.failure));
+                if (!done.read.sightingFailure.empty())
+                    oplog::append(logDir, "slot " + juce::String(slot)
+                                              + " take seen by the loudness read not kept in the history: "
+                                              + utf8(done.read.sightingFailure));
                 const LoudnessReport report = loudnessreport::describe(done.read.reading, target);
                 // The line the old flow left in a history row goes to the log
                 // instead: the only record of a normalize that was not offered.
@@ -2605,6 +2646,20 @@ void MainComponent::enqueueLoudnessRead(int slot, std::optional<double> target, 
     player.setLoudnessPending(slot); // ignored unless that slot is loaded
     auto note = std::make_shared<juce::String>();
     juce::Component::SafePointer<MainComponent> safe(this);
+    // A read that failed on the file itself is remembered (readFailed, #141);
+    // one the lifecycle gate turned away — the pedal leaving, a ghost mount —
+    // never reached the file and says nothing about it. `before` runs only
+    // once the gate has let the job through to the card.
+    auto reached = std::make_shared<bool>(false);
+    auto markReached = [reached](const volume::fs::path&) { *reached = true; };
+    auto rememberFailure = [safe, slot, reached, alive = uiAlive](const std::string& error) {
+        if (error.empty() || !*reached)
+            return;
+        juce::MessageManager::callAsync([safe, slot, alive] {
+            if (*alive && safe != nullptr)
+                safe->readFailed(slot);
+        });
+    };
     worker.enqueue(
         { "Check slot " + juce::String(slot) + " loudness",
           slot,
@@ -2618,6 +2673,10 @@ void MainComponent::enqueueLoudnessRead(int slot, std::optional<double> target, 
                   oplog::append(logDir, "slot " + juce::String(slot)
                                             + " loudness reading not kept in the history: "
                                             + juce::String::fromUTF8(read.failure.c_str()));
+              if (!read.sightingFailure.empty())
+                  oplog::append(logDir, "slot " + juce::String(slot)
+                                            + " take seen by the loudness read not kept in the history: "
+                                            + juce::String::fromUTF8(read.sightingFailure.c_str()));
               const LoudnessReport report = loudnessreport::describe(read.reading, target);
               *note = report.noteText;
               juce::MessageManager::callAsync([safe, slot, report, batch] {
@@ -2625,21 +2684,30 @@ void MainComponent::enqueueLoudnessRead(int slot, std::optional<double> target, 
                       safe->applyLoudnessReport(slot, report, batch);
               });
           },
-          note, batch, /*background=*/true });
+          note, batch, /*background=*/true, /*quiet=*/false, /*needsVolume=*/true,
+          std::move(markReached), std::move(rememberFailure) });
 }
 
 // The player's pass metered the loaded loop on its own thread; the history
 // is the worker's, so the number crosses over as a job of its own — one that
 // reads no card and tells nobody anything: the words are already on screen,
-// and a history with no card in front of it simply takes nothing.
-void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading)
+// and a history with no card in front of it simply takes nothing. What the
+// pass saw goes with it (#141): the file's facts under the hash, filed for
+// the card mounted now, so the next connect knows the file by its bytes —
+// placed among the operations by where the read began, not by when this job
+// runs: a foreground operation may have jumped ahead of it meanwhile.
+void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading, int slot,
+                                std::optional<TakeFacts> seen, std::optional<std::int64_t> readBegan)
 {
     worker.enqueue({ "Keep a loudness reading",
                      0,
-                     [rec = recorder, key = std::move(hash), reading,
+                     [rec = recorder, key = std::move(hash), reading, slot, facts = std::move(seen),
+                      began = readBegan, mounted = volume::fs::path(snapshot.volume),
                       logDir = settings.dataDir()](const volume::fs::path&) {
                          try {
-                             rec->reading(key, reading);
+                             if (rec->reading(key, reading) && facts && began)
+                                 rec->sighted(mounted, slot, facts->name, facts->size, facts->modifiedMs, key,
+                                              *began);
                          } catch (const std::exception& e) {
                              oplog::append(logDir, "loudness reading not kept in the history: "
                                                        + juce::String::fromUTF8(e.what()));
@@ -2652,8 +2720,142 @@ void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading)
                      false }); // and it needs no card: the store is on this computer
 }
 
+// A real read of the slot's take failed (#141) — the player's pass, or a
+// Check: an inferred cell in its place goes, and the history is not asked
+// again about the file as the scan sees it now, for the rest of this
+// connection. A guess must not outlive a read that could not confirm it,
+// nor come back on the next snapshot to stand where the read failed.
+void MainComponent::readFailed(int slot)
+{
+    if (const SlotRow* row = slotRowFor(slot); row != nullptr && row->take)
+        unreadableTakes[slot] = *row->take;
+    if (const SlotTable::LoudnessCell* cell = table.loudnessFor(slot); cell != nullptr && cell->inferred)
+        table.clearLoudness(slot);
+}
+
+// The LUFS column from what the history already knows (#141). Every slot with
+// a take and nothing in its cell is put to the store by the facts the scan
+// read off its directory entry and the config — name, size, stamp, WavLen —
+// and a reading the history has for those very bytes lands as an inferred
+// cell. Off the message thread and without the card, like the history reads:
+// the store is on this computer. The card is named by its marker, read on
+// this mount, so a store still holding another card's session cannot answer
+// for this one; a card the history has never met knows nothing.
+//
+// Not for the slot loaded in the player: it is the one slot the app can
+// measure at once, and a guess there would sit beside a player that does not
+// re-read a file it already has (an Undo on another slot clears every cell,
+// this one's included). If nothing is reading it, the background read does.
+// A multi-track memory playing as a mix is not measured by the player, and
+// is asked of the history like any other slot.
+// Not while the LUFS column is hidden: nobody would see it. Not for a file a
+// read already failed on in this connection (readFailed).
+//
+// Hands off while a job runs, like restoreListening and for the same reason:
+// the job's rescan lands before its result clears the cells it moved, so the
+// busy drop is the hook after a job, and the snapshot hook covers mounts and
+// idle rescans.
+//
+// What lands informs the eye and decides nothing: a read that came first
+// outranks it on arrival, every real read replaces it, every mutation clears
+// it, and Normalize measures the card's bytes whatever the column shows.
+void MainComponent::inferLoudnessFromHistory()
+{
+    if (pedalBusy || !card || snapshot.state != lifecycle::State::connected || !snapshot.error.empty()
+        || !table.loudnessColumnVisible())
+        return;
+    // A take, an empty cell, and not the very file a read failed on.
+    const auto blank = [this](const SlotRow& row) {
+        return row.take && row.info.hasAudio && table.loudnessFor(row.info.slot) == nullptr
+            && !(unreadableTakes.contains(row.info.slot) && unreadableTakes.at(row.info.slot) == *row.take);
+    };
+    const int loaded = player.currentSlot();
+    // The player measures the one file it loads; a multi-track memory plays
+    // as a mix and is measured by nobody, so it is any other slot here — no
+    // read on its behalf (track 1's number is not the mix's, and a banner
+    // for a read nobody asked for helps nobody).
+    const auto playerMeasures = [loaded](const SlotRow& row) {
+        return row.info.slot == loaded && row.info.tracks.size() <= 1;
+    };
+    std::vector<history::SlotSighting> sightings;
+    for (const SlotRow& row : snapshot.slots) {
+        if (!blank(row))
+            continue;
+        if (playerMeasures(row)) {
+            if (!player.loudnessPending())
+                enqueueLoudnessRead(loaded, currentTargetLufs(), 0);
+            continue;
+        }
+        sightings.push_back({ row.info.slot,
+                              { row.take->name, row.take->size, row.take->modifiedMs, row.info.frames } });
+    }
+    if (sightings.empty())
+        return;
+    juce::Component::SafePointer<MainComponent> safe(this);
+    worker.enqueue(
+        { "Read loudness readings from the history",
+          0,
+          [rec = recorder, markerId = card->id, sightings, target = currentTargetLufs(), safe,
+           logged = inferenceProblemsLogged, logDir = settings.dataDir(),
+           alive = uiAlive](const volume::fs::path&) {
+              const std::optional<std::int64_t> cardRow = rec->store().cardFor(markerId);
+              if (!cardRow)
+                  return;
+              const history::Inference inference = history::inferLoudness(rec->store(), *cardRow, sightings);
+              // A slot whose record could not be read answers nothing; it is
+              // said in the log once a connection, not on every snapshot.
+              for (const history::SlotProblem& problem : inference.problems)
+                  if (logged->insert(problem.slot).second)
+                      oplog::append(logDir, "slot " + juce::String(problem.slot)
+                                                + ": the history's record of its take could not be read "
+                                                  "for the LUFS column: "
+                                                + juce::String::fromUTF8(problem.what.c_str()));
+              struct Found {
+                  history::SlotSighting sighted;
+                  LoudnessReport report;
+                  std::int64_t measuredMs;
+              };
+              std::vector<Found> found;
+              for (const history::InferredReading& inferred : inference.found)
+                  found.push_back({ inferred.sighted, describeReading(inferred.reading, target),
+                                    inferred.measuredMs });
+              if (found.empty())
+                  return;
+              juce::MessageManager::callAsync([safe, alive, markerId, found] {
+                  if (!*alive || safe == nullptr || !safe->card || safe->card->id != markerId)
+                      return;
+                  for (const Found& f : found) {
+                      // The slot still shows the very take that was sighted,
+                      // nothing landed in its cell meanwhile — a read, or a
+                      // mutation's clearing, both outrank the history — and
+                      // it is not the slot the player has loaded since.
+                      const SlotRow* row = safe->slotRowFor(f.sighted.slot);
+                      const history::HistoryStore::TakeSighting& seen = f.sighted.take;
+                      if (row == nullptr || !row->take || row->take->name != seen.name
+                          || row->take->size != seen.size || row->take->modifiedMs != seen.modifiedMs
+                          || row->info.frames != seen.frames
+                          || safe->table.loudnessFor(f.sighted.slot) != nullptr
+                          || (f.sighted.slot == safe->player.currentSlot() && row->info.tracks.size() <= 1))
+                          continue;
+                      safe->table.setLoudness(
+                          f.sighted.slot,
+                          SlotTable::LoudnessCell::fromHistory(
+                              { f.report.cellText, f.report.attention, false, f.report.rowText,
+                                f.report.damaged, f.report.tooltipText },
+                              juce::Time(f.measuredMs)));
+                  }
+              });
+          },
+          nullptr,
+          0,
+          true,      // background: nobody sat down to wait for it
+          true,      // quiet: the column is the report; a failure still speaks
+          false }); // and it needs no card: the store is on this computer
+}
+
 void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)
 {
+    unreadableTakes.erase(slot); // a real read of the slot succeeded: its file is readable (#141)
     table.setLoudness(slot, { report.cellText, report.attention, false, report.rowText,
                               report.damaged, report.tooltipText });
     player.setLoudness(slot, report.rowText, report.attention, report.damaged,

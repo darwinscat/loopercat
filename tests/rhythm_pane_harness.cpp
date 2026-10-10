@@ -130,7 +130,7 @@ std::vector<SlotRow> rowsOf()
     set(16, "RHYTHM", "PlayCount", rc0::kRhythmPlayCount1Meas);
     std::vector<SlotRow> rows;
     for (auto& info : catalog::listSlots(text))
-        rows.push_back({ std::move(info), "", "", { "" } });
+        rows.push_back({ std::move(info), "", "", { "" }, std::nullopt });
     return rows;
 }
 

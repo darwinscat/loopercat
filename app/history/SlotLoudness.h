@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "FileTime.h"
 #include "HistoryRecorder.h"
 
 #include <loopercat/Commands.hpp>
@@ -11,6 +12,7 @@
 #include <loopercat/Volume.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <optional>
@@ -23,6 +25,17 @@
 // the take's bytes come off the card once and are measured, and the reading
 // is filed in the history under the hash of those very bytes (#140) before
 // the caller turns it into words.
+//
+// It files what the read saw too (#141): the file's name, size and stamp
+// with the hash of the bytes read under them, so the next connect knows the
+// file in the slot by the bytes, not by a row that only named it — when the
+// file stood still under the read (one stat before, one after, and the bytes
+// as long as the entry said), and not otherwise. The read is placed among the
+// operations by the newest one begun when it started (newestOp): on the
+// worker nothing can begin while it runs. A reading recalled for these bytes
+// (below) files the sighting the same way: the bytes were read either way.
+// A sighting the store refuses is reported in `sightingFailure`, beside a
+// reading that was kept.
 //
 // The read is the job; the filing is its tail. A history with no card in
 // front of it takes nothing (`kept` false, no failure), and a store that
@@ -58,6 +71,7 @@ struct SlotLoudness {
     bool kept = false;     // the history holds the reading now
     bool recalled = false; // the history held it already, for these very bytes: nothing was measured
     std::string failure;   // why the history does not hold it: it could not be asked, or refused it
+    std::string sightingFailure; // the reading was kept, what the read saw was not (#141)
 };
 
 // Whether a reading could have come off the meter at all (review of #142):
@@ -87,21 +101,47 @@ inline bool plausibleReading(const wav::LoudnessReading& reading)
 namespace detail {
 
     // The slot's take as the worker reads it: the bytes, named as the
-    // history names them.
+    // history names them, and what the directory entry said around the read.
     struct TakeBytes {
         std::string raw;
         std::string hash;
+        std::string name;                 // the file's name in the slot's folder
+        std::optional<FileStat> before;   // the entry as the read began
+        bool stoodStill = false;          // unchanged under the read, and as long as the bytes
+        std::optional<std::int64_t> began; // newestOp() as the read began
     };
 
-    inline TakeBytes readTake(const volume::fs::path& volume, int slot)
+    inline TakeBytes readTake(const volume::fs::path& volume, int slot, HistoryRecorder& recorder)
     {
         const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
         if (files.empty())
             throw Error("slot " + std::to_string(slot) + " has no audio to measure");
         TakeBytes take;
-        take.raw = commands::readFileBytes(volume::wavDir(volume, slot) / files.front());
+        take.began = recorder.newestOp();
+        take.name = files.front();
+        const volume::fs::path file = volume::wavDir(volume, slot) / take.name;
+        take.before = statFile(file);
+        take.raw = commands::readFileBytes(file);
+        const std::optional<FileStat> after = statFile(file);
         take.hash = HistoryStore::contentHash(take.raw);
+        take.stoodStill = take.before && after && *take.before == *after
+                       && take.before->size == static_cast<std::int64_t>(take.raw.size());
         return take;
+    }
+
+    // File what the read saw, for a reading the history holds; the store's
+    // refusal goes beside the reading, never over it.
+    inline void fileSighting(const volume::fs::path& volume, int slot, const TakeBytes& take,
+                             HistoryRecorder& recorder, SlotLoudness& out)
+    {
+        if (!out.kept || !take.stoodStill || !take.began)
+            return;
+        try {
+            recorder.sighted(volume, slot, take.name, take.before->size, take.before->modifiedMs,
+                             take.hash, *take.began);
+        } catch (const std::exception& e) {
+            out.sightingFailure = e.what();
+        }
     }
 
     inline void measure(const TakeBytes& take, SlotLoudness& out)
@@ -110,16 +150,20 @@ namespace detail {
             reinterpret_cast<const unsigned char*>(take.raw.data()), take.raw.size()));
     }
 
-    // Measure the bytes and file the reading under their hash; the filing's
-    // trouble is reported beside the reading, never thrown over it.
-    inline void measureAndFile(const TakeBytes& take, HistoryRecorder& recorder, SlotLoudness& out)
+    // Measure the bytes and file the reading under their hash, then what the
+    // read saw; the filing's trouble is reported beside the reading, never
+    // thrown over it.
+    inline void measureAndFile(const volume::fs::path& volume, int slot, const TakeBytes& take,
+                               HistoryRecorder& recorder, SlotLoudness& out)
     {
         measure(take, out);
         try {
             out.kept = recorder.reading(out.hash, out.reading);
         } catch (const std::exception& e) {
             out.failure = e.what(); // the store's refusal, or anything else the filing threw
+            return;
         }
+        fileSighting(volume, slot, take, recorder, out);
     }
 
 } // namespace detail
@@ -127,10 +171,10 @@ namespace detail {
 inline SlotLoudness readSlotLoudness(const volume::fs::path& volume, int slot,
                                      HistoryRecorder& recorder)
 {
-    const detail::TakeBytes take = detail::readTake(volume, slot);
+    const detail::TakeBytes take = detail::readTake(volume, slot, recorder);
     SlotLoudness out;
     out.hash = take.hash;
-    detail::measureAndFile(take, recorder, out);
+    detail::measureAndFile(volume, slot, take, recorder, out);
     return out;
 }
 
@@ -141,7 +185,7 @@ inline SlotLoudness recallOrReadSlotLoudness(
     const volume::fs::path& volume, int slot, HistoryRecorder& recorder,
     const std::function<bool(const wav::LoudnessReading&)>& serves)
 {
-    const detail::TakeBytes take = detail::readTake(volume, slot);
+    const detail::TakeBytes take = detail::readTake(volume, slot, recorder);
     SlotLoudness out;
     out.hash = take.hash;
     // Asked only under the condition a reading is filed under — a session
@@ -161,10 +205,11 @@ inline SlotLoudness recallOrReadSlotLoudness(
         if (known.has_value() && plausibleReading(known->reading) && serves(known->reading)) {
             out.reading = known->reading;
             out.kept = out.recalled = true;
+            detail::fileSighting(volume, slot, take, recorder, out);
             return out;
         }
     }
-    detail::measureAndFile(take, recorder, out);
+    detail::measureAndFile(volume, slot, take, recorder, out);
     return out;
 }
 
