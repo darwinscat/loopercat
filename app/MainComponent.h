@@ -24,6 +24,7 @@
 #include "PedalPresence.h"
 #include "PedalWorker.h"
 #include "HistoryPane.h"
+#include "HintDelay.h"
 #include "HistoryWindow.h"
 #include "HistoryWindowHost.h"
 #include "history/SlotRows.h"
@@ -337,7 +338,7 @@ private:
     RhythmPane rhythmPane;
     Toast toast;
     BatchOverlay batchOverlay;
-    juce::TooltipWindow tooltips { this, 600 }; // hover hints (the player's loudness readout first)
+    juce::TooltipWindow tooltips { this, kHintDelayMs }; // hover hints (the player's loudness readout first)
 
     // The running batch (issue #61): id 0 = none. Results are credited by the
     // id the worker hands back, never by parsing descriptions.
