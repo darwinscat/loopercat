@@ -384,7 +384,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     recorder->onMeasured = [this, alive = uiAlive](int slot, const wav::LoudnessReading& reading) {
         juce::MessageManager::callAsync([this, alive, slot, reading] {
             if (*alive)
-                applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
+                applyLoudnessReport(slot, loudnessreport::describe(reading, currentTargetLufs()), 0);
         });
     };
     player.onNormalize = [this](int slot) {
@@ -2457,8 +2457,8 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
     // However the step ends — offered, refused, or stopped at the worker's
     // gate before it read a byte — `after` runs, and posts after the step's
     // own answer: the slot is free for the next request from then on.
-    step.after = [safe, slot](const std::string& error) {
-        juce::MessageManager::callAsync([safe, slot, stopped = !error.empty()] {
+    step.after = [safe, slot](const JobOutcome& outcome) {
+        juce::MessageManager::callAsync([safe, slot, stopped = !outcome.ok()] {
             if (safe != nullptr)
                 safe->endNormalizeStep(slot, stopped);
         });
@@ -2652,8 +2652,8 @@ void MainComponent::enqueueLoudnessRead(int slot, std::optional<double> target, 
     // once the gate has let the job through to the card.
     auto reached = std::make_shared<bool>(false);
     auto markReached = [reached](const volume::fs::path&) { *reached = true; };
-    auto rememberFailure = [safe, slot, reached, alive = uiAlive](const std::string& error) {
-        if (error.empty() || !*reached)
+    auto rememberFailure = [safe, slot, reached, alive = uiAlive](const JobOutcome& outcome) {
+        if (!outcome.failed() || !*reached)
             return;
         juce::MessageManager::callAsync([safe, slot, alive] {
             if (*alive && safe != nullptr)
@@ -2817,7 +2817,7 @@ void MainComponent::inferLoudnessFromHistory()
               };
               std::vector<Found> found;
               for (const history::InferredReading& inferred : inference.found)
-                  found.push_back({ inferred.sighted, describeReading(inferred.reading, target),
+                  found.push_back({ inferred.sighted, loudnessreport::describe(inferred.reading, target),
                                     inferred.measuredMs });
               if (found.empty())
                   return;

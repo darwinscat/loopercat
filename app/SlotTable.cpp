@@ -270,19 +270,31 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
         onSlotSelected(slotOfRow(lastRowSelected));
 }
 
-// The LUFS cell carries its reading's explanation as a hover hint — where
-// the number came from first of all, when it came out of the history rather
-// than a read (#141). A read in flight explains nothing yet, and a row whose
-// cell is not drawn (no loop in the slot) has nothing to explain.
+// Two cells carry a hover hint; every other cell says nothing.
+// - LUFS: the reading's explanation — where the number came from first of
+//   all, when it came out of the history rather than a read (#141). A read
+//   in flight explains nothing yet, and a row whose cell is not drawn (no
+//   loop in the slot) has nothing to explain.
+// - Count-In: the sentence a seven-pixel dot cannot carry — for a memory
+//   whose click the core would refuse, why, in the card's words
+//   (RefusalWords.h).
 juce::String SlotTable::getCellTooltip(int row, int columnId)
 {
     const int slot = slotOfRow(row);
-    if (columnId != kLufs || slot <= 0 || !rows_[static_cast<std::size_t>(row)].info.hasAudio)
+    if (slot <= 0)
         return {};
-    const auto found = loudness_.find(slot);
-    if (found == loudness_.end() || found->second.pending)
-        return {};
-    return found->second.tooltip;
+    const SlotRow& r = rows_[static_cast<std::size_t>(row)];
+    if (columnId == kLufs) {
+        if (!r.info.hasAudio)
+            return {};
+        const auto found = loudness_.find(slot);
+        if (found == loudness_.end() || found->second.pending)
+            return {};
+        return found->second.tooltip;
+    }
+    if (columnId == kCountIn && r.info.countInRefused)
+        return words::countInRefused(*r.info.countInRefused, r.info.rhythm.beat);
+    return {};
 }
 
 void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
@@ -343,19 +355,6 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         if (!r.info.hasAudio && r.wavFile.empty())
             onEmptyWavCellClicked(r.info.slot);
     }
-}
-
-// The sentence a seven-pixel dot cannot carry: hovering the Count-In cell of
-// a memory whose click the core would refuse says why, in the card's words
-// (RefusalWords.h). Every other cell says nothing.
-juce::String SlotTable::getCellTooltip(int row, int columnId)
-{
-    if (columnId != kCountIn || slotOfRow(row) == 0)
-        return {};
-    const SlotRow& r = rows_[static_cast<std::size_t>(row)];
-    if (!r.info.countInRefused)
-        return {};
-    return words::countInRefused(*r.info.countInRefused, r.info.rhythm.beat);
 }
 
 // --- per-row busy indication ---

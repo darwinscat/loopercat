@@ -119,11 +119,10 @@ private:
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int row, int width, int height, bool selected) override;
     void paintCell(juce::Graphics&, int row, int columnId, int width, int height, bool selected) override;
-    juce::String getCellTooltip(int row, int columnId) override; // the LUFS cell's hint
+    juce::String getCellTooltip(int row, int columnId) override; // the LUFS and Count-In cells' hints
     void selectedRowsChanged(int lastRowSelected) override;
     void cellDoubleClicked(int row, int columnId, const juce::MouseEvent&) override;
     void cellClicked(int row, int columnId, const juce::MouseEvent&) override;
-    juce::String getCellTooltip(int row, int columnId) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int>& selectedRows) override;
 
     // Internal row drag (the swap gesture). File drags use the interface above.
