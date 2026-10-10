@@ -1009,6 +1009,23 @@ target_link_libraries(history_pane_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_pane_tests COMMAND history_pane_tests)
 
+# The tab strip's lead column (#145): geometry and hit test, driven without
+# a mouse — the label names no tab, and the tabs never move.
+juce_add_console_app(tab_strip_tests PRODUCT_NAME "tab_strip_tests")
+target_sources(tab_strip_tests PRIVATE tests/tab_strip_tests.cpp)
+target_compile_definitions(tab_strip_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(tab_strip_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME tab_strip_tests COMMAND tab_strip_tests)
+
 # The storage panel (issue #74's visible part): driven without a mouse, a
 # database or a worker — it shows what it is handed and offers only what the
 # plan gives.

@@ -110,7 +110,8 @@ int main()
     };
 
     const auto load = [&] {
-        pane.setSlot(1, wavFile, "01 Loop", false, kFrames);
+        // The name alone: the slot's number is the tab strip's to say (#145).
+        pane.setSlot(1, wavFile, "Loop", false, kFrames);
         CHECK(engine.hasSource());
         CHECK(pane.currentPath() == wavFile.getFullPathName());
         settle(pane);

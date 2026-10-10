@@ -334,7 +334,9 @@ private:
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
-    TabStrip bottomTabs { { "Audio", "Properties", "Rhythm", "History" } };
+    // The strip names the slot ahead of its tabs (#145): one place, true
+    // for Audio, Properties, Rhythm and History alike.
+    TabStrip bottomTabs { { "Audio", "Properties", "Rhythm", "History" }, TabStrip::Lead::label };
     HistoryPane history;
     SlotInspector inspector;
     RhythmPane rhythmPane;
