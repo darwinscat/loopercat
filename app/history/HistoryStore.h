@@ -114,8 +114,9 @@ public:
     // with no kept blob) and for bytes read off the card that no operation
     // archived. The same hash again replaces: the bytes did not change, so
     // a newer measurement is the same fact, dated anew. Refused: a hash that
-    // is not 32 bytes, a negative count, and a value that is not a number —
-    // SQLite would file a NaN as NULL, which here reads "unmeasurable".
+    // is not 32 bytes, a negative count, a value that is not a number —
+    // SQLite would file a NaN as NULL, which here reads "unmeasurable" — an
+    // infinite loudness, and a loudness beside a -inf true peak.
     // What the numbers mean against today's target is the reader's business
     // (MainComponent::describeReading); the store keeps the numbers.
     void recordReading(const std::string& hash, const wav::LoudnessReading& reading,

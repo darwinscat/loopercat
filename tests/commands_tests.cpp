@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <numbers>
 #include <optional>
@@ -2483,6 +2484,14 @@ int main()
         // A default-constructed target (0.0) is a bug wearing a number.
         CHECK_THROWS(commands::normalize(volume, 6, { .write = writeOpts(tmp.path) }),
                      "between -70 and -1");
+        // So is a number that is not one, or not finite: NaN fails every
+        // comparison, and a NaN gain would fill the take with NaN samples.
+        for (const double target : { std::numeric_limits<double>::quiet_NaN(),
+                                     std::numeric_limits<double>::infinity(),
+                                     -std::numeric_limits<double>::infinity() })
+            CHECK_THROWS(commands::normalize(volume, 6, { .targetLufs = target,
+                                                          .write = writeOpts(tmp.path) }),
+                         "between -70 and -1");
 
         // Every answer and every refusal above left the volume byte-identical.
         CHECK(volumeBytes(volume) == before);

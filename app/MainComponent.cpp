@@ -367,7 +367,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     // under it (#140), after the words are on screen.
     player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading,
                                    const std::string& hash) {
-        applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
+        applyLoudnessReport(slot, loudnessreport::describe(reading, currentTargetLufs()), 0);
         if (!hash.empty()) // empty: the core would not measure these bytes to this number
             keepReading(hash, reading);
     };
@@ -624,6 +624,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     endNormalizeBatch();
             }
             if (inCheck) {
+                checkUnread.erase(slot);
                 ++checkFailed;
                 if (checkDone + checkFailed >= checkTotal)
                     finishLoudnessCheck();
@@ -2020,13 +2021,18 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     menu.addSubMenu(juce::String::fromUTF8("Downmix to mono"), downmix, occupied);
     // The label names the target so the choice is informed before the dialog:
     // the number comes from Settings -> Import, shared with normalize-on-upload.
-    const double normalizeTarget = settings.file() != nullptr
-        ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
-        : kDefaultTargetLufs;
+    // With no usable target the item stays, unnamed: choosing it says why.
+    const std::optional<double> normalizeTarget = currentTargetLufs();
+    // Greyed while the slot's reading is pending, as the player's button is:
+    // the answer it would wait for is already on its way (#142).
+    const SlotTable::LoudnessCell* reading = table.loudnessFor(slot);
+    const bool readPending = (reading != nullptr && reading->pending) || normalizeSteps.contains(slot);
     menu.addItem(9,
-                 "Normalize to " + SettingsDialog::formatLufs(normalizeTarget)
-                     + juce::String::fromUTF8(" LUFS\xe2\x80\xa6"),
-                 occupied);
+                 normalizeTarget.has_value()
+                     ? "Normalize to " + SettingsDialog::formatLufs(*normalizeTarget)
+                           + juce::String::fromUTF8(" LUFS\xe2\x80\xa6")
+                     : juce::String::fromUTF8("Normalize\xe2\x80\xa6"),
+                 occupied && !readPending);
     // The read-only counterpart (issue #61), and the way to stop a running
     // background check from wherever the player happens to right-click.
     if (checkId != 0)
@@ -2176,13 +2182,22 @@ void MainComponent::releasePlayerIfHolding(int slotA, int slotB)
 void MainComponent::pushWav(int slot, const juce::String& sourcePath, bool slotOccupied)
 {
     const auto enqueuePush = [this, slot, sourcePath](bool force) {
-        releasePlayerIfHolding(slot, slot); // a replace rewrites the WAV under preview (issue #26)
         // The upload preferences are read HERE, when the player acts — a
         // settings change mid-queue must not rewrite jobs already promised.
         auto* file = settings.file();
         const ImportPrefs prefs = file != nullptr ? importprefs::read(*file) : importprefs::defaults();
+        // Normalize-on-upload with no target to aim at: refused before the
+        // player is touched, in the sentence the Normalize commands use —
+        // never pushed un-normalized, never with a gain made up for it.
+        if (prefs.normalizeOnUpload && !prefs.targetLufs.has_value()) {
+            unusableTargetText = file->getValue(kNormalizeTargetLufsKey);
+            refuseNormalizeWithoutTarget("Push " + juce::File(sourcePath).getFileName() + " to slot "
+                                         + juce::String(slot));
+            return;
+        }
         const std::optional<double> normalizeTarget =
-            prefs.normalizeOnUpload ? std::optional<double>(prefs.targetLufs) : std::nullopt;
+            prefs.normalizeOnUpload ? prefs.targetLufs : std::nullopt;
+        releasePlayerIfHolding(slot, slot); // a replace rewrites the WAV under preview (issue #26)
         auto note = std::make_shared<juce::String>();
         const auto options = makeWriteOptions();
         worker.enqueue(recorded("push", options, { "Push " + juce::File(sourcePath).getFileName() + " to slot "
@@ -2324,29 +2339,149 @@ void MainComponent::downmixSlot(int slot, const juce::String& name, wav::Placeme
 // existed. Destructive in the same sense as the fold (the original loudness
 // stops being recoverable from the file), so it asks first and keeps the
 // original in the history. The target is the shared one from Settings → Import.
+//
+// It measures before it asks (#142). Nothing on the card says how loud a
+// loop is, and finding out is the expensive half of the job — so the first
+// step is a background read like Check loudness: the history is asked for a
+// reading of these very bytes (#140) and the meter runs only when it knows
+// nothing. No operation opens for it: a take with nothing to do is a toast
+// and no window; one the command would refuse is refused here, in its words;
+// one it would rewrite gets the window with the numbers in hand. The command
+// still measures the card's bytes again before it writes — the authority
+// stays with the job, and a take replaced between the two steps is caught
+// there. The bulk apply asks once and steps over every slot that needs
+// nothing; it does not come through here.
 void MainComponent::normalizeSlot(int slot, const juce::String& name)
 {
-    const double target = settings.file() != nullptr
-        ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
-        : kDefaultTargetLufs;
+    const std::optional<double> stored = currentTargetLufs();
+    if (!stored.has_value()) {
+        refuseNormalizeWithoutTarget("Normalize slot " + juce::String(slot));
+        return;
+    }
+    const double target = *stored;
+    // One step per slot: a second request while the first still reads would
+    // open a second window over the same take. The menu item and the
+    // player's button are greyed meanwhile; this catches what slips past.
+    if (!normalizeSteps.start(slot))
+        return;
+    table.setLoudness(slot, { juce::String::fromUTF8("\xe2\x80\xa6"), false, true });
+    player.setLoudnessPending(slot); // ignored unless that slot is loaded
+    juce::Component::SafePointer<MainComponent> safe(this);
+    // Named as the job it leads to: a refusal at the worker's gate reads
+    // "Normalize slot N: …" like every other refusal of this action.
+    PedalWorker::Job step {
+        "Normalize slot " + juce::String(slot),
+        slot,
+        [slot, name, target, safe, rec = recorder,
+         logDir = settings.dataDir()](const volume::fs::path& volumePath) {
+            try {
+                const normalizestep::Step done = normalizestep::run(volumePath, slot, *rec, target);
+                if (!done.read.failure.empty())
+                    oplog::append(logDir, "slot " + juce::String(slot)
+                                              + " loudness reading not kept in the history: "
+                                              + utf8(done.read.failure));
+                const LoudnessReport report = loudnessreport::describe(done.read.reading, target);
+                // The line the old flow left in a history row goes to the log
+                // instead: the only record of a normalize that was not offered.
+                if (done.plan.outcome != normalizeplan::Plan::Outcome::apply)
+                    oplog::append(logDir, "normalize slot " + juce::String(slot) + " not offered: "
+                                              + (done.plan.words.empty() ? report.noteText
+                                                                         : utf8(done.plan.words)));
+                juce::MessageManager::callAsync(
+                    [safe, slot, name, target, report, plan = done.plan, hash = done.read.hash] {
+                        if (safe != nullptr)
+                            safe->offerNormalize(slot, name, target, report, plan, hash);
+                    });
+            } catch (const std::exception& e) {
+                // No plan can be made of this take — none in the slot, bytes
+                // that are not the pedal's, a card that will not be read: the
+                // job would have refused it, and so does this, in one voice
+                // with the plan's own refusals. Nothing was opened to close.
+                const juce::String why = juce::String::fromUTF8(e.what());
+                oplog::append(logDir, "normalize slot " + juce::String(slot) + " not offered: " + why);
+                juce::MessageManager::callAsync([safe, slot, why] {
+                    if (safe != nullptr) {
+                        safe->table.clearPendingLoudness(slot); // the read will never land
+                        safe->player.clearLoudness(slot);
+                        safe->refuseNormalize(slot, why);
+                    }
+                });
+            }
+        },
+        nullptr,
+        0,
+        true, // background: read-only, never a reason to lock the UI
+        true  // quiet: what it found is said by offerNormalize, a refusal by the banner
+    };
+    // However the step ends — offered, refused, or stopped at the worker's
+    // gate before it read a byte — `after` runs, and posts after the step's
+    // own answer: the slot is free for the next request from then on.
+    step.after = [safe, slot](const std::string& error) {
+        juce::MessageManager::callAsync([safe, slot, stopped = !error.empty()] {
+            if (safe != nullptr)
+                safe->endNormalizeStep(slot, stopped);
+        });
+    };
+    worker.enqueue(std::move(step));
+}
+
+void MainComponent::endNormalizeStep(int slot, bool stoppedAtGate)
+{
+    normalizeSteps.end(slot);
+    if (stoppedAtGate) {
+        // The gate's own banner already says why; the "…" must not stay.
+        table.clearPendingLoudness(slot);
+        player.clearLoudness(slot);
+    }
+}
+
+void MainComponent::refuseNormalize(int slot, const juce::String& why)
+{
+    // Where every refused mutation lands, worded as the job would have
+    // failed — and it stays until the next job succeeds, unlike a toast:
+    // the fix for a damaged take is a re-push, and the reason must outlive
+    // the click. The job would have left a failed row too; this leaves none.
+    banners.showError(banners::Source::job, "Normalize slot " + juce::String(slot) + ": " + why);
+}
+
+void MainComponent::offerNormalize(int slot, const juce::String& name, double target,
+                                   const LoudnessReport& report, const normalizeplan::Plan& plan,
+                                   const std::string& measuredHash)
+{
+    applyLoudnessReport(slot, report, 0); // the take was read: the column and the row show it
     const juce::String label = name.isEmpty() ? juce::String(slot)
                                               : juce::String(slot) + " (" + name + ")";
+    switch (plan.outcome) {
+    case normalizeplan::Plan::Outcome::refuse:
+        refuseNormalize(slot, utf8(plan.words));
+        return;
+    case normalizeplan::Plan::Outcome::nothingToDo:
+        toast.show("Nothing to normalize in slot " + label + ": " + report.noteText);
+        return;
+    case normalizeplan::Plan::Outcome::apply:
+        break;
+    }
     const juce::String targetText = SettingsDialog::formatLufs(target) + " LUFS";
-
     juce::AlertWindow::showAsync(
         juce::MessageBoxOptions()
             .withIconType(juce::MessageBoxIconType::WarningIcon)
-            .withTitle("Normalize slot " + label + " to " + targetText + "?")
-            .withMessage(juce::String::fromUTF8(
-                             "One constant gain lands the whole loop at the target loudness "
+            // A capped boost stops short of the target by design: the title
+            // says where it heads, the first line how far it gets.
+            .withTitle("Normalize slot " + label + (plan.cappedByPeak ? " toward " : " to ")
+                       + targetText + "?")
+            // The numbers lead; the sentence after them holds for a capped
+            // boost too, which lands short of the target by design.
+            .withMessage(utf8(plan.words)
+                         + juce::String::fromUTF8(
+                             ". One constant gain over the whole loop "
                              "\xe2\x80\x94 nothing else about the sound changes.\n\n"
                              "The current WAV is kept in the history \xe2\x80\x94 "
                              "that is your undo."))
             .withButton("Normalize")
             .withButton("Cancel"),
-        [this, slot, target](int button) {
+        [this, slot, target, measuredHash](int button) {
             if (button == 1)
-                enqueueNormalize(slot, target);
+                enqueueNormalize(slot, target, 0, nullptr, measuredHash);
         });
 }
 
@@ -2356,12 +2491,13 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
 // Batch jobs carry the batch id (for crediting and cancel) and feed the
 // overlay's current-file bar through `filePermille` (issue #61).
 void MainComponent::enqueueNormalize(int slot, double target, int batch,
-                                     std::shared_ptr<std::atomic<int>> filePermille)
+                                     std::shared_ptr<std::atomic<int>> filePermille,
+                                     std::optional<std::string> measuredHash)
 {
     releasePlayerIfHolding(slot, slot); // the rewrite happens under preview (issue #26)
     auto note = std::make_shared<juce::String>();
     const auto options = makeWriteOptions();
-    worker.enqueue(recorded(
+    PedalWorker::Job job = recorded(
         "normalize", options,
         { "Normalize slot " + juce::String(slot), slot,
           [slot, target, note, filePermille, options,
@@ -2380,7 +2516,13 @@ void MainComponent::enqueueNormalize(int slot, double target, int batch,
               *note = describeNormalize(result, target);
               oplog::append(logDir, "normalize slot " + juce::String(slot) + ": " + *note);
           },
-          note, batch }));
+          note, batch });
+    // The single-slot path was answered for the bytes its first step
+    // measured (#142): anything else in the slot by now is refused before
+    // the operation opens. The bulk apply asked once for whatever is there.
+    if (measuredHash.has_value())
+        job.before = normalizestep::guardedBefore(slot, *measuredHash, std::move(job.before));
+    worker.enqueue(std::move(job));
 }
 
 // Batch takeover (issue #61): the overlay swallows every click until the last
@@ -2425,71 +2567,36 @@ void MainComponent::endNormalizeBatch()
 // runs as a worker job like every mutation — same busy pulse, same error
 // banner, and serialized against rewrites so it can never read a half-written
 // take — but it writes nothing: no archive, no journal line, no Disconnect hint.
-double MainComponent::currentTargetLufs()
+std::optional<double> MainComponent::currentTargetLufs()
 {
     auto* file = settings.file();
-    return file != nullptr ? file->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
-                           : kDefaultTargetLufs;
+    if (file == nullptr)
+        return kDefaultTargetLufs;
+    // Read back through the field's own rule, by the one reader the upload
+    // uses too (ImportPrefs.h): a file from a build whose field let "nan"
+    // through, or one edited by hand, holds text that is not a target — and
+    // no target is put in its place (#142 review).
+    const std::optional<double> target = importprefs::read(*file).targetLufs;
+    if (!target.has_value()) {
+        const juce::String stored = file->getValue(kNormalizeTargetLufsKey);
+        unusableTargetText = stored;
+        if (!unusableTargetReported) {
+            unusableTargetReported = true;
+            banners.showError(banners::Source::job, targetlufs::unusableStored(stored));
+        }
+    }
+    return target;
 }
 
-// One reading, two audiences: the inspector wants the sentence, the column
-// wants the number — and both want to be told when the number is not one.
-MainComponent::LoudnessReport MainComponent::describeReading(const wav::LoudnessReading& reading,
-                                                             double targetLufs)
+// Normalize has nothing to aim at: refused in the sentence the launch
+// reported, and nothing is measured for it.
+void MainComponent::refuseNormalizeWithoutTarget(const juce::String& action)
 {
-    const juce::String target = SettingsDialog::formatLufs(targetLufs);
-    if (reading.wildSamples > 0) {
-        // The number the meter would print here is real — and meaningless:
-        // 2.4e38 is not a loudness, it is a foreign header read as float
-        // (the 2026-09-02 recovered card). The row gets a sign and a word;
-        // the hint gets the story.
-        const juce::String what = "damaged audio: " + juce::String(reading.wildSamples)
-                                + " impossible sample value(s)";
-        return { "damaged", "damaged audio", what,
-                 "This file contains bytes that are not sound. Re-push the loop from its "
-                 "original; Normalize will not touch it.",
-                 true, true };
-    }
-    if (!reading.integratedLufs.has_value())
-        return { "n/a", "silent or too short to measure", "silent or too short to measure",
-                 "Nothing to measure: silence, or under 400 ms of audio.", false, false };
-    const double lufs = *reading.integratedLufs;
-    const double wanted = targetLufs - lufs;
-    const bool offTarget = std::abs(wanted) >= loudness::kAlreadyAtTargetLu;
-    // Attention means "Normalize would change this" — so the readout runs
-    // the command's own gain rule. A quiet loop whose peaks already touch the
-    // ceiling is off target and yet has nothing to gain (field report: a slot
-    // painted orange that the command then rightly refused); it reads grey
-    // with the reason, and a partial boost says how much is actually there.
-    const double gain = !offTarget ? 0.0
-                      : std::isfinite(reading.truePeakDb)
-                          ? loudness::normalizeGainDb(lufs, targetLufs, reading.truePeakDb,
-                                                      loudness::kPeakCeilingDb)
-                          : wanted;
-    const bool wouldChange = offTarget && std::abs(gain) > 1.0e-9;
-    const bool capped = wanted > 0.0 && gain + 1.0e-9 < wanted;
-    juce::String row = juce::String(lufs, 1) + juce::String::fromUTF8(" LUFS \xc2\xb7 ");
-    if (!offTarget)
-        row << "at target " << target;
-    else {
-        row << juce::String(std::abs(wanted), 1) << " dB " << (wanted > 0.0 ? "below" : "above")
-            << " target " << target;
-        if (!wouldChange)
-            row << juce::String::fromUTF8(" \xc2\xb7 peak-limited, nothing to gain");
-        else if (capped)
-            row << juce::String::fromUTF8(" \xc2\xb7 only +") << juce::String(gain, 1)
-                << " dB possible";
-    }
-    const juce::String peak = juce::String(reading.truePeakDb, 1) + " dBTP";
-    juce::String tip = "Peak " + peak + juce::String::fromUTF8(" \xc2\xb7 target ") + target + " LUFS.";
-    if (offTarget && !wouldChange)
-        tip << " Cannot be raised without clipping.";
-    else if (capped)
-        tip << " Only +" << juce::String(gain, 1) << " dB fits without clipping.";
-    return { juce::String(lufs, 1), row, row + ", peak " + peak, tip, wouldChange, false };
+    banners.showError(banners::Source::job,
+                      action + ": " + targetlufs::unusableStored(unusableTargetText));
 }
 
-void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
+void MainComponent::enqueueLoudnessRead(int slot, std::optional<double> target, int batch)
 {
     // Every loudness read is background work: read-only, never a reason to
     // lock the UI. The cell says "…" until the answer lands, and the one in
@@ -2511,7 +2618,7 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
                   oplog::append(logDir, "slot " + juce::String(slot)
                                             + " loudness reading not kept in the history: "
                                             + juce::String::fromUTF8(read.failure.c_str()));
-              const LoudnessReport report = describeReading(read.reading, target);
+              const LoudnessReport report = loudnessreport::describe(read.reading, target);
               *note = report.noteText;
               juce::MessageManager::callAsync([safe, slot, report, batch] {
                   if (safe != nullptr)
@@ -2552,6 +2659,7 @@ void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, 
     player.setLoudness(slot, report.rowText, report.attention, report.damaged,
                        report.tooltipText); // ignored unless that slot is loaded
     if (checkId != 0 && batch == checkId) {
+        checkUnread.erase(slot);
         if (report.attention)
             ++checkAttention;
         if (report.damaged)
@@ -2578,12 +2686,12 @@ void MainComponent::startLoudnessCheck(const std::vector<int>& slots)
 {
     if (slots.empty() || checkId != 0)
         return;
-    const double target = currentTargetLufs();
+    const std::optional<double> target = currentTargetLufs(); // empty: readings without a verdict
     checkId = ++batchCounter;
     checkTotal = static_cast<int>(slots.size());
     checkDone = checkFailed = checkAttention = checkDamaged = 0;
     checkStopping = false;
-    checkSlots = slots;
+    checkUnread = std::set<int>(slots.begin(), slots.end());
     for (const int slot : slots)
         enqueueLoudnessRead(slot, target, checkId);
     toast.show("Checking the loudness of " + juce::String(checkTotal)
@@ -2597,8 +2705,12 @@ void MainComponent::stopLoudnessCheck()
     if (checkId == 0)
         return;
     checkTotal -= worker.cancelPending(checkId); // the dropped tail never reports back
-    for (const int slot : checkSlots)
-        table.clearPendingLoudness(slot); // …so its "…" cells go back to the dash
+    // …so its "…" cells go back to the dash: the check's own, not yet read.
+    // A cell a Normalize step is reading stays "…" — its answer is coming.
+    for (const int slot : checkUnread)
+        if (!normalizeSteps.contains(slot))
+            table.clearPendingLoudness(slot);
+    checkUnread.clear();
     checkStopping = true;
     if (checkDone + checkFailed >= checkTotal)
         finishLoudnessCheck(); // nothing in flight — over now
@@ -2648,10 +2760,9 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
         if (const SlotRow* row = slotRowFor(slot); row != nullptr && row->info.hasAudio)
             occupied.push_back(slot);
 
-    const double target = settings.file() != nullptr
-        ? settings.file()->getDoubleValue(kNormalizeTargetLufsKey, kDefaultTargetLufs)
-        : kDefaultTargetLufs;
-    const juce::String targetText = SettingsDialog::formatLufs(target) + " LUFS";
+    const std::optional<double> stored = currentTargetLufs();
+    const juce::String targetText =
+        stored.has_value() ? SettingsDialog::formatLufs(*stored) + " LUFS" : juce::String();
 
     juce::PopupMenu menu;
     const juce::String count =
@@ -2661,11 +2772,13 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
         menu.addItem(3, "Stop loudness check");
     else
         menu.addItem(2, "Check loudness (" + count + ")", !occupied.empty());
-    menu.addItem(1, "Normalize " + count + " to " + targetText + juce::String::fromUTF8("\xe2\x80\xa6"),
+    menu.addItem(1,
+                 "Normalize " + count + (stored.has_value() ? " to " + targetText : juce::String())
+                     + juce::String::fromUTF8("\xe2\x80\xa6"),
                  !occupied.empty());
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
-        [this, occupied, target, targetText](int choice) {
+        [this, occupied, stored, targetText, count](int choice) {
             if (choice == 2) {
                 startLoudnessCheck(occupied);
                 return;
@@ -2676,6 +2789,11 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
             }
             if (choice != 1 || occupied.empty())
                 return;
+            if (!stored.has_value()) {
+                refuseNormalizeWithoutTarget("Normalize " + count);
+                return;
+            }
+            const double target = *stored;
             juce::AlertWindow::showAsync(
                 juce::MessageBoxOptions()
                     .withIconType(juce::MessageBoxIconType::WarningIcon)

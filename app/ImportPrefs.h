@@ -3,9 +3,12 @@
 
 #pragma once
 
+#include "TargetLufs.h"
 #include "UploadMark.h"
 
 #include <juce_data_structures/juce_data_structures.h>
+
+#include <optional>
 
 //==============================================================================
 // loopercat::ImportPrefs — what happens to an upload on its way to the card,
@@ -27,7 +30,10 @@ struct ImportPrefs {
     // 2.0's reference — the modern spelling of the "89 dB" the request
     // arrived in.
     bool normalizeOnUpload;
-    double targetLufs;
+    // Empty when the stored text is not a target (TargetLufs.h, #142 review):
+    // a file from a build whose field let "nan" through, or one edited by
+    // hand. No target is put in its place.
+    std::optional<double> targetLufs;
     // The mark a converted upload lands with (issue #139): "-pedal" out of
     // the box, which is the spelling existing cards already carry; empty
     // means converted uploads land under their own name.
@@ -64,20 +70,26 @@ namespace importprefs
     // falls back only when the key is missing, not when its value is empty.
     // The mark gets the field's one rule (markAsTyped), so "only spaces is
     // the empty mark" holds whichever hand wrote the file — and nothing else
-    // about it is rewritten.
+    // about it is rewritten. The target gets the field's one rule too
+    // (targetlufs::parse): stored text that is not a target reads as none.
     inline ImportPrefs read(juce::PropertiesFile& file)
     {
         const ImportPrefs shipped = defaults();
         return { .normalizeOnUpload =
                      file.getBoolValue(kNormalizeOnUploadKey, shipped.normalizeOnUpload),
-                 .targetLufs = file.getDoubleValue(kTargetLufsKey, shipped.targetLufs),
+                 .targetLufs = file.containsKey(kTargetLufsKey)
+                                   ? targetlufs::parse(file.getValue(kTargetLufsKey))
+                                   : shipped.targetLufs,
                  .convertedMark = markAsTyped(file.getValue(kConvertedMarkKey, shipped.convertedMark)) };
     }
 
+    // An unusable stored target stays until the player types one: nothing is
+    // written in its place.
     inline void write(juce::PropertiesFile& file, const ImportPrefs& prefs)
     {
         file.setValue(kNormalizeOnUploadKey, prefs.normalizeOnUpload);
-        file.setValue(kTargetLufsKey, prefs.targetLufs);
+        if (prefs.targetLufs.has_value())
+            file.setValue(kTargetLufsKey, *prefs.targetLufs);
         file.setValue(kConvertedMarkKey, prefs.convertedMark);
         file.saveIfNeeded();
     }

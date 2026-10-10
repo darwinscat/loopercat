@@ -995,6 +995,36 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
 
 // --- normalize ---
 
+// A target outside this window is a bug wearing a number: 0.0 is what an
+// unset field reads as, and no loudness war ever pushed a target past -1 or
+// under -70. The command refuses it before it reads a byte, and the
+// measure-first step of the single-slot action (#142) refuses it the same way.
+// Asked in the positive: NaN fails every comparison, so "outside" spelled as
+// two comparisons let it through, and the gain it made filled a take with
+// NaN samples (review of #142, P1).
+inline void requireNormalizeTarget(double targetLufs)
+{
+    if (!(targetLufs < loudness::kPeakCeilingDb && targetLufs > loudness::kAbsoluteGateLufs))
+        throw Error("normalize target must sit between -70 and -1 LUFS, got "
+                    + std::to_string(targetLufs));
+}
+
+// The sentences normalize refuses a take with, as functions: the measure-first
+// step (#142) refuses the same take in the same words before any window
+// opens, and the two cannot drift apart.
+inline std::string normalizeDamagedRefusal(int slot, std::int64_t wildSamples)
+{
+    return "slot " + std::to_string(slot) + " contains " + std::to_string(wildSamples)
+         + " impossible sample value(s) — bytes that are not audio. The take looks "
+           "damaged; re-push it from the original instead of normalizing it";
+}
+
+inline std::string normalizeUnmeasurableRefusal(int slot)
+{
+    return "slot " + std::to_string(slot)
+         + " is silent or shorter than the 400 ms a loudness measurement needs";
+}
+
 struct NormalizeOptions {
     double targetLufs = 0.0; // REQUIRED: 0 is not a target and is refused as one
     WriteOptions write;      // write.archive REQUIRED: the original goes there first (the undo)
@@ -1024,8 +1054,9 @@ struct NormalizeResult {
 // Two outcomes deliberately write NOTHING and say so instead of erroring —
 // they are answers, not failures, and a bulk apply must be able to walk over
 // them: already within kAlreadyAtTargetLu of the target (nothing audible to
-// gain), and a wanted boost fully swallowed by the peak ceiling (the loop
-// already peaks at -1 dBTP — there is nothing to give it). An unmeasurable
+// gain), and a wanted boost the peak ceiling cuts below kSmallestGainDb (the
+// loop already peaks at, or within an inaudible step of, -1 dBTP — there is
+// nothing to give it). An unmeasurable
 // slot — silence, or under one gating block — IS an error: the player asked
 // to normalize this slot, and no gain would do what they asked.
 inline NormalizeResult normalize(const fs::path& volume, int slot,
@@ -1033,12 +1064,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
 {
     if (!options.write.archive)
         throw Error("normalize needs an archive — the original is kept first, it is the undo");
-    // 0.0 is what an unset field reads as, and no loudness war ever pushed a
-    // target out of this window — outside it is a bug, not a taste.
-    if (options.targetLufs >= loudness::kPeakCeilingDb
-        || options.targetLufs <= loudness::kAbsoluteGateLufs)
-        throw Error("normalize target must sit between -70 and -1 LUFS, got "
-                    + std::to_string(options.targetLufs));
+    requireNormalizeTarget(options.targetLufs);
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -1066,18 +1092,14 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     // gain of hundreds of dB and bake it in — that is how a damaged take
     // becomes a silent one. Refuse, and say what to do instead.
     if (reading.wildSamples > 0)
-        throw Error("slot " + std::to_string(slot) + " contains "
-                    + std::to_string(reading.wildSamples)
-                    + " impossible sample value(s) — bytes that are not audio. The take looks "
-                      "damaged; re-push it from the original instead of normalizing it");
+        throw Error(normalizeDamagedRefusal(slot, reading.wildSamples));
     // The bytes are audio: what they measure is a fact worth keeping whatever
     // this command then does with it — writes a gain, finds nothing to do,
     // or refuses below because nothing can be done for silence.
     if (options.write.journal.loudnessMeasured)
         options.write.journal.loudnessMeasured(slot, files.front(), raw, reading);
     if (!reading.integratedLufs.has_value())
-        throw Error("slot " + std::to_string(slot)
-                    + " is silent or shorter than the 400 ms a loudness measurement needs");
+        throw Error(normalizeUnmeasurableRefusal(slot));
 
     NormalizeResult result;
     result.measuredLufs = *reading.integratedLufs;
@@ -1088,9 +1110,11 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     const double gainDb = loudness::normalizeGainDb(result.measuredLufs, options.targetLufs,
                                                     reading.truePeakDb,
                                                     loudness::kPeakCeilingDb);
-    result.cappedByPeak = wanted > 0.0 && gainDb + 1.0e-9 < wanted;
-    if (std::abs(gainDb) < 1.0e-9)
-        return result; // the ceiling ate the whole boost — rewriting would change nothing
+    // Exact on purpose: normalizeGainDb hands the wanted gain back untouched
+    // when the ceiling does not bite, so any shortfall is the ceiling's.
+    result.cappedByPeak = wanted > 0.0 && gainDb < wanted;
+    if (std::abs(gainDb) < loudness::kSmallestGainDb)
+        return result; // the ceiling left no audible boost — rewriting would change nothing
 
     const wav::Bytes rewritten = wav::withGainDb(rawView, gainDb, segment(0.45, 0.60));
 

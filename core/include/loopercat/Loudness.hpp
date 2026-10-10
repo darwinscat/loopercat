@@ -64,6 +64,19 @@ inline constexpr double kPeakCeilingDb = -1.0;
 // import path and the on-card normalize command.
 inline constexpr double kAlreadyAtTargetLu = 0.2;
 
+// The smallest gain worth writing is the step "already at target" stands
+// for: a gain under kAlreadyAtTargetLu is as inaudible as a loudness that
+// close to the target, and writing it would spend an archive copy, a pedal
+// write generation and a history row on nothing. A threshold of 1e-9 dB
+// looked like "no gain" and was not one: once a capped take's samples are
+// float32 again, the gain left to it measured 2.9e-07 dB (review of #142) —
+// under a microdecibel, inaudible, and still over 1e-9, so every further
+// Normalize offered "+0.0 dB", rewrote the same bytes and added a row; a
+// take with 0.049 dB of headroom opened the window too. Shared by the
+// on-card command, the plan it is asked for first, and the LUFS column's
+// colouring, so none of them offers what another would not write.
+inline constexpr double kSmallestGainDb = kAlreadyAtTargetLu;
+
 // Honest audio never leaves [-8, +8]: float32 masters peak a little over 1,
 // and nothing musical is 18 dB past that. A sample beyond it — or not a
 // number at all — is bytes that are not audio. Seen on hardware 2026-09-02:
@@ -209,10 +222,20 @@ private:
 //   * a boost is capped so peakDb (dBTP) lands at or below ceilingDb;
 //   * the cap floors at zero — it never turns a boost into a cut, so a track
 //     that already peaks above the ceiling is left as loud as it was, not
-//     "rescued" uninvited.
+//     "rescued" uninvited;
+//   * a measured loudness, target or ceiling that is not a finite number is
+//     refused: it would make a gain that is not one, and a NaN gain fills a
+//     take with NaN samples. Every path that levels audio — the on-card
+//     command, the plan it is asked for first, normalize-on-upload — comes
+//     through here (review of #142); which targets are sensible stays the
+//     callers' business.
 inline double normalizeGainDb(double measuredLufs, double targetLufs, double peakDb,
                               double ceilingDb)
 {
+    if (!std::isfinite(measuredLufs) || !std::isfinite(targetLufs) || !std::isfinite(ceilingDb))
+        throw Error("normalize gain needs finite figures, got measured "
+                    + std::to_string(measuredLufs) + " LUFS, target " + std::to_string(targetLufs)
+                    + " LUFS, ceiling " + std::to_string(ceilingDb) + " dBTP");
     const double gain = targetLufs - measuredLufs;
     if (gain <= 0.0)
         return gain;

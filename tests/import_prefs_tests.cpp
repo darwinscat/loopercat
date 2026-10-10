@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <memory>
+#include <optional>
 #include <string>
 
 using namespace loopercat;
@@ -36,8 +37,12 @@ std::unique_ptr<juce::PropertiesFile> open(const juce::File& dir)
 }
 
 // A target that went through the file as text comes back as the same number;
-// the comparison allows for nothing but the representation.
-bool nearly(double actual, double expected) { return std::abs(actual - expected) < 1.0e-9; }
+// the comparison allows for nothing but the representation. No target is not
+// near anything.
+bool nearly(std::optional<double> actual, double expected)
+{
+    return actual.has_value() && std::abs(*actual - expected) < 1.0e-9;
+}
 
 } // namespace
 
@@ -125,6 +130,63 @@ int main()
         CHECK(file->containsKey("normalizeOnUpload"));
         CHECK(file->containsKey("normalizeTargetLufs"));
         CHECK(file->containsKey("convertedUploadMark"));
+    }
+
+    // --- stored text that is not a target reads as no target, and nothing is put in its place
+    //     (#142 review): the field's window is -30..-8, NaN and infinity are not in it ---
+    {
+        const auto readTarget = [&](const juce::String& stored) {
+            auto file = open(work);
+            file->setValue(importprefs::kTargetLufsKey, stored);
+            return importprefs::read(*file).targetLufs;
+        };
+        CHECK(!readTarget("nan").has_value());
+        CHECK(!readTarget("inf").has_value());
+        CHECK(!readTarget("-inf").has_value());
+        CHECK(!readTarget("abc").has_value());
+        CHECK(!readTarget("").has_value());     // present but empty: not the default either
+        CHECK(!readTarget("0").has_value());
+        CHECK(!readTarget("-40").has_value());
+        CHECK(!readTarget("-30.01").has_value());
+        CHECK(!readTarget("-7.9").has_value());
+        CHECK(nearly(readTarget("-30"), -30.0)); // both ends of the window are targets
+        CHECK(nearly(readTarget("-8"), -8.0));
+        CHECK(nearly(readTarget(" -14 "), -14.0));
+
+        // writing with no target leaves the stored text exactly as it was,
+        // while the keys that have values are written
+        {
+            auto file = open(work);
+            file->setValue(importprefs::kTargetLufsKey, "nan");
+            file->saveIfNeeded();
+            ImportPrefs prefs = importprefs::read(*file);
+            CHECK(!prefs.targetLufs.has_value());
+            prefs.normalizeOnUpload = false;
+            prefs.convertedMark = "-x";
+            importprefs::write(*file, prefs);
+        }
+        {
+            auto file = open(work);
+            CHECK_EQ(file->getValue(importprefs::kTargetLufsKey).toStdString(), std::string("nan"));
+            const ImportPrefs prefs = importprefs::read(*file);
+            CHECK(!prefs.normalizeOnUpload);
+            CHECK_EQ(prefs.convertedMark.toStdString(), std::string("-x"));
+            // and a target typed later replaces it
+            ImportPrefs typed = prefs;
+            typed.targetLufs = -20.0;
+            typed.normalizeOnUpload = true;
+            typed.convertedMark = "-pedal";
+            importprefs::write(*file, typed);
+        }
+        {
+            auto file = open(work);
+            CHECK(nearly(importprefs::read(*file).targetLufs, -20.0));
+            // an absent target key is the shipped default, not "no target"
+            file->removeValue(importprefs::kTargetLufsKey);
+            CHECK(nearly(importprefs::read(*file).targetLufs, -18.0));
+            importprefs::write(*file, { .normalizeOnUpload = true, .targetLufs = -16.5,
+                                        .convertedMark = "-pedal" });
+        }
     }
 
     // --- an absent mark key reads as the default even when the others are set ---
