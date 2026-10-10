@@ -10,6 +10,8 @@
 #include <loopercat/Rc0.hpp>
 #include <loopercat/Volume.hpp>
 
+#include "JobOutcome.h"
+
 #include <juce_events/juce_events.h>
 
 #include <algorithm>
@@ -18,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <typeinfo>
 #include <vector>
 
 //==============================================================================
@@ -31,7 +34,7 @@
 // token (the destructor flips it on the message thread after joining the
 // worker, so a queued delivery can never touch a dead owner). Snapshots are
 // change-gated; job results and busy transitions always arrive, in order:
-// busy(true) -> snapshot -> result(description, error) -> busy(false).
+// busy(true) -> snapshot -> result(description, outcome) -> busy(false).
 //
 // scanOnce() is public for the one deliberate exception: the headless
 // --snapshot path, which scans synchronously before rendering.
@@ -102,6 +105,8 @@ public:
         // A job nobody asked to be told about: it reports only failures. The
         // history tab refreshes itself whenever a slot is selected, and a
         // toast for each of those would push the app's real news off screen.
+        // A refusal at the lifecycle gate is not a failure of the job —
+        // nothing ran — so a quiet job keeps it to its `after` (JobOutcome).
         bool quiet = false;
         // Reading the history needs no card: the store is on this computer.
         // Such a job skips the lifecycle gate and is handed an empty path, so
@@ -110,10 +115,11 @@ public:
         // Around `work`, for the history (#72): `before` runs once the gate has
         // let the job through and the volume is resolved, and a throw from it
         // stops the job before it touches the card; `after` always runs,
-        // with the job's error (empty = success), and a throw from it is
-        // appended to that error rather than hiding it.
+        // with the job's outcome — success, a failure of its work, or the
+        // gate's refusal, which ran neither `before` nor `work` — and a
+        // throw from it is appended to the error rather than hiding it.
         std::function<void(const volume::fs::path&)> before = nullptr;
-        std::function<void(const std::string& error)> after = nullptr;
+        std::function<void(const JobOutcome&)> after = nullptr;
     };
 
     // `explicitVolume` pins the volume path (the --volume CLI override;
@@ -135,8 +141,10 @@ public:
 
     // (started/finished, affected slot or 0, background job)
     std::function<void(bool, int, bool)> onBusy;
-    // (description, error — empty = ok, batch id — 0 = standalone, affected slot or 0)
-    std::function<void(juce::String, juce::String, int, int)> onJobResult;
+    // (description, outcome, batch id — 0 = standalone, affected slot or 0).
+    // Every ending of a job the player asked for; of a quiet job, only a
+    // failure (JobOutcome::told).
+    std::function<void(juce::String, const JobOutcome&, int, int)> onJobResult;
 
     // Wire the platform device-truth probe (DeviceWatcher::verdict) and the
     // eject starter (DeviceWatcher::eject) before start(). Unset probe means
@@ -259,6 +267,32 @@ public:
     }
 
 private:
+    // An exception with no words would make JobOutcome::failure throw inside
+    // the handler, and a throw out of run() ends the thread: no `after`, no
+    // result, no busy(false), no job or scan ever again. Such an exception is
+    // a bug in whatever threw it — asserted — so the banner gets a plain
+    // sentence and the operations log the type that threw (detailOf).
+    static std::string reasonOf(const std::exception& e)
+    {
+        const std::string what = e.what();
+        if (!what.empty())
+            return what;
+        jassertfalse;
+        return "the job stopped without saying why";
+    }
+
+    static std::string detailOf(const std::exception& e)
+    {
+        if (e.what()[0] != '\0')
+            return {};
+        return std::string("a throw without a message: ") + typeid(e).name();
+    }
+
+    static JobOutcome failureOf(const std::exception& e)
+    {
+        return JobOutcome::failure(reasonOf(e), detailOf(e));
+    }
+
     std::optional<volume::fs::path> resolveVolume() const
     {
         if (!explicitVolume_.empty())
@@ -312,44 +346,54 @@ private:
                     if (cb)
                         cb(true, slot, bg);
                 });
-                juce::String error;
-                try {
+                JobOutcome outcome = JobOutcome::success();
+                volume::fs::path path; // stays empty for a job that needs no card
+                if (job->needsVolume) {
                     // The lifecycle gate: a ghost mount happily accepts writes
                     // into page cache that can never reach the pedal — the
-                    // 2026-07-22 phantom "saved" toast. Only connected is honest.
-                    if (job->needsVolume && !machine_.writable())
-                        throw Error(std::string("pedal is ") + lifecycle::stateName(machine_.state())
-                                    + " — refusing to touch the volume");
-                    volume::fs::path path;
-                    if (job->needsVolume) {
-                        const auto found = resolveVolume();
-                        if (!found || !volume::looksLikePedal(*found))
-                            throw Error("no pedal volume mounted");
+                    // 2026-07-22 phantom "saved" toast. Only connected is
+                    // honest. A refusal is its own ending, not a failure of
+                    // the job: neither `before` nor `work` runs, and the card
+                    // is untouched (issue #146).
+                    if (!machine_.writable())
+                        outcome = JobOutcome::refused(machine_.state());
+                    else if (const auto found = resolveVolume();
+                             !found || !volume::looksLikePedal(*found))
+                        // Past the gate, the volume the last scan saw has
+                        // gone: nothing runs either, so this too is a
+                        // refusal, not a failure of the job.
+                        outcome = JobOutcome::unmounted();
+                    else
                         path = *found;
+                }
+                if (!outcome.didNotRun()) {
+                    try {
+                        if (job->before)
+                            job->before(path);
+                        job->work(path);
+                    } catch (const std::exception& e) {
+                        outcome = failureOf(e);
                     }
-                    if (job->before)
-                        job->before(path);
-                    job->work(path);
-                } catch (const std::exception& e) {
-                    error = juce::String::fromUTF8(e.what()); // core messages carry typographic dashes
                 }
                 if (job->after) {
                     try {
-                        job->after(error.toStdString());
+                        job->after(outcome);
                     } catch (const std::exception& e) {
-                        error << (error.isEmpty() ? "" : "; ") << "history: "
-                              << juce::String::fromUTF8(e.what());
+                        // The history's bookkeeping failed, whatever the job
+                        // did: the ending stays what it was and is told with
+                        // this beside it, refusal or not.
+                        outcome.historyThrew(reasonOf(e));
                     }
                 }
                 maybeDeliverSnapshot(scanAdvanced());
                 juce::String described = job->description;
-                if (error.isEmpty() && job->note != nullptr && job->note->isNotEmpty())
+                if (outcome.ok() && job->note != nullptr && job->note->isNotEmpty())
                     described << juce::String::fromUTF8(" \xe2\x80\x94 ") << *job->note;
-                if (!job->quiet || error.isNotEmpty())
-                    deliver([cb = onJobResult, d = described, error, b = job->batch,
+                if (outcome.told(job->quiet))
+                    deliver([cb = onJobResult, d = described, outcome, b = job->batch,
                              s = job->slot] {
                         if (cb)
-                            cb(d, error, b, s);
+                            cb(d, outcome, b, s);
                     });
                 deliver([cb = onBusy, slot = job->slot, bg = job->background] {
                     if (cb)
@@ -420,9 +464,9 @@ private:
                     break;
                 }
             } catch (const std::exception& e) {
-                deliver([cb = onJobResult, msg = juce::String::fromUTF8(e.what())] {
+                deliver([cb = onJobResult, outcome = failureOf(e)] {
                     if (cb)
-                        cb("Eject", msg, 0, 0);
+                        cb("Eject", outcome, 0, 0);
                 });
             }
         }

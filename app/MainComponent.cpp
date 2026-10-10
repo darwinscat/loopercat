@@ -11,6 +11,7 @@
 #include "history/ForgetSlotJob.h"
 #include "ClearSlotHistoryAction.h"
 #include "history/SlotRows.h"
+#include "JobWords.h"
 #include "OperationsLog.h"
 #include "PedalPortName.h"
 #include "Strings.h"
@@ -558,7 +559,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     connectHoldUntilMs = nowMs() + kReenumerateHoldMs;
                     startTimer(kSuperviseTickMs);
                     worker.postDeviceLost();
-                    toast.show(juce::String::fromUTF8(
+                    tellDeparture(juce::String::fromUTF8(
                         "Pedal disconnected \xe2\x80\x94 back on the looper screen"));
                     quitGate.finish(); // the pedal is walking home — quit may proceed
                 });
@@ -586,16 +587,24 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                 feedHistoryWindow();
         }
     };
-    worker.onJobResult = [this](juce::String description, juce::String error, int batch,
+    worker.onJobResult = [this](juce::String description, const JobOutcome& outcome, int batch,
                                 int slot) {
         // Credited by the id the worker hands back — never by parsing text.
         const bool inBatch = batchId != 0 && batch == batchId;
         const bool inCheck = checkId != 0 && batch == checkId;
         if (historyEditPending && description == historyEditDescription)
-            settleHistoryEdit(error.isEmpty() ? description + juce::String::fromUTF8(" \xe2\x80\x94 done")
-                                              : description + ": " + error);
-        if (error.isNotEmpty()) {
-            banners.showError(banners::Source::job, description + ": " + error);
+            settleHistoryEdit(outcome.ok() ? description + juce::String::fromUTF8(" \xe2\x80\x94 done")
+                                           : utf8(jobwords::banner(description.toStdString(), outcome)));
+        if (!outcome.ok()) {
+            // The player's words for the ending (JobWords.h): a job that did
+            // not run says so, in a sentence about the pedal; the core's own
+            // sentence goes to the operations log (issue #146).
+            banners.showError(banners::Source::job,
+                              utf8(jobwords::banner(description.toStdString(), outcome)));
+            if (outcome.didNotRun())
+                trace(utf8(jobwords::refusalLog(description.toStdString(), outcome)));
+            else if (!outcome.detail().empty())
+                trace(utf8(jobwords::failureLog(description.toStdString(), outcome)));
             if (description.startsWith("Check slot") && slot > 0) {
                 player.clearLoudness(slot);       // a failed read must not stay "measuring…"
                 table.clearPendingLoudness(slot); // …nor its cell "…"
@@ -1271,7 +1280,7 @@ void MainComponent::clearSlotHistory(int slot)
             });
         }, nullptr, 0, true, true, false
     };
-    read.after = [settled](const std::string& error) { if (!error.empty()) settled(); };
+    read.after = [settled](const JobOutcome& outcome) { if (!outcome.ok()) settled(); };
     worker.enqueue(std::move(read));
 }
 
@@ -1452,14 +1461,19 @@ void MainComponent::readCardName()
         true,  // quiet: the corner is the report; a failure still speaks
         true   // the card is the point
     };
-    // Whatever happened, the seam must not wait forever.
-    job.after = [safe, generation = cardGeneration, alive = uiAlive](const std::string& error) {
-        if (error.empty()) return;
-        juce::MessageManager::callAsync([safe, alive, generation, error] {
+    // Whatever happened, the seam must not wait forever. A read the gate
+    // refused — the pedal left while the card was being read — is a quiet
+    // job's refusal: no banner, the next connect reads again; the trace
+    // keeps the core's sentence.
+    job.after = [safe, generation = cardGeneration, alive = uiAlive](const JobOutcome& outcome) {
+        if (outcome.ok()) return;
+        juce::MessageManager::callAsync([safe, alive, generation, outcome] {
             if (*alive && safe != nullptr && generation == safe->cardGeneration) {
                 safe->cardNameSettled = true;
                 safe->firstSeenSettled = true;
-                safe->firstSeenProblem = error;
+                safe->firstSeenProblem = outcome.error();
+                if (outcome.didNotRun())
+                    safe->trace("connect: the card's name was not read: " + utf8(outcome.error()));
             }
         });
     };
@@ -1470,12 +1484,23 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
 {
     juce::Component::SafePointer<MainComponent> safe(this);
     worker.enqueue(history::firstSeenJob(recorder, run, slot,
-        [safe, run, slot, alive = uiAlive](int count, const std::string& error) {
-            juce::MessageManager::callAsync([safe, run, slot, count, error, alive] {
+        [safe, run, slot, alive = uiAlive](int count, const JobOutcome& outcome) {
+            juce::MessageManager::callAsync([safe, run, slot, count, outcome, alive] {
                 if (!*alive || safe == nullptr || run->cancelled) return;
-                safe->firstSeenCount = count;
-                safe->firstSeenProblem = error;
-                safe->firstSeenSettled = !error.empty() || count == 99;
+                if (outcome.ok())
+                    safe->firstSeenCount = count; // a step that did not run photographed nothing
+                safe->firstSeenProblem = outcome.error();
+                safe->firstSeenSettled = !outcome.ok() || count == 99;
+                // A step that did not run is the interruption the run resumes
+                // from, told as information: logged now unless the scan that
+                // saw the pedal go already did (applySnapshot), and said to
+                // the player with the departure's own toast (tellDeparture) —
+                // a toast now would be replaced by it unread. A step that
+                // failed on its own is told by the worker's result, as every
+                // failure is (issue #146).
+                if (outcome.didNotRun())
+                    if (const auto line = safe->firstSeenNotice.interrupted(outcome, slot))
+                        safe->trace(utf8(*line));
                 safe->updateStatusText();
                 if (safe->firstSeenSettled) {
                     safe->updateHistory();
@@ -1485,6 +1510,16 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
                 }
             });
         }));
+}
+
+// The departure's last word to the player: `told` with the first snapshot's
+// interruption appended when this connection had one, said once (issue
+// #146). Empty `told` means the departure was told another way — the
+// lifecycle line, a banner — and the sentence, if any, stands alone.
+void MainComponent::tellDeparture(const juce::String& told)
+{
+    if (const std::optional<std::string> words = firstSeenNotice.departure(told.toStdString()))
+        toast.show(utf8(*words));
 }
 
 void MainComponent::cardNamed(marker::Card named, bool minted, std::string sweepNote)
@@ -1754,6 +1789,15 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     if (!mounted) {
         if (!cardNameVolume.empty()) {
             ++cardGeneration;
+            // The pedal went while the first snapshot was in flight: the
+            // step the gate refuses next loses its completion to the cancel
+            // below, so the interruption is decided here, from what this
+            // scan saw — the only way in for a Finder eject or a yank the
+            // probe sees first (issue #146).
+            const bool inFlight = firstSeenRun && !firstSeenRun->cancelled && !firstSeenSettled;
+            const int reached = inFlight ? firstSeenRun->completed.load() : 0;
+            if (const auto line = firstSeenNotice.departed(snapshot.state, inFlight, reached))
+                trace(utf8(*line));
             if (firstSeenRun) firstSeenRun->cancelled = true;
             worker.enqueue({ "Close the card's history session", 0,
                              [rec = recorder](const volume::fs::path&) { rec->disconnect(); },
@@ -1768,6 +1812,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         if (firstSeenRun) firstSeenRun->cancelled = true;
         firstSeenSettled = false;
         firstSeenProblem.clear();
+        firstSeenNotice.connectionStarted(); // the snapshot resumes now — nothing to announce
         firstSeenCount = 0;
         card.reset();
         cardNameVolume = snapshot.volume;
@@ -1775,6 +1820,16 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         trace("connect: card up at " + utf8(snapshot.volume) + " (" + utf8(snapshot.family) + ")");
         readCardName();
     }
+    // The pedal is gone and the story had no toast of its own — a yank
+    // cleaned up, a Finder eject, a volume ejected while the pedal stayed in
+    // STORAGE: the lifecycle line and the status told it. An interrupted
+    // first snapshot still has its sentence to say, and it stands alone
+    // here, after the scan above has had its say (issue #146). The
+    // app-driven Disconnect said it with its own toast already, and then
+    // there is nothing left to say.
+    if (snapshot.state == lifecycle::State::disconnected
+        && previousState != lifecycle::State::disconnected)
+        tellDeparture({});
     if (card) {
         pedalLight.set(true, utf8(card->name));
     } else {
@@ -1893,8 +1948,8 @@ PedalWorker::Job MainComponent::recorded(const char* kind, const commands::Write
     // operation that wrote nothing — a normalize that found the slot already
     // at target — leaves a row that says only "normalize", and the reason
     // lives nowhere but a toast that is already gone.
-    job.after = [rec = recorder, id = options.opId, note = job.note](const std::string& error) {
-        rec->finish(id, error, note != nullptr ? note->toStdString() : std::string());
+    job.after = [rec = recorder, id = options.opId, note = job.note](const JobOutcome& outcome) {
+        rec->finish(id, outcome.error(), note != nullptr ? note->toStdString() : std::string());
     };
     return job;
 }
@@ -2749,7 +2804,7 @@ void MainComponent::releaseHistoryTakes(juce::Component::SafePointer<HistoryStor
         false   // and it needs no card
     };
     job.after = [rec = recorder, limit = historyLimit(), panel,
-                 alive = uiAlive](const std::string&) {
+                 alive = uiAlive](const JobOutcome&) {
         deliverHistoryStorage(rec->store(), limit, panel, alive);
     };
     worker.enqueue(std::move(job));
@@ -2816,7 +2871,7 @@ void MainComponent::resized()
     // The version moved up into the status row, so the strip it used to
     // reserve at the bottom goes to the pane that needed it: the waveform is
     // back to its old height with the tab strip on top of it.
-    toast.setBounds(getWidth() / 2 - 280, getHeight() - kBottomPaneHeight - 42, 560, 34);
+    toast.anchor(getWidth() / 2, getHeight() - kBottomPaneHeight - 42);
     batchOverlay.setBounds(getLocalBounds());
     auto bottom = area.removeFromBottom(kBottomPaneHeight).reduced(12, 8);
     bottomTabs.setBounds(bottom.removeFromTop(26));
@@ -3011,7 +3066,7 @@ void MainComponent::pinFromWindow(std::int64_t op, bool pinned)
                                rec->store().pinOp(op, pinned);
                            },
                            nullptr, 0, true, false, false };
-    job.after = [safe, alive = uiAlive](const std::string&) {
+    job.after = [safe, alive = uiAlive](const JobOutcome&) {
         juce::MessageManager::callAsync([safe, alive] {
             if (*alive && safe != nullptr)
                 safe->feedHistoryWindow();
@@ -3117,12 +3172,12 @@ void MainComponent::pressUndo(bool redo)
                      },
                      nullptr, 0, true, true, false,
                      nullptr,
-                     [safe, alive = uiAlive](const std::string& error) {
+                     [safe, alive = uiAlive](const JobOutcome& outcome) {
                          // A plan that could not be read at all: the press is over.
-                         if (!error.empty())
-                             juce::MessageManager::callAsync([safe, alive, error] {
+                         if (!outcome.ok())
+                             juce::MessageManager::callAsync([safe, alive, outcome] {
                                  if (*alive && safe != nullptr)
-                                     safe->settleHistoryEdit(juce::String::fromUTF8(error.c_str()));
+                                     safe->settleHistoryEdit(utf8(outcome.error()));
                              });
                      } });
 }
@@ -3188,8 +3243,8 @@ void MainComponent::runHistoryEdit(HistoryEdit edit)
                   checked](const volume::fs::path& volumePath) {
         *checked = history::undo::beginPress(*rec, id, redo, target, volumePath);
     };
-    job.after = [rec = recorder, id = options.opId, checked](const std::string& error) {
-        rec->finish(id, error, checked->note);
+    job.after = [rec = recorder, id = options.opId, checked](const JobOutcome& outcome) {
+        rec->finish(id, outcome.error(), checked->note);
     };
     worker.enqueue(std::move(job));
 }

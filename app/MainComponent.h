@@ -17,6 +17,7 @@
 #include "BannerStrip.h"
 #include "BatchOverlay.h"
 #include "DeviceWatcher.h"
+#include "FirstSnapshotNotice.h"
 #include "LooperMark.h"
 #include "PedalLight.h"
 #include "PedalBook.h"
@@ -198,6 +199,7 @@ private:
     // the endpoint Connect chose. A click on the name renames the card.
     void readCardName();
     void snapshotNext(const std::shared_ptr<history::FirstSeenRun>& run, int slot);
+    void tellDeparture(const juce::String& told); // the pedal has gone: the toast's last word
     void cardNamed(marker::Card card, bool minted, std::string sweepNote);
     void renamePedal();
     void savePedalBook();
@@ -373,6 +375,7 @@ private:
     std::shared_ptr<history::FirstSeenRun> firstSeenRun;
     bool firstSeenSettled = false;
     std::string firstSeenProblem;
+    FirstSnapshotNotice firstSeenNotice; // an interruption waiting for the departure's toast (#146)
     int firstSeenCount = 0;
     int cardGeneration = 0;
     bool cardNameSettled = false;       // read, minted, or given up — for the seam

@@ -48,7 +48,7 @@ int main()
         int refreshed = 0;
         auto job = history::forgetSlotJob(recorder, card, 4, plan, true, [&] { ++refreshed; });
         CHECK(!job.needsVolume); CHECK(!job.background); CHECK(!job.quiet);
-        job.before({}); job.work({}); job.after("");
+        job.before({}); job.work({}); job.after(JobOutcome::success());
         CHECK_EQ(refreshed, 1);
         CHECK(store.slotTimeline(4).empty());
         CHECK(!store.offeredTargets().undo); CHECK(!store.offeredTargets().redo);
