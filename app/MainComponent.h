@@ -292,7 +292,7 @@ private:
     void normalizeSlot(int slot, const juce::String& name);
     // The first step has ended, however it ended (#142); `stoppedAtGate`:
     // the worker refused it before it read a byte, so no answer is coming.
-    void endNormalizeStep(int slot, bool stoppedAtGate);
+    void endNormalizeStep(int slot, const juce::String& description, const JobOutcome& outcome);
     void refuseNormalize(int slot, const juce::String& why);
     // `measuredHash`: the single-slot path's — the bytes its first step
     // measured, the only ones the job may write over (#142). Absent for the

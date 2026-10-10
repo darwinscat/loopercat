@@ -2452,27 +2452,34 @@ void MainComponent::normalizeSlot(int slot, const juce::String& name)
         nullptr,
         0,
         true, // background: read-only, never a reason to lock the UI
-        true  // quiet: what it found is said by offerNormalize, a refusal by the banner
+        true  // quiet: what it found is said by offerNormalize, a refusal by endNormalizeStep
     };
     // However the step ends — offered, refused, or stopped at the worker's
     // gate before it read a byte — `after` runs, and posts after the step's
     // own answer: the slot is free for the next request from then on.
-    step.after = [safe, slot](const JobOutcome& outcome) {
-        juce::MessageManager::callAsync([safe, slot, stopped = !outcome.ok()] {
+    step.after = [safe, slot, description = step.description](const JobOutcome& outcome) {
+        juce::MessageManager::callAsync([safe, slot, description, outcome] {
             if (safe != nullptr)
-                safe->endNormalizeStep(slot, stopped);
+                safe->endNormalizeStep(slot, description, outcome);
         });
     };
     worker.enqueue(std::move(step));
 }
 
-void MainComponent::endNormalizeStep(int slot, bool stoppedAtGate)
+void MainComponent::endNormalizeStep(int slot, const juce::String& description, const JobOutcome& outcome)
 {
     normalizeSteps.end(slot);
-    if (stoppedAtGate) {
-        // The gate's own banner already says why; the "…" must not stay.
-        table.clearPendingLoudness(slot);
-        player.clearLoudness(slot);
+    if (outcome.ok())
+        return;
+    // Stopped before an answer: the "…" must not stay.
+    table.clearPendingLoudness(slot);
+    player.clearLoudness(slot);
+    // A quiet job's refusal at the worker's gate is not told by the worker
+    // (JobOutcome::told); the player asked for this one, so it is said here,
+    // in the words every refused job uses (JobWords.h).
+    if (outcome.didNotRun()) {
+        banners.showError(banners::Source::job, utf8(jobwords::banner(description.toStdString(), outcome)));
+        trace(utf8(jobwords::refusalLog(description.toStdString(), outcome)));
     }
 }
 

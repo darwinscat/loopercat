@@ -28,14 +28,24 @@ namespace loopercat::targetlufs
 
 inline constexpr double kMinLufs = -30.0, kMaxLufs = -8.0;
 
-// The typed text as a target, or nothing when it is not one. Unparsable text
-// reads as 0.0, which sits outside the window like every other non-target.
-// JUCE also reads "nan" and "inf": the window is asked in the positive, since
-// NaN fails every comparison and "outside" spelled as two of them let it
-// through into Settings (review of #142, P1).
+// The typed text as a target, or nothing when it is not one. The whole text
+// must be the number — an optional leading minus, digits, at most one point —
+// because JUCE reads a number off the front of anything: "-18,5" (a European
+// -18.5) would become -18, and "-18 LUFS" would pass for -18 (integration
+// review of 0.9.6). JUCE also reads "nan" and "inf"; neither passes the shape,
+// and the window is asked in the positive besides, since NaN fails every
+// comparison and "outside" spelled as two of them let it through into
+// Settings (review of #142, P1).
 inline std::optional<double> parse(const juce::String& text)
 {
-    const double value = text.trim().getDoubleValue();
+    const juce::String t = text.trim();
+    const int body = t.startsWithChar('-') ? 1 : 0;
+    const juce::String digits = t.substring(body);
+    if (digits.isEmpty() || !digits.containsOnly("0123456789.")
+        || digits.indexOfChar('.') != digits.lastIndexOfChar('.')
+        || !digits.containsAnyOf("0123456789"))
+        return std::nullopt;
+    const double value = t.getDoubleValue();
     if (!(value >= kMinLufs && value <= kMaxLufs))
         return std::nullopt;
     return value;
@@ -52,8 +62,10 @@ inline juce::String format(double lufs)
 // meanwhile, when the stored text is not a target.
 inline juce::String unusableStored(const juce::String& stored)
 {
-    return "The normalize target in Settings is not a number LooperCat can use (" + stored
-         + juce::String::fromUTF8("): set it again in Settings \xe2\x86\x92 Import");
+    const juce::String where = juce::String::fromUTF8("set it again in Settings \xe2\x86\x92 Import");
+    if (stored.trim().isEmpty())
+        return "The normalize target in Settings is empty: " + where;
+    return "The normalize target in Settings is not a number LooperCat can use (" + stored + "): " + where;
 }
 
 } // namespace loopercat::targetlufs

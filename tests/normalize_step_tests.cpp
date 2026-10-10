@@ -199,6 +199,14 @@ int main()
         CHECK(std::isnan(juce::String("nan").getDoubleValue())); // the premise
         for (const char* text : { "nan", "NaN", "-nan", "inf", "-inf", "Inf", "1e999", "-1e999" })
             CHECK(!parsed(text).has_value());
+        // The whole text is the number, or there is no target: JUCE reads a
+        // number off the front of anything, and a hand-edited "-18,5" meant
+        // -18.5, not -18 (integration review of 0.9.6).
+        for (const char* text : { "-18,5", "-18 LUFS", "-18abc", "--18", "- 18", "-", ".", "-.",
+                                  "-18.5.0", "-1e1", "-0x12", "\xe2\x88\x92" "18" /* U+2212 minus */ })
+            CHECK(!parsed(text).has_value());
+        CHECK(parsed("-18.").has_value() && closeTo(*parsed("-18."), -18.0, 1.0e-12)); // a point with nothing after
+        CHECK(parsed("-9.75").has_value() && closeTo(*parsed("-9.75"), -9.75, 1.0e-12));
     }
 
     // --- 2. the first step: a plan of the take's bytes, and no operation ---
@@ -339,6 +347,11 @@ int main()
         CHECK_EQ(targetlufs::unusableStored("inf"),
                  juce::String::fromUTF8("The normalize target in Settings is not a number LooperCat "
                                         "can use (inf): set it again in Settings \xe2\x86\x92 Import"));
+        // an empty stored value is said as empty, not as "()"
+        CHECK_EQ(targetlufs::unusableStored(""),
+                 juce::String::fromUTF8("The normalize target in Settings is empty: "
+                                        "set it again in Settings \xe2\x86\x92 Import"));
+        CHECK_EQ(targetlufs::unusableStored("  "), targetlufs::unusableStored(""));
 
         const wav::LoudnessReading quiet { -22.8, 0.1f, -20.0, 0 };
         const wav::LoudnessReading peaky { -25.0, 0.89f, -1.0, 0 }; // nothing to gain against -18

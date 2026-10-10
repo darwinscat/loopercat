@@ -151,6 +151,15 @@ int main()
         CHECK(!readTarget("-7.9").has_value());
         CHECK(nearly(readTarget("-30"), -30.0)); // both ends of the window are targets
         CHECK(nearly(readTarget("-8"), -8.0));
+        // Review of PR #160: text with a number in front of something that is
+        // not a number is not a target either, by the same contract ("stored
+        // text that is not a target reads as none"): a European decimal
+        // comma, a unit, a typo. Only a hand-edited file can hold these — the
+        // field refuses the characters — and a hand-edited "-18,5" meaning
+        // -18.5 must not quietly become -18.
+        CHECK(!readTarget("-18,5").has_value());
+        CHECK(!readTarget("-18 LUFS").has_value());
+        CHECK(!readTarget("-18abc").has_value());
         CHECK(nearly(readTarget(" -14 "), -14.0));
 
         // writing with no target leaves the stored text exactly as it was,
