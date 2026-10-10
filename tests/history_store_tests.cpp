@@ -16,15 +16,24 @@
 //     that could never return space, another program's database
 //   - an operation remembers the slot it was about even when it changed
 //     nothing there (#144): a row for the slot, never a state of it
+//   - a loudness reading is a fact about bytes (#140): filed under their
+//     hash and nothing else, every field back as it went in, replaced by a
+//     newer reading of the same bytes, untouched by whatever happens to the
+//     slot or the kept copy; a key that is not a hash is refused
+//   - every take row names the file's modification time (#141 reads it)
 
 #include "support.hpp"
 
 #include "../app/history/HistoryStore.h"
 #include "../app/history/Schema.h"
 
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
+#include <optional>
 #include <string>
 
 using namespace loopercat;
@@ -225,14 +234,40 @@ int main()
         Ready r(tmp.path);
         const std::string landed = take(30000, 11);
         const auto op = r.store.beginOp(r.session, "op-push", "push", 2000);
-        r.store.recordLanded(op, 9, 1, "new.wav", landed);
-        sqlite::Statement read(r.store.db(), "SELECT side, size, hash FROM slot_audio WHERE op = ?1");
+        r.store.recordLanded(op, 9, 1, "new.wav", landed, 2345);
+        sqlite::Statement read(r.store.db(), "SELECT side, size, hash, modified FROM slot_audio WHERE op = ?1");
         read.bind(1, op);
         CHECK(read.step());
         CHECK_EQ(read.text(0), std::string("after"));
         CHECK_EQ(read.integer(1), 30000);
         CHECK(read.blob(2) == HistoryStore::contentHash(landed));
+        CHECK_EQ(read.integer(3), 2345); // the file's stamp, as the recorder read it off the card
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM blobs"), 0);
+    }
+
+    // --- every take row names the file's modification time (#141) ---
+    //
+    // Theory: whatever way a take comes to be what a slot holds — landed by a
+    // write, found in place after one, photographed by the first sighting —
+    // its row carries the stamp the card's directory entry showed, exactly,
+    // in milliseconds since the epoch like every other time here. No such row
+    // written by this store is without one: NULL belongs to rows older than
+    // the column, and to archived takes, which are leaving their slot.
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string bytes = take(3000, 144);
+        const auto op = r.store.beginOp(r.session, "op-stamped", "push", 2000);
+        r.store.recordLanded(op, 11, 1, "011_1.WAV", bytes, 1'700'000'000'123);
+        r.store.recordPresentAudio(op, 12, 1, "012_1.WAV", 3000, std::nullopt, 1'700'000'000'456);
+        r.store.finishOp(op, OpStatus::done, "");
+        const auto snapshot = r.store.firstSeen(r.session, "snap", 2100);
+        r.store.snapshotSlot(snapshot, 13, "body", { { 1, "013_1.WAV", bytes, 1'700'000'000'789 } }, 2100);
+        sqlite::Db& db = r.store.db();
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio WHERE slot = 11"), 1'700'000'000'123);
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio WHERE slot = 12"), 1'700'000'000'456);
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio WHERE slot = 13"), 1'700'000'000'789);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after' AND modified IS NULL"), 0);
     }
 
     // --- the lifecycle cannot lie ---
@@ -366,7 +401,7 @@ int main()
         r.store.keepAudio(live, 5, 1, "005_1.WAV", old, 9000);
         r.store.recordPresentAudio(live, 5, 1, "005_1.WAV",
                                    static_cast<std::int64_t>(fresh.size()),
-                                   HistoryStore::contentHash(fresh));
+                                   HistoryStore::contentHash(fresh), 9000);
         r.store.finishOp(live, OpStatus::done, "trimmed");
 
         // A later operation after the system clock moved backwards.
@@ -440,7 +475,7 @@ int main()
         const std::string bytes = take(8000, 71);
         const auto push = r.store.beginOp(r.session, "op-push", "push", 2000);
         r.store.recordBodies(push, { { 7, "empty", "loaded" } });
-        r.store.recordLanded(push, 7, 1, "007_1.WAV", bytes);
+        r.store.recordLanded(push, 7, 1, "007_1.WAV", bytes, 2000);
         r.store.finishOp(push, OpStatus::done, "");
         const std::string why = "already at -18.0 LUFS (measured -18.1), nothing to do";
         const auto nothing = r.store.beginOp(r.session, "op-nothing", "normalize", 3000);
@@ -540,6 +575,198 @@ int main()
         CHECK(r.store.subjects(running) == std::vector<int> { 7 });
         CHECK_EQ(r.store.slotTimeline(7).size(), 1u);
         CHECK(r.store.slotTimeline(7).size() == 1u && r.store.slotTimeline(7).front().status == "failed");
+    }
+
+    // --- a loudness reading is a fact about bytes (#140) ---
+    //
+    // Theory: a reading is of bytes and of nothing else. It is filed under
+    // their hash whether or not any row names them, every field comes back as
+    // it went in — an unmeasurable loudness as absent, never as a number; a
+    // peak of -inf as -inf — a second reading of the same bytes replaces the
+    // first, and a key that is not a hash is refused rather than filed under.
+    {
+        TempDir tmp;
+        HistoryStore store(tmp.path);
+        const std::string bytes = take(5000, 140);
+        const std::string hash = HistoryStore::contentHash(bytes);
+        CHECK(!store.readingFor(hash).has_value()); // never measured: absent, not zeros
+
+        // no slot_audio row, no blobs_meta row knows these bytes: filed regardless
+        const wav::LoudnessReading loud { -22.75, 0.73f, -2.5, 0 };
+        store.recordReading(hash, loud, 5000);
+        const auto back = store.readingFor(hash);
+        CHECK(back.has_value());
+        if (back) {
+            CHECK(back->reading.integratedLufs.has_value());
+            CHECK(back->reading.integratedLufs.has_value()
+                  && std::bit_cast<std::uint64_t>(*back->reading.integratedLufs)
+                         == std::bit_cast<std::uint64_t>(-22.75));
+            CHECK_EQ(std::bit_cast<std::uint32_t>(back->reading.samplePeak),
+                     std::bit_cast<std::uint32_t>(0.73f));
+            CHECK_EQ(std::bit_cast<std::uint64_t>(back->reading.truePeakDb),
+                     std::bit_cast<std::uint64_t>(-2.5));
+            CHECK_EQ(back->reading.wildSamples, 0);
+            CHECK_EQ(back->measuredMs, 5000);
+        }
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM blobs_meta"), 0);
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM slot_audio"), 0);
+
+        // the same bytes measured again: one row, the newer numbers, the newer date
+        store.recordReading(hash, { -22.7, 0.75f, -2.4, 0 }, 6000);
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM loudness_readings"), 1);
+        const auto newer = store.readingFor(hash);
+        CHECK(newer.has_value() && newer->measuredMs == 6000);
+        CHECK(newer.has_value() && newer->reading.integratedLufs.has_value()
+              && std::abs(*newer->reading.integratedLufs - (-22.7)) <= 1.0e-12);
+        CHECK_EQ(std::bit_cast<std::uint32_t>(newer ? newer->reading.samplePeak : 0.0f),
+                 std::bit_cast<std::uint32_t>(0.75f));
+
+        // digital silence: no loudness and a peak of -inf come back exactly so
+        const std::string quiet = HistoryStore::contentHash(take(5000, 141));
+        store.recordReading(quiet, { std::nullopt, 0.0f, -std::numeric_limits<double>::infinity(), 0 }, 7000);
+        const auto silence = store.readingFor(quiet);
+        CHECK(silence.has_value());
+        CHECK(silence.has_value() && !silence->reading.integratedLufs.has_value());
+        CHECK(silence.has_value() && std::isinf(silence->reading.truePeakDb) && silence->reading.truePeakDb < 0.0);
+        CHECK_EQ(std::bit_cast<std::uint32_t>(silence ? silence->reading.samplePeak : 1.0f),
+                 std::bit_cast<std::uint32_t>(0.0f));
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM loudness_readings WHERE integrated_lufs = 0"), 0);
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM loudness_readings WHERE integrated_lufs IS NULL"), 1);
+
+        // damaged bytes: the count is the fact, the numbers beside it are kept as read
+        const std::string junk = HistoryStore::contentHash(take(5000, 142));
+        store.recordReading(junk, { 767.0, 2.4e38f, 400.0, 1234 }, 8000);
+        const auto damaged = store.readingFor(junk);
+        CHECK(damaged.has_value() && damaged->reading.wildSamples == 1234);
+        CHECK_EQ(std::bit_cast<std::uint32_t>(damaged ? damaged->reading.samplePeak : 0.0f),
+                 std::bit_cast<std::uint32_t>(2.4e38f));
+
+        // a key that is not a hash is refused, on the way in and on the way out
+        CHECK_THROWS(store.recordReading(hash.substr(0, 31), loud, 9000), "32 bytes");
+        CHECK_THROWS(store.recordReading(hash + "x", loud, 9000), "32 bytes");
+        CHECK_THROWS(store.recordReading("", loud, 9000), "32 bytes");
+        CHECK_THROWS(store.readingFor(hash.substr(0, 31)), "32 bytes");
+        CHECK_THROWS(store.readingFor(""), "32 bytes");
+        // a value that is not a number cannot pass for "unmeasurable", and a
+        // count cannot be negative: refused, with nothing filed
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("nan-lufs"), { nan, 0.5f, -3.0, 0 }, 1),
+                     "not a number");
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("nan-peak"),
+                                         { -20.0, std::numeric_limits<float>::quiet_NaN(), -3.0, 0 }, 1),
+                     "not a number");
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("nan-tp"), { -20.0, 0.5f, nan, 0 }, 1),
+                     "not a number");
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("negative"), { -20.0, 0.5f, -3.0, -1 }, 1),
+                     "negative");
+        // a sample peak is a magnitude: below zero it is not a peak
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("neg-peak"), { -20.0, -0.5f, -3.0, 0 }, 1),
+                     "negative");
+        CHECK_THROWS(store.recordReading(HistoryStore::contentHash("neg-peak"), { -20.0, -1.0e-30f, -3.0, 0 }, 1),
+                     "negative");
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM loudness_readings"), 3);
+        // the table refuses on its own what the method refuses
+        CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'00', NULL, 0.0, 0.0, 0, 1)"), "CHECK");
+        CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'" + std::string(64, '0')
+                                     + "', NULL, -0.5, 0.0, 0, 1)"),
+                     "CHECK");
+        CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'" + std::string(64, '0')
+                                     + "', NULL, 0.0, 0.0, -1, 1)"),
+                     "CHECK");
+        CHECK_THROWS(store.db().exec("INSERT INTO loudness_readings VALUES (x'" + std::string(64, '0')
+                                     + "', NULL, NULL, 0.0, 0, 1)"),
+                     "NOT NULL");
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM loudness_readings"), 3);
+    }
+    {
+        // A reading outlives everything that can happen to the slot and to
+        // the bytes: the take's bytes released, the slot's history forgotten,
+        // the store reopened. A fact about bytes is not about a slot, and it
+        // costs nothing to keep.
+        TempDir tmp;
+        const std::string bytes = take(20000, 143);
+        const std::string hash = HistoryStore::contentHash(bytes);
+        {
+            Ready r(tmp.path);
+            const auto cleared = r.store.beginOp(r.session, "op-cleared", "clear", 2000);
+            r.store.keepAudio(cleared, 8, 1, "008_1.WAV", bytes, 2000);
+            r.store.finishOp(cleared, OpStatus::done, "");
+            r.store.recordReading(hash, { -19.5, 0.9f, -1.2, 0 }, 2500);
+            // a later operation elsewhere, so the clear is no longer what Undo would put back
+            const auto renamed = r.store.beginOp(r.session, "op-renamed", "rename", 3000);
+            r.store.recordBodies(renamed, { { 9, "before", "after" } });
+            r.store.finishOp(renamed, OpStatus::done, "");
+            // the bytes go: the reading stays
+            CHECK(r.store.releaseBlobs({ hash }, r.store.offeredTargets(), 3500) > 0);
+            CHECK(!r.store.takeBytes(hash).has_value());
+            CHECK(r.store.readingFor(hash).has_value());
+            // the slot's history goes: the reading stays
+            r.store.forgetSlot(*r.store.selectedCard(), 8, 4000, true);
+            CHECK(r.store.slotTimeline(8).empty());
+            CHECK(r.store.readingFor(hash).has_value());
+        }
+        HistoryStore reopened(tmp.path);
+        const auto kept = reopened.readingFor(hash);
+        CHECK(kept.has_value());
+        CHECK(kept.has_value() && kept->measuredMs == 2500);
+        CHECK(kept.has_value() && kept->reading.integratedLufs.has_value()
+              && std::abs(*kept->reading.integratedLufs - (-19.5)) <= 1.0e-12);
+    }
+
+    // --- a hash is carried to a new row only for the very file an earlier row saw (#141) ---
+    //
+    // Theory: the slot's newest row for a file name is the slot's last word
+    // about that file. It vouches for the file in front of the recorder only
+    // when it carries a hash and its size and stamp are the file's now. A
+    // newer row without a hash means the file changed while the app was away,
+    // and no older row may speak over it. A row from before the store kept
+    // stamps is held to the rule it was written under, name and size — the
+    // one allowance, so a migrated history's slots stay restorable.
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string a = take(3000, 151);
+        const std::string hashA = HistoryStore::contentHash(a);
+        const auto push = r.store.beginOp(r.session, "op-push", "push", 2000);
+        r.store.recordLanded(push, 5, 1, "005_1.WAV", a, 1000);
+        r.store.recordLanded(push, 7, 1, "007_1.WAV", take(3000, 152), 1000);
+        r.store.finishOp(push, OpStatus::done, "");
+        const auto next = r.store.beginOp(r.session, "op-next", "rename", 3000);
+        // the same file: name, size and stamp as the row saw them
+        CHECK(r.store.hashHeldBefore(next, 5, "005_1.WAV", 3000, 1000) == hashA);
+        // another file under the same name: a different stamp, or a different size
+        CHECK(!r.store.hashHeldBefore(next, 5, "005_1.WAV", 3000, 2000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 5, "005_1.WAV", 3001, 1000).has_value());
+        // another slot, another name: nothing to carry
+        CHECK(!r.store.hashHeldBefore(next, 6, "005_1.WAV", 3000, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 5, "006_1.WAV", 3000, 1000).has_value());
+        // only rows before the operation asking
+        CHECK(!r.store.hashHeldBefore(push, 5, "005_1.WAV", 3000, 1000).has_value());
+        // the newest row has no hash: the last word, and an older match is not consulted
+        r.store.recordPresentAudio(next, 5, 1, "005_1.WAV", 3000, std::nullopt, 2000);
+        r.store.finishOp(next, OpStatus::done, "");
+        const auto later = r.store.beginOp(r.session, "op-later", "rename", 4000);
+        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 2000).has_value());
+        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 1000).has_value()); // not even for the old stamp
+        // a row from before the store kept stamps is asked only what it knows:
+        // name and size carry its hash, whatever stamp the file has now; a
+        // different size is still another file
+        sqlite::Statement unstamp(r.store.db(), "UPDATE slot_audio SET modified = NULL WHERE slot = 7");
+        unstamp.run();
+        CHECK(r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 1000) == HistoryStore::contentHash(take(3000, 152)));
+        CHECK(r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 987654321) == HistoryStore::contentHash(take(3000, 152)));
+        CHECK(!r.store.hashHeldBefore(later, 7, "007_1.WAV", 2999, 1000).has_value());
+        // and a stamped row stays held to its stamp: the allowance is for old rows only
+        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 1000).has_value());
+        // another card's rows are another card's
+        r.store.finishOp(later, OpStatus::done, "");
+        const auto other = r.store.openSession(r.store.card("other", "RC-5", "Other", 5000), 5000);
+        const auto elsewhere = r.store.beginOp(other, "op-elsewhere", "rename", 6000);
+        r.store.recordLanded(elsewhere, 9, 1, "009_1.WAV", a, 1000);
+        r.store.finishOp(elsewhere, OpStatus::done, "");
+        r.store.selectCard(1);
+        const auto back = r.store.beginOp(r.session, "op-back", "rename", 7000);
+        CHECK(!r.store.hashHeldBefore(back, 9, "009_1.WAV", 3000, 1000).has_value());
     }
 
     return testkit::summary("history_store_tests");

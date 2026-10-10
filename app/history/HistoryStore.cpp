@@ -3,14 +3,14 @@
 
 #include "HistoryStore.h"
 
+#include "ContentHash.h"
 #include "Schema.h"
 #include "Undo.h"
 
 #include <loopercat/SystemFile.hpp>
 
-#include <juce_cryptography/juce_cryptography.h>
-
 #include <algorithm>
+#include <cmath>
 #include <map>
 
 namespace loopercat::history
@@ -100,9 +100,7 @@ HistoryStore::HistoryStore(const std::filesystem::path& dir)
 
 std::string HistoryStore::contentHash(std::string_view bytes)
 {
-    const juce::SHA256 sha(bytes.data(), bytes.size());
-    const juce::MemoryBlock raw = sha.getRawData();
-    return std::string(static_cast<const char*>(raw.getData()), raw.getSize());
+    return history::contentHash(bytes);
 }
 
 std::int64_t HistoryStore::card(const std::string& markerId, const std::string& model,
@@ -162,7 +160,7 @@ void HistoryStore::snapshotSlot(std::int64_t op, int slot, const std::string& bo
         const auto hash = contentHash(take.bytes);
         keepBlob(hash, take.bytes, nowMs);
         recordPresentAudio(op, slot, take.track, take.name,
-                           static_cast<std::int64_t>(take.bytes.size()), hash);
+                           static_cast<std::int64_t>(take.bytes.size()), hash, take.modifiedMs);
     }
     tx.commit();
 }
@@ -250,13 +248,13 @@ void HistoryStore::recordBodies(std::int64_t op, const std::vector<commands::Slo
 }
 
 void HistoryStore::recordLanded(std::int64_t op, int slot, int track, const std::string& name,
-                                std::string_view bytes)
+                                std::string_view bytes, std::int64_t modifiedMs)
 {
-    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
-                               "VALUES (?1, ?2, 'after', ?3, ?4, ?5, ?6)");
+    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash, modified) "
+                               "VALUES (?1, ?2, 'after', ?3, ?4, ?5, ?6, ?7)");
     const std::string hash = contentHash(bytes);
     row.bind(1, op).bind(2, slot).bind(3, track).bindText(4, name)
-        .bind(5, static_cast<std::int64_t>(bytes.size())).bindBlob(6, hash).run();
+        .bind(5, static_cast<std::int64_t>(bytes.size())).bindBlob(6, hash).bind(7, modifiedMs).run();
 }
 
 void HistoryStore::finishOp(std::int64_t op, OpStatus status, const std::string& note)
@@ -277,16 +275,75 @@ void HistoryStore::finishOp(std::int64_t op, OpStatus status, const std::string&
 
 void HistoryStore::recordPresentAudio(std::int64_t op, int slot, int track,
                                       const std::string& name, std::int64_t size,
-                                      const std::optional<std::string>& hash)
+                                      const std::optional<std::string>& hash,
+                                      std::int64_t modifiedMs)
 {
-    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash) "
-                               "VALUES (?1, ?2, 'after', ?3, ?4, ?5, ?6)");
+    sqlite::Statement row(db_, "INSERT INTO slot_audio(op, slot, side, track, name, size, hash, modified) "
+                               "VALUES (?1, ?2, 'after', ?3, ?4, ?5, ?6, ?7)");
     row.bind(1, op).bind(2, slot).bind(3, track).bindText(4, name).bind(5, size);
     if (hash)
         row.bindBlob(6, *hash);
     else
         row.bindNull(6);
+    row.bind(7, modifiedMs);
     row.run();
+}
+
+void HistoryStore::recordReading(const std::string& hash, const wav::LoudnessReading& reading,
+                                 std::int64_t nowMs)
+{
+    if (hash.size() != 32)
+        throw Error("a content hash is 32 bytes, not " + std::to_string(hash.size()));
+    if (reading.wildSamples < 0)
+        throw Error("a count of impossible samples cannot be negative, got "
+                    + std::to_string(reading.wildSamples));
+    // A NaN would go in as NULL and come back out as "unmeasurable": refused
+    // here, where it still has a name. -Inf (digital silence) is a value.
+    if (std::isnan(reading.samplePeak) || std::isnan(reading.truePeakDb)
+        || (reading.integratedLufs.has_value() && std::isnan(*reading.integratedLufs)))
+        throw Error("a loudness reading with a value that is not a number is not a reading");
+    // The sample peak is the largest |sample|: a magnitude, never below zero.
+    if (reading.samplePeak < 0.0f)
+        throw Error("a sample peak is a magnitude and cannot be negative, got "
+                    + std::to_string(reading.samplePeak));
+    sqlite::Statement put(db_, "INSERT INTO loudness_readings"
+                               "(hash, integrated_lufs, sample_peak, true_peak_dbtp, wild_samples, measured) "
+                               "VALUES (?1, ?2, ?3, ?4, ?5, ?6) "
+                               "ON CONFLICT(hash) DO UPDATE SET "
+                               "integrated_lufs = excluded.integrated_lufs, "
+                               "sample_peak = excluded.sample_peak, "
+                               "true_peak_dbtp = excluded.true_peak_dbtp, "
+                               "wild_samples = excluded.wild_samples, "
+                               "measured = excluded.measured");
+    put.bindBlob(1, hash);
+    if (reading.integratedLufs.has_value())
+        put.bindReal(2, *reading.integratedLufs);
+    else
+        put.bindNull(2);
+    put.bindReal(3, static_cast<double>(reading.samplePeak))
+        .bindReal(4, reading.truePeakDb)
+        .bind(5, reading.wildSamples)
+        .bind(6, nowMs)
+        .run();
+}
+
+std::optional<HistoryStore::StoredReading> HistoryStore::readingFor(const std::string& hash)
+{
+    if (hash.size() != 32)
+        throw Error("a content hash is 32 bytes, not " + std::to_string(hash.size()));
+    sqlite::Statement read(db_, "SELECT integrated_lufs, sample_peak, true_peak_dbtp, wild_samples, measured "
+                                "FROM loudness_readings WHERE hash = ?1");
+    read.bindBlob(1, hash);
+    if (!read.step())
+        return std::nullopt;
+    StoredReading stored;
+    if (!read.isNull(0))
+        stored.reading.integratedLufs = read.real(0);
+    stored.reading.samplePeak = static_cast<float>(read.real(1));
+    stored.reading.truePeakDb = read.real(2);
+    stored.reading.wildSamples = read.integer(3);
+    stored.measuredMs = read.integer(4);
+    return stored;
 }
 
 void HistoryStore::recordSubject(std::int64_t op, int slot)
@@ -345,17 +402,35 @@ bool HistoryStore::hasAfterAudio(std::int64_t op, int slot)
 }
 
 std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot,
-                                                        const std::string& name, std::int64_t size)
+                                                        const std::string& name, std::int64_t size,
+                                                        std::int64_t modifiedMs)
 {
-    sqlite::Statement read(db_, "SELECT hash FROM slot_audio WHERE slot = ?2 AND side = 'after' "
-                                "AND name = ?3 AND size = ?4 AND op < ?1 AND hash IS NOT NULL "
+    // The newest row for this file name, whatever it says: a row with no
+    // hash is the slot's last word about the file, and an older row with
+    // one is about an earlier file of the same name.
+    sqlite::Statement read(db_, "SELECT hash, size, modified FROM slot_audio "
+                                "WHERE slot = ?2 AND side = 'after' AND name = ?3 AND op < ?1 "
                                 "AND op IN (SELECT o.seq FROM ops o JOIN sessions s ON s.id = o.session "
                                 "WHERE s.card = (SELECT s2.card FROM ops o2 JOIN sessions s2 "
                                 "ON s2.id = o2.session WHERE o2.seq = ?1)) "
                                 "ORDER BY op DESC LIMIT 1");
-    read.bind(1, op).bind(2, slot).bindText(3, name).bind(4, size);
+    read.bind(1, op).bind(2, slot).bindText(3, name);
     if (!read.step())
         return std::nullopt;
+    if (read.isNull(0))
+        return std::nullopt; // no hash: the file changed while the app was away
+    if (read.integer(1) != size)
+        return std::nullopt; // the same name on a file of another size
+    // A row from before the store kept stamps (version 8 and older) can be
+    // asked only what it knows, name and size — the rule those rows were
+    // written under. Without it every slot of a migrated history would stand
+    // hash-less until audio landed in it, and nothing recorded there could be
+    // restored from the History window. The staleness this allows stays
+    // confined to those rows: a stamped row is held to its stamp.
+    if (read.isNull(2))
+        return read.blob(0);
+    if (read.integer(2) != modifiedMs)
+        return std::nullopt; // the same name and size on another file
     return read.blob(0);
 }
 

@@ -16,19 +16,32 @@
 //   - an op cut off mid-way reads as interrupted, and its take is still kept
 //   - an op names the slot it is about once it has begun, and keeps it when
 //     it then writes nothing (#144); maintenance is about no slot
+//   - every take row carries the stamp the card's directory entry showed
+//     (#141), and what normalize measured is in the history under the bytes
+//     it measured — written or not (#140); a reading has nowhere to go while
+//     no card is in front of the history
+//   - a loudness check files what it read under the hash of the file read,
+//     and still answers when the history will not take it
 
 #include "support.hpp"
 
+#include "../app/history/SlotLoudness.h"
 #include "../app/history/WriteOptionsFactory.h"
 #include "../app/OperationsLog.h"
 
 #include <loopercat/Commands.hpp>
 
+#include <bit>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <numbers>
 #include <string>
+#include <tuple>
+#include <vector>
 
 using namespace loopercat;
 using history::HistoryRecorder;
@@ -68,6 +81,50 @@ void putWav(const fs::path& volume, int slot, const std::string& name, int frame
     commands::writeFileBytes(volume::wavDir(volume, slot) / name,
                              std::string_view(reinterpret_cast<const char*>(bytes.data()),
                                               bytes.size()));
+}
+
+// A float32 stereo take of a 997 Hz sine at `dbfs` peak in both channels —
+// the tone BS.1770 calibrates on, so a -28 dBFS take reads -28 LUFS — which
+// is what a measurement has to read off before anything can be said about it.
+void putSineWav(const fs::path& volume, int slot, const std::string& name, int frames, double dbfs)
+{
+    std::vector<unsigned char> b;
+    const auto ascii = [&b](std::string_view t) {
+        for (const char c : t)
+            b.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](int v) { p16(v & 0xffff); p16((v >> 16) & 0xffff); };
+    const auto sample = [&b](float value) {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        for (int shift = 0; shift < 32; shift += 8)
+            b.push_back(static_cast<unsigned char>((bits >> shift) & 0xffu));
+    };
+    const int dataSize = frames * 8;
+    ascii("RIFF"); p32(12 + 24 + 8 + dataSize - 8); ascii("WAVE");
+    ascii("fmt "); p32(16);
+    p16(3); p16(2); p32(wav::kSampleRate); p32(wav::kSampleRate * 8); p16(8); p16(32);
+    ascii("data"); p32(dataSize);
+    const double amp = std::pow(10.0, dbfs / 20.0);
+    const double w = 2.0 * std::numbers::pi * 997.0 / wav::kSampleRate;
+    for (int frame = 0; frame < frames; ++frame) {
+        const auto v = static_cast<float>(amp * std::sin(w * frame));
+        sample(v);
+        sample(v);
+    }
+    fs::create_directories(volume::wavDir(volume, slot));
+    commands::writeFileBytes(volume::wavDir(volume, slot) / name,
+                             std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+}
+
+// A file's modification time as the OS reports it, ms since the epoch — the
+// oracle the rows are compared against.
+std::int64_t fileStamp(const fs::path& file)
+{
+    return juce::File(juce::String(file.string())).getLastModificationTime().toMilliseconds();
 }
 
 std::map<std::string, std::string> volumeBytes(const fs::path& volume)
@@ -490,6 +547,165 @@ int main()
     }
 
     {
+        // A take re-recorded in place under the same name and size is another
+        // file (#141, review). Take A is renamed, so its row carries A's hash
+        // with A's stamp; the pedal then records B over it — same name, same
+        // size, a later stamp — and the next rename must not pair B's stamp
+        // with A's hash. And once a row without a hash stands for the file,
+        // no older row with one may speak over it: the stamp is the tell.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV", 132300);
+        const fs::path file = volume::wavDir(volume, 3) / "003_1.WAV";
+        const std::string a = commands::readFileBytes(file);
+        const std::int64_t stampA = 1'600'000'000'000;
+        CHECK(juce::File(juce::String(file.string())).setLastModificationTime(juce::Time(stampA)));
+        auto rec = recorderAt(tmp.path / "history");
+        sqlite::Db& db = rec->store().db();
+        const auto rowOf = [&db](const std::string& opId) {
+            sqlite::Statement row(db, "SELECT hex(a.hash), a.modified, hash IS NULL FROM slot_audio a "
+                                      "JOIN ops o ON o.seq = a.op WHERE o.id = ?1 AND a.slot = 3 AND a.side = 'after'");
+            row.bindText(1, opId);
+            if (!row.step())
+                throw Error("no after-row for " + opId);
+            return std::tuple<std::string, std::int64_t, bool>(row.text(0), row.integer(1), row.integer(2) != 0);
+        };
+        const auto hex = [](const std::string& raw) {
+            static constexpr char digits[] = "0123456789ABCDEF";
+            std::string out;
+            for (const char c : raw) {
+                const auto b = static_cast<unsigned char>(c);
+                out += digits[b >> 4];
+                out += digits[b & 0xF];
+            }
+            return out;
+        };
+
+        CHECK_EQ(run(*rec, "op-r1", "rename", volume, [&] {
+                     commands::rename(volume, 3, "First", options(rec, "op-r1"));
+                 }),
+                 std::string());
+        const auto [hash1, stamp1, null1] = rowOf("op-r1");
+        CHECK(!null1);
+        CHECK_EQ(hash1, hex(HistoryStore::contentHash(a))); // A, photographed and carried
+        CHECK_EQ(stamp1, stampA);
+
+        // the pedal records B over A: same name, same size, other bytes, later stamp
+        std::string b = a;
+        b.back() = static_cast<char>(b.back() ^ 0x5a);
+        CHECK(b != a && b.size() == a.size());
+        commands::writeFileBytes(file, b);
+        const std::int64_t stampB = stampA + 10'000;
+        CHECK(juce::File(juce::String(file.string())).setLastModificationTime(juce::Time(stampB)));
+
+        CHECK_EQ(run(*rec, "op-r2", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Second", options(rec, "op-r2"));
+                 }),
+                 std::string());
+        const auto [hash2, stamp2, null2] = rowOf("op-r2");
+        CHECK(null2); // B is a stranger: no hash, and never A's
+        CHECK_EQ(stamp2, stampB);
+
+        // a third rename: the newest row for the file has no hash and is the
+        // last word — A's row two operations back may not speak over it
+        CHECK_EQ(run(*rec, "op-r3", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Third", options(rec, "op-r3"));
+                 }),
+                 std::string());
+        const auto [hash3, stamp3, null3] = rowOf("op-r3");
+        CHECK(null3);
+        CHECK_EQ(stamp3, stampB);
+
+        // once the app itself lands a take there, the hash travels again — for that file
+        CHECK_EQ(run(*rec, "op-trim", "trim", volume, [&] {
+                     commands::trim(volume, 3, 0, 66150, { .write = options(rec, "op-trim") });
+                 }),
+                 std::string());
+        const auto [hashC, stampC, nullC] = rowOf("op-trim");
+        CHECK(!nullC);
+        CHECK_EQ(hashC, hex(HistoryStore::contentHash(commands::readFileBytes(file))));
+        CHECK_EQ(run(*rec, "op-r4", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Fourth", options(rec, "op-r4"));
+                 }),
+                 std::string());
+        const auto [hash4, stamp4, null4] = rowOf("op-r4");
+        CHECK(!null4);
+        CHECK_EQ(hash4, hashC);
+        CHECK_EQ(stamp4, stampC);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE slot = 3 AND side = 'after' AND hash = "
+                           "(SELECT hash FROM slot_audio a2 JOIN ops o2 ON o2.seq = a2.op WHERE o2.id = 'op-r1' AND a2.slot = 3)"),
+                 2); // A's hash: the snapshot's row and the first rename's, nowhere else
+    }
+
+    {
+        // A history migrated from version 8 or older (every preview tester's)
+        // has rows with no stamp. Its slots must stay restorable: the newest
+        // such row carries its hash on name and size, as it was written —
+        // while a stamped row beside it is still held to its stamp.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 5, "005_1.WAV", 132300);
+        putWav(volume, 6, "006_1.WAV", 132300);
+        const fs::path fileFive = volume::wavDir(volume, 5) / "005_1.WAV";
+        const fs::path fileSix = volume::wavDir(volume, 6) / "006_1.WAV";
+        const std::string five = commands::readFileBytes(fileFive);
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(run(*rec, "op-old", "rename", volume, [&] {
+                     commands::rename(volume, 5, "Old", options(rec, "op-old"));
+                     commands::rename(volume, 6, "Older", options(rec, "op-old"));
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        // the rows as a pre-v9 store left them: no stamp
+        db.exec("UPDATE slot_audio SET modified = NULL");
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE modified IS NOT NULL"), 0);
+        // slot 5 untouched: the next rename carries the hash on name and size alone
+        CHECK_EQ(run(*rec, "op-five", "rename", volume, [&] {
+                     commands::rename(volume, 5, "Five", options(rec, "op-five"));
+                 }),
+                 std::string());
+        {
+            sqlite::Statement rowFive(db, "SELECT hex(a.hash), a.modified IS NULL FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                          "WHERE o.id = 'op-five' AND a.slot = 5 AND a.side = 'after'");
+            CHECK(rowFive.step());
+            std::string hexFive;
+            for (const char c : HistoryStore::contentHash(five)) {
+                static constexpr char digits[] = "0123456789ABCDEF";
+                const auto b = static_cast<unsigned char>(c);
+                hexFive += digits[b >> 4];
+                hexFive += digits[b & 0xF];
+            }
+            CHECK_EQ(rowFive.text(0), hexFive);
+            CHECK_EQ(rowFive.integer(1), 0); // and the new row is stamped
+        }
+        // slot 6 re-recorded in place, same size: the old row still vouches by
+        // name and size — the allowance's price, confined to pre-v9 rows —
+        // and from here on the slot's rows are stamped and held to it
+        std::string six = commands::readFileBytes(fileSix);
+        six.back() = static_cast<char>(six.back() ^ 0x5a);
+        commands::writeFileBytes(fileSix, six);
+        CHECK(juce::File(juce::String(fileSix.string())).setLastModificationTime(juce::Time(1'600'000'000'000)));
+        CHECK_EQ(run(*rec, "op-six", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six", options(rec, "op-six"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six' AND a.slot = 6 AND a.hash IS NOT NULL AND a.modified = 1600000000000"),
+                 1);
+        // now re-record again under the stamped row: another stamp, no hash
+        six.back() = static_cast<char>(six.back() ^ 0x3c);
+        commands::writeFileBytes(fileSix, six);
+        CHECK(juce::File(juce::String(fileSix.string())).setLastModificationTime(juce::Time(1'600'000'010'000)));
+        CHECK_EQ(run(*rec, "op-six-again", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six again", options(rec, "op-six-again"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six-again' AND a.slot = 6 AND a.hash IS NULL AND a.modified = 1600000010000"),
+                 1);
+    }
+
+    {
         // A failed operation is not written down as a state. The failure that
         // discriminates is one whose audio hooks never fire — a rename cannot
         // touch a take — and that still gets far enough to be announced: the
@@ -583,6 +799,166 @@ int main()
         rec->finish("op-forget", "");
         CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-forget'"), std::string("done"));
         CHECK_EQ(rec->store().slotTimeline(7).size(), 1u);
+    }
+
+    // --- every take row carries the stamp the card's directory entry showed (#141) ---
+    //
+    // Theory: whatever way a take reaches a row — photographed by the first
+    // sighting, found in place after an operation, landed by a write — the
+    // row says what the directory entry said, exactly, so a later connect
+    // can compare the two without reading the file.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "take.wav", 132300);
+        const fs::path takeFile = volume::wavDir(volume, 4) / "take.wav";
+        // a stamp of the test's choosing, years in the past, with milliseconds
+        // the file system may or may not keep: macOS and Windows keep them,
+        // JUCE on Linux sets and reads whole seconds. The rows are held to what
+        // the directory entry says, so that is what the test compares against.
+        const std::int64_t chosen = 1'600'000'000'123;
+        CHECK(juce::File(juce::String(takeFile.string())).setLastModificationTime(juce::Time(chosen)));
+        const std::int64_t stamped = fileStamp(takeFile);
+        CHECK(stamped <= chosen && chosen - stamped < 1000); // the stamp took, at most rounded down to a second
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(run(*rec, "op-rename", "rename", volume, [&] {
+                     commands::rename(volume, 4, "Stamped", options(rec, "op-rename"));
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        // the first sighting photographed the take with its stamp...
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.kind = 'snapshot' AND a.slot = 4"),
+                 stamped);
+        // ...and the rename, which did not touch the file, wrote the same stamp down again
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-rename' AND a.slot = 4"),
+                 stamped);
+        // a trim lands a new file: its row carries the new entry's stamp — the
+        // write's own time, not the old file's
+        const std::int64_t before = juce::Time::currentTimeMillis();
+        CHECK_EQ(run(*rec, "op-trim", "trim", volume, [&] {
+                     commands::trim(volume, 4, 0, 66150, { .write = options(rec, "op-trim") });
+                 }),
+                 std::string());
+        const std::int64_t after = juce::Time::currentTimeMillis();
+        const std::int64_t landed = count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                              "WHERE o.id = 'op-trim' AND a.side = 'after'");
+        CHECK(landed != stamped);
+        CHECK(landed >= before - 2000 && landed <= after + 2000); // a file system may round to whole seconds
+        CHECK_EQ(landed, fileStamp(takeFile));
+        // every row that says what the slot holds has its stamp; the archived
+        // take's row names bytes on their way out, and a connect never meets them
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after' AND modified IS NULL"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after'"), 3); // snapshot, rename, trim
+    }
+
+    // --- what normalize measured is in the history, under the bytes it measured (#140) ---
+    //
+    // Theory: the reading is of the take as the command found it, so it is
+    // filed under the hash of those bytes — the same hash the archive names
+    // when a write follows — and it is filed whether a write follows or not.
+    // The bytes a gain lands get no derived number: nobody measured them. And
+    // a reading has nowhere to go while no card is in front of the history.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 6, "take.wav", 44100, -28.0);
+        const fs::path takeFile = volume::wavDir(volume, 6) / "take.wav";
+        const std::string original = commands::readFileBytes(takeFile);
+        auto rec = recorderAt(tmp.path / "history");
+        // nothing in front of the history yet: the reading is not taken, and the store is not even opened for it
+        CHECK(!rec->reading(HistoryStore::contentHash(original), { -28.0, 0.04f, -28.0, 0 }));
+        CHECK(!fs::exists(tmp.path / "history" / "history.db"));
+
+        CHECK_EQ(run(*rec, "op-norm", "normalize", volume, [&] {
+                     commands::normalize(volume, 6, { .targetLufs = -18.0, .write = options(rec, "op-norm") });
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        const auto before = rec->store().readingFor(HistoryStore::contentHash(original));
+        CHECK(before.has_value());
+        CHECK(before.has_value() && before->reading.integratedLufs.has_value()
+              && std::abs(*before->reading.integratedLufs - (-28.0)) <= 0.1);
+        CHECK(before.has_value() && before->reading.wildSamples == 0);
+        CHECK(before.has_value() && before->measuredMs > 1'000'000); // the recorder's clock, not a zero
+        // the same hash the archive filed the original under
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-norm' AND a.side = 'before' AND a.hash = (SELECT hash FROM loudness_readings)"),
+                 1);
+        // the bytes the gain landed have no number of their own
+        const std::string landed = commands::readFileBytes(takeFile);
+        CHECK(landed != original);
+        CHECK(!rec->store().readingFor(HistoryStore::contentHash(landed)).has_value());
+
+        // the slot is at target now: the second normalize writes nothing,
+        // archives nothing, has nothing to say about the slot (#144 names it
+        // as a subject in the app) — and still files what it measured
+        CHECK_EQ(run(*rec, "op-again", "normalize", volume, [&] {
+                     commands::normalize(volume, 6, { .targetLufs = -18.0, .write = options(rec, "op-again") });
+                 }),
+                 std::string());
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-again'"), std::string("done"));
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op WHERE o.id = 'op-again'"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes c JOIN ops o ON o.seq = c.op WHERE o.id = 'op-again'"), 0);
+        const auto now = rec->store().readingFor(HistoryStore::contentHash(landed));
+        CHECK(now.has_value());
+        CHECK(now.has_value() && now->reading.integratedLufs.has_value()
+              && std::abs(*now->reading.integratedLufs - (-18.0)) <= 0.1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+
+        // the card goes away: a reading has nowhere to go again, and nothing is filed
+        rec->disconnect();
+        CHECK(!rec->reading(HistoryStore::contentHash("later"), { -20.0, 0.5f, -3.0, 0 }));
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+        // and the store's refusals come through, a session or not
+        rec->selectVolume(volume);
+        CHECK_THROWS(rec->reading("short", { -20.0, 0.5f, -3.0, 0 }), "32 bytes");
+    }
+
+    // --- a loudness check files what it read, and answers even when the history will not (#140) ---
+    //
+    // Theory: the job reads the take once, measures it, and files the reading
+    // under the hash of exactly the bytes it read. The answer does not depend
+    // on the filing: no card in front of the history, nothing filed and no
+    // failure; a store that refuses, the refusal reported and the reading
+    // still returned. A slot with no take is an error, as before.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
+        const std::string bytes = commands::readFileBytes(volume::wavDir(volume, 9) / "009_1.WAV");
+        auto rec = recorderAt(tmp.path / "history");
+
+        const auto cold = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(cold.hash == HistoryStore::contentHash(bytes));
+        CHECK(cold.reading.integratedLufs.has_value()
+              && std::abs(*cold.reading.integratedLufs - (-23.0)) <= 0.1);
+        CHECK(!cold.kept);
+        CHECK(cold.failure.empty());
+        CHECK(!fs::exists(tmp.path / "history" / "history.db")); // not even opened for it
+
+        rec->selectVolume(volume); // the card is in front of the history now
+        const auto warm = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(warm.kept);
+        CHECK(warm.failure.empty());
+        const auto stored = rec->store().readingFor(HistoryStore::contentHash(bytes));
+        CHECK(stored.has_value());
+        CHECK(stored.has_value() && stored->reading.integratedLufs.has_value()
+              && warm.reading.integratedLufs.has_value()
+              && std::abs(*stored->reading.integratedLufs - *warm.reading.integratedLufs) <= 1.0e-12);
+        CHECK(stored.has_value() && stored->reading.wildSamples == 0);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM loudness_readings"), 1);
+
+        // the history cannot take it: the answer still comes, with the refusal beside it
+        rec->store().db().exec("DROP TABLE loudness_readings");
+        const auto broken = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(broken.reading.integratedLufs.has_value());
+        CHECK(broken.hash == HistoryStore::contentHash(bytes));
+        CHECK(!broken.kept);
+        CHECK(!broken.failure.empty());
+
+        CHECK_THROWS(history::readSlotLoudness(volume, 10, *rec), "no audio to measure");
     }
 
     // --- the wiring refuses to be built without what it needs ---

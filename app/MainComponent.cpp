@@ -10,6 +10,7 @@
 #include "history/HistoryRecorder.h"
 #include "history/ForgetSlotJob.h"
 #include "ClearSlotHistoryAction.h"
+#include "history/SlotLoudness.h"
 #include "history/SlotRows.h"
 #include "JobWords.h"
 #include "OperationsLog.h"
@@ -361,9 +362,14 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             editPlayStop(slot, std::move(edits));
     };
     table.onLoudnessCellDoubleClicked = [this](int slot) { measureSlotLoudness(slot); };
-    // The player read the file for its waveform anyway; the meter rode along.
-    player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading) {
+    // The player read the file for its waveform anyway; the meter rode along,
+    // and so did the hash of what it read — the history keeps the number
+    // under it (#140), after the words are on screen.
+    player.onLoudnessRead = [this](int slot, const wav::LoudnessReading& reading,
+                                   const std::string& hash) {
         applyLoudnessReport(slot, describeReading(reading, currentTargetLufs()), 0);
+        if (!hash.empty()) // empty: the core would not measure these bytes to this number
+            keepReading(hash, reading);
     };
     player.onNormalize = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
@@ -2495,15 +2501,17 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
     worker.enqueue(
         { "Check slot " + juce::String(slot) + " loudness",
           slot,
-          [slot, target, batch, note, safe](const volume::fs::path& volumePath) {
-              const std::vector<std::string> files = volume::listSlotWavs(volumePath, slot);
-              if (files.empty())
-                  throw Error("slot " + std::to_string(slot) + " has no audio to measure");
-              const std::string raw =
-                  commands::readFileBytes(volume::wavDir(volumePath, slot) / files.front());
-              const wav::LoudnessReading reading = wav::measureLoudness(wav::BytesView(
-                  reinterpret_cast<const unsigned char*>(raw.data()), raw.size()));
-              const LoudnessReport report = describeReading(reading, target);
+          [slot, target, batch, note, safe, rec = recorder,
+           logDir = settings.dataDir()](const volume::fs::path& volumePath) {
+              // The bytes are read once: measured, and filed in the history
+              // under their hash (#140). A history that would not take the
+              // reading is a line in the log, not this read's failure.
+              const history::SlotLoudness read = history::readSlotLoudness(volumePath, slot, *rec);
+              if (!read.failure.empty())
+                  oplog::append(logDir, "slot " + juce::String(slot)
+                                            + " loudness reading not kept in the history: "
+                                            + juce::String::fromUTF8(read.failure.c_str()));
+              const LoudnessReport report = describeReading(read.reading, target);
               *note = report.noteText;
               juce::MessageManager::callAsync([safe, slot, report, batch] {
                   if (safe != nullptr)
@@ -2511,6 +2519,30 @@ void MainComponent::enqueueLoudnessRead(int slot, double target, int batch)
               });
           },
           note, batch, /*background=*/true });
+}
+
+// The player's pass metered the loaded loop on its own thread; the history
+// is the worker's, so the number crosses over as a job of its own — one that
+// reads no card and tells nobody anything: the words are already on screen,
+// and a history with no card in front of it simply takes nothing.
+void MainComponent::keepReading(std::string hash, wav::LoudnessReading reading)
+{
+    worker.enqueue({ "Keep a loudness reading",
+                     0,
+                     [rec = recorder, key = std::move(hash), reading,
+                      logDir = settings.dataDir()](const volume::fs::path&) {
+                         try {
+                             rec->reading(key, reading);
+                         } catch (const std::exception& e) {
+                             oplog::append(logDir, "loudness reading not kept in the history: "
+                                                       + juce::String::fromUTF8(e.what()));
+                         }
+                     },
+                     nullptr,
+                     0,
+                     true,      // background: the player did not ask to wait for it
+                     true,      // quiet: it has nothing to say, and it does not fail
+                     false }); // and it needs no card: the store is on this computer
 }
 
 void MainComponent::applyLoudnessReport(int slot, const LoudnessReport& report, int batch)

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "HistoryRecorder.h"
+#include "FileTime.h"
 #include "../OperationId.h"
 
 namespace loopercat::history
@@ -104,7 +105,7 @@ int HistoryRecorder::snapshotStep(const Snapshot& snapshot, int slot)
                     // Leave room for SQLite's record header and hash. Refuse before allocating.
                     if (std::filesystem::file_size(file) > static_cast<std::uintmax_t>(std::max(0, limit - 1024)))
                         throw Error("take " + name + " exceeds the history store's size limit");
-                    takes.push_back({ track, name, commands::readFileBytes(file) });
+                    takes.push_back({ track, name, commands::readFileBytes(file), modifiedMs(file) });
                 }
             store().snapshotSlot(snapshot.op, slot, rc0::slotBody(memory, slot), takes, clock_());
         } catch (const std::exception& error) {
@@ -182,12 +183,17 @@ void HistoryRecorder::subject(const std::string& opId, int slot)
     store().recordSubject(found->second.row, slot);
 }
 
-std::int64_t HistoryRecorder::opRow(const std::string& opId) const
+const HistoryRecorder::Operation& HistoryRecorder::operation(const std::string& opId) const
 {
     const auto found = ops_.find(opId);
     if (found == ops_.end())
         throw Error("operation " + opId + " reported to the history without having begun");
-    return found->second.row;
+    return found->second;
+}
+
+std::int64_t HistoryRecorder::opRow(const std::string& opId) const
+{
+    return operation(opId).row;
 }
 
 void HistoryRecorder::keepAudio(const std::string& opId, int slot, const std::string& fileName,
@@ -205,7 +211,17 @@ void HistoryRecorder::bodies(const std::string& opId,
 void HistoryRecorder::landed(const std::string& opId, int slot, const std::string& fileName,
                              std::string_view bytes)
 {
-    store().recordLanded(opRow(opId), slot, kTrack, fileName, bytes);
+    const Operation& op = operation(opId);
+    store().recordLanded(op.row, slot, kTrack, fileName, bytes,
+                         modifiedMs(volume::wavDir(op.volume, slot) / fileName));
+}
+
+bool HistoryRecorder::reading(const std::string& hash, const wav::LoudnessReading& reading)
+{
+    if (!session_)
+        return false;
+    store().recordReading(hash, reading, clock_());
+    return true;
 }
 
 void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
@@ -224,8 +240,12 @@ void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
             const auto size = static_cast<std::int64_t>(std::filesystem::file_size(dir / name, ec));
             if (ec)
                 throw Error("cannot measure " + (dir / name).string());
+            // The stamp is read once and asked of the earlier row too: a hash
+            // is carried over only for the very file that row saw.
+            const std::int64_t modified = modifiedMs(dir / name);
             store().recordPresentAudio(op.row, slot, kTrack, name, size,
-                                       store().hashHeldBefore(op.row, from, name, size));
+                                       store().hashHeldBefore(op.row, from, name, size, modified),
+                                       modified);
         }
     }
 }
@@ -281,6 +301,18 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     };
     options.journal.slotsChanging = [recorder, opId](const std::vector<int>& slots) {
         recorder->preserveSlots(opId, slots);
+    };
+    // What the command measured, under the hash of the bytes it measured —
+    // the before-bytes, which the archive names by the same hash if a write
+    // follows. Inside an operation the card's session is open, so the
+    // reading always goes in; a store that cannot take it stops the command
+    // here, before the card is touched, like every other hook.
+    options.journal.loudnessMeasured = [recorder, opId](int slot, const std::string&,
+                                                        std::string_view bytes,
+                                                        const wav::LoudnessReading& reading) {
+        if (!recorder->reading(HistoryStore::contentHash(bytes), reading))
+            throw Error("operation " + opId + " measured slot " + std::to_string(slot)
+                        + " with no card session open to file the reading in");
     };
     // The settings pair, before it is written: each changed section, its
     // text before and after (sysfile::sectionChanges, in the core). A throw

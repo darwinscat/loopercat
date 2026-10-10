@@ -497,7 +497,7 @@ static int runTests()
         const auto card = cardAt(tmp.path);
         const auto baseline = newSighting(*rec, card);
         CHECK_THROWS(rec->store().snapshotSlot(baseline.op, 1, "body",
-           { { 1, "good.wav", "bytes" }, { 0, "bad.wav", "other bytes" } }, 2000), "CHECK");
+           { { 1, "good.wav", "bytes", 1500 }, { 0, "bad.wav", "other bytes", 1500 } }, 2000), "CHECK");
         CHECK(rec->store().touchedSlots(baseline.op).empty());
         CHECK_EQ(rec->store().usage().audioBytes, 0);
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM blobs_meta"), 0);

@@ -654,6 +654,7 @@ target_link_libraries(player_pane_harness PRIVATE
     felitronics::appkit
     juce::juce_gui_basics
     juce::juce_audio_utils
+    juce::juce_cryptography             # the read pass hashes what it meters (#140)
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME player_pane_harness COMMAND player_pane_harness)
@@ -739,6 +740,27 @@ target_link_libraries(import_prefs_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME import_prefs_tests COMMAND import_prefs_tests)
+
+# ----------------------------------------------------------------------------
+# The player's meter over JUCE's decoder against the core's (#140): on a take
+# the pedal gate accepts the two agree bit for bit, and the gate refuses what
+# JUCE would still decode — truncated, pcm16, mono — off the header and the
+# size alone. The streamed file hash against the in-memory one. No window.
+# ----------------------------------------------------------------------------
+juce_add_console_app(reader_loudness_tests PRODUCT_NAME "reader_loudness_tests")
+target_sources(reader_loudness_tests PRIVATE tests/reader_loudness_tests.cpp)
+target_compile_definitions(reader_loudness_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(reader_loudness_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_audio_formats
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME reader_loudness_tests COMMAND reader_loudness_tests)
 
 # ----------------------------------------------------------------------------
 # The history store (issue #72): theory tests against real SQLite files — the

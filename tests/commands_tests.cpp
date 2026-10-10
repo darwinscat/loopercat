@@ -2489,6 +2489,85 @@ int main()
         CHECK(!fs::exists(tmp.path / "archive")); // and no archive copy was spent
     }
 
+    // --- normalize tells the journal what it measured, of the bytes it measured (#140) ---
+    //
+    // Theory: the reading is of the take as the command found it — reported
+    // once, with those very bytes, before anything about the take changes,
+    // and whether or not a write follows. A take refused as not audio is no
+    // reading. A journal without the hook changes nothing about the command.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineFloatWav(volume, 6, "quiet.wav", 44100, -28.0);
+        putSineFloatWav(volume, 7, "attarget.wav", 44100, -18.0);
+        putSineFloatWav(volume, 4, "faint.wav", 44100, -100.0);           // under the -70 gate
+        putSineFloatWav(volume, 8, "damaged.wav", 44100, -23.0, 1.0e20f); // one impossible sample
+        struct Heard {
+            int slot;
+            std::string name;
+            std::string bytes;
+            wav::LoudnessReading reading;
+        };
+        std::vector<Heard> heard;
+        const auto listening = [&](commands::WriteOptions options) {
+            options.journal.loudnessMeasured = [&](int slot, const std::string& name,
+                                                   std::string_view bytes,
+                                                   const wav::LoudnessReading& reading) {
+                heard.push_back({ slot, name, std::string(bytes), reading });
+            };
+            return options;
+        };
+
+        // a gain is written: the journal heard the take BEFORE it, byte for byte
+        const std::string quiet = commands::readFileBytes(volume::wavDir(volume, 6) / "quiet.wav");
+        const auto applied = commands::normalize(
+            volume, 6, { .targetLufs = -18.0, .write = listening(writeOpts(tmp.path)) });
+        CHECK(applied.applied);
+        CHECK_EQ(heard.size(), 1u);
+        if (heard.size() == 1u) {
+            CHECK_EQ(heard[0].slot, 6);
+            CHECK_EQ(heard[0].name, std::string("quiet.wav"));
+            CHECK(heard[0].bytes == quiet);
+            CHECK(heard[0].bytes != commands::readFileBytes(volume::wavDir(volume, 6) / "quiet.wav"));
+            CHECK(heard[0].reading.integratedLufs.has_value()
+                  && std::abs(*heard[0].reading.integratedLufs - (-28.0)) <= 0.1);
+            CHECK_EQ(heard[0].reading.wildSamples, 0);
+        }
+
+        // nothing to write: measured all the same, reported once
+        heard.clear();
+        const std::string atTargetBytes =
+            commands::readFileBytes(volume::wavDir(volume, 7) / "attarget.wav");
+        const auto atTarget = commands::normalize(
+            volume, 7, { .targetLufs = -18.0, .write = listening(writeOpts(tmp.path)) });
+        CHECK(!atTarget.applied);
+        CHECK_EQ(heard.size(), 1u);
+        CHECK(heard.size() == 1u && heard[0].slot == 7 && heard[0].bytes == atTargetBytes);
+        CHECK(heard.size() == 1u && heard[0].reading.integratedLufs.has_value()
+              && std::abs(*heard[0].reading.integratedLufs - (-18.0)) <= 0.1);
+
+        // silence: the command refuses to act, and what it measured is still a
+        // measurement — "nothing to measure" is an answer about these bytes
+        heard.clear();
+        CHECK_THROWS(commands::normalize(volume, 4, { .targetLufs = -18.0,
+                                                      .write = listening(writeOpts(tmp.path)) }),
+                     "silent or shorter");
+        CHECK_EQ(heard.size(), 1u);
+        CHECK(heard.size() == 1u && !heard[0].reading.integratedLufs.has_value());
+
+        // bytes that are not audio: refused, and no reading is reported of them
+        heard.clear();
+        CHECK_THROWS(commands::normalize(volume, 8, { .targetLufs = -18.0,
+                                                      .write = listening(writeOpts(tmp.path)) }),
+                     "impossible sample");
+        CHECK(heard.empty());
+
+        // a journal without the hook: the command measures and writes as before
+        putSineFloatWav(volume, 9, "plain.wav", 44100, -28.0);
+        CHECK(commands::normalize(volume, 9, { .targetLufs = -18.0, .write = writeOpts(tmp.path) })
+                  .applied);
+    }
+
     // --- a real card: a mutation changes what it exists to write, and no other byte ---
     //
     // fixtures/rc5-card.RC0 is a MEMORY1.RC0 off an RC-5 (fw 1.10): 41 loops in

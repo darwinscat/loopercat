@@ -240,6 +240,16 @@ struct Journal {
     // After a take has landed on the card, with its bytes: the post-state's
     // audio, so the history never has to read it back over USB.
     std::function<void(int slot, const std::string& fileName, std::string_view bytes)> audioWritten;
+    // Optional. What a take measured, with the very bytes measured, from a
+    // command that meters on its way (normalize): a reading is a fact about
+    // those bytes, and the history files it under their hash (#140) — so it
+    // is reported while they are still the take's, before any archive or
+    // rewrite, and it is reported whether or not a write follows. Only a
+    // measurement is reported: bytes that are not audio are refused by the
+    // command instead, and the bytes a rewrite lands get no derived number.
+    std::function<void(int slot, const std::string& fileName, std::string_view bytes,
+                       const wav::LoudnessReading& reading)>
+        loudnessMeasured;
     // Just before the settings pair is written, with every section this edit
     // changes — the pedal's own settings are undoable like a memory is
     // (sysfile::SectionChange carries the section's bytes either side).
@@ -1060,6 +1070,11 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
                     + std::to_string(reading.wildSamples)
                     + " impossible sample value(s) — bytes that are not audio. The take looks "
                       "damaged; re-push it from the original instead of normalizing it");
+    // The bytes are audio: what they measure is a fact worth keeping whatever
+    // this command then does with it — writes a gain, finds nothing to do,
+    // or refuses below because nothing can be done for silence.
+    if (options.write.journal.loudnessMeasured)
+        options.write.journal.loudnessMeasured(slot, files.front(), raw, reading);
     if (!reading.integratedLufs.has_value())
         throw Error("slot " + std::to_string(slot)
                     + " is silent or shorter than the 400 ms a loudness measurement needs");
