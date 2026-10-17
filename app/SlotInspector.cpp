@@ -3,10 +3,9 @@
 
 #include "SlotInspector.h"
 
+#include "RefusalWords.h"
 #include "SlotTable.h"
 #include "Strings.h"
-
-#include <felitronics/appkit/Brand.h>
 
 #include <loopercat/Commands.hpp>
 
@@ -124,7 +123,11 @@ void SlotInspector::refresh()
     nameEditor_.setReadOnly(!can.rename);
     tempoEditor_.setEnabled(live && can.tempo);
     tempoEditor_.setReadOnly(!can.tempo);
-    countIn_.setEnabled(live && can.countIn);
+    // A click the core would refuse is not offered: where the count-in's
+    // switch would write a PATTERN number at a beat whose list is not
+    // charted (CountIn.hpp, #149), the card is a lamp and its orange line
+    // says why, before the click rather than in a banner after it.
+    countIn_.setEnabled(live && can.countIn && !info_.countInRefused);
     oneShot_.setEnabled(live && can.oneShot);
     playStop_.setEnabled(live && can.playStop);
     footer_.setText(can.anyWrite() ? juce::String("Disconnect to hear the changes.")
@@ -155,7 +158,9 @@ void SlotInspector::refresh()
         info_.countIn ? "One bar of count at " + SlotTable::formatTempo(info_.tempoTenths)
                             + " BPM, then the loop."
                       : "No count: the loop starts the moment you press play.",
-        !info_.countIn && info_.countInTakesPattern
+        info_.countInRefused
+            ? words::countInRefused(*info_.countInRefused, info_.rhythm.beat)
+        : !info_.countIn && info_.countInTakesPattern
             ? juce::String::fromUTF8("Switching it on replaces a rhythm pattern chosen on the "
                                      "pedal.")
             : juce::String());
@@ -230,15 +235,7 @@ void SlotInspector::paint(juce::Graphics& g)
         g.setColour(kDim);
         g.setFont(juce::FontOptions(13.0f));
         g.drawText("Select a slot to set it up", getLocalBounds(), juce::Justification::centred);
-        return;
     }
-
-    // The slot's number leads the row, the way the pedal's display names it.
-    auto header = getLocalBounds().reduced(kPad, 0).withHeight(28).withTrimmedTop(6);
-    g.setColour(felitronics::appkit::brand::lilac);
-    g.setFont(juce::FontOptions(14.0f));
-    g.drawText("SLOT " + juce::String(info_.slot).paddedLeft('0', 2),
-               header.removeFromLeft(76), juce::Justification::centredLeft);
 }
 
 void SlotInspector::resized()
@@ -248,7 +245,6 @@ void SlotInspector::resized()
     auto area = getLocalBounds().reduced(kPad, 6);
 
     auto identity = area.removeFromTop(28);
-    identity.removeFromLeft(76); // the painted "SLOT nn"
 
     nameCaption_.setBounds(identity.removeFromLeft(44).withTrimmedTop(8));
     const int nameWidth = fieldWidth(nameEditor_, rc0::kNameLength);

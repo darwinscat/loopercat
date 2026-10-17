@@ -14,19 +14,44 @@
 //   - a history that cannot open, or a hook for an op that never began, stops
 //     the command with the card untouched
 //   - an op cut off mid-way reads as interrupted, and its take is still kept
+//   - an op names the slot it is about once it has begun, and keeps it when
+//     it then writes nothing (#144); maintenance is about no slot
+//   - every take row carries the stamp the card's directory entry showed
+//     (#141), and what normalize measured is in the history under the bytes
+//     it measured — written or not (#140); a reading has nowhere to go while
+//     no card is in front of the history
+//   - a loudness check files what it read under the hash of the file read,
+//     and still answers when the history will not take it
+//   - the measure-first step of Normalize (#142) takes the history's reading
+//     of exactly these bytes over the meter, measures what it has never seen
+//     — a take swapped in under the same name, size and date included — and
+//     leaves the card's timeline as it was, while a real normalize adds one row
+//   - a stored reading the meter could not have taken, or one the caller
+//     cannot use, is measured over once and replaced; a store that cannot be
+//     asked is not asked again to file; the trouble named is the one that was
 
 #include "support.hpp"
 
+#include "../app/history/SlotLoudness.h"
 #include "../app/history/WriteOptionsFactory.h"
+#include "../app/NormalizePlan.h"
 #include "../app/OperationsLog.h"
 
 #include <loopercat/Commands.hpp>
 
+#include <bit>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
+#include <numbers>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <vector>
 
 using namespace loopercat;
 using history::HistoryRecorder;
@@ -66,6 +91,50 @@ void putWav(const fs::path& volume, int slot, const std::string& name, int frame
     commands::writeFileBytes(volume::wavDir(volume, slot) / name,
                              std::string_view(reinterpret_cast<const char*>(bytes.data()),
                                               bytes.size()));
+}
+
+// A float32 stereo take of a 997 Hz sine at `dbfs` peak in both channels —
+// the tone BS.1770 calibrates on, so a -28 dBFS take reads -28 LUFS — which
+// is what a measurement has to read off before anything can be said about it.
+void putSineWav(const fs::path& volume, int slot, const std::string& name, int frames, double dbfs)
+{
+    std::vector<unsigned char> b;
+    const auto ascii = [&b](std::string_view t) {
+        for (const char c : t)
+            b.push_back(static_cast<unsigned char>(c));
+    };
+    const auto p16 = [&b](int v) {
+        b.push_back(static_cast<unsigned char>(v & 0xff));
+        b.push_back(static_cast<unsigned char>((v >> 8) & 0xff));
+    };
+    const auto p32 = [&p16](int v) { p16(v & 0xffff); p16((v >> 16) & 0xffff); };
+    const auto sample = [&b](float value) {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        for (int shift = 0; shift < 32; shift += 8)
+            b.push_back(static_cast<unsigned char>((bits >> shift) & 0xffu));
+    };
+    const int dataSize = frames * 8;
+    ascii("RIFF"); p32(12 + 24 + 8 + dataSize - 8); ascii("WAVE");
+    ascii("fmt "); p32(16);
+    p16(3); p16(2); p32(wav::kSampleRate); p32(wav::kSampleRate * 8); p16(8); p16(32);
+    ascii("data"); p32(dataSize);
+    const double amp = std::pow(10.0, dbfs / 20.0);
+    const double w = 2.0 * std::numbers::pi * 997.0 / wav::kSampleRate;
+    for (int frame = 0; frame < frames; ++frame) {
+        const auto v = static_cast<float>(amp * std::sin(w * frame));
+        sample(v);
+        sample(v);
+    }
+    fs::create_directories(volume::wavDir(volume, slot));
+    commands::writeFileBytes(volume::wavDir(volume, slot) / name,
+                             std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+}
+
+// A file's modification time as the OS reports it, ms since the epoch — the
+// oracle the rows are compared against.
+std::int64_t fileStamp(const fs::path& file)
+{
+    return juce::File(juce::String(file.string())).getLastModificationTime().toMilliseconds();
 }
 
 std::map<std::string, std::string> volumeBytes(const fs::path& volume)
@@ -488,6 +557,187 @@ int main()
     }
 
     {
+        // A take re-recorded in place under the same name and size is another
+        // file (#141, review). Take A is renamed, so its row carries A's hash
+        // with A's stamp; the pedal then records B over it — same name, same
+        // size, a later stamp — and the next rename must not pair B's stamp
+        // with A's hash. And once a row without a hash stands for the file,
+        // no older row with one may speak over it: the stamp is the tell.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 3, "003_1.WAV", 132300);
+        const fs::path file = volume::wavDir(volume, 3) / "003_1.WAV";
+        const std::string a = commands::readFileBytes(file);
+        const std::int64_t stampA = 1'600'000'000'000;
+        CHECK(juce::File(juce::String(file.string())).setLastModificationTime(juce::Time(stampA)));
+        auto rec = recorderAt(tmp.path / "history");
+        sqlite::Db& db = rec->store().db();
+        const auto rowOf = [&db](const std::string& opId) {
+            sqlite::Statement row(db, "SELECT hex(a.hash), a.modified, hash IS NULL FROM slot_audio a "
+                                      "JOIN ops o ON o.seq = a.op WHERE o.id = ?1 AND a.slot = 3 AND a.side = 'after'");
+            row.bindText(1, opId);
+            if (!row.step())
+                throw Error("no after-row for " + opId);
+            return std::tuple<std::string, std::int64_t, bool>(row.text(0), row.integer(1), row.integer(2) != 0);
+        };
+        const auto hex = [](const std::string& raw) {
+            static constexpr char digits[] = "0123456789ABCDEF";
+            std::string out;
+            for (const char c : raw) {
+                const auto b = static_cast<unsigned char>(c);
+                out += digits[b >> 4];
+                out += digits[b & 0xF];
+            }
+            return out;
+        };
+
+        CHECK_EQ(run(*rec, "op-r1", "rename", volume, [&] {
+                     commands::rename(volume, 3, "First", options(rec, "op-r1"));
+                 }),
+                 std::string());
+        const auto [hash1, stamp1, null1] = rowOf("op-r1");
+        CHECK(!null1);
+        CHECK_EQ(hash1, hex(HistoryStore::contentHash(a))); // A, photographed and carried
+        CHECK_EQ(stamp1, stampA);
+
+        // the pedal records B over A: same name, same size, other bytes, later stamp
+        std::string b = a;
+        b.back() = static_cast<char>(b.back() ^ 0x5a);
+        CHECK(b != a && b.size() == a.size());
+        commands::writeFileBytes(file, b);
+        const std::int64_t stampB = stampA + 10'000;
+        CHECK(juce::File(juce::String(file.string())).setLastModificationTime(juce::Time(stampB)));
+
+        CHECK_EQ(run(*rec, "op-r2", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Second", options(rec, "op-r2"));
+                 }),
+                 std::string());
+        const auto [hash2, stamp2, null2] = rowOf("op-r2");
+        CHECK(null2); // B is a stranger: no hash, and never A's
+        CHECK_EQ(stamp2, stampB);
+
+        // a third rename: the newest row for the file has no hash and is the
+        // last word — A's row two operations back may not speak over it
+        CHECK_EQ(run(*rec, "op-r3", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Third", options(rec, "op-r3"));
+                 }),
+                 std::string());
+        const auto [hash3, stamp3, null3] = rowOf("op-r3");
+        CHECK(null3);
+        CHECK_EQ(stamp3, stampB);
+
+        // once the app itself lands a take there, the hash travels again — for that file
+        CHECK_EQ(run(*rec, "op-trim", "trim", volume, [&] {
+                     commands::trim(volume, 3, 0, 66150, { .write = options(rec, "op-trim") });
+                 }),
+                 std::string());
+        const auto [hashC, stampC, nullC] = rowOf("op-trim");
+        CHECK(!nullC);
+        CHECK_EQ(hashC, hex(HistoryStore::contentHash(commands::readFileBytes(file))));
+        CHECK_EQ(run(*rec, "op-r4", "rename", volume, [&] {
+                     commands::rename(volume, 3, "Fourth", options(rec, "op-r4"));
+                 }),
+                 std::string());
+        const auto [hash4, stamp4, null4] = rowOf("op-r4");
+        CHECK(!null4);
+        CHECK_EQ(hash4, hashC);
+        CHECK_EQ(stamp4, stampC);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE slot = 3 AND side = 'after' AND hash = "
+                           "(SELECT hash FROM slot_audio a2 JOIN ops o2 ON o2.seq = a2.op WHERE o2.id = 'op-r1' AND a2.slot = 3)"),
+                 2); // A's hash: the snapshot's row and the first rename's, nowhere else
+    }
+
+    {
+        // A history migrated from version 8 or older (every preview tester's)
+        // has rows with no stamp. Its slots must stay restorable: the newest
+        // such row carries its hash on name and size, as it was written —
+        // and the row it hands the hash to carries no stamp either, so a
+        // guess by name and size never becomes a row a connect trusts to
+        // name the very file (#141, review S1).
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 5, "005_1.WAV", 132300);
+        putWav(volume, 6, "006_1.WAV", 132300);
+        const fs::path fileFive = volume::wavDir(volume, 5) / "005_1.WAV";
+        const fs::path fileSix = volume::wavDir(volume, 6) / "006_1.WAV";
+        const std::string five = commands::readFileBytes(fileFive);
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(run(*rec, "op-old", "rename", volume, [&] {
+                     commands::rename(volume, 5, "Old", options(rec, "op-old"));
+                     commands::rename(volume, 6, "Older", options(rec, "op-old"));
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        // the rows as a pre-v9 store left them: no stamp
+        db.exec("UPDATE slot_audio SET modified = NULL");
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE modified IS NOT NULL"), 0);
+        // slot 5 untouched: the next rename carries the hash on name and size alone
+        CHECK_EQ(run(*rec, "op-five", "rename", volume, [&] {
+                     commands::rename(volume, 5, "Five", options(rec, "op-five"));
+                 }),
+                 std::string());
+        {
+            sqlite::Statement rowFive(db, "SELECT hex(a.hash), a.modified IS NULL FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                          "WHERE o.id = 'op-five' AND a.slot = 5 AND a.side = 'after'");
+            CHECK(rowFive.step());
+            std::string hexFive;
+            for (const char c : HistoryStore::contentHash(five)) {
+                static constexpr char digits[] = "0123456789ABCDEF";
+                const auto b = static_cast<unsigned char>(c);
+                hexFive += digits[b >> 4];
+                hexFive += digits[b & 0xF];
+            }
+            CHECK_EQ(rowFive.text(0), hexFive);
+            CHECK_EQ(rowFive.integer(1), 1); // and the new row carries no stamp: a guess stays one
+        }
+        // slot 6 re-recorded in place, same size: the old row still vouches by
+        // name and size — the allowance's price — and the row it vouches for
+        // is stampless too, so the price is paid in restorability alone
+        std::string six = commands::readFileBytes(fileSix);
+        six.back() = static_cast<char>(six.back() ^ 0x5a);
+        commands::writeFileBytes(fileSix, six);
+        CHECK(juce::File(juce::String(fileSix.string())).setLastModificationTime(juce::Time(1'600'000'000'000)));
+        CHECK_EQ(run(*rec, "op-six", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six", options(rec, "op-six"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six' AND a.slot = 6 AND a.hash IS NOT NULL AND a.modified IS NULL"),
+                 1);
+        // re-recorded again: the newest row is still a stampless one, so the
+        // slot stays in the allowance — vouched by name and size, no stamp —
+        // until audio lands in it
+        six.back() = static_cast<char>(six.back() ^ 0x3c);
+        commands::writeFileBytes(fileSix, six);
+        CHECK(juce::File(juce::String(fileSix.string())).setLastModificationTime(juce::Time(1'600'000'010'000)));
+        CHECK_EQ(run(*rec, "op-six-again", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six again", options(rec, "op-six-again"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six-again' AND a.slot = 6 AND a.hash IS NOT NULL AND a.modified IS NULL"),
+                 1);
+        // audio landing ends the allowance: a trim lands its own hash with
+        // its stamp, and the next row is held to both
+        CHECK_EQ(run(*rec, "op-six-trim", "trim", volume, [&] {
+                     commands::trim(volume, 6, 0, 66150, { .write = options(rec, "op-six-trim") });
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six-trim' AND a.slot = 6 AND a.side = 'after' "
+                           "AND a.hash IS NOT NULL AND a.modified IS NOT NULL"),
+                 1);
+        CHECK_EQ(run(*rec, "op-six-named", "rename", volume, [&] {
+                     commands::rename(volume, 6, "Six named", options(rec, "op-six-named"));
+                 }),
+                 std::string());
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-six-named' AND a.slot = 6 AND a.hash IS NOT NULL "
+                           "AND a.modified IS NOT NULL"),
+                 1);
+    }
+
+    {
         // A failed operation is not written down as a state. The failure that
         // discriminates is one whose audio hooks never fire — a rename cannot
         // touch a take — and that still gets far enough to be announced: the
@@ -550,6 +800,592 @@ int main()
         CHECK_EQ(text(db, "SELECT note FROM ops WHERE id = 'op-broke'"),
                  std::string("cannot write MEMORY1.RC0"));
         CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-broke'"), std::string("failed"));
+    }
+
+    // --- the slot an operation is about (#144): named once it has begun, kept when it wrote nothing ---
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_THROWS(rec->subject("op-unbegun", 7), "without having begun");
+        rec->begin("op-about", "normalize", volume);
+        rec->subject("op-about", 7);
+        CHECK_THROWS(rec->subject("op-about", 7), "already a subject");
+        CHECK_THROWS(rec->subject("op-about", 0), "1..99");
+        CHECK_THROWS(rec->subject("op-about", 100), "1..99");
+        rec->finish("op-about", "", "already at -18.0 LUFS (measured -18.1), nothing to do");
+        auto& db = rec->store().db();
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-about'"), std::string("done"));
+        CHECK_EQ(count(db, "SELECT count(*) FROM op_subjects WHERE slot = 7"), 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio"), 0); // wrote nothing, so holds nothing it can say
+        const auto rows = rec->store().slotTimeline(7);
+        CHECK_EQ(rows.size(), 1u);
+        CHECK(rows.size() == 1u && rows.front().subjectOnly);
+        CHECK(rows.size() == 1u && rows.front().kind == "normalize");
+        // maintenance is about no slot: a subject on it is refused, not written
+        const auto card = *rec->store().selectedCard();
+        rec->beginMaintenance("op-forget", card);
+        CHECK_THROWS(rec->subject("op-forget", 7), "about no slot");
+        CHECK_EQ(count(db, "SELECT count(*) FROM op_subjects"), 1);
+        rec->finish("op-forget", "");
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-forget'"), std::string("done"));
+        CHECK_EQ(rec->store().slotTimeline(7).size(), 1u);
+    }
+
+    // --- every take row carries the stamp the card's directory entry showed (#141) ---
+    //
+    // Theory: whatever way a take reaches a row — photographed by the first
+    // sighting, found in place after an operation, landed by a write — the
+    // row says what the directory entry said, exactly, so a later connect
+    // can compare the two without reading the file.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putWav(volume, 4, "take.wav", 132300);
+        const fs::path takeFile = volume::wavDir(volume, 4) / "take.wav";
+        // a stamp of the test's choosing, years in the past, with milliseconds
+        // the file system may or may not keep: macOS and Windows keep them,
+        // JUCE on Linux sets and reads whole seconds. The rows are held to what
+        // the directory entry says, so that is what the test compares against.
+        const std::int64_t chosen = 1'600'000'000'123;
+        CHECK(juce::File(juce::String(takeFile.string())).setLastModificationTime(juce::Time(chosen)));
+        const std::int64_t stamped = fileStamp(takeFile);
+        CHECK(stamped <= chosen && chosen - stamped < 1000); // the stamp took, at most rounded down to a second
+        auto rec = recorderAt(tmp.path / "history");
+        CHECK_EQ(run(*rec, "op-rename", "rename", volume, [&] {
+                     commands::rename(volume, 4, "Stamped", options(rec, "op-rename"));
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        // the first sighting photographed the take with its stamp...
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.kind = 'snapshot' AND a.slot = 4"),
+                 stamped);
+        // ...and the rename, which did not touch the file, wrote the same stamp down again
+        CHECK_EQ(count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-rename' AND a.slot = 4"),
+                 stamped);
+        // a trim lands a new file: its row carries the new entry's stamp — the
+        // write's own time, not the old file's
+        const std::int64_t before = juce::Time::currentTimeMillis();
+        CHECK_EQ(run(*rec, "op-trim", "trim", volume, [&] {
+                     commands::trim(volume, 4, 0, 66150, { .write = options(rec, "op-trim") });
+                 }),
+                 std::string());
+        const std::int64_t after = juce::Time::currentTimeMillis();
+        const std::int64_t landed = count(db, "SELECT modified FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                                              "WHERE o.id = 'op-trim' AND a.side = 'after'");
+        CHECK(landed != stamped);
+        CHECK(landed >= before - 2000 && landed <= after + 2000); // a file system may round to whole seconds
+        CHECK_EQ(landed, fileStamp(takeFile));
+        // every row that says what the slot holds has its stamp; the archived
+        // take's row names bytes on their way out, and a connect never meets them
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after' AND modified IS NULL"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE side = 'after'"), 3); // snapshot, rename, trim
+    }
+
+    // --- what normalize measured is in the history, under the bytes it measured (#140) ---
+    //
+    // Theory: the reading is of the take as the command found it, so it is
+    // filed under the hash of those bytes — the same hash the archive names
+    // when a write follows — and it is filed whether a write follows or not.
+    // The bytes a gain lands get no derived number: nobody measured them. And
+    // a reading has nowhere to go while no card is in front of the history.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 6, "take.wav", 44100, -28.0);
+        const fs::path takeFile = volume::wavDir(volume, 6) / "take.wav";
+        const std::string original = commands::readFileBytes(takeFile);
+        auto rec = recorderAt(tmp.path / "history");
+        // nothing in front of the history yet: the reading is not taken, and the store is not even opened for it
+        CHECK(!rec->reading(HistoryStore::contentHash(original), { -28.0, 0.04f, -28.0, 0 }));
+        CHECK(!fs::exists(tmp.path / "history" / "history.db"));
+
+        CHECK_EQ(run(*rec, "op-norm", "normalize", volume, [&] {
+                     commands::normalize(volume, 6, { .targetLufs = -18.0, .write = options(rec, "op-norm") });
+                 }),
+                 std::string());
+        sqlite::Db& db = rec->store().db();
+        const auto before = rec->store().readingFor(HistoryStore::contentHash(original));
+        CHECK(before.has_value());
+        CHECK(before.has_value() && before->reading.integratedLufs.has_value()
+              && std::abs(*before->reading.integratedLufs - (-28.0)) <= 0.1);
+        CHECK(before.has_value() && before->reading.wildSamples == 0);
+        CHECK(before.has_value() && before->measuredMs > 1'000'000); // the recorder's clock, not a zero
+        // the same hash the archive filed the original under
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op "
+                           "WHERE o.id = 'op-norm' AND a.side = 'before' AND a.hash = (SELECT hash FROM loudness_readings)"),
+                 1);
+        // the bytes the gain landed have no number of their own
+        const std::string landed = commands::readFileBytes(takeFile);
+        CHECK(landed != original);
+        CHECK(!rec->store().readingFor(HistoryStore::contentHash(landed)).has_value());
+
+        // the slot is at target now: the second normalize writes nothing,
+        // archives nothing, has nothing to say about the slot (#144 names it
+        // as a subject in the app) — and still files what it measured
+        CHECK_EQ(run(*rec, "op-again", "normalize", volume, [&] {
+                     commands::normalize(volume, 6, { .targetLufs = -18.0, .write = options(rec, "op-again") });
+                 }),
+                 std::string());
+        CHECK_EQ(text(db, "SELECT status FROM ops WHERE id = 'op-again'"), std::string("done"));
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio a JOIN ops o ON o.seq = a.op WHERE o.id = 'op-again'"), 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes c JOIN ops o ON o.seq = c.op WHERE o.id = 'op-again'"), 0);
+        const auto now = rec->store().readingFor(HistoryStore::contentHash(landed));
+        CHECK(now.has_value());
+        CHECK(now.has_value() && now->reading.integratedLufs.has_value()
+              && std::abs(*now->reading.integratedLufs - (-18.0)) <= 0.1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+
+        // the card goes away: a reading has nowhere to go again, and nothing is filed
+        rec->disconnect();
+        CHECK(!rec->reading(HistoryStore::contentHash("later"), { -20.0, 0.5f, -3.0, 0 }));
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+        // and the store's refusals come through, a session or not
+        rec->selectVolume(volume);
+        CHECK_THROWS(rec->reading("short", { -20.0, 0.5f, -3.0, 0 }), "32 bytes");
+    }
+
+    // --- a loudness check files what it read, and answers even when the history will not (#140) ---
+    //
+    // Theory: the job reads the take once, measures it, and files the reading
+    // under the hash of exactly the bytes it read. The answer does not depend
+    // on the filing: no card in front of the history, nothing filed and no
+    // failure; a store that refuses, the refusal reported and the reading
+    // still returned. A slot with no take is an error, as before.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
+        const std::string bytes = commands::readFileBytes(volume::wavDir(volume, 9) / "009_1.WAV");
+        auto rec = recorderAt(tmp.path / "history");
+
+        const auto cold = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(cold.hash == HistoryStore::contentHash(bytes));
+        CHECK(cold.reading.integratedLufs.has_value()
+              && std::abs(*cold.reading.integratedLufs - (-23.0)) <= 0.1);
+        CHECK(!cold.kept);
+        CHECK(cold.failure.empty());
+        CHECK(!fs::exists(tmp.path / "history" / "history.db")); // not even opened for it
+
+        rec->selectVolume(volume); // the card is in front of the history now
+        const auto warm = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(warm.kept);
+        CHECK(warm.failure.empty());
+        const auto stored = rec->store().readingFor(HistoryStore::contentHash(bytes));
+        CHECK(stored.has_value());
+        CHECK(stored.has_value() && stored->reading.integratedLufs.has_value()
+              && warm.reading.integratedLufs.has_value()
+              && std::abs(*stored->reading.integratedLufs - *warm.reading.integratedLufs) <= 1.0e-12);
+        CHECK(stored.has_value() && stored->reading.wildSamples == 0);
+        CHECK_EQ(count(rec->store().db(), "SELECT count(*) FROM loudness_readings"), 1);
+
+        // the history cannot take it: the answer still comes, with the refusal beside it
+        rec->store().db().exec("DROP TABLE loudness_readings");
+        const auto broken = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(broken.reading.integratedLufs.has_value());
+        CHECK(broken.hash == HistoryStore::contentHash(bytes));
+        CHECK(!broken.kept);
+        CHECK(!broken.failure.empty());
+
+        CHECK_THROWS(history::readSlotLoudness(volume, 10, *rec), "no audio to measure");
+    }
+
+    // --- what the read saw is filed beside the reading, on both paths, and a
+    //     refused sighting never masquerades as the reading's trouble (#141 on #140) ---
+    //
+    // Theory (SlotLoudness.h, PR #160 glue): a sighting goes in only when the
+    // reading was kept, and names the file the read opened, the entry's size
+    // and stamp, the hash of the bytes, and the newest operation begun when
+    // the read began — none, on a store no operation has touched. The recall
+    // path files the very same row: the bytes were read either way. A store
+    // that takes the reading and refuses the sighting says so in
+    // `sightingFailure`, with `kept` true and `failure` empty, on both paths.
+    // No session: nothing kept, and no sighting trouble invented.
+    {
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const fs::path take = volume::wavDir(volume, 9) / "009_1.WAV";
+        putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
+        const std::string hash = HistoryStore::contentHash(commands::readFileBytes(take));
+        const auto hex = [](const std::string& bytes) {
+            static constexpr char digits[] = "0123456789ABCDEF";
+            std::string out;
+            for (const unsigned char c : bytes) {
+                out += digits[c >> 4];
+                out += digits[c & 15];
+            }
+            return out;
+        };
+        auto rec = recorderAt(tmp.path / "history");
+        rec->selectVolume(volume); // a session open, and not one operation begun
+        sqlite::Db& db = rec->store().db();
+        const std::string theRow = "SELECT count(*) FROM take_sightings WHERE slot = 9 AND name = '009_1.WAV'"
+                                   " AND size = " + std::to_string(fs::file_size(take))
+                                 + " AND modified = " + std::to_string(history::modifiedMs(take))
+                                 + " AND hex(hash) = '" + hex(hash) + "' AND since_op IS NULL";
+
+        // Read path, on a store with no operation: the sighting stands on none.
+        const auto cold = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(cold.kept);
+        CHECK(cold.failure.empty());
+        CHECK(cold.sightingFailure.empty());
+        CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 1);
+        CHECK_EQ(count(db, theRow), 1);
+
+        // Recall path: the row gone, the reading recalled, the same row back.
+        db.exec("DELETE FROM take_sightings");
+        const auto any = [](const wav::LoudnessReading&) { return true; };
+        const auto recalled = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(recalled.recalled);
+        CHECK(recalled.kept);
+        CHECK(recalled.failure.empty());
+        CHECK(recalled.sightingFailure.empty());
+        CHECK_EQ(count(db, "SELECT count(*) FROM take_sightings"), 1);
+        CHECK_EQ(count(db, theRow), 1);
+
+        // The store takes the reading and refuses the sighting, on both paths:
+        // the reading is kept and the trouble is the sighting's alone.
+        db.exec("DELETE FROM loudness_readings");
+        db.exec("DROP TABLE take_sightings");
+        const auto readRefused = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(readRefused.kept);
+        CHECK(!readRefused.recalled);
+        CHECK(readRefused.failure.empty());
+        CHECK(!readRefused.sightingFailure.empty());
+        CHECK(rec->store().readingFor(hash).has_value());
+        const auto recallRefused = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(recallRefused.recalled);
+        CHECK(recallRefused.kept);
+        CHECK(recallRefused.failure.empty());
+        CHECK(!recallRefused.sightingFailure.empty());
+
+        // No session: nothing kept, nothing refused.
+        rec->disconnect();
+        const auto unkept = history::readSlotLoudness(volume, 9, *rec);
+        CHECK(!unkept.kept);
+        CHECK(unkept.failure.empty());
+        CHECK(unkept.sightingFailure.empty());
+        const auto unkeptRecall = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(!unkeptRecall.recalled);
+        CHECK(!unkeptRecall.kept);
+        CHECK(unkeptRecall.failure.empty());
+        CHECK(unkeptRecall.sightingFailure.empty());
+    }
+
+    // --- the measure-first step of Normalize asks the history before the meter (#142) ---
+    //
+    // Theory: the bytes come off the card and are hashed; a reading the
+    // history holds for exactly that hash is the answer and nothing is
+    // measured — proven by planting a reading the meter could never take off
+    // these bytes and getting it back, dated as planted. Bytes the history has
+    // never seen are measured and filed under their own hash — even a take
+    // swapped in under the same name, size and date as one the history has a
+    // row and a reading for: what a slot's facts suggest (#141) is a guess,
+    // and a guess never answers here. No card in front of the history:
+    // measured, nothing filed, the store not opened. A history that cannot
+    // answer: measured around, the trouble reported. And the step opens no
+    // operation: after a take with nothing to do the card's timeline is as it
+    // was, while a real normalize then adds exactly one row.
+    {
+        constexpr double kTarget = -18.0;
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const fs::path take9 = volume::wavDir(volume, 9) / "009_1.WAV";
+        putSineWav(volume, 9, "009_1.WAV", 44100, -23.0);
+        const std::string hash = HistoryStore::contentHash(commands::readFileBytes(take9));
+        auto rec = recorderAt(tmp.path / "history");
+        const auto any = [](const wav::LoudnessReading&) { return true; };
+
+        // No card in front of the history: measured, nothing filed, not even opened to ask.
+        const auto cold = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(!cold.recalled);
+        CHECK(!cold.kept);
+        CHECK(cold.failure.empty());
+        CHECK(cold.hash == hash);
+        CHECK(cold.reading.integratedLufs.has_value()
+              && std::abs(*cold.reading.integratedLufs - (-23.0)) <= 0.1);
+        CHECK(!fs::exists(tmp.path / "history" / "history.db"));
+
+        // The card connects and its first snapshot is taken, as the app takes
+        // it: the take's row now names it by name, size, date and hash. From
+        // here on the card's timeline is the oracle for "no row".
+        const auto first = rec->firstSeen(volume);
+        CHECK(first.has_value());
+        for (int slot = 1; first.has_value() && slot <= 99; ++slot)
+            rec->snapshotStep(*first, slot);
+        sqlite::Db& db = rec->store().db();
+        const auto timelineRows = [&rec] { return rec->store().cardTimeline().size(); };
+        const std::size_t rowsBefore = timelineRows();
+        const std::int64_t opsBefore = count(db, "SELECT count(*) FROM ops");
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 0); // a snapshot measures nothing
+
+        // A reading no meter would take off a -23 dBFS tone, planted under
+        // these bytes' hash: if it comes back, nothing was measured.
+        const wav::LoudnessReading planted { -40.0, 0.25f, -12.0, 0 };
+        constexpr std::int64_t kPlantedAt = 5;
+        rec->store().recordReading(hash, planted, kPlantedAt);
+        const auto recalled = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(recalled.recalled);
+        CHECK(recalled.kept);
+        CHECK(recalled.failure.empty());
+        CHECK(recalled.hash == hash);
+        CHECK(recalled.reading.integratedLufs.has_value()
+              && std::abs(*recalled.reading.integratedLufs - (-40.0)) <= 1.0e-12);
+        CHECK(std::abs(recalled.reading.samplePeak - 0.25f) <= 1.0e-6f);
+        CHECK(std::abs(recalled.reading.truePeakDb - (-12.0)) <= 1.0e-12);
+        CHECK_EQ(recalled.reading.wildSamples, 0);
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 1); // not filed anew
+        const auto row = rec->store().readingFor(hash);
+        CHECK(row.has_value() && row->measuredMs == kPlantedAt); // nor dated anew
+
+        // Another sound under the same name, the same size and the same date:
+        // everything a directory entry says matches the row, and the bytes do
+        // not. The step reads the bytes, so the planted -40 must not answer.
+        const auto sizeBefore = fs::file_size(take9);
+        const auto stampBefore = fs::last_write_time(take9);
+        putSineWav(volume, 9, "009_1.WAV", 44100, -30.0);
+        fs::last_write_time(take9, stampBefore);
+        CHECK(fs::file_size(take9) == sizeBefore);
+        CHECK(fs::last_write_time(take9) == stampBefore);
+        const std::string swappedHash = HistoryStore::contentHash(commands::readFileBytes(take9));
+        CHECK(swappedHash != hash);
+        const auto swapped = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(!swapped.recalled);
+        CHECK(swapped.kept);
+        CHECK(swapped.failure.empty());
+        CHECK(swapped.hash == swappedHash);
+        CHECK(swapped.reading.integratedLufs.has_value()
+              && std::abs(*swapped.reading.integratedLufs - (-30.0)) <= 0.1);
+        CHECK(rec->store().readingFor(swappedHash).has_value());
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+        // ...and it is the history's answer from then on, to the last digit.
+        const auto again = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(again.recalled);
+        CHECK(again.reading.integratedLufs.has_value() && swapped.reading.integratedLufs.has_value()
+              && std::abs(*again.reading.integratedLufs - *swapped.reading.integratedLufs) <= 1.0e-12);
+
+        // A take already at the target: read, filed, nothing to do — and the
+        // card's timeline has not moved. The old flow left a row here.
+        putSineWav(volume, 10, "010_1.WAV", 44100, kTarget);
+        const auto atTarget = history::recallOrReadSlotLoudness(volume, 10, *rec, any);
+        CHECK(!atTarget.recalled);
+        CHECK(atTarget.kept);
+        CHECK(normalizeplan::decide(10, atTarget.reading, kTarget).outcome
+              == normalizeplan::Plan::Outcome::nothingToDo);
+        CHECK_EQ(timelineRows(), rowsBefore);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops"), opsBefore);
+
+        // A take with something to do: the step opened nothing for it either...
+        putSineWav(volume, 11, "011_1.WAV", 44100, -28.0);
+        const auto quiet = history::recallOrReadSlotLoudness(volume, 11, *rec, any);
+        CHECK(normalizeplan::decide(11, quiet.reading, kTarget).outcome
+              == normalizeplan::Plan::Outcome::apply);
+        CHECK_EQ(timelineRows(), rowsBefore);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops"), opsBefore);
+        // ...and the normalize it leads to adds exactly one row.
+        CHECK_EQ(run(*rec, "op-142", "normalize", volume, [&] {
+                     commands::normalize(volume, 11, { .targetLufs = kTarget,
+                                                       .write = options(rec, "op-142") });
+                 }),
+                 std::string());
+        CHECK_EQ(timelineRows(), rowsBefore + 1);
+        CHECK_EQ(count(db, "SELECT count(*) FROM ops"), opsBefore + 1);
+
+        // The history cannot be asked: the bytes still can be, and the trouble is said.
+        db.exec("DROP TABLE loudness_readings");
+        const auto broken = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        CHECK(!broken.recalled);
+        CHECK(!broken.kept);
+        CHECK(broken.failure.rfind("the history could not be asked: ", 0) == 0);
+        CHECK(broken.hash == swappedHash);
+        CHECK(broken.reading.integratedLufs.has_value()
+              && std::abs(*broken.reading.integratedLufs - (-30.0)) <= 0.1);
+
+        CHECK_THROWS(history::recallOrReadSlotLoudness(volume, 12, *rec, any), "no audio to measure");
+    }
+
+    // --- a stored reading the meter could not have taken is measured over (#142 review) ---
+    //
+    // Theory: the store is believed for what the meter can say and nothing
+    // else. A row planted past recordReading's checks — an infinite loudness,
+    // a loudness beside a peak that is not finite, a sample peak that is not
+    // finite, a loudness at or under the -70 LUFS gate — is no answer: the
+    // bytes are measured once and the fresh reading replaces the row. A
+    // plausible row the caller cannot use is measured over the same way, the
+    // caller asked once and never about the fresh reading. A store that cannot
+    // be asked is not asked again to file — shown with an authorizer that
+    // refuses the ask and lets a filing through: no row appears. `failure`
+    // is set only when nothing was kept, and says which of the two failed.
+    {
+        // What the meter can and cannot say, on its own.
+        const double inf = std::numeric_limits<double>::infinity();
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        CHECK(history::plausibleReading({ -30.0, 0.03f, -29.5, 0 }));
+        CHECK(history::plausibleReading({ std::nullopt, 0.0f, -inf, 0 }));   // digital silence
+        CHECK(history::plausibleReading({ std::nullopt, 0.5f, -6.0, 0 }));   // under one gating block
+        CHECK(history::plausibleReading({ 767.0, 2.4e38f, 400.0, 1234 }));   // damaged, as read
+        CHECK(!history::plausibleReading({ inf, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -inf, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ nan, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, -inf, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, inf, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, nan, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, -0.5f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, std::numeric_limits<float>::infinity(), -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, std::numeric_limits<float>::quiet_NaN(), -29.5, 0 }));
+        CHECK(!history::plausibleReading({ loudness::kAbsoluteGateLufs, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ -80.0, 0.03f, -29.5, 0 }));
+        CHECK(!history::plausibleReading({ std::nullopt, 0.0f, nan, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, -29.5, -1 }));
+        // An infinite peak is how the meter reports a +inf sample: plausible
+        // beside impossible samples, and only there. NaN never is.
+        const float infF = std::numeric_limits<float>::infinity();
+        const float nanF = std::numeric_limits<float>::quiet_NaN();
+        CHECK(history::plausibleReading({ 767.0, infF, 400.0, 3 }));
+        CHECK(history::plausibleReading({ std::nullopt, infF, inf, 2 }));
+        CHECK(history::plausibleReading({ 767.0, infF, inf, 3 }));
+        CHECK(!history::plausibleReading({ std::nullopt, infF, -6.0, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, inf, 0 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, -inf, 4 })); // a loud take has a peak
+        CHECK(!history::plausibleReading({ -30.0, nanF, -29.5, 5 }));
+        CHECK(!history::plausibleReading({ std::nullopt, nanF, inf, 2 }));
+        CHECK(!history::plausibleReading({ -30.0, 0.03f, nan, 5 }));
+
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        putSineWav(volume, 9, "009_1.WAV", 44100, -30.0);
+        const std::string hash = HistoryStore::contentHash(
+            commands::readFileBytes(volume::wavDir(volume, 9) / "009_1.WAV"));
+        auto rec = recorderAt(tmp.path / "history");
+        rec->selectVolume(volume);
+        sqlite::Db& db = rec->store().db();
+        const auto any = [](const wav::LoudnessReading&) { return true; };
+        constexpr std::int64_t kPlantedAt = 7;
+        const auto plant = [&db, &hash](std::optional<double> lufs, double samplePeak, double truePeak) {
+            sqlite::Statement put(db, "INSERT OR REPLACE INTO loudness_readings"
+                                      "(hash, integrated_lufs, sample_peak, true_peak_dbtp, wild_samples, measured) "
+                                      "VALUES (?1, ?2, ?3, ?4, 0, 7)");
+            put.bindBlob(1, hash);
+            if (lufs.has_value())
+                put.bindReal(2, *lufs);
+            else
+                put.bindNull(2);
+            put.bindReal(3, samplePeak).bindReal(4, truePeak).run();
+        };
+        const auto measuredFresh = [&](const history::SlotLoudness& read) {
+            const auto row = rec->store().readingFor(hash);
+            return !read.recalled && read.kept && read.failure.empty() && read.hash == hash
+                && read.reading.integratedLufs.has_value()
+                && std::abs(*read.reading.integratedLufs - (-30.0)) <= 0.1
+                && row.has_value() && row->measuredMs != kPlantedAt
+                && row->reading.integratedLufs.has_value()
+                && std::abs(*row->reading.integratedLufs - *read.reading.integratedLufs) <= 1.0e-12;
+        };
+
+        int asked = 0;
+        const auto counting = [&asked](const wav::LoudnessReading&) {
+            ++asked;
+            return true;
+        };
+        plant(inf, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-inf, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-30.0, 0.03, -inf);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-30.0, 0.03, inf);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-30.0, inf, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(loudness::kAbsoluteGateLufs, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        plant(-80.0, 0.03, -29.5);
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, counting)));
+        CHECK_EQ(asked, 0); // an implausible row is never put to the caller
+
+        // A damaged reading with an infinite peak, as the meter reports one,
+        // is what the store keeps and what recall believes: planted under
+        // these bytes, it comes back, not measured again.
+        rec->store().recordReading(hash, { 767.0, std::numeric_limits<float>::infinity(), 400.0, 3 },
+                                   kPlantedAt);
+        const auto damagedRow = history::recallOrReadSlotLoudness(volume, 9, *rec, counting);
+        CHECK(damagedRow.recalled);
+        CHECK(std::isinf(damagedRow.reading.samplePeak));
+        CHECK_EQ(damagedRow.reading.wildSamples, 3);
+        CHECK_EQ(asked, 1);
+        // And a real take with a +inf sample: measured once, filed, and
+        // recalled from then on — not measured and filed again on every ask.
+        {
+            const fs::path damagedTake = volume::wavDir(volume, 9) / "009_1.WAV";
+            std::string bytes = commands::readFileBytes(damagedTake);
+            constexpr std::size_t kFirstSample = 44; // RIFF 12 + fmt 24 + data header 8
+            const auto bits = std::bit_cast<std::uint32_t>(std::numeric_limits<float>::infinity());
+            for (std::size_t i = 0; i < 4; ++i)
+                bytes[kFirstSample + i] = static_cast<char>((bits >> (8 * i)) & 0xffu);
+            commands::writeFileBytes(damagedTake, bytes);
+            const auto fresh = history::recallOrReadSlotLoudness(volume, 9, *rec, counting);
+            CHECK(!fresh.recalled);
+            CHECK(fresh.kept);
+            CHECK(fresh.reading.wildSamples > 0);
+            CHECK(std::isinf(fresh.reading.samplePeak));
+            const auto filed = rec->store().readingFor(fresh.hash);
+            CHECK(filed.has_value());
+            const auto later = history::recallOrReadSlotLoudness(volume, 9, *rec, counting);
+            CHECK(later.recalled);
+            CHECK(filed.has_value() && rec->store().readingFor(fresh.hash).has_value()
+                  && rec->store().readingFor(fresh.hash)->measuredMs == filed->measuredMs);
+            putSineWav(volume, 9, "009_1.WAV", 44100, -30.0); // the clean take back
+            CHECK(HistoryStore::contentHash(commands::readFileBytes(damagedTake)) == hash);
+        }
+        asked = 0;
+
+        // A plausible row the caller cannot use: asked once, about that row
+        // only, and measured over.
+        rec->store().recordReading(hash, { -40.0, 0.25f, -12.0, 0 }, kPlantedAt);
+        std::vector<double> putToCaller;
+        const auto refusing = [&putToCaller](const wav::LoudnessReading& known) {
+            putToCaller.push_back(known.integratedLufs.value_or(0.0));
+            return false;
+        };
+        CHECK(measuredFresh(history::recallOrReadSlotLoudness(volume, 9, *rec, refusing)));
+        CHECK_EQ(putToCaller.size(), 1u);
+        CHECK(!putToCaller.empty() && std::abs(putToCaller.front() - (-40.0)) <= 1.0e-12);
+        // Replaced, not added: the clean take's row and the damaged take's.
+        CHECK_EQ(count(db, "SELECT count(*) FROM loudness_readings"), 2);
+
+        // The ask refused, the filing allowed: nothing is filed, so nothing
+        // was tried, and the trouble named is the ask's.
+        db.exec("DELETE FROM loudness_readings");
+        const auto denySelect = [](void*, int action, const char*, const char*, const char*,
+                                   const char*) { return action == SQLITE_SELECT ? SQLITE_DENY : SQLITE_OK; };
+        sqlite3_set_authorizer(db.raw(), denySelect, nullptr);
+        const auto unasked = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        // The control: under the same authorizer a filing goes through.
+        const std::string other = HistoryStore::contentHash("another take");
+        rec->store().recordReading(other, { -20.0, 0.5f, -3.0, 0 }, 9);
+        sqlite3_set_authorizer(db.raw(), nullptr, nullptr);
+        CHECK(!unasked.recalled);
+        CHECK(!unasked.kept);
+        CHECK(unasked.failure.rfind("the history could not be asked: ", 0) == 0);
+        CHECK(unasked.reading.integratedLufs.has_value()
+              && std::abs(*unasked.reading.integratedLufs - (-30.0)) <= 0.1);
+        CHECK(!rec->store().readingFor(hash).has_value());
+        CHECK(rec->store().readingFor(other).has_value());
+
+        // The ask answered, the filing refused: the trouble named is the filing's.
+        const auto denyInsert = [](void*, int action, const char*, const char*, const char*,
+                                   const char*) { return action == SQLITE_INSERT ? SQLITE_DENY : SQLITE_OK; };
+        sqlite3_set_authorizer(db.raw(), denyInsert, nullptr);
+        const auto unfiled = history::recallOrReadSlotLoudness(volume, 9, *rec, any);
+        sqlite3_set_authorizer(db.raw(), nullptr, nullptr);
+        CHECK(!unfiled.recalled);
+        CHECK(!unfiled.kept);
+        CHECK(!unfiled.failure.empty());
+        CHECK(unfiled.failure.rfind("the history could not be asked", 0) != 0);
+        CHECK(!rec->store().readingFor(hash).has_value());
     }
 
     // --- the wiring refuses to be built without what it needs ---

@@ -127,6 +127,16 @@ int main()
         CHECK(r.wasOk());
         if (r.wasOk()) {
             CHECK(out.converted); // an mp3 is always a conversion, never a pass-through
+            CHECK(out.rebuilt);   // ...and a rebuild: a decoder made these samples
+            // The fact about the source is its codec, not the decoder's float32
+            // (issue #139): the report must not describe an mp3 as "32-bit float".
+            CHECK(out.sourceFormat.has_value());
+            if (out.sourceFormat.has_value()) {
+                CHECK(!out.sourceFormat->factual); // a decoder's samples, not the file's
+                CHECK_EQ(out.sourceFormat->encoding.toStdString(), std::string("MP3"));
+                CHECK_EQ(wavimport::describeConversion(*out.sourceFormat).toStdString(),
+                         std::string("MP3 \xe2\x86\x92 32-bit float"));
+            }
             juce::MemoryBlock raw;
             CHECK(out.file.loadFileAsData(raw));
             const auto info = wav::readWavInfo(wav::BytesView(

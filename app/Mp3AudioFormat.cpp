@@ -26,7 +26,7 @@ namespace
     {
     public:
         explicit Mp3Reader(juce::InputStream* stream)
-            : juce::AudioFormatReader(stream, "MP3")
+            : juce::AudioFormatReader(stream, Mp3AudioFormat::kReaderName)
         {
             input->readIntoMemoryBlock(data);
             if (mp3dec_ex_open_buf(&dec, static_cast<const juce::uint8*>(data.getData()),

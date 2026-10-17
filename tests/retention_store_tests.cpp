@@ -175,7 +175,7 @@ int main()
         const std::string hash = HistoryStore::contentHash(shared);
         const auto opA = r.replaced(1, shared);
         const auto opB = r.replaced(2, shared);
-        r.store.recordLanded(opB, 2, 1, "landed.wav", shared); // an 'after' naming the same bytes
+        r.store.recordLanded(opB, 2, 1, "landed.wav", shared, r.now()); // an 'after' naming the same bytes
         const std::string other = take(20000, 2);
         const auto opC = r.replaced(3, other);
 
@@ -240,14 +240,14 @@ int main()
         const auto hShared = HistoryStore::contentHash(shared);
         const auto hLater = HistoryStore::contentHash(later);
         const auto sighting = r.store.firstSeen(r.session, "sighting", r.now());
-        r.store.snapshotSlot(sighting, 1, "body", { { 1, "original.wav", original } }, r.now());
-        r.store.snapshotSlot(sighting, 2, "body", { { 1, "newer.wav", originalNew } }, r.now());
-        r.store.snapshotSlot(sighting, 3, "body", { { 1, "shared.wav", shared } }, r.now());
+        r.store.snapshotSlot(sighting, 1, "body", { { 1, "original.wav", original, 9001 } }, r.now());
+        r.store.snapshotSlot(sighting, 2, "body", { { 1, "newer.wav", originalNew, 9002 } }, r.now());
+        r.store.snapshotSlot(sighting, 3, "body", { { 1, "shared.wav", shared, 9003 } }, r.now());
         r.store.finishOp(sighting, OpStatus::done, "");
         r.replaced(4, later);
         const auto pushedAt = r.now();
         const auto push = r.store.beginOp(r.session, "push", "push", pushedAt);
-        r.store.recordLanded(push, 27, 1, "pushed.wav", shared); // 'after' is a reference too
+        r.store.recordLanded(push, 27, 1, "pushed.wav", shared, pushedAt); // 'after' is a reference too
         r.store.finishOp(push, OpStatus::done, "");
         r.renamed(9); // no take is needed by undo
 

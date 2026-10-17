@@ -3,10 +3,14 @@
 
 #include "HistoryWindow.h"
 
+#include "HistoryBadges.h"
+#include "MiddleEllipsis.h"
+
 #include <felitronics/appkit/Brand.h>
 #include <loopercat/Error.hpp>
 
 #include <algorithm>
+#include <vector>
 
 namespace loopercat
 {
@@ -28,10 +32,76 @@ const juce::Colour kSelected { 0xff26263a };
 const juce::Colour kBadge { 0xff2a2a3a };
 const juce::Colour kWarning { 0xffd9a441 };  // failed, interrupted
 
-// Where the badges start and how wide each is: the hit test and the
-// painting read the same numbers.
+// Where the badges start, how wide each is — and which ones a row wears at
+// all: the hit test and the painting read the same numbers.
 int badgesLeft() { return kGutter + kClockWidth; }
 int badgeLeft(int index) { return badgesLeft() + index * (kBadgeWidth + kBadgeGap); }
+int badgesRight() { return badgesLeft() + kBadgeSlots * (kBadgeWidth + kBadgeGap); }
+bool inBadgeStrip(int x) { return x >= badgesLeft() && x < badgesRight(); }
+
+// The store hands a row's slots ascending, each once (HistoryStore.h,
+// CardEntry::slots), and the pedal has 1..99 of them. A row that says
+// otherwise would wear a badge for a slot the filter refuses — and a click
+// on it would throw from inside the mouse dispatch, far from the mistake.
+void checkSlots(const HistoryWindow::Row& row)
+{
+    int previous = 0;
+    for (const int slot : row.slots) {
+        if (slot < 1 || slot > 99)
+            throw Error("history row " + std::to_string(row.op) + ": slot " + std::to_string(slot)
+                        + " is not 1..99");
+        if (slot <= previous)
+            throw Error("history row " + std::to_string(row.op) + ": slots are ascending, each once ("
+                        + std::to_string(previous) + " then " + std::to_string(slot) + ")");
+        previous = slot;
+    }
+}
+history::badges::Shown badgesOf(const HistoryWindow::Row& row, std::optional<int> filter)
+{
+    return history::badges::shown(row.slots, row.isSnapshot, kBadgeSlots, filter);
+}
+
+// The words a row counted in words wears where its badges would be:
+// "99 slots" for the card's first sighting.
+juce::String slotsInWords(const HistoryWindow::Row& row)
+{
+    const auto count = static_cast<int>(row.slots.size());
+    return juce::String(count) + (count == 1 ? " slot" : " slots");
+}
+
+// What each position of the strip reads: the badges' numbers, then the
+// chip's count — or, for a row counted in words, the words alone across the
+// strip. The painting and badgeStripText read the same list.
+std::vector<juce::String> stripTexts(const HistoryWindow::Row& row, const history::badges::Shown& worn)
+{
+    if (worn.inWords)
+        return { slotsInWords(row) };
+    std::vector<juce::String> texts;
+    for (const int slot : worn.slots)
+        texts.push_back(juce::String(slot));
+    if (worn.more > 0)
+        texts.push_back("+" + juce::String(worn.more));
+    return texts;
+}
+
+// The strip's part of the hint: the words, or every slot the chip only
+// counts — "slots 3, 7, 12, 40, 99" — and nothing for a row whose badges
+// already say it all.
+juce::String stripHint(const HistoryWindow::Row& row, const history::badges::Shown& worn)
+{
+    if (worn.inWords)
+        return slotsInWords(row);
+    if (worn.more == 0)
+        return {};
+    juce::String list;
+    for (const int slot : row.slots)
+        list << (list.isEmpty() ? "" : ", ") << slot;
+    return "slots " + list;
+}
+
+// What joins the parts of a row's hint. A dash, because the parts themselves
+// use the middle dot (several takes in one audio column).
+juce::String hintJoin() { return juce::String::fromUTF8(" \xe2\x80\x94 "); }
 } // namespace
 
 HistoryWindow::HistoryWindow()
@@ -71,6 +141,8 @@ HistoryWindow::~HistoryWindow() { list_.setModel(nullptr); }
 
 void HistoryWindow::show(std::vector<Row> rows)
 {
+    for (const Row& row : rows)
+        checkSlots(row);
     const std::int64_t keep = selected() != nullptr ? selected()->op : 0;
     rows_ = std::move(rows);
     rebuildVisible(keep);
@@ -197,12 +269,44 @@ std::optional<int> HistoryWindow::badgeAt(int visibleIndex, int x) const
     const Row* row = visibleRow(visibleIndex);
     if (row == nullptr)
         return std::nullopt;
-    for (std::size_t i = 0; i < row->slots.size(); ++i) {
+    const history::badges::Shown worn = badgesOf(*row, filter_);
+    for (std::size_t i = 0; i < worn.slots.size(); ++i) {
         const int left = badgeLeft(static_cast<int>(i));
         if (x >= left && x < left + kBadgeWidth)
-            return row->slots[i];
+            return worn.slots[i];
     }
-    return std::nullopt;
+    return std::nullopt; // the clock, the chip, the words, the sentence
+}
+
+juce::String HistoryWindow::badgeStripText(int visibleIndex) const
+{
+    const Row* row = visibleRow(visibleIndex);
+    if (row == nullptr)
+        return {};
+    juce::String text;
+    for (const juce::String& cell : stripTexts(*row, badgesOf(*row, filter_)))
+        text << (text.isEmpty() ? "" : " ") << cell;
+    return text;
+}
+
+void HistoryWindow::clickAt(int visibleIndex, int x)
+{
+    if (const auto slot = badgeAt(visibleIndex, x))
+        setFilter(slot);
+}
+
+juce::String HistoryWindow::hintAt(int visibleIndex) const
+{
+    const Row* row = visibleRow(visibleIndex);
+    if (row == nullptr)
+        return {};
+    juce::String hint;
+    for (const juce::String& part : { row->when, stripHint(*row, badgesOf(*row, filter_)), row->action,
+                                      row->detail, row->state, row->audio,
+                                      juce::String(row->pinned ? "pinned" : "") })
+        if (part.isNotEmpty())
+            hint << (hint.isEmpty() ? juce::String() : hintJoin()) << part;
+    return hint;
 }
 
 void HistoryWindow::selectedRowsChanged(int)
@@ -212,15 +316,24 @@ void HistoryWindow::selectedRowsChanged(int)
 
 void HistoryWindow::listBoxItemClicked(int row, const juce::MouseEvent& event)
 {
-    if (const auto slot = badgeAt(row, event.x))
-        setFilter(slot);
+    clickAt(row, event.x);
+}
+
+juce::String HistoryWindow::getTooltipForRow(int row)
+{
+    return hintAt(row);
 }
 
 void HistoryWindow::listBoxItemDoubleClicked(int index, const juce::MouseEvent& event)
 {
-    if (badgeAt(index, event.x))
-        return; // the click already filtered; a second click is not a play
-    const Row* row = visibleRow(index);
+    doubleClickAt(index, event.x);
+}
+
+void HistoryWindow::doubleClickAt(int visibleIndex, int x)
+{
+    if (inBadgeStrip(x))
+        return; // a badge: the click already filtered; the chip or the words: a count is not a take
+    const Row* row = visibleRow(visibleIndex);
     if (row != nullptr && row->playable && !busy_ && onPlay)
         onPlay(row->op);
 }
@@ -246,16 +359,29 @@ void HistoryWindow::paintListBoxItem(int index, juce::Graphics& g, int width, in
     g.setColour(kInk);
     g.drawText(row->when, area.removeFromLeft(kClockWidth), juce::Justification::centredLeft, false);
 
-    for (std::size_t i = 0; i < row->slots.size(); ++i) {
-        const juce::Rectangle<int> badge(badgeLeft(static_cast<int>(i)), 4, kBadgeWidth, height - 8);
-        g.setColour(filter_ && *filter_ == row->slots[i] ? felitronics::appkit::brand::violet
-                                                          : kBadge);
-        g.fillRoundedRectangle(badge.toFloat(), 4.0f);
-        g.setColour(kPaper);
-        g.setFont(juce::FontOptions(11.0f));
-        g.drawText(juce::String(row->slots[i]), badge, juce::Justification::centred, false);
+    const history::badges::Shown worn = badgesOf(*row, filter_);
+    const std::vector<juce::String> texts = stripTexts(*row, worn);
+    g.setFont(juce::FontOptions(11.0f));
+    if (worn.inWords) {
+        // "99 slots" across the strip, in the chip's quiet ink: a count,
+        // not a badge.
+        const juce::Rectangle<int> strip(badgesLeft(), 0, badgesRight() - badgesLeft() - kBadgeGap,
+                                         height);
+        g.setColour(kInk);
+        g.drawText(texts.front(), strip, juce::Justification::centredLeft, false);
     }
-    area.removeFromLeft(kBadgeSlots * (kBadgeWidth + kBadgeGap));
+    for (std::size_t i = 0; i < texts.size() && !worn.inWords; ++i) {
+        // A badge wears paper; the chip, counting the rest, wears the quiet
+        // ink that says it is a number, not a button.
+        const bool badge = i < worn.slots.size();
+        const juce::Rectangle<int> cell(badgeLeft(static_cast<int>(i)), 4, kBadgeWidth, height - 8);
+        g.setColour(badge && filter_ && *filter_ == worn.slots[i] ? felitronics::appkit::brand::violet
+                                                                   : kBadge);
+        g.fillRoundedRectangle(cell.toFloat(), 4.0f);
+        g.setColour(badge ? kPaper : kInk);
+        g.drawText(texts[i], cell, juce::Justification::centred, false);
+    }
+    area.removeFromLeft(badgesRight() - badgesLeft());
     g.setFont(juce::FontOptions(13.0f));
 
     if (row->audio.isNotEmpty()) {
@@ -278,8 +404,15 @@ void HistoryWindow::paintListBoxItem(int index, juce::Graphics& g, int width, in
         juce::jmin(area.getWidth(), juce::GlyphArrangement::getStringWidthInt(g.getCurrentFont(), action) + 16);
     g.drawText(action, area.removeFromLeft(actionWidth), juce::Justification::centredLeft, false);
     if (row->detail.isNotEmpty()) {
+        // Cut in the middle when it does not fit: the tail ("nothing to do")
+        // is the part that matters, and the hint carries the whole sentence.
         g.setColour(kInk.brighter(0.35f));
-        g.drawText(row->detail, area, juce::Justification::centredLeft, true);
+        const juce::Font font = g.getCurrentFont();
+        const auto widthOf = [&font](const juce::String& text) {
+            return juce::GlyphArrangement::getStringWidthInt(font, text);
+        };
+        g.drawText(elideMiddle(row->detail, area.getWidth(), widthOf), area,
+                   juce::Justification::centredLeft, false);
     }
 }
 

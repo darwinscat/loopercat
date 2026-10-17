@@ -248,6 +248,7 @@ function(loopercat_core_test name)
 endfunction()
 
 loopercat_core_test(banner_tests)
+loopercat_core_test(job_words_tests)
 loopercat_core_test(connect_tests)
 # The gate in front of Connect's first frame (issue #85): pure over the
 # register's answer, so it is built like a core suite though it lives in app/.
@@ -255,6 +256,11 @@ loopercat_core_test(connect_gate_tests)
 # What the app remembers about the pedals it has met (issue #98): pure, so
 # it is a core suite though it lives in app/.
 loopercat_core_test(pedal_book_tests)
+# What a file name on the card may be (FatName.hpp): FAT's rules and Windows's.
+loopercat_core_test(fat_name_tests)
+# The name a pushed file lands under (issue #139): pure, so it is a core
+# suite though it lives in app/.
+loopercat_core_test(upload_mark_tests)
 # The empty window's words about the bus, by the profile table's read gate.
 loopercat_core_test(pedal_presence_tests)
 loopercat_core_test(params_tests)
@@ -294,9 +300,11 @@ target_link_libraries(card_rows_tests PRIVATE loopercat_sqlite3)
 loopercat_core_test(undo_tests)
 target_link_libraries(undo_tests PRIVATE loopercat_sqlite3)
 loopercat_core_test(operation_id_tests)
+loopercat_core_test(history_badges_tests)
 loopercat_core_test(downmix_tests)
 loopercat_core_test(loudness_tests)
 loopercat_core_test(normalize_tests)
+loopercat_core_test(normalize_plan_tests)
 loopercat_core_test(usecase_count_in_tests)
 loopercat_core_test(usecase_rhythm_tests)
 loopercat_core_test(usecase_play_stop_tests)
@@ -647,6 +655,7 @@ target_link_libraries(player_pane_harness PRIVATE
     felitronics::appkit
     juce::juce_gui_basics
     juce::juce_audio_utils
+    juce::juce_cryptography             # the read pass hashes what it meters (#140)
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME player_pane_harness COMMAND player_pane_harness)
@@ -715,6 +724,65 @@ target_link_libraries(wav_import_tests PRIVATE
 add_test(NAME wav_import_tests COMMAND wav_import_tests)
 
 # ----------------------------------------------------------------------------
+# The upload preferences (issues #53, #139) in the app's own PropertiesFile:
+# defaults for an untouched file, round trips through a fresh open, a mark
+# cleared to nothing staying nothing.
+# ----------------------------------------------------------------------------
+juce_add_console_app(import_prefs_tests PRODUCT_NAME "import_prefs_tests")
+target_sources(import_prefs_tests PRIVATE tests/import_prefs_tests.cpp)
+target_compile_definitions(import_prefs_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(import_prefs_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME import_prefs_tests COMMAND import_prefs_tests)
+
+# ----------------------------------------------------------------------------
+# The player's meter over JUCE's decoder against the core's (#140): on a take
+# the pedal gate accepts the two agree bit for bit, and the gate refuses what
+# JUCE would still decode — truncated, pcm16, mono — off the header and the
+# size alone. The streamed file hash against the in-memory one. No window.
+# ----------------------------------------------------------------------------
+juce_add_console_app(reader_loudness_tests PRODUCT_NAME "reader_loudness_tests")
+target_sources(reader_loudness_tests PRIVATE tests/reader_loudness_tests.cpp)
+target_compile_definitions(reader_loudness_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(reader_loudness_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_audio_formats
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME reader_loudness_tests COMMAND reader_loudness_tests)
+
+# A take's directory entry as the connect scan reads it (#141): name, size
+# and the platform's own stamp off the file system, no facts for an entry it
+# will not describe — and the real scan carrying them slot by slot without
+# reading audio. JUCE for the stamp and the worker's thread; no window.
+juce_add_console_app(take_facts_tests PRODUCT_NAME "take_facts_tests")
+target_sources(take_facts_tests PRIVATE tests/take_facts_tests.cpp)
+target_compile_definitions(take_facts_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(take_facts_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_events
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME take_facts_tests COMMAND take_facts_tests)
+
+# ----------------------------------------------------------------------------
 # The history store (issue #72): theory tests against real SQLite files — the
 # storage properties read back, atomicity of a take and its row, dedup,
 # lifecycle, and the stores it must refuse. JUCE only for SHA-256.
@@ -755,6 +823,49 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
+
+# The single-slot Normalize around its plan (#142): the target typed in
+# Settings, the read-only first step, the guard ahead of the write, one step
+# per slot — on synthetic cards, through the recorder as the app wires it.
+juce_add_console_app(normalize_step_tests PRODUCT_NAME "normalize_step_tests")
+target_sources(normalize_step_tests PRIVATE tests/normalize_step_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(normalize_step_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(normalize_step_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME normalize_step_tests COMMAND normalize_step_tests)
+
+# What the history says about a take it meets again without reading it (#141):
+# real commands recorded on a synthetic pedal, readings filed as Check
+# loudness files them, the takes sighted by their directory entries — and
+# asked of the store, which must write nothing for answering.
+juce_add_console_app(inferred_loudness_tests PRODUCT_NAME "inferred_loudness_tests")
+target_sources(inferred_loudness_tests PRIVATE tests/inferred_loudness_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(inferred_loudness_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(inferred_loudness_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME inferred_loudness_tests COMMAND inferred_loudness_tests)
 
 # First sighting, interruption and foreground writes on synthetic cards.
 juce_add_console_app(first_seen_tests PRODUCT_NAME "first_seen_tests")
@@ -942,12 +1053,29 @@ target_compile_definitions(history_window_tests PRIVATE
     LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
 target_link_libraries(history_window_tests PRIVATE
     loopercat::core
+    loopercat_sqlite3  # rows::forCard words the test's snapshot row; its header sees the store
     nlohmann_json::nlohmann_json
     felitronics::appkit
     juce::juce_gui_basics
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_window_tests COMMAND history_window_tests)
+
+# The middle cut of a long detail (#143): measured through a stand-in face —
+# no window, no font.
+juce_add_console_app(middle_ellipsis_tests PRODUCT_NAME "middle_ellipsis_tests")
+target_sources(middle_ellipsis_tests PRIVATE tests/middle_ellipsis_tests.cpp)
+target_compile_definitions(middle_ellipsis_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(middle_ellipsis_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME middle_ellipsis_tests COMMAND middle_ellipsis_tests)
 
 # GUI contract: built in restricted environments, run by the coordinator.
 juce_add_console_app(history_pane_tests PRODUCT_NAME "history_pane_tests")
@@ -965,6 +1093,23 @@ target_link_libraries(history_pane_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_pane_tests COMMAND history_pane_tests)
+
+# The tab strip's lead column (#145): geometry and hit test, driven without
+# a mouse — the label names no tab, and the tabs never move.
+juce_add_console_app(tab_strip_tests PRODUCT_NAME "tab_strip_tests")
+target_sources(tab_strip_tests PRIVATE tests/tab_strip_tests.cpp)
+target_compile_definitions(tab_strip_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(tab_strip_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME tab_strip_tests COMMAND tab_strip_tests)
 
 # The storage panel (issue #74's visible part): driven without a mouse, a
 # database or a worker — it shows what it is handed and offers only what the

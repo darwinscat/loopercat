@@ -27,6 +27,10 @@ namespace loopercat
 class Mp3AudioFormat final : public juce::AudioFormat
 {
 public:
+    // What the reader calls itself (AudioFormatReader::getFormatName): the
+    // import's report tells a codec's reader from a sample reader by this.
+    static constexpr const char* kReaderName = "MP3";
+
     Mp3AudioFormat();
 
     juce::Array<int> getPossibleSampleRates() override;

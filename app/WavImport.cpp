@@ -4,12 +4,15 @@
 #include "WavImport.h"
 
 #include "Mp3AudioFormat.h"
+#include "OperationsLog.h"
 
 #include <loopercat/Error.hpp>
 #include <loopercat/Loudness.hpp>
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace loopercat::wavimport
@@ -21,14 +24,10 @@ namespace
 
     // The pedal takes the file as-is when the core's own upload gate does —
     // one truth, not a parallel reimplementation of it.
-    bool pedalAcceptsAsIs(const juce::File& source)
+    bool pedalAcceptsAsIs(wav::BytesView bytes)
     {
-        juce::MemoryBlock raw;
-        if (!source.loadFileAsData(raw))
-            return false;
         try {
-            wav::assertUploadable(wav::readWavInfo(wav::BytesView(
-                static_cast<const unsigned char*>(raw.getData()), raw.getSize())));
+            wav::assertUploadable(wav::readWavInfo(bytes));
             return true;
         } catch (const Error&) {
             return false;
@@ -73,14 +72,77 @@ namespace
             remaining -= n;
         }
     }
+
+    // The conversion's file inside its job directory. The name says what the
+    // file is; the name on the card is decided elsewhere.
+    constexpr const char* kConvertedFileName = "converted.wav";
+
+    // JUCE's readers that read a file's samples as they lie, so the width
+    // they report is a fact about the file. Named by the READER
+    // (AudioFormatReader::getFormatName — wavFormatName and its siblings in
+    // juce_audio_formats/codecs), not by the format object that was asked:
+    // WavAudioFormat hands an Ogg stream inside a WAV to the Ogg reader. A
+    // JUCE upgrade that renamed one would make its files read as decoded by
+    // the system, which errs toward the mark.
+    constexpr const char* kWavReader = "WAV file";
+    constexpr const char* kAiffReader = "AIFF file";
+    constexpr const char* kFlacReader = "FLAC file";
+    constexpr const char* kOggReader = "Ogg-Vorbis file";
+    // The words for a system decoder — CoreAudio on macOS, Windows Media on
+    // Windows — which takes what JUCE's own readers refuse (float64, mu-law,
+    // AAC) and reports whatever width it chose: nothing about the file.
+    constexpr const char* kSystemDecoded = "decoded by the system";
+
+    SourceFormat factsOf(const juce::AudioFormatReader& reader)
+    {
+        SourceFormat facts { .sampleRate = int(std::llround(reader.sampleRate)),
+                             .channels = static_cast<int>(reader.numChannels) };
+        const juce::String name = reader.getFormatName();
+        if (name == Mp3AudioFormat::kReaderName) {
+            facts.encoding = "MP3";
+        } else if (name == kOggReader) {
+            facts.encoding = "Ogg Vorbis";
+        } else if (name == kWavReader || name == kAiffReader || name == kFlacReader) {
+            facts.encoding = juce::String(int(reader.bitsPerSample)) + "-bit"
+                           + (reader.usesFloatingPointData ? " float" : "");
+            facts.factual = true;
+        } else {
+            facts.encoding = kSystemDecoded;
+        }
+        return facts;
+    }
+
+    // The words the push report uses for a channel count prepare lets through.
+    juce::String channelsWord(int channels) { return channels == 1 ? "mono" : "stereo"; }
+
+    // A source the pedal takes as it is: no conversion, no job directory.
+    Prepared untouched(const juce::File& source, std::optional<NormalizeOutcome> outcome)
+    {
+        Prepared p;
+        p.file = source;
+        p.converted = false;
+        p.normalize = outcome;
+        return p;
+    }
 } // namespace
 
-juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepared& out,
+juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prepared& out,
                      const Options& options)
 {
-    const bool passesAsIs = pedalAcceptsAsIs(source);
+    juce::MemoryBlock raw;
+    if (!source.loadFileAsData(raw))
+        return juce::Result::fail("cannot read " + source.getFullPathName());
+    const wav::BytesView bytes(static_cast<const unsigned char*>(raw.getData()), raw.getSize());
+    // A WAV whose structure is at fault is refused with the fault named,
+    // never handed to a decoder that would pad a cut data chunk with
+    // silence or keep one of two data chunks and drop the other (review of
+    // issue #139). What the gate then refuses is shape — a tag, a rate, a
+    // width — and that is the converter's job.
+    if (const auto fault = wav::riffFault(bytes))
+        return juce::Result::fail(source.getFileName() + " " + *fault);
+    const bool passesAsIs = pedalAcceptsAsIs(bytes);
     if (!options.normalizeTargetLufs.has_value() && passesAsIs) {
-        out = { source, false, std::nullopt };
+        out = untouched(source, std::nullopt);
         return juce::Result::ok();
     }
 
@@ -98,6 +160,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
         return juce::Result::fail(source.getFileName() + " has "
                                   + juce::String(channels)
                                   + " channels — only mono and stereo can go to the pedal");
+    const SourceFormat sourceFormat = factsOf(*reader);
 
     // Pass 1 of the opt-in normalization (issue #53): measure, decide, and —
     // when a pedal-ready file needs nothing — keep the byte-exact promise.
@@ -113,7 +176,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
             // not a thing to aim at. Import as-is, report the damage.
             outcome = NormalizeOutcome { .damaged = true, .wildSamples = meter.wildSamples() };
             if (passesAsIs) {
-                out = { source, false, outcome };
+                out = untouched(source, outcome);
                 return juce::Result::ok();
             }
         } else if (!measured.has_value()) {
@@ -121,7 +184,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
             // and inventing a gain would be a guess. Import as-is and say so.
             outcome = NormalizeOutcome {};
             if (passesAsIs) {
-                out = { source, false, outcome };
+                out = untouched(source, outcome);
                 return juce::Result::ok();
             }
         } else {
@@ -129,7 +192,7 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
             if (passesAsIs && std::abs(wanted) < loudness::kAlreadyAtTargetLu) {
                 outcome = NormalizeOutcome { .measurable = true, .untouched = true,
                                              .measuredLufs = *measured };
-                out = { source, false, outcome };
+                out = untouched(source, outcome);
                 return juce::Result::ok();
             }
             gainDb = loudness::normalizeGainDb(*measured, target, meter.truePeakDb(),
@@ -141,12 +204,17 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
         }
     }
 
-    const juce::Result dirOk = tempDir.createDirectory();
+    // The job's own directory: nothing else writes there, so the file inside
+    // carries a fixed name and nothing is ever renamed around a clash. The
+    // name the audio lands under on the card is the caller's decision, made
+    // at the push (issue #139) — this one is never seen outside this job.
+    JobDir jobDir(importTmp.getChildFile(juce::Uuid().toString()));
+    const juce::Result dirOk = jobDir.path().createDirectory();
     if (dirOk.failed())
         return dirOk;
-    const juce::File dest =
-        tempDir.getChildFile(source.getFileNameWithoutExtension() + "-pedal.wav")
-            .getNonexistentSibling();
+    const juce::File dest = jobDir.path().getChildFile(kConvertedFileName);
+    if (dest.existsAsFile())
+        return juce::Result::fail(dest.getFullPathName() + " already exists in a fresh job directory");
 
     auto stream = dest.createOutputStream();
     if (stream == nullptr)
@@ -191,8 +259,59 @@ juce::Result prepare(const juce::File& source, const juce::File& tempDir, Prepar
     }
     writer.reset(); // flush before anyone reads the file
 
-    out = { dest, true, outcome };
+    out.file = dest;
+    out.converted = true;
+    // Rebuilt unless there is positive evidence the samples are the source's:
+    // a reader that reads them as they lie reported the pedal's own shape,
+    // and no gain went in. A header-only rewrite of such a file is the one
+    // case that is not a rebuild; anything a decoder made is.
+    out.rebuilt = !sourceFormat.factual || differsFromTarget(sourceFormat)
+               || (outcome.has_value() && outcome->measurable && !outcome->untouched);
+    out.normalize = outcome;
+    out.sourceFormat = sourceFormat;
+    out.jobDir = std::move(jobDir);
     return juce::Result::ok();
+}
+
+bool differsFromTarget(const SourceFormat& source)
+{
+    return source.sampleRate != kTargetSampleRate || source.encoding != kTargetEncoding
+        || source.channels != kTargetChannels;
+}
+
+void JobDir::release()
+{
+    if (dir_ == juce::File())
+        return;
+    // import-tmp lives in the app's data home, beside operations.log.
+    if (!dir_.deleteRecursively())
+        oplog::append(dir_.getParentDirectory().getParentDirectory(),
+                      "import-tmp: could not remove " + dir_.getFullPathName()
+                          + " after the job; remove it by hand");
+    dir_ = juce::File();
+}
+
+juce::String describeConversion(const SourceFormat& source)
+{
+    juce::StringArray was, now;
+    if (source.sampleRate != kTargetSampleRate) {
+        was.add(juce::String(source.sampleRate) + " Hz");
+        now.add(juce::String(kTargetSampleRate) + " Hz");
+    }
+    if (source.encoding != kTargetEncoding) {
+        was.add(source.encoding);
+        now.add(kTargetEncoding);
+    }
+    if (source.channels != kTargetChannels) {
+        was.add(channelsWord(source.channels));
+        now.add(channelsWord(kTargetChannels));
+    }
+    if (was.isEmpty())
+        return {};
+    // The same arrow describeNormalize draws, so a note carrying both
+    // sentences reads with one.
+    return was.joinIntoString(", ") + juce::String::fromUTF8(" \xe2\x86\x92 ")
+         + now.joinIntoString(", ");
 }
 
 } // namespace loopercat::wavimport

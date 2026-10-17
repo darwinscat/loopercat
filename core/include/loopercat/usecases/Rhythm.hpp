@@ -23,24 +23,49 @@
 //         groove becomes Blank. The pattern is forgotten, and the UI says so
 //         before the click (patternLostOnOff). No hidden state anywhere.
 //
-// The lists are the manual's, in its order, counted from zero. Three points
+// The lists are the manual's, in its order, counted from zero. Four points
 // are measured on the pedal: Pattern 57 = Blank (kRhythmPatternBlank), Beat 2
-// = 4/4, PlayCount 1 = 1MEAS. The rest — every other name, the interior of
-// the BEAT range the manual prints as "2/4–4/4–7/4, 5/8–15/8", the +10 the
-// file adds to TONE LOW/HIGH (screen −10..+10, factory body 10) — is per the
-// manual and the factory body, not yet read off the screen. A number outside
-// a list is a typed error carrying the number: a control that shows "?" for
-// it would hide exactly the fact that says the rule is wrong.
+// = 4/4, PlayCount 1 = 1MEAS, Pattern 12 = Rock2 at 4/4. The rest — every
+// other name, the interior of the BEAT range the manual prints as
+// "2/4–4/4–7/4, 5/8–15/8", the +10 the file adds to TONE LOW/HIGH (screen
+// −10..+10, factory body 10) — is per the manual and the factory body, not
+// yet read off the screen. A number outside a list is a typed error carrying
+// the number: a control that shows "?" for it would hide exactly the fact
+// that says the rule is wrong.
+//
+// One list is not one list. The number in <Pattern> indexes the pattern
+// list of the memory's CURRENT BEAT (hardware, 2026-09-30 and 2026-10-01,
+// #147, stated in Beat.hpp): Rock2 chosen on the pedal is stored as 12 at
+// 4/4 and as 3 at 6/4, and a 19 written at 6/4 shows a blank name on the
+// screen. kPatterns is the 4/4 list, the one the manual prints; every other
+// beat's list is uncharted — its length, its order, and where Blank sits in
+// it. The range cannot tell: a short list's numbers all fall inside this
+// one, so patternName would answer with a wrong name and no error. The
+// guard keys off the beat (#149): at an uncharted beat the number is read
+// and shown, never named, and no edit writes <Pattern> — neither this
+// feature's nor the count-in's. The next uncharted edge is the reading
+// itself: isOn() still takes 57 for Blank at every beat, a 4/4 fact used
+// for display only, until the other lists are charted. A restore (history,
+// undo, redo) writes a recorded body faithfully, not through apply(), so a
+// row recorded before this guard can bring a 4/4 number back to a memory
+// at another beat; the tab then shows it as a number.
 //
 // One rule the manual states outright (p. 10): BEAT cannot be changed after
 // a track is recorded. A slot with an indexed take refuses a Beat edit; the
 // bar arithmetic that assumes 4/4 (Params.hpp, Commands.hpp) is #92's, and
-// this feature leaves every length field alone.
+// this feature leaves every length field alone. And one rule of ours
+// (#149): BEAT cannot leave 4/4 while the count-in borrows the rhythm
+// section (State on, Blank, count on) — at any other beat the count-in's
+// hand-back and this switch would both need a pattern number, and BEAT
+// itself would be the only way back: a memory stuck in the app. Every
+// other BEAT move keeps the pattern bytes exactly, and a move to 4/4 is
+// never refused.
 
 #pragma once
 
 #include "../Error.hpp"
 #include "../Rc0.hpp"
+#include "Beat.hpp"
 #include "Choice.hpp"
 #include "CountIn.hpp"
 
@@ -58,9 +83,11 @@ namespace loopercat::usecases::rhythm {
 // (Choice.hpp, shared with every list-valued use case).
 using usecases::Choice;
 
-// PATTERN: 57 grooves in the manual's fourteen groups, then Blank. Anchors:
-// 0 is the factory value and the printed default (SimpleBeat1); 57 is Blank
-// on the screen (hardware). Interior boundaries follow from the group sizes.
+// PATTERN at 4/4: 57 grooves in the manual's fourteen groups, then Blank.
+// Anchors: 0 is the factory value and the printed default (SimpleBeat1); 57
+// is Blank on the screen (hardware); 12 is Rock2 (hardware, 2026-10-01, a
+// 4/4 memory written on the pedal). Interior boundaries follow from the
+// group sizes. This is the 4/4 list only — see patternListCharted.
 inline constexpr std::array<Choice, 58> kPatterns { {
     { 0, "SimpleBeat1" }, { 1, "SimpleBeat2" }, { 2, "SimpleBeat3" }, { 3, "SimpleBeat4" },
     { 4, "GrooveBeat1" }, { 5, "GrooveBeat2" }, { 6, "GrooveBeat3" }, { 7, "GrooveBeat4" },
@@ -93,14 +120,13 @@ inline constexpr std::array<Choice, 7> kKits { {
     { 5, "R&B" }, { 6, "808+909" },
 } };
 
-// BEAT: the manual prints "2/4–4/4–7/4, 5/8–15/8" with 4/4 the default, and
-// never lists the steps. Anchor: 2 = 4/4 (hardware), which fits 2/4, 3/4, 4/4.
-// Every step inside both ranges, the /8 block after the /4 block: inferred.
-inline constexpr std::array<Choice, 17> kBeats { {
-    { 0, "2/4" }, { 1, "3/4" }, { 2, "4/4" }, { 3, "5/4" }, { 4, "6/4" }, { 5, "7/4" },
-    { 6, "5/8" }, { 7, "6/8" }, { 8, "7/8" }, { 9, "8/8" }, { 10, "9/8" }, { 11, "10/8" },
-    { 12, "11/8" }, { 13, "12/8" }, { 14, "13/8" }, { 15, "14/8" }, { 16, "15/8" },
-} };
+// BEAT is the RHYTHM screen's field, but the count-in has to obey it too, so
+// the list and the one charted beat live in Beat.hpp; the card keeps its
+// names for them.
+using beat::kBeats;
+using beat::kBeatFourFour;
+using beat::patternListCharted;
+using beat::beatName;
 
 // VARIATION: A or B. Anchor: 0 is the factory value and the printed default.
 inline constexpr std::array<Choice, 2> kVariations { { { 0, "A" }, { 1, "B" } } };
@@ -146,7 +172,6 @@ namespace detail {
 
 inline std::string_view patternName(long long n) { return detail::nameIn(kPatterns, "PATTERN", n); }
 inline std::string_view kitName(long long n) { return detail::nameIn(kKits, "KIT", n); }
-inline std::string_view beatName(long long n) { return detail::nameIn(kBeats, "BEAT", n); }
 inline std::string_view variationName(long long n)
 {
     return detail::nameIn(kVariations, "VARIATION", n);
@@ -195,7 +220,9 @@ inline std::optional<long long> patternLostOnOff(std::string_view slotBody)
 // Everything the card shows, read in one go. Tone values are the screen's.
 struct Values {
     bool on;
-    long long pattern; // an index into kPatterns — Blank included, it is what the file says
+    long long pattern;   // what the file says, at any beat — Blank included
+    bool patternCharted; // the beat's list is charted, so `pattern` has a name:
+                         // 4/4 only (#149). Elsewhere it is a number to show.
     long long kit;
     long long beat;
     long long variation;
@@ -204,43 +231,126 @@ struct Values {
     long long toneLow;  // −10..+10, as on the screen
     long long toneHigh; // −10..+10, as on the screen
     bool beatLocked;    // a take is recorded: BEAT is read-only (manual p. 10)
+    bool beatHeldByCountIn; // at 4/4 with the count-in's own shape in the section
+                            // (State on, Blank, count on): BEAT cannot leave 4/4,
+                            // or the memory is stuck in the app (#149)
 
     bool operator==(const Values&) const = default;
 };
 
 inline Values read(std::string_view slotBody)
 {
+    const long long beat = detail::rhythm(slotBody, "Beat");
+    const long long pattern = detail::rhythm(slotBody, "Pattern");
     return { isOn(slotBody),
-             detail::rhythm(slotBody, "Pattern"),
+             pattern,
+             patternListCharted(beat),
              detail::rhythm(slotBody, "Kit"),
-             detail::rhythm(slotBody, "Beat"),
+             beat,
              detail::rhythm(slotBody, "Variation"),
              detail::rhythm(slotBody, "Level"),
              detail::rhythm(slotBody, "Reverb"),
              toneOnScreen(detail::rhythm(slotBody, "ToneLow")),
              toneOnScreen(detail::rhythm(slotBody, "ToneHigh")),
-             beatLocked(slotBody) };
+             beatLocked(slotBody),
+             patternListCharted(beat) && countin::isOn(slotBody)
+                 && pattern == rc0::kRhythmPatternBlank };
 }
 
+// --- the beat's list, or none ---
+
+namespace detail {
+
+    // A PATTERN number is chosen from the current beat's list, so it can be
+    // chosen only where that list is known. The sentence names the beat as
+    // the screen prints it ("6/4"): the number alone would send the player
+    // to count the manual's list.
+    inline void requirePatternCharted(long long atBeat)
+    {
+        if (!patternListCharted(atBeat))
+            throw Error("PATTERN cannot be chosen at " + beat::label(atBeat) + ": "
+                        + std::string(beat::kOnlyFourFourCharted));
+    }
+
+} // namespace detail
+
 // --- the switch ---
+
+// The two paths of the switch that write a PATTERN number: Blank becomes the
+// default on the way on, the groove becomes Blank on the way off with a
+// count-in to keep. Neither number is known outside the 4/4 list.
+enum class SwitchRefusal {
+    onNeedsGroove, // on over Blank would write kPatternDefault
+    offNeedsBlank, // off with the count-in on would write kRhythmPatternBlank
+};
+
+// Why switching the drums to `on` is refused at this memory's beat, or
+// nothing. At an uncharted beat the two clicks above are refused; State
+// alone is still ours. Pure over what the card shows, and typed, so the tab
+// makes the switch a lamp before the click and says so in its own words,
+// while apply() refuses after it with the fact (switchRefusalText). The
+// beat is not named here: a memory can hold a beat the manual's list lacks,
+// and a State-only switch there must still pass.
+inline std::optional<SwitchRefusal> switchRefusal(const Values& values, bool countInOn, bool on)
+{
+    if (patternListCharted(values.beat) || on == values.on)
+        return std::nullopt;
+    if (on && values.pattern == rc0::kRhythmPatternBlank)
+        return SwitchRefusal::onNeedsGroove;
+    if (!on && countInOn)
+        return SwitchRefusal::offNeedsBlank;
+    return std::nullopt;
+}
+
+// The refusal as the core states it, for the banner and the log: what the
+// click needed, the beat as the screen prints it, and the fact.
+inline std::string switchRefusalText(SwitchRefusal why, long long atBeat)
+{
+    const std::string fact(beat::kOnlyFourFourCharted);
+    switch (why) {
+    case SwitchRefusal::onNeedsGroove:
+        return "Switching the rhythm on at " + beat::label(atBeat)
+            + " needs a groove in place of Blank, and " + fact
+            + ": choose a pattern on the pedal first.";
+    case SwitchRefusal::offNeedsBlank:
+        return "Switching the rhythm off at " + beat::label(atBeat)
+            + " with the count-in on needs Blank's number, and " + fact
+            + ": switch the count-in off first.";
+    }
+    throw Error("unknown rhythm switch refusal " + std::to_string(static_cast<int>(why)));
+}
+
+namespace detail {
+
+    // The switch's bytes, trusted: the caller has asked switchRefusal first.
+    inline std::string switchBytes(std::string body, bool on)
+    {
+        if (on == isOn(body))
+            return body;
+        if (on) {
+            if (rhythm(body, "Pattern") == rc0::kRhythmPatternBlank)
+                body = setRhythm(body, "Pattern", kPatternDefault);
+            return setRhythm(body, "State", rc0::kRhythmStateOn);
+        }
+        if (countin::isOn(body))
+            return setRhythm(body, "Pattern", rc0::kRhythmPatternBlank);
+        return setRhythm(body, "State", 0);
+    }
+
+} // namespace detail
 
 // Switch the drums for one slot body. On: State on, and a groove where there
 // was Blank — the printed default, since the silence was never a choice of
 // groove. Off: State off, unless the count-in needs it, in which case the
-// groove becomes Blank. Already there is already there: nothing moves.
+// groove becomes Blank. Already there is already there: nothing moves. At an
+// uncharted beat the two paths that would write a pattern number are refused
+// before any byte moves (switchRefusal).
 inline std::string applySwitch(std::string_view slotBody, bool on)
 {
-    std::string body(slotBody);
-    if (on == isOn(body))
-        return body;
-    if (on) {
-        if (detail::rhythm(body, "Pattern") == rc0::kRhythmPatternBlank)
-            body = detail::setRhythm(body, "Pattern", kPatternDefault);
-        return detail::setRhythm(body, "State", rc0::kRhythmStateOn);
-    }
-    if (countin::isOn(body))
-        return detail::setRhythm(body, "Pattern", rc0::kRhythmPatternBlank);
-    return detail::setRhythm(body, "State", 0);
+    const Values values = read(slotBody);
+    if (const auto why = switchRefusal(values, countin::isOn(slotBody), on))
+        throw Error(switchRefusalText(*why, values.beat));
+    return detail::switchBytes(std::string(slotBody), on);
 }
 
 // --- edits ---
@@ -266,27 +376,43 @@ struct Edits {
 };
 
 // Apply an edit to a slot body. Every present field is checked before the
-// first byte moves — against the manual's lists and ranges, and against the
-// slot itself for BEAT — so a refused edit leaves the body untouched. An
-// empty edit is a caller bug, not a no-op.
+// first byte moves — against the manual's lists and ranges, against the
+// slot itself for BEAT, and against the beat the edit leaves the memory at
+// for PATTERN and the switch — so a refused edit leaves the body untouched.
+// An empty edit is a caller bug, not a no-op.
 inline std::string apply(std::string_view slotBody, const Edits& edits)
 {
     if (edits.empty())
         throw Error("no rhythm setting to change");
-    if (edits.pattern) {
-        patternName(*edits.pattern);
-        if (*edits.pattern == rc0::kRhythmPatternBlank)
-            throw Error("Blank is the count-in's silence, not a groove: switch the rhythm off "
-                        "instead");
-    }
-    if (edits.kit)
-        kitName(*edits.kit);
     if (edits.beat) {
         beatName(*edits.beat);
         if (beatLocked(slotBody))
             throw Error("BEAT cannot be changed once a track is recorded (RC-5 reference "
                         "manual p. 10)");
+        if (!patternListCharted(*edits.beat) && read(slotBody).beatHeldByCountIn)
+            throw Error("BEAT cannot leave 4/4 while the count-in borrows the rhythm section: "
+                        "switch the count-in off first");
     }
+    // PATTERN is chosen from the list of the beat the memory will be at once
+    // this edit lands — its own, or the one the edit carries — and so is the
+    // switch's own pattern write. A pattern together with a move to 4/4 is
+    // fine; a pattern together with a move away from it is not.
+    const long long atBeat = edits.beat ? *edits.beat : detail::rhythm(slotBody, "Beat");
+    if (edits.pattern) {
+        detail::requirePatternCharted(atBeat);
+        patternName(*edits.pattern);
+        if (*edits.pattern == rc0::kRhythmPatternBlank)
+            throw Error("Blank is the count-in's silence, not a groove: switch the rhythm off "
+                        "instead");
+    }
+    if (edits.on) {
+        Values after = read(slotBody);
+        after.beat = atBeat;
+        if (const auto why = switchRefusal(after, countin::isOn(slotBody), *edits.on))
+            throw Error(switchRefusalText(*why, atBeat));
+    }
+    if (edits.kit)
+        kitName(*edits.kit);
     if (edits.variation)
         variationName(*edits.variation);
     if (edits.level)
@@ -300,7 +426,7 @@ inline std::string apply(std::string_view slotBody, const Edits& edits)
 
     std::string body(slotBody);
     if (edits.on)
-        body = applySwitch(body, *edits.on);
+        body = detail::switchBytes(std::move(body), *edits.on);
     if (edits.pattern)
         body = detail::setRhythm(body, "Pattern", *edits.pattern);
     if (edits.kit)
@@ -322,9 +448,17 @@ inline std::string apply(std::string_view slotBody, const Edits& edits)
 
 // The edit in the pedal's own words, for the history and the banner:
 // "switched on", "pattern Rock1, kit Jazz", "tone low -3". Names are looked
-// up, so a number outside a list fails here as loudly as in apply().
-inline std::string describe(const Edits& edits)
+// up, so a number outside a list fails here as loudly as in apply(). `beat`
+// is the memory's own: a pattern is named from the list of the beat the
+// edit leaves the memory at, and at an uncharted beat it is refused here
+// too — the words are made before the job runs, and a history row must not
+// carry a 4/4 name for a 6/4 number.
+inline std::string describe(const Edits& edits, long long atBeat)
 {
+    if (edits.beat)
+        atBeat = *edits.beat;
+    if (edits.pattern)
+        detail::requirePatternCharted(atBeat);
     std::string out;
     const auto add = [&out](std::string_view text) {
         if (!out.empty())

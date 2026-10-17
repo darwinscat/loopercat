@@ -104,18 +104,18 @@ int main()
 
         const auto push = r.begin("push");
         r.store.recordBodies(push, { { 12, "b12-0", "b12-1" } });
-        r.store.recordLanded(push, 12, 1, "a.wav", bytesA);
+        r.store.recordLanded(push, 12, 1, "a.wav", bytesA, 2500);
         r.store.finishOp(push, OpStatus::done, "");
 
         const auto trim = r.begin("trim");
         r.store.keepAudio(trim, 12, 1, "a.wav", bytesA, ++r.clock);
         r.store.recordBodies(trim, { { 12, "b12-1", "b12-2" } });
-        r.store.recordLanded(trim, 12, 1, "a.wav", bytesB);
+        r.store.recordLanded(trim, 12, 1, "a.wav", bytesB, 2600);
         r.store.finishOp(trim, OpStatus::done, "");
 
         const auto swap = r.begin("swap");
         r.store.recordBodies(swap, { { 12, "b12-2", "b43-0" }, { 43, "b43-0", "b12-2" } });
-        r.store.recordPresentAudio(swap, 43, 1, "a.wav", 3000, HistoryStore::contentHash(bytesB));
+        r.store.recordPresentAudio(swap, 43, 1, "a.wav", 3000, HistoryStore::contentHash(bytesB), 2600);
         r.store.finishOp(swap, OpStatus::done, "");
 
         const auto failed = r.begin("clear"); // refused before it touched the card
@@ -233,7 +233,7 @@ int main()
         const std::string bytes = take(4000, 5);
         const auto push = r.begin("push");
         r.store.recordBodies(push, { { 9, "b9-0", "b9-1" } });
-        r.store.recordLanded(push, 9, 1, "take.wav", bytes);
+        r.store.recordLanded(push, 9, 1, "take.wav", bytes, 2500);
         r.store.finishOp(push, OpStatus::done, "");
         const auto clear = r.begin("clear");
         r.store.keepAudio(clear, 9, 1, "take.wav", bytes, ++r.clock); // archived on its way out
@@ -242,7 +242,7 @@ int main()
         const auto undone = r.begin("undo");
         r.store.setReverts(undone, clear);
         r.store.recordBodies(undone, { { 9, "b9-0", "b9-1" } });
-        r.store.recordLanded(undone, 9, 1, "take.wav", bytes);
+        r.store.recordLanded(undone, 9, 1, "take.wav", bytes, 2700);
         r.store.finishOp(undone, OpStatus::done, "clear");
 
         const auto entries = r.store.cardTimeline();
@@ -305,7 +305,7 @@ int main()
         const std::string bytes = take(3000, 7);
         const auto push = r.begin("push");
         r.store.recordBodies(push, { { 4, "b4-0", "b4-1" } });
-        r.store.recordLanded(push, 4, 1, "b.wav", bytes); // the take it left
+        r.store.recordLanded(push, 4, 1, "b.wav", bytes, 2500); // the take it left
         r.store.finishOp(push, OpStatus::done, "");
         const auto clear = r.begin("clear");
         r.store.keepAudio(clear, 4, 1, "b.wav", bytes, ++r.clock); // the take it archived

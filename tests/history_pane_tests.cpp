@@ -10,7 +10,8 @@ int main()
     pane.onClearHistory = [&](int slot) { CHECK_EQ(slot, 4); ++calls; };
     CHECK_EQ(pane.clearHistoryText().toStdString(), std::string("Clear history of this slot\xe2\x80\xa6"));
     CHECK(!pane.clearHistoryEnabled()); pane.clearHistory(); CHECK_EQ(calls, 0);
-    pane.setRows({{"now", "Renamed", "", "", false, false, 1}}, 4);
+    pane.setRows({{"now", "Renamed", "", "", "", false, false, 1}}, 4);
+    pane.setRows({{"now", "Pushed", "cannot read a.wav", "failed", "", false, false, 2}}, 4); // a state rides along
     CHECK(pane.clearHistoryEnabled()); pane.clearHistory(); CHECK_EQ(calls, 1);
     pane.setBusy(true); CHECK(!pane.clearHistoryEnabled()); pane.clearHistory(); CHECK_EQ(calls, 1);
     pane.setBusy(false); CHECK(pane.clearHistoryEnabled());

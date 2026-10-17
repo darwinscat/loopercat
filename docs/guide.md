@@ -104,6 +104,9 @@ The gear in the top row opens the app's own settings:
 - **Audio** — which interface and outputs the preview plays through.
 - **Columns** — which behaviour lamps the slot table shows. The pedal's own
   facts (name, duration, bars, tempo, file) are always there.
+- **Import** — what happens to a file on its way to the pedal: normalization
+  (see [Normalize](#normalize)) and the mark a converted upload carries (see
+  [Moving audio](#moving-audio)).
 
 ## Editing a slot
 
@@ -129,7 +132,11 @@ memory. No power cycling.
   you switch it on: a *silent* rhythm section is what the count borrows, and
   it will replace that pattern. A rhythm that is actually playing is left
   alone — the count simply joins it, and switching the count off later leaves
-  your groove where it was.
+  your groove where it was. At a time signature other than 4/4 the switch
+  waits where the click would have to write a rhythm pattern number — only
+  the 4/4 pattern list is charted so far — and the card says what to do
+  instead; the Rhythm tab shows such a pattern as a number for the same
+  reason.
 - **One Shot** — play once and stop instead of looping.
 
 Both switches are also the lamps in the table, if you keep those columns on:
@@ -188,7 +195,12 @@ Three ways to use it:
   target*. Off by default: off means files the pedal accepts are written
   byte-exact, as always. On, every pushed file lands at the target.
 - **One slot** — right-click a loaded slot → **Normalize to -18 LUFS…**. The
-  original WAV is kept in the history — that is your undo.
+  loop is measured first (a reading the history already holds for that very
+  file is reused), so the question comes with the numbers: "Measured -22.8
+  LUFS, this adds +4.8 dB". A loop already at the target, or one whose peaks
+  leave nothing to gain, gets a note instead of a question, and nothing is
+  written or added to the history. When it does write, the original WAV is
+  kept in the history — that is your undo.
 - **Several slots** — Cmd/Ctrl-click or Shift-click rows to select them,
   right-click the selection → **Normalize N slots…**. Each loop gets its own
   gain; loops already at the target are left untouched. While the batch runs,
@@ -207,7 +219,11 @@ A few things worth knowing:
   loop's true peak would hit -1 dBTP — the peak of the waveform between the
   samples, the one a DAC actually reconstructs — so a quiet-but-peaky track
   lands a little short of target instead of distorting; the toast says so
-  when it happens.
+  when it happens. A boost the ceiling would cut to less than 0.2 dB — the
+  same step as "already at the target" — is no boost: the loop is left
+  alone, and a batch counts it among the untouched ones. So a loop Normalize
+  has just capped stays put on the next run instead of being rewritten for
+  nothing.
 - To check where a loop sits without changing anything: select it and look at
   the player row — as the waveform finishes loading, the loudness appears
   after the name with how far it sits from the target (the same read draws
@@ -236,6 +252,22 @@ A few things worth knowing:
   gapless — no encoder-delay silence before the downbeat, no gap at the loop
   seam); when replacing, the old loop is kept in the history.
 - **Pull to folder…** — copy a loop off the pedal as a standard WAV.
+
+A file the pedal takes as it is (44.1 kHz, stereo, 32-bit float WAV) lands
+under its own name, byte for byte. One that had to be rebuilt — a 48 kHz or
+24-bit export, a mono take, an MP3, or a file normalization rewrote — lands
+as `<your name>-pedal.wav`: `song.mp3` becomes `song-pedal.wav`. The mark is
+there on purpose. The bytes in that slot are not the bytes of your file (they
+were resampled, spread to two channels, re-quantised, maybe gain-adjusted), and
+a take pulled back a month later should say so at a glance. The push toast and
+the history row spell out what changed, e.g. `48000 Hz, 24-bit, mono →
+44100 Hz, 32-bit float, stereo`. A float export that differs only in its
+header (the WAVE_FORMAT_EXTENSIBLE shape DAWs write) is repacked, not rebuilt:
+it lands as `<your name>.wav`, every sample intact, with no mark. The suffix
+is yours: Settings → **Import** →
+*Mark uploads converted for the pedal with*. Clear it and converted uploads
+land under their own name (with a `.wav` extension — the audio inside is a
+WAV, whatever the source was).
 
 ## Swap
 

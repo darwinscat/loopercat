@@ -3,6 +3,7 @@
 
 #include "SlotTable.h"
 
+#include "RefusalWords.h"
 #include "Strings.h"
 
 #include <felitronics/appkit/Brand.h>
@@ -89,6 +90,23 @@ int SlotTable::slotOfRow(int rowIndex) const
              : 0;
 }
 
+SlotTable::LoudnessCell SlotTable::LoudnessCell::fromHistory(LoudnessCell measured,
+                                                             juce::Time measuredAt)
+{
+    // The provenance leads: a player reading the hint learns first that
+    // this number was not read off the card today, then the one gesture
+    // that reads it on every card and every slot — the double-click on this
+    // very cell — then what the number says.
+    measured.tooltip = "From the history: measured " + measuredAt.formatted("%d %b %Y %H:%M")
+                     + ", not re-measured. Double-click to measure it now."
+                     + (measured.tooltip.isEmpty() ? juce::String() : " " + measured.tooltip);
+    // No attention: "Normalize would change this" is a verdict, and a guess
+    // passes none. The number alone, in light ink.
+    measured.attention = false;
+    measured.inferred = true;
+    return measured;
+}
+
 void SlotTable::setLoudness(int slot, LoudnessCell cell)
 {
     loudness_[slot] = std::move(cell);
@@ -136,6 +154,11 @@ void SlotTable::setOptionalColumns(bool oneShot, bool countIn, bool loudness)
     header.setColumnVisible(kOneShot, oneShot);
     header.setColumnVisible(kCountIn, countIn);
     header.setColumnVisible(kLufs, loudness);
+}
+
+bool SlotTable::loudnessColumnVisible() const
+{
+    return table_.getHeader().isColumnVisible(kLufs);
 }
 
 void SlotTable::selectSlot(int slot)
@@ -247,6 +270,33 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
         onSlotSelected(slotOfRow(lastRowSelected));
 }
 
+// Two cells carry a hover hint; every other cell says nothing.
+// - LUFS: the reading's explanation — where the number came from first of
+//   all, when it came out of the history rather than a read (#141). A read
+//   in flight explains nothing yet, and a row whose cell is not drawn (no
+//   loop in the slot) has nothing to explain.
+// - Count-In: the sentence a seven-pixel dot cannot carry — for a memory
+//   whose click the core would refuse, why, in the card's words
+//   (RefusalWords.h).
+juce::String SlotTable::getCellTooltip(int row, int columnId)
+{
+    const int slot = slotOfRow(row);
+    if (slot <= 0)
+        return {};
+    const SlotRow& r = rows_[static_cast<std::size_t>(row)];
+    if (columnId == kLufs) {
+        if (!r.info.hasAudio)
+            return {};
+        const auto found = loudness_.find(slot);
+        if (found == loudness_.end() || found->second.pending)
+            return {};
+        return found->second.tooltip;
+    }
+    if (columnId == kCountIn && r.info.countInRefused)
+        return words::countInRefused(*r.info.countInRefused, r.info.rhythm.beat);
+    return {};
+}
+
 void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&)
 {
     // Double-click = edit in place, where the card may be written to; on a
@@ -292,8 +342,10 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         onOneShotToggled(slotOfRow(row));
         return;
     }
-    // Same gesture for the Count-In cell.
-    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0 && allowed().countIn) {
+    // Same gesture for the Count-In cell — unless the core would refuse the
+    // click (CountIn.hpp, #149): then the dot is a lamp, and its hover says why.
+    if (columnId == kCountIn && onCountInToggled && slotOfRow(row) > 0 && allowed().countIn
+        && !rows_[static_cast<std::size_t>(row)].info.countInRefused) {
         onCountInToggled(slotOfRow(row));
         return;
     }
@@ -532,9 +584,12 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     if (columnId == kOneShot || columnId == kCountIn) {
         // The cell is the toggle: filled = on, hollow = off (click flips it).
         // On a card this app only reads it is a lamp, not a button: the
-        // same dot, dimmed, and a click does nothing.
+        // same dot, dimmed, and a click does nothing. So is a Count-In dot
+        // whose click the core would refuse (CountIn.hpp, #149).
         const bool on = columnId == kOneShot ? r.info.oneShot : r.info.countIn;
-        const bool clickable = columnId == kOneShot ? allowed().oneShot : allowed().countIn;
+        const bool clickable = columnId == kOneShot
+            ? allowed().oneShot
+            : allowed().countIn && !r.info.countInRefused;
         const float d = 7.0f;
         const float x = static_cast<float>(area.getX()) + 2.0f;
         const float y = (static_cast<float>(height) - d) * 0.5f;
@@ -573,7 +628,13 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
             }
             return;
         }
-        g.setColour(!known ? kDim.withAlpha(0.55f)
+        // A number out of the history rather than a read (#141) wears the
+        // text ink, lighter: the column's own vocabulary for "less present"
+        // (the dash, the empty rows) rather than a mark, which in a 68 px
+        // number column would read as part of the number. It never wears
+        // the attention colour (LoudnessCell::fromHistory). The hint says why.
+        g.setColour(!known                    ? kDim.withAlpha(0.55f)
+                    : found->second.inferred  ? kText.withAlpha(0.6f)
                     : found->second.attention ? felitronics::appkit::brand::orange
                                               : kText);
         g.drawText(known ? found->second.text

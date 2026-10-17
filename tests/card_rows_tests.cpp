@@ -6,7 +6,8 @@
 // row is one operation; a swap is one row with two slots; a button is a
 // promise the row can keep. The cases are the shapes a real store produces:
 // a take whose bytes are gone, an audio-only row, a
-// failed operation, an operation that touched nothing.
+// failed operation, an operation that touched nothing — and one that was
+// about a slot and changed nothing there (#144): a badge, no offer.
 
 #include "support.hpp"
 
@@ -225,6 +226,118 @@ int main()
         midi.system = { { "MIDI", "<MIDI>\n\t<RxCh>1</RxCh>\n</MIDI>", "<MIDI>\n\t<RxCh>2</RxCh>\n</MIDI>" } };
         CHECK_EQ(rows::forCard({ midi }).front().action, std::string("Pedal settings changed"));
         CHECK_EQ(rows::forCard({ midi }).front().detail, std::string("RxCh 1 -> 2"));
+    }
+
+    // --- an operation about a slot it did not change: its badge, its words, nothing to offer (#144) ---
+    {
+        Card nothing = op(5, 5000, "normalize");
+        nothing.note = "already at -18.0 LUFS (measured -18.1), nothing to do";
+        nothing.subjects = { 7 };
+        const auto made = rows::forCard({ nothing });
+        CHECK_EQ(made.size(), 1u);
+        CHECK(made.front().slots() == (std::vector<int> { 7 }));
+        CHECK(made.front().takes.empty()); // a subject is no take
+        CHECK_EQ(made.front().action, std::string("Normalized"));
+        CHECK_EQ(made.front().detail, nothing.note);
+        CHECK_EQ(made.front().state, std::string());
+        CHECK(!made.front().playable());
+        CHECK(!made.front().restorable());
+        CHECK(made.front().restorableSlots().empty());
+        CHECK_EQ(made.front().takeHash(), std::string());
+        // a failed one, about its slot, still wears the badge and says why
+        Card failed = op(6, 6000, "normalize", "app", "failed");
+        failed.note = "cannot read 007_1.WAV";
+        failed.subjects = { 7 };
+        CHECK(rows::forCard({ failed }).front().slots() == (std::vector<int> { 7 }));
+        CHECK_EQ(rows::forCard({ failed }).front().state, std::string("failed"));
+        CHECK_EQ(rows::forCard({ failed }).front().detail, failed.note);
+    }
+
+    // --- a swap about the two slots it changed wears two badges, not four ---
+    {
+        Card swap = op(3, 3000, "swap");
+        Card::Slot a = touched(swap, 12, true);
+        a.facts.beforeBody = loaded;
+        a.facts.afterBody = shorter;
+        a.facts.swappedWith = 43;
+        Card::Slot b = touched(swap, 43, true);
+        b.facts.beforeBody = shorter;
+        b.facts.afterBody = loaded;
+        b.facts.swappedWith = 12;
+        swap.slots = { a, b };
+        swap.subjects = { 12, 43 };
+        const auto made = rows::forCard({ swap });
+        CHECK(made.front().slots() == (std::vector<int> { 12, 43 }));
+        CHECK_EQ(made.front().takes.size(), 2u);
+        CHECK_EQ(made.front().action, std::string("Swapped slots 12 and 43"));
+        // a subject beside a touched slot sorts into its place, whichever is lower
+        Card mixed = op(4, 4000, "restore");
+        Card::Slot c = touched(mixed, 12, false);
+        c.facts.beforeBody = loaded;
+        c.facts.afterBody = shorter;
+        mixed.slots = { c };
+        mixed.subjects = { 43 };
+        CHECK(rows::forCard({ mixed }).front().slots() == (std::vector<int> { 12, 43 }));
+        mixed.subjects = { 7 };
+        CHECK(rows::forCard({ mixed }).front().slots() == (std::vector<int> { 7, 12 }));
+        CHECK(rows::forCard({ mixed }).front().restorableSlots() == (std::vector<int> { 12 }));
+        CHECK(rows::forCard({ mixed }).front().restorable()); // the one state it recorded can go back
+    }
+
+    // --- badges are what the row is about; a restore acts on what it recorded ---
+    {
+        // A row touching {3, 40} and about {7, 12, 40}: four badges, two
+        // slots to put back — never "Restore 4 slots".
+        Card two = op(8, 8000, "restore");
+        Card::Slot a = touched(two, 40, false);
+        a.facts.beforeBody = loaded;
+        a.facts.afterBody = shorter;
+        Card::Slot b = touched(two, 3, false);
+        b.facts.beforeBody = loaded;
+        b.facts.afterBody = shorter;
+        two.slots = { b, a };
+        two.subjects = { 7, 12, 40 };
+        const auto made = rows::forCard({ two });
+        CHECK(made.front().slots() == (std::vector<int> { 3, 7, 12, 40 }));
+        CHECK(made.front().touchedSlots() == (std::vector<int> { 3, 40 }));
+        CHECK(made.front().restorableSlots() == (std::vector<int> { 3, 40 }));
+        CHECK(made.front().restorable());
+        // a subject-only row has badges and nothing to act on
+        Card nothing = op(9, 9000, "normalize");
+        nothing.subjects = { 7 };
+        CHECK(rows::forCard({ nothing }).front().slots() == (std::vector<int> { 7 }));
+        CHECK(rows::forCard({ nothing }).front().touchedSlots().empty());
+    }
+
+    // --- the window's words for a row that did nothing, or did not finish ---
+    {
+        Card renamed = op(10, 10000, "rename");
+        renamed.subjects = { 7 };
+        CHECK_EQ(rows::forCard({ renamed }).front().action, std::string("Renamed"));
+        CHECK_EQ(rows::forCard({ renamed }).front().detail, std::string("nothing changed"));
+        Card oneshot = op(11, 11000, "oneshot");
+        oneshot.subjects = { 7 };
+        CHECK_EQ(rows::forCard({ oneshot }).front().action, std::string("One Shot"));
+        CHECK_EQ(rows::forCard({ oneshot }).front().detail, std::string("nothing changed"));
+        // a failed attempt: the state, the reason, and no switch position
+        Card failedOneShot = op(12, 12000, "oneshot", "app", "failed");
+        failedOneShot.note = "cannot write MEMORY1.RC0";
+        failedOneShot.subjects = { 7 };
+        CHECK_EQ(rows::forCard({ failedOneShot }).front().action, std::string("One Shot"));
+        CHECK_EQ(rows::forCard({ failedOneShot }).front().detail, failedOneShot.note);
+        CHECK_EQ(rows::forCard({ failedOneShot }).front().state, std::string("failed"));
+        // an old no-op (no subject, no note) says nothing rather than inventing it
+        Card old = op(13, 13000, "normalize");
+        CHECK_EQ(rows::forCard({ old }).front().detail, std::string());
+        // a failed trim that recorded bodies on the way: its reason, not its numbers
+        Card failedTrim = op(14, 14000, "trim", "app", "failed");
+        failedTrim.note = "cannot write MEMORY2.RC0";
+        Card::Slot s = touched(failedTrim, 12, false);
+        s.facts.beforeBody = loaded;
+        s.facts.afterBody = shorter;
+        failedTrim.slots = { s };
+        CHECK_EQ(rows::forCard({ failedTrim }).front().detail, failedTrim.note);
+        CHECK_EQ(rows::forCard({ failedTrim }).front().state, std::string("failed"));
     }
 
     // --- pins ride along; an empty card has no rows ---

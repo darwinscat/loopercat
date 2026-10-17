@@ -87,6 +87,11 @@ int main()
                                               .beforeBody = bodyWith(kFrames4m36, 1111, "Memory42", true),
                                               .afterBody = pushed });
         CHECK_EQ(off.action, std::string("One Shot off"));
+        // without a body left behind — an attempt that failed, or found
+        // nothing to change — the switch is named and no position invented
+        CHECK_EQ(story::tell({ .kind = "oneshot" }).action, std::string("One Shot"));
+        CHECK_EQ(story::tell({ .kind = "oneshot", .beforeBody = pushed }).action, std::string("One Shot"));
+        CHECK_EQ(story::tell({ .kind = "countin" }).action, std::string("Play Count-In"));
     }
 
     // --- a swap says what happened, not the six fields it moved ---
@@ -235,6 +240,7 @@ int main()
         // a push carries the fact behind a normalize line, or alone, or not at all
         const auto pushLine = story::tell({ .kind = "push", .beforeBody = longer, .afterBody = shorter,
                                           .takeName = "take.wav", .take = story::Take::onCard,
+                                          .status = "done",
                                           .note = "normalized -3.2 dB; " + std::string(story::kNoteLengthReplaced) });
         CHECK(pushLine.detail.find("take.wav") == 0);
         CHECK(pushLine.detail.find(" - note length replaced by bars") == pushLine.detail.size() - std::string(" - note length replaced by bars").size());
@@ -242,12 +248,73 @@ int main()
                                          .note = std::string(story::kNoteLengthReplaced) });
         CHECK_EQ(alone.detail, std::string("take.wav - note length replaced by bars"));
         const auto quiet = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
-                                         .note = "normalized -3.2 dB" });
-        CHECK_EQ(quiet.detail, std::string("take.wav"));
+                                         .status = "done", .note = "normalized -3.2 dB" });
+        CHECK_EQ(quiet.detail, std::string("take.wav - normalized -3.2 dB"));
         // the fact belongs to push and trim: a rename's note is a rename's note
         const auto other = story::tell({ .kind = "rename", .take = story::Take::none,
                                          .note = std::string(story::kNoteLengthReplaced) });
         CHECK(other.detail.find("note length") == std::string::npos);
+    }
+
+    // --- a push row says what the job said about the take (issue #139) ---
+    //
+    // The row names the take as it landed — the mark is in the name — keeps
+    // its numbers, and then draws the note's sentences: the rebuild's facts,
+    // the normalization's. The note-length fact keeps its own place at the
+    // end, drawn once, and is left out of the sentences.
+    {
+        const auto converted = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
+                                             .takeName = "song-pedal.wav", .take = story::Take::onCard,
+                                             .status = "done",
+                                             .note = "48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo" });
+        CHECK_EQ(converted.detail,
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo"));
+        CHECK_EQ(converted.audio, std::string("in the slot now"));
+
+        const auto both = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
+                                        .takeName = "song-pedal.wav", .take = story::Take::onCard,
+                                        .status = "done",
+                                        .note = "24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB; "
+                                            + std::string(story::kNoteLengthReplaced) });
+        CHECK_EQ(both.detail,
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB"
+                             " - note length replaced by bars"));
+
+        // no bodies (a row an older store kept): the name and the sentence
+        const auto bare = story::tell({ .kind = "push", .takeName = "song.wav", .take = story::Take::kept,
+                                        .status = "done", .note = "MP3 \xe2\x86\x92 32-bit float" });
+        CHECK_EQ(bare.detail, std::string("song.wav - MP3 \xe2\x86\x92 32-bit float"));
+
+        // a note that is only the fact adds nothing twice
+        const auto onlyFact = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
+                                            .status = "done",
+                                            .note = std::string(story::kNoteLengthReplaced) + "; " });
+        CHECK_EQ(onlyFact.detail, std::string("take.wav - note length replaced by bars"));
+
+        // a failed push's note is its error, and the row's state already says
+        // it failed: the line keeps its old shape, the error is not a sentence
+        const auto failed = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
+                                          .status = "failed",
+                                          .note = "slot 9 already has audio (loop.wav); pass force to replace" });
+        CHECK_EQ(failed.detail, std::string("take.wav"));
+        const auto failedBodies = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
+                                                .takeName = "take.wav", .take = story::Take::onCard,
+                                                .status = "failed", .note = "cannot write MEMORY1.RC0" });
+        CHECK_EQ(failedBodies.detail, std::string("take.wav - 4:36 - 111.1 BPM"));
+        // an interrupted one, and a row an older build wrote with no status: the same
+        const auto interrupted = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
+                                               .status = "interrupted", .note = "24-bit \xe2\x86\x92 32-bit float" });
+        CHECK_EQ(interrupted.detail, std::string("take.wav"));
+        const auto unknown = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
+                                           .note = "24-bit \xe2\x86\x92 32-bit float" });
+        CHECK_EQ(unknown.detail, std::string("take.wav"));
+
+        // the helper itself: the fact is dropped wherever it sits, the rest keeps its order
+        CHECK_EQ(story::sentencesBesides("a; b; c", "b"), std::string("a; c"));
+        CHECK_EQ(story::sentencesBesides("b; a", "b"), std::string("a"));
+        CHECK_EQ(story::sentencesBesides("b", "b"), std::string(""));
+        CHECK_EQ(story::sentencesBesides("", "b"), std::string(""));
+        CHECK_EQ(story::sentencesBesides("a;b", "b"), std::string("a;b")); // not the join
     }
 
     return testkit::summary("slot_story_tests");

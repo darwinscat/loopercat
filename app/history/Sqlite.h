@@ -98,6 +98,16 @@ public:
         return *this;
     }
 
+    // A double, under its own name: an overload of bind() would make every
+    // `bind(2, slot)` with an int ambiguous between the two conversions.
+    // SQLite keeps infinities as REAL and turns NaN into NULL — a caller that
+    // means a number checks for NaN first.
+    Statement& bindReal(int index, double value)
+    {
+        check(sqlite3_bind_double(stmt_.get(), index, value), index);
+        return *this;
+    }
+
     Statement& bindText(int index, std::string_view text)
     {
         check(sqlite3_bind_text64(stmt_.get(), index, text.data(), text.size(),
@@ -151,6 +161,7 @@ public:
         return sqlite3_column_type(stmt_.get(), column) == SQLITE_NULL;
     }
     std::int64_t integer(int column) const { return sqlite3_column_int64(stmt_.get(), column); }
+    double real(int column) const { return sqlite3_column_double(stmt_.get(), column); }
     std::string text(int column) const
     {
         const auto* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt_.get(), column));

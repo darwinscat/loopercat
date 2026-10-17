@@ -242,9 +242,9 @@ int main()
             try {
                 job.before(fixture.card);
                 job.work(fixture.card);
-                job.after({});
+                job.after(JobOutcome::success());
             } catch (const std::exception& error) {
-                job.after(error.what());
+                job.after(JobOutcome::failure(error.what()));
                 testkit::fail(std::string("clear: ") + error.what(), __FILE__, __LINE__);
             }
         }, [&](int slot, std::function<void(int)> callback) {
@@ -275,6 +275,13 @@ int main()
             continue;
         }
         CHECK_EQ(jobs, 1);
+        {
+            // the clear is about its slot, whatever it then found there (#144)
+            const auto timeline = fixture.rec->store().cardTimeline();
+            CHECK(!timeline.empty());
+            CHECK(!timeline.empty() && timeline.back().kind == "clear");
+            CHECK(!timeline.empty() && timeline.back().subjects == std::vector<int> { 4 });
+        }
         if (onPedal)
             checkTimeline(fixture, { "snapshot", "clear" });
         else
@@ -310,7 +317,8 @@ int main()
         std::vector<HistoryPane::Row> shown;
         for (const auto& row : rows)
             shown.push_back({ {}, juce::String(row.line.action), juce::String(row.line.detail),
-                juce::String(row.line.audio), row.playable, row.restorable, row.op });
+                juce::String(row.state), juce::String(row.line.audio), row.playable, row.restorable,
+                row.op });
         pane.setRows(std::move(shown), 4);
         history::TakeAudition audition(fixture.root / "audition");
         AudioEngine engine;

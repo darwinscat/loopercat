@@ -25,6 +25,7 @@
 #include "usecases/PlayStop.hpp"
 #include "usecases/Rhythm.hpp"
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,6 +67,11 @@ struct SlotInfo {
                               // thing the UI has to say out loud beforehand.
                               // A bool, not the pattern: its names are not
                               // hardware-verified yet, so we cannot name it.
+    std::optional<usecases::countin::Refusal> countInRefused; // the next click on Play
+                              // Count-In (the opposite of countIn) would write a
+                              // PATTERN number at a beat whose list is not charted
+                              // (CountIn.hpp, #149): the switch is a lamp, and this
+                              // is why. Nothing when the click is the player's.
     long long tempoTenths;  // Tempo: tenths of BPM the pedal will play at
     long long measures;     // MeasLen: whole bars, as the pedal displays them
     long long recTempoTenths; // RecTmp: tenths of BPM the take was recorded at —
@@ -103,13 +109,15 @@ inline SlotInfo readSlot(std::string_view memoryText, const profile::DeviceProfi
     for (int track = 1; track <= family.trackCount; ++track)
         tracks.push_back(readTrack(body, track));
     const TrackInfo& first = tracks.front();
+    const bool countIn = usecases::countin::isOn(body);
     return { slot,
              rc0::decodeName(body),
              first.hasAudio,
              first.frames,
              first.oneShot,
-             usecases::countin::isOn(body),
+             countIn,
              usecases::countin::patternAtRisk(body).has_value(),
+             usecases::countin::refusal(body, !countIn),
              rc0::sectionField(body, rc0::kSectionMaster, "Tempo"),
              first.measures,
              first.recTempoTenths,

@@ -5,7 +5,12 @@
 
 #include "AppSettings.h"
 #include "HistoryStoragePanel.h"
+#include "ImportPrefs.h"
 #include "TabStrip.h"
+#include "TargetLufs.h"
+#include "UploadMark.h"
+
+#include <loopercat/Error.hpp>
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
 
@@ -32,6 +37,12 @@
 // this one. The target is stored in LUFS; the label translates it into
 // ReplayGain vocabulary (reference 89 dB = -18 LUFS, the linear offset is
 // +107) because "normalize to 89 dB" is how the request arrived.
+//
+// The mark on converted uploads (issue #139) ships ON as "-pedal": that is
+// the spelling existing cards already carry, from the days the conversion's
+// temp-file name travelled to the card by accident. The field refuses a
+// character a FAT name cannot hold and snaps back to the stored mark, with
+// the refusal said under it — never a silently rewritten mark.
 //==============================================================================
 namespace loopercat
 {
@@ -45,15 +56,7 @@ public:
         bool loudness; // the LUFS column (issue #61) — off until asked for
     };
 
-    struct ImportPrefs {
-        bool normalizeOnUpload;
-        double targetLufs;
-    };
-
-    // The target field refuses values outside this window: hotter than -8
-    // leaves no headroom against a live band's transients, quieter than -30
-    // buries the loop under any stage noise — both are typos, not choices.
-    static constexpr double kMinTargetLufs = -30.0, kMaxTargetLufs = -8.0;
+    using ImportPrefs = loopercat::ImportPrefs; // read and written by importprefs::
 
     SettingsDialog(juce::AudioDeviceManager& devices, AppSettings& settings,
                    Columns columns, std::function<void(Columns)> onColumnsChanged,
@@ -105,7 +108,7 @@ public:
         // knob (field report, 2026-09-01).
         target_.setInputRestrictions(6, "-0123456789.");
         target_.setJustification(juce::Justification::centredRight);
-        target_.setText(formatLufs(importPrefs_.targetLufs), juce::dontSendNotification);
+        target_.setText(targetText(), juce::dontSendNotification);
         target_.onReturnKey = [this] { parseTarget(); };
         target_.onFocusLost = [this] { parseTarget(); };
         addChildComponent(target_);
@@ -122,6 +125,31 @@ public:
         importHint_.setFont(juce::FontOptions(11.0f));
         importHint_.setColour(juce::Label::textColourId, juce::Colour(0xff6f6f78));
         addChildComponent(importHint_);
+
+        markCaption_.setText("Mark uploads converted for the pedal with", juce::dontSendNotification);
+        markCaption_.setFont(juce::FontOptions(12.0f));
+        markCaption_.setColour(juce::Label::textColourId, juce::Colour(0xff8a8a92));
+        addChildComponent(markCaption_);
+
+        // No input restriction: a forbidden character is refused with its name,
+        // not dropped on the way in — the player sees what was wrong with it.
+        mark_.setText(importPrefs_.convertedMark, juce::dontSendNotification);
+        mark_.onReturnKey = [this] { parseMark(); };
+        mark_.onFocusLost = [this] { parseMark(); };
+        addChildComponent(mark_);
+
+        markRefusal_.setFont(juce::FontOptions(11.0f));
+        markRefusal_.setColour(juce::Label::textColourId, juce::Colour(0xffff8a3d)); // brand orange
+        addChildComponent(markRefusal_);
+
+        markHint_.setText("Added to the file name on the card when the audio had to be "
+                          "rebuilt for the pedal: a different sample rate, bit depth or "
+                          "channel count, or a normalization that rewrote it. A file the "
+                          "pedal takes as-is keeps its name. Empty: no mark.",
+                          juce::dontSendNotification);
+        markHint_.setFont(juce::FontOptions(11.0f));
+        markHint_.setColour(juce::Label::textColourId, juce::Colour(0xff6f6f78));
+        addChildComponent(markHint_);
 
         addChildComponent(storage_);
 
@@ -147,11 +175,7 @@ public:
 
     // "-18" for whole targets, "-17.5" otherwise — the number a player typed,
     // not a printf artefact. Shared with the slot menu's Normalize label.
-    static juce::String formatLufs(double lufs)
-    {
-        juce::String s(lufs, 1);
-        return s.endsWith(".0") ? s.dropLastCharacters(2) : s;
-    }
+    static juce::String formatLufs(double lufs) { return targetlufs::format(lufs); }
 
     void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff121218)); }
 
@@ -180,6 +204,13 @@ public:
         targetEquiv_.setBounds(targetRow);
         importArea.removeFromTop(12);
         importHint_.setBounds(importArea.removeFromTop(40));
+        importArea.removeFromTop(14);
+        markCaption_.setBounds(importArea.removeFromTop(20));
+        importArea.removeFromTop(4);
+        mark_.setBounds(importArea.removeFromTop(24).removeFromLeft(160));
+        importArea.removeFromTop(4);
+        markRefusal_.setBounds(importArea.removeFromTop(18));
+        markHint_.setBounds(importArea.removeFromTop(54));
     }
 
 private:
@@ -191,7 +222,8 @@ private:
         countIn_.setVisible(index == 1);
         loudness_.setVisible(index == 1);
         for (auto* c : std::initializer_list<juce::Component*> {
-                 &normalize_, &targetCaption_, &target_, &targetEquiv_, &importHint_ })
+                 &normalize_, &targetCaption_, &target_, &targetEquiv_, &importHint_,
+                 &markCaption_, &mark_, &markRefusal_, &markHint_ })
             c->setVisible(index == 2);
         storage_.setVisible(index == kHistoryTab);
     }
@@ -213,24 +245,52 @@ private:
     {
         // ReplayGain 2.0 fixes -18 LUFS = the RG 1.0 "89 dB" reference; the
         // scale is linear, so any target translates by the same +107 offset.
-        targetEquiv_.setText("= ReplayGain " + formatLufs(importPrefs_.targetLufs + 107.0)
-                                 + " dB",
+        // No usable target, no equivalent: the field is empty until one is typed.
+        targetEquiv_.setText(importPrefs_.targetLufs.has_value()
+                                 ? "= ReplayGain " + formatLufs(*importPrefs_.targetLufs + 107.0) + " dB"
+                                 : juce::String(),
                              juce::dontSendNotification);
+    }
+
+    juce::String targetText() const
+    {
+        return importPrefs_.targetLufs.has_value() ? formatLufs(*importPrefs_.targetLufs) : juce::String();
     }
 
     void parseTarget()
     {
-        // Unparsable text reads as 0.0, and 0 sits outside the window like
-        // every other non-target — one range check rejects both.
-        const double value = target_.getText().trim().getDoubleValue();
-        if (value < kMinTargetLufs || value > kMaxTargetLufs) {
+        const std::optional<double> value = targetlufs::parse(target_.getText());
+        if (!value.has_value()) {
             // Not a target — snap back to the stored one, visibly.
-            target_.setText(formatLufs(importPrefs_.targetLufs), juce::dontSendNotification);
+            target_.setText(targetText(), juce::dontSendNotification);
             return;
         }
-        importPrefs_.targetLufs = value;
-        target_.setText(formatLufs(value), juce::dontSendNotification);
+        importPrefs_.targetLufs = *value;
+        target_.setText(formatLufs(*value), juce::dontSendNotification);
         refreshEquivalence();
+        commitImport();
+    }
+
+    void parseMark()
+    {
+        // A mark of only spaces is the empty mark the hint promises, not a
+        // name with a space before its extension; every other mark is kept
+        // as typed, its spaces included — a FAT name may hold them, and a
+        // rewritten mark would be a different mark.
+        const juce::String typed = importprefs::markAsTyped(mark_.getText());
+        try {
+            uploadmark::assertSuffix(typed.toStdString());
+        } catch (const Error& refused) {
+            // Not a mark — snap back to the stored one, and say why.
+            mark_.setText(importPrefs_.convertedMark, juce::dontSendNotification);
+            markRefusal_.setText(juce::String::fromUTF8(refused.what()), juce::dontSendNotification);
+            return;
+        }
+        markRefusal_.setText({}, juce::dontSendNotification);
+        mark_.setText(typed, juce::dontSendNotification); // what was accepted, as it will be stored
+        if (typed == importPrefs_.convertedMark)
+            return;
+        importPrefs_.convertedMark = typed;
         commitImport();
     }
 
@@ -251,6 +311,10 @@ private:
     juce::TextEditor target_;
     juce::Label targetEquiv_;
     juce::Label importHint_;
+    juce::Label markCaption_;
+    juce::TextEditor mark_;
+    juce::Label markRefusal_;
+    juce::Label markHint_;
 
     HistoryStoragePanel storage_;
 

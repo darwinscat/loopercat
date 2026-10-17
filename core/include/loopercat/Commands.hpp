@@ -17,6 +17,7 @@
 #include "DeviceProfile.hpp"
 #include "Downmix.hpp"
 #include "Error.hpp"
+#include "FatName.hpp"
 #include "Loudness.hpp"
 #include "Normalize.hpp"
 #include "Params.hpp"
@@ -25,6 +26,7 @@
 #include "Volume.hpp"
 #include "Wav.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -32,6 +34,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace loopercat::commands {
@@ -47,6 +50,14 @@ namespace fs = std::filesystem;
 inline std::string readFileBytes(const fs::path& path,
                                  const std::function<void(double)>& progress = {})
 {
+    // Only a regular file is bytes. A folder under a take's name opens as a
+    // stream on Linux, and libstdc++ then throws std::ios_base::failure from
+    // the first read ("Is a directory") instead of failing the stream: an
+    // exception none of our callers expects, which ended the connect scan's
+    // doctor pass. Refused here in our own words, before a stream exists.
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec))
+        throw Error("cannot read " + path.string() + ": not a file");
     std::ifstream in(path, std::ios::binary);
     if (!in)
         throw Error("cannot read " + path.string());
@@ -237,6 +248,16 @@ struct Journal {
     // After a take has landed on the card, with its bytes: the post-state's
     // audio, so the history never has to read it back over USB.
     std::function<void(int slot, const std::string& fileName, std::string_view bytes)> audioWritten;
+    // Optional. What a take measured, with the very bytes measured, from a
+    // command that meters on its way (normalize): a reading is a fact about
+    // those bytes, and the history files it under their hash (#140) — so it
+    // is reported while they are still the take's, before any archive or
+    // rewrite, and it is reported whether or not a write follows. Only a
+    // measurement is reported: bytes that are not audio are refused by the
+    // command instead, and the bytes a rewrite lands get no derived number.
+    std::function<void(int slot, const std::string& fileName, std::string_view bytes,
+                       const wav::LoudnessReading& reading)>
+        loudnessMeasured;
     // Just before the settings pair is written, with every section this edit
     // changes — the pedal's own settings are undoable like a memory is
     // (sysfile::SectionChange carries the section's bytes either side).
@@ -560,11 +581,63 @@ inline WriteResult setTempo(const fs::path& volume, int slot, long long tempoTen
 
 struct PushOptions {
     std::optional<std::string> name; // also rename the slot
+    // The file's name on the card (issue #139). Absent: the name of the file
+    // push is handed, as before. Present: exactly this — the caller decides
+    // what a converted upload is called, instead of a temp file's name
+    // travelling to the card by accident. Checked by assertLandedName before
+    // a byte moves.
+    std::optional<std::string> landedName;
     bool oneShot = false;
     bool writeConfig = true;         // false = drop the file only, let the pedal index it on boot
     bool force = false;              // replace existing slot audio (it goes to write.archive first)
     WriteOptions write;
 };
+
+// A landed name is a bare file name with a .wav extension and something in
+// front of it, that every host of the card can create and the card's own
+// sweep leaves alone — checked here, before a byte moves, because push
+// archives and removes the old take before it writes the new one, and a
+// name the card refuses at the write would leave the slot empty with a
+// config that says it holds audio (issue #139, review). The rules are
+// FatName.hpp's: no separator in either direction (the card is FAT and is
+// read on Windows too), none of FAT's reserved characters, at most 238
+// UTF-16 units (what Windows's MAX_PATH leaves under the card folder — FAT's
+// own 255 is not the binding limit), no Windows device name; plus the card's own: no name the
+// junk sweep deletes (volume::isJunkName — "._take.wav" would be reported
+// as pushed and swept at the next sweep), no name starting with a dot (a
+// hidden file on every host). The extension's case is not checked: the
+// pedal's own recordings wear uppercase .WAV (the pedal-technical names
+// Wav.hpp recognises) and FAT does not tell the two apart. An upload's
+// extension changes on purpose (issue #139: song.mp3 lands as
+// song-pedal.wav), so a name that kept its source's extension would lie
+// about the bytes under it.
+inline void assertLandedName(const std::string& name)
+{
+    if (name.find_first_of("/\\") != std::string::npos)
+        throw Error("push: the name on the card must be a bare file name, not \"" + name + "\"");
+    if (const auto c = fatname::forbiddenCharacter(name))
+        throw Error("push: the name on the card cannot contain " + fatname::describeCharacter(*c)
+                    + " — a file name on the card cannot hold it");
+    constexpr std::string_view kWav = ".wav";
+    std::string tail = name.size() >= kWav.size() ? name.substr(name.size() - kWav.size()) : name;
+    for (char& c : tail)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (tail != kWav)
+        throw Error("push: the name on the card must end in .wav, not \"" + name + "\"");
+    if (name.size() == kWav.size())
+        throw Error("push: the name on the card needs a name in front of .wav");
+    if (volume::isJunkName(name))
+        throw Error("push: \"" + name + "\" is a name the card sweep deletes");
+    if (name.front() == '.')
+        throw Error("push: the name on the card cannot start with a dot — \"" + name
+                    + "\" would be a hidden file");
+    if (fatname::isDeviceName(name))
+        throw Error("push: \"" + name + "\" is a name Windows reserves for a device");
+    if (const std::size_t units = fatname::utf16Units(name); units > fatname::kMaxLandedUnits)
+        throw Error("push: the name on the card is " + std::to_string(units)
+                    + " characters long; a file name on the card holds at most "
+                    + std::to_string(fatname::kMaxLandedUnits));
+}
 
 struct PushResult {
     wav::Info info;
@@ -598,6 +671,8 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
 
     if (options.name)
         rc0::encodeName(*options.name); // validates; applied in the document below
+    if (options.landedName)
+        assertLandedName(*options.landedName);
 
     std::optional<params::SlotParams> slotParams;
     std::string newDocument;
@@ -652,8 +727,9 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     fs::create_directories(dir, ec);
     if (ec)
         throw Error("cannot create " + dir.string());
-    PushResult result { info, dir / wavPath.filename(), false, noteLengthReplaced, slotParams,
-                        {}, std::nullopt };
+    PushResult result { info,
+                        dir / (options.landedName ? fs::path(*options.landedName) : wavPath.filename()),
+                        false, noteLengthReplaced, slotParams, {}, std::nullopt };
     for (const auto& old : existing) {
         archiveTake(options.write, "push", slot, old, readFileBytes(dir / old));
         result.archived.push_back(old);
@@ -927,6 +1003,36 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
 
 // --- normalize ---
 
+// A target outside this window is a bug wearing a number: 0.0 is what an
+// unset field reads as, and no loudness war ever pushed a target past -1 or
+// under -70. The command refuses it before it reads a byte, and the
+// measure-first step of the single-slot action (#142) refuses it the same way.
+// Asked in the positive: NaN fails every comparison, so "outside" spelled as
+// two comparisons let it through, and the gain it made filled a take with
+// NaN samples (review of #142, P1).
+inline void requireNormalizeTarget(double targetLufs)
+{
+    if (!(targetLufs < loudness::kPeakCeilingDb && targetLufs > loudness::kAbsoluteGateLufs))
+        throw Error("normalize target must sit between -70 and -1 LUFS, got "
+                    + std::to_string(targetLufs));
+}
+
+// The sentences normalize refuses a take with, as functions: the measure-first
+// step (#142) refuses the same take in the same words before any window
+// opens, and the two cannot drift apart.
+inline std::string normalizeDamagedRefusal(int slot, std::int64_t wildSamples)
+{
+    return "slot " + std::to_string(slot) + " contains " + std::to_string(wildSamples)
+         + " impossible sample value(s) — bytes that are not audio. The take looks "
+           "damaged; re-push it from the original instead of normalizing it";
+}
+
+inline std::string normalizeUnmeasurableRefusal(int slot)
+{
+    return "slot " + std::to_string(slot)
+         + " is silent or shorter than the 400 ms a loudness measurement needs";
+}
+
 struct NormalizeOptions {
     double targetLufs = 0.0; // REQUIRED: 0 is not a target and is refused as one
     WriteOptions write;      // write.archive REQUIRED: the original goes there first (the undo)
@@ -956,8 +1062,9 @@ struct NormalizeResult {
 // Two outcomes deliberately write NOTHING and say so instead of erroring —
 // they are answers, not failures, and a bulk apply must be able to walk over
 // them: already within kAlreadyAtTargetLu of the target (nothing audible to
-// gain), and a wanted boost fully swallowed by the peak ceiling (the loop
-// already peaks at -1 dBTP — there is nothing to give it). An unmeasurable
+// gain), and a wanted boost the peak ceiling cuts below kSmallestGainDb (the
+// loop already peaks at, or within an inaudible step of, -1 dBTP — there is
+// nothing to give it). An unmeasurable
 // slot — silence, or under one gating block — IS an error: the player asked
 // to normalize this slot, and no gain would do what they asked.
 inline NormalizeResult normalize(const fs::path& volume, int slot,
@@ -965,12 +1072,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
 {
     if (!options.write.archive)
         throw Error("normalize needs an archive — the original is kept first, it is the undo");
-    // 0.0 is what an unset field reads as, and no loudness war ever pushed a
-    // target out of this window — outside it is a bug, not a taste.
-    if (options.targetLufs >= loudness::kPeakCeilingDb
-        || options.targetLufs <= loudness::kAbsoluteGateLufs)
-        throw Error("normalize target must sit between -70 and -1 LUFS, got "
-                    + std::to_string(options.targetLufs));
+    requireNormalizeTarget(options.targetLufs);
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -998,13 +1100,14 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     // gain of hundreds of dB and bake it in — that is how a damaged take
     // becomes a silent one. Refuse, and say what to do instead.
     if (reading.wildSamples > 0)
-        throw Error("slot " + std::to_string(slot) + " contains "
-                    + std::to_string(reading.wildSamples)
-                    + " impossible sample value(s) — bytes that are not audio. The take looks "
-                      "damaged; re-push it from the original instead of normalizing it");
+        throw Error(normalizeDamagedRefusal(slot, reading.wildSamples));
+    // The bytes are audio: what they measure is a fact worth keeping whatever
+    // this command then does with it — writes a gain, finds nothing to do,
+    // or refuses below because nothing can be done for silence.
+    if (options.write.journal.loudnessMeasured)
+        options.write.journal.loudnessMeasured(slot, files.front(), raw, reading);
     if (!reading.integratedLufs.has_value())
-        throw Error("slot " + std::to_string(slot)
-                    + " is silent or shorter than the 400 ms a loudness measurement needs");
+        throw Error(normalizeUnmeasurableRefusal(slot));
 
     NormalizeResult result;
     result.measuredLufs = *reading.integratedLufs;
@@ -1015,9 +1118,11 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     const double gainDb = loudness::normalizeGainDb(result.measuredLufs, options.targetLufs,
                                                     reading.truePeakDb,
                                                     loudness::kPeakCeilingDb);
-    result.cappedByPeak = wanted > 0.0 && gainDb + 1.0e-9 < wanted;
-    if (std::abs(gainDb) < 1.0e-9)
-        return result; // the ceiling ate the whole boost — rewriting would change nothing
+    // Exact on purpose: normalizeGainDb hands the wanted gain back untouched
+    // when the ceiling does not bite, so any shortfall is the ceiling's.
+    result.cappedByPeak = wanted > 0.0 && gainDb < wanted;
+    if (std::abs(gainDb) < loudness::kSmallestGainDb)
+        return result; // the ceiling left no audible boost — rewriting would change nothing
 
     const wav::Bytes rewritten = wav::withGainDb(rawView, gainDb, segment(0.45, 0.60));
 

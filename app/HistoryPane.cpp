@@ -16,6 +16,7 @@ constexpr int kGutter = 12;
 const juce::Colour kInk { 0xff8a8a99 };      // the quiet half of a row
 const juce::Colour kPaper { 0xffe8e8f0 };    // what the row is about
 const juce::Colour kSelected { 0xff26263a };
+const juce::Colour kWarning { 0xffd9a441 };  // failed, interrupted — the window's colour
 } // namespace
 
 HistoryPane::HistoryPane()
@@ -137,6 +138,14 @@ void HistoryPane::paintListBoxItem(int rowNumber, juce::Graphics& g, int width, 
     g.drawText(row.when, area.removeFromLeft(96), juce::Justification::centredLeft, false);
     if (row.audio.isNotEmpty())
         g.drawText(row.audio, area.removeFromRight(150), juce::Justification::centredRight, false);
+    if (row.state.isNotEmpty()) {
+        // What did not happen, in the window's warning colour and place: a
+        // row that failed must not read like one that landed.
+        g.setColour(kWarning);
+        const int stateWidth = juce::GlyphArrangement::getStringWidthInt(g.getCurrentFont(), row.state) + 12;
+        g.drawText(row.state, area.removeFromRight(juce::jmin(area.getWidth(), stateWidth)),
+                   juce::Justification::centredRight, false);
+    }
 
     g.setColour(kPaper);
     const int actionWidth =

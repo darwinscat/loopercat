@@ -7,6 +7,15 @@
 //   - it shows the rows it is handed, oldest first, newest selected
 //   - a slot badge filters to that slot, and "All slots" widens again
 //   - a swap is one row wearing two badges, and answers to both filters
+//   - a row wears at most three badges; past that a "+N" chip counts the
+//     rest and filters nothing, and a snapshot of all 99 wears none: "99
+//     slots" stands where they would be (#143); the counted slots still
+//     answer the filter, and the filtered slot is never the hidden one
+//   - a row's hint is its whole line, however narrow the row: the slots
+//     the strip only counts, and the pin, included
+//   - a double-click plays only past the badge strip: not on a badge, not
+//     on the chip, not on the words
+//   - a row whose slots are not the pedal's is refused, by its op
 //   - the buttons offer only what a row can do: no Play or Export for a
 //     take no longer kept, no Restore for a state that cannot go back
 //   - a pin toggled here reaches the owner with the operation and the new
@@ -17,7 +26,9 @@
 
 #include "../app/HistoryWindow.h"
 #include "../app/AppMenu.h"
+#include "../app/history/SlotRows.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -38,6 +49,64 @@ HistoryWindow::Row row(std::int64_t op, const char* action, std::vector<int> slo
     r.op = op;
     return r;
 }
+
+// The card's first sighting as the store's timeline hands it and
+// rows::forCard words it: one snapshot entry touching all 99 slots, of which
+// `withTakes` held a take the store kept — those a restore can put back; the
+// rest were empty. Mapped to the window's row as MainComponent maps it when
+// it feeds the window. Nothing here types the row's words.
+HistoryWindow::Row firstSeen(const std::vector<int>& withTakes)
+{
+    using Card = history::HistoryStore::CardEntry;
+    Card entry;
+    entry.op = 7;
+    entry.at = 1758657000000;
+    entry.kind = "snapshot";
+    entry.actor = "app";
+    entry.status = "done";
+    for (int slot = 1; slot <= 99; ++slot) {
+        Card::Slot touched;
+        touched.slot = slot;
+        touched.facts.op = entry.op;
+        touched.facts.at = entry.at;
+        touched.facts.kind = entry.kind;
+        touched.facts.actor = entry.actor;
+        touched.facts.status = entry.status;
+        if (std::find(withTakes.begin(), withTakes.end(), slot) != withTakes.end()) {
+            touched.facts.afterBody = rc0::factorySlotBody(slot);
+            touched.facts.takeName = "TEST_" + std::to_string(slot) + ".WAV";
+            touched.facts.takeHash = std::string(32, static_cast<char>(slot));
+            touched.facts.takeKept = true;
+            touched.facts.takeIsAfter = true;
+            touched.facts.takeCount = 1;
+            touched.facts.takeBytes = 1719900;
+        }
+        entry.slots.push_back(touched);
+    }
+    const std::vector<history::rows::CardRow> cardRows = history::rows::forCard({ entry });
+    if (cardRows.size() != 1)
+        throw Error("forCard worded " + std::to_string(cardRows.size()) + " rows for one entry");
+    const history::rows::CardRow& row = cardRows.front();
+    HistoryWindow::Row seen;
+    seen.when = "23 Sep 21:50";
+    seen.action = juce::String(row.action);
+    seen.detail = juce::String(row.detail);
+    seen.state = juce::String(row.state);
+    seen.slots = row.slots();
+    seen.playable = row.playable();
+    seen.restorable = row.restorable();
+    seen.pinned = row.pinned;
+    seen.op = row.op;
+    seen.isSnapshot = row.kind == "snapshot";
+    seen.restorableSlots = row.restorableSlots();
+    return seen;
+}
+
+// Where a badge position starts, as the window lays them out: the gutter,
+// the clock, then 30-wide badges 4 apart. A click lands 5 in. The strip
+// has room for three; the sentence starts where the fourth would.
+int badgeX(int position) { return 12 + 110 + position * (30 + 4) + 5; }
+const int stripEnd = 12 + 110 + 3 * (30 + 4);
 
 std::vector<HistoryWindow::Row> timeline()
 {
@@ -275,5 +344,265 @@ int main()
         window.restore();
         CHECK_EQ(restores, 1);
     }
+    // --- #143: the snapshot row, as the store words it, says "99 slots" where
+    // its badges would be, in the strip and in the hint; the words are the
+    // window's, the sentence is forCard's ---
+    {
+        HistoryWindow window;
+        window.show({ firstSeen({ 57 }) });
+        const HistoryWindow::Row& seen = *window.visibleRow(0);
+        CHECK_EQ(seen.slots.size(), 99u);
+        CHECK(seen.isSnapshot);
+        CHECK(seen.action.isNotEmpty());
+        CHECK(seen.detail.isNotEmpty());
+        CHECK(!seen.detail.contains("slots")); // forCard counts takes and bytes, not slots
+        CHECK(!seen.action.contains("slots"));
+        CHECK_EQ(window.badgeStripText(0), juce::String("99 slots"));
+        const juce::String hint = window.hintAt(0);
+        CHECK(hint.contains("99 slots"));
+        CHECK(hint.contains(seen.action));
+        CHECK(hint.contains(seen.detail));
+        CHECK(hint.indexOf("99 slots") < hint.indexOf(seen.action)); // where the strip is: before the sentence
+        window.setFilter(57); // the words stay, the filter has no badge to light
+        CHECK_EQ(window.badgeStripText(0), juce::String("99 slots"));
+        CHECK(window.hintAt(0).contains("99 slots"));
+    }
+
+    // --- #143: a snapshot of all 99 slots wears no badge; nothing on it filters ---
+    {
+        HistoryWindow window;
+        window.show({ firstSeen({ 57 }), row(8, "Pushed", { 12 }, true, true) });
+        for (int position = 0; position < 99; ++position) {
+            CHECK(window.badgeAt(0, badgeX(position)) == std::nullopt);
+            window.clickAt(0, badgeX(position));
+        }
+        CHECK(window.badgeAt(0, badgeX(99)) == std::nullopt);
+        CHECK(window.badgeAt(0, window.getWidth() - 1) == std::nullopt);
+        CHECK(window.badgeAt(0, 100000) == std::nullopt);
+        window.clickAt(0, window.getWidth() - 1);
+        window.clickAt(0, 0);
+        CHECK(!window.filter().has_value()); // no click on the snapshot row filtered
+        CHECK_EQ(window.visibleRows(), 2);
+
+        // the push's badge still filters: the limit is the row's, not the window's
+        window.clickAt(1, badgeX(0));
+        CHECK(window.filter() == 12);
+    }
+
+    // --- #143: the filter finds the snapshot by what it touched; Restore goes by slot ---
+    {
+        HistoryWindow window;
+        window.show({ firstSeen({ 57 }) });
+        window.setFilter(57);
+        CHECK_EQ(window.visibleRows(), 1);
+        CHECK(window.visibleRow(0)->op == 7);
+        window.selectVisible(0);
+        CHECK(window.restoreEnabled());
+        int restores = 0;
+        window.onRestore = [&](std::int64_t op) { CHECK_EQ(op, 7); ++restores; };
+        window.restore();
+        CHECK_EQ(restores, 1);
+        CHECK(window.badgeAt(0, badgeX(0)) == std::nullopt); // behind the filter, still no badge
+
+        window.setFilter(58); // touched, so shown — but nothing of 58's to go back to
+        CHECK_EQ(window.visibleRows(), 1);
+        window.selectVisible(0);
+        CHECK(!window.restoreEnabled());
+        window.restore();
+        CHECK_EQ(restores, 1);
+
+        // the same slot in front, when the snapshot holds nothing for it
+        window.show({ firstSeen({}) });
+        window.setFilter(57);
+        CHECK_EQ(window.visibleRows(), 1);
+        window.selectVisible(0);
+        CHECK(!window.restoreEnabled());
+        window.restore();
+        CHECK_EQ(restores, 1);
+    }
+
+    // --- #143: five slots: two badges, then a "+3" chip that filters nothing ---
+    {
+        HistoryWindow window;
+        window.show({ row(1, "Normalized 5 slots", { 3, 7, 12, 40, 99 }, false, false) });
+        CHECK(window.badgeAt(0, badgeX(0)) == 3);
+        CHECK(window.badgeAt(0, badgeX(1)) == 7);
+        CHECK(window.badgeAt(0, badgeX(2)) == std::nullopt); // the chip
+        CHECK(window.badgeAt(0, badgeX(3)) == std::nullopt); // 40 is counted, not worn
+        CHECK(window.badgeAt(0, badgeX(4)) == std::nullopt); // 99 too
+        CHECK_EQ(window.badgeStripText(0), juce::String("3 7 +3"));
+        window.clickAt(0, badgeX(2));
+        CHECK(!window.filter().has_value());
+        window.clickAt(0, badgeX(3));
+        CHECK(!window.filter().has_value());
+        window.clickAt(0, badgeX(1));
+        CHECK(window.filter() == 7);
+        CHECK_EQ(window.visibleRows(), 1);
+        CHECK_EQ(window.badgeStripText(0), juce::String("3 7 +3")); // 7 was worn already
+
+        // a counted slot still answers the filter — and once filtered to, it
+        // is worn in the last badge position, the chip still counting three
+        window.setFilter(40);
+        CHECK_EQ(window.visibleRows(), 1);
+        CHECK_EQ(window.badgeStripText(0), juce::String("3 40 +3"));
+        CHECK(window.badgeAt(0, badgeX(0)) == 3);
+        CHECK(window.badgeAt(0, badgeX(1)) == 40);
+        CHECK(window.badgeAt(0, badgeX(2)) == std::nullopt);
+        window.clickAt(0, badgeX(2));
+        CHECK(window.filter() == 40);
+        window.clickAt(0, badgeX(0)); // the badge that stayed still filters
+        CHECK(window.filter() == 3);
+        CHECK_EQ(window.badgeStripText(0), juce::String("3 7 +3"));
+        window.setFilter(99);
+        CHECK_EQ(window.badgeStripText(0), juce::String("3 99 +3"));
+        CHECK(window.badgeAt(0, badgeX(1)) == 99);
+        window.setFilter(std::nullopt);
+        CHECK_EQ(window.badgeStripText(0), juce::String("3 7 +3"));
+        window.clickAt(0, badgeX(0));
+        CHECK(window.filter() == 3);
+    }
+
+    // --- #143: exactly three slots: three badges, no chip ---
+    {
+        HistoryWindow window;
+        window.show({ row(1, "Normalized 3 slots", { 5, 6, 8 }, false, false) });
+        CHECK(window.badgeAt(0, badgeX(0)) == 5);
+        CHECK(window.badgeAt(0, badgeX(1)) == 6);
+        CHECK(window.badgeAt(0, badgeX(2)) == 8);
+        CHECK(window.badgeAt(0, badgeX(3)) == std::nullopt);
+        CHECK_EQ(window.badgeStripText(0), juce::String("5 6 8"));
+        window.clickAt(0, badgeX(2));
+        CHECK(window.filter() == 8);
+        CHECK_EQ(window.badgeStripText(0), juce::String("5 6 8"));
+    }
+
+    // --- #143: the hint is the whole line, in the row's order ---
+    {
+        HistoryWindow window;
+        HistoryWindow::Row full = row(1, "Normalized slot 12", { 12 }, true, true);
+        full.when = "23 Sep 21:54";
+        full.detail = "already peaking at the -1 dBTP ceiling (measured -19.2 LUFS), nothing to do";
+        full.state = "failed";
+        full.audio = "take kept";
+        HistoryWindow::Row terse = row(2, "Renamed", { 7 }, false, true);
+        terse.when = "23 Sep 21:55";
+        window.show({ full, terse });
+
+        const juce::String hint = window.hintAt(0);
+        for (const juce::String& part : { full.when, full.action, full.detail, full.state, full.audio })
+            CHECK(hint.contains(part));
+        CHECK(hint.indexOf(full.when) < hint.indexOf(full.action));
+        CHECK(hint.indexOf(full.action) < hint.indexOf(full.detail));
+        CHECK(hint.indexOf(full.detail) < hint.indexOf(full.state));
+        CHECK(hint.indexOf(full.state) < hint.indexOf(full.audio));
+        CHECK(hint.startsWith(full.when));
+        CHECK(hint.endsWith(full.audio));
+
+        // a row with nothing but a clock and an action: what joins them is
+        // whatever the window chose, and it appears once between parts —
+        // never doubled for a missing part, never at either end
+        const juce::String bare = window.hintAt(1);
+        CHECK(bare.startsWith(terse.when));
+        CHECK(bare.endsWith(terse.action));
+        const juce::String join =
+            bare.substring(terse.when.length(), bare.length() - terse.action.length());
+        CHECK(join.trim().isNotEmpty());
+        CHECK_EQ(hint, full.when + join + full.action + join + full.detail + join + full.state
+                           + join + full.audio);
+        CHECK(!hint.contains(join + join));
+        CHECK(!bare.contains(join + join));
+
+        CHECK(window.hintAt(2).isEmpty()); // no such row
+        CHECK(window.hintAt(-1).isEmpty());
+
+        // what the strip only counts is spelled out, between the clock and
+        // the sentence; a row whose badges say it all adds nothing
+        HistoryWindow::Row many = row(3, "Normalized 5 slots", { 3, 7, 12, 40, 99 }, false, false);
+        HistoryWindow::Row three = row(4, "Normalized 3 slots", { 5, 6, 8 }, false, false);
+        window.show({ full, terse, many, three });
+        const juce::String counted = window.hintAt(2);
+        CHECK(counted.contains("slots 3, 7, 12, 40, 99"));
+        CHECK(counted.indexOf(many.when) < counted.indexOf("slots 3, 7, 12, 40, 99"));
+        CHECK(counted.indexOf("slots 3, 7, 12, 40, 99") < counted.indexOf(many.action));
+        CHECK(!counted.contains(join + join));
+        CHECK_EQ(window.hintAt(3), three.when + join + three.action); // its three badges say it all
+        CHECK(!window.hintAt(0).contains(join + "slots"));
+        window.setFilter(40); // the filtered slot came out of hiding; the list is still whole
+        CHECK(window.hintAt(0).contains("slots 3, 7, 12, 40, 99"));
+        window.setFilter(std::nullopt);
+
+        // the pin, which the row paints as a diamond, is a word in the hint
+        window.selectVisible(1);
+        CHECK(!window.hintAt(1).contains("pinned"));
+        window.togglePin();
+        CHECK(window.hintAt(1).endsWith("pinned"));
+        CHECK(window.hintAt(1).startsWith(terse.when));
+        CHECK(!window.hintAt(1).contains(join + join));
+        CHECK(!window.hintAt(0).contains("pinned"));
+        window.togglePin();
+        CHECK(!window.hintAt(1).contains("pinned"));
+    }
+
+    // --- #143 review: a row whose slots are not the pedal's is refused, by op ---
+    {
+        HistoryWindow window;
+        window.show(timeline());
+        window.selectVisible(0);
+        const auto refused = [&window](std::vector<int> slots, const char* why) {
+            auto rows = timeline();
+            rows.push_back(row(77, "Pushed", std::move(slots), true, true));
+            CHECK_THROWS(window.show(rows), why);
+            CHECK_THROWS(window.show(rows), "77"); // the row is named by its op
+            CHECK_EQ(window.visibleRows(), 4);    // the window kept what it showed
+            CHECK(window.selected() != nullptr && window.selected()->op == 1);
+        };
+        refused({ 0 }, "1..99");
+        refused({ 100 }, "1..99");
+        refused({ 12, 12 }, "ascending");
+        refused({ 43, 12 }, "ascending");
+        refused({ 1, 99, 100 }, "1..99");
+        refused({ 12, 43, 43 }, "ascending");
+        window.show({ row(78, "Normalized 3 slots", { 1, 50, 99 }, false, false) }); // the bounds are fine
+        CHECK_EQ(window.visibleRows(), 1);
+        window.show({ row(79, "Changed SETUP", {}, false, false) }); // no slot at all is fine
+        CHECK_EQ(window.visibleRows(), 1);
+    }
+
+    // --- #143 review: a double-click in the badge strip never plays ---
+    {
+        HistoryWindow window;
+        std::vector<std::int64_t> played;
+        window.onPlay = [&](std::int64_t op) { played.push_back(op); };
+        window.show({ firstSeen({ 57 }), row(8, "Pushed", { 3, 7, 12, 40, 99 }, true, true) });
+        CHECK(window.visibleRow(0)->playable); // the snapshot's kept take: the words are still not it
+        for (int position = 0; position < 3; ++position)
+            window.doubleClickAt(0, badgeX(position)); // "99 slots"
+        window.doubleClickAt(1, badgeX(2)); // the chip
+        window.doubleClickAt(1, badgeX(0)); // a badge
+        window.doubleClickAt(1, badgeX(1));
+        window.doubleClickAt(1, stripEnd - 1); // the strip's last pixel
+        window.doubleClickAt(0, stripEnd - 1);
+        CHECK(played.empty());
+        CHECK(!window.filter().has_value()); // nor does a double-click filter
+
+        window.doubleClickAt(1, stripEnd); // the sentence: plays
+        CHECK(played == (std::vector<std::int64_t> { 8 }));
+        window.doubleClickAt(0, window.getWidth() - 1); // the snapshot's audio column: plays its take
+        CHECK(played == (std::vector<std::int64_t> { 8, 7 }));
+        window.doubleClickAt(1, 0); // the clock, as before
+        CHECK(played == (std::vector<std::int64_t> { 8, 7, 8 }));
+
+        window.setBusy(true);
+        window.doubleClickAt(1, stripEnd);
+        CHECK_EQ(played.size(), 3u);
+        window.setBusy(false);
+        window.doubleClickAt(99, stripEnd); // no such row
+        CHECK_EQ(played.size(), 3u);
+        window.show({ row(9, "Trimmed", { 12 }, false, false) }); // nothing to play
+        window.doubleClickAt(0, stripEnd);
+        window.doubleClickAt(0, badgeX(1)); // the empty strip of a one-badge row: still the strip
+        CHECK_EQ(played.size(), 3u);
+    }
+
     return testkit::summary("history_window_tests");
 }

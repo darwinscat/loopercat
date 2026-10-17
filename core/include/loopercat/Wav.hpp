@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -85,9 +86,20 @@ namespace detail {
 
 } // namespace detail
 
-inline Info readWavInfo(BytesView data)
+// The header of a file whose first bytes are `head` and whose whole size is
+// `fileSize`: the same chunk walk and the same refusals as over the whole
+// file, for a reader that must know whether this is a take the core would
+// accept without reading all of it (#140). Every chunk header and the fmt
+// body must lie inside `head`; a file whose chunk headers run past the probe
+// is refused as unreadable from it, never guessed at. readWavInfo(data) is
+// this with the whole file as the head.
+inline Info readWavInfo(BytesView head, std::int64_t fileSize)
 {
-    if (data.size() < 44 || !detail::chunkIdIs(data, 0, "RIFF") || !detail::chunkIdIs(data, 8, "WAVE"))
+    if (fileSize < static_cast<std::int64_t>(head.size()))
+        throw Error("header probe of " + std::to_string(head.size())
+                    + " bytes is longer than the file it is said to begin, "
+                    + std::to_string(fileSize) + " bytes");
+    if (head.size() < 44 || !detail::chunkIdIs(head, 0, "RIFF") || !detail::chunkIdIs(head, 8, "WAVE"))
         throw Error("not a RIFF/WAVE file");
 
     bool haveFmt = false;
@@ -95,31 +107,38 @@ inline Info readWavInfo(BytesView data)
     std::int64_t sampleRate = 0;
     std::int64_t dataBytes = -1;
     std::int64_t offset = 12;
-    const auto size = static_cast<std::int64_t>(data.size());
+    const std::int64_t size = fileSize;
+    const auto probe = static_cast<std::int64_t>(head.size());
     while (offset + 8 <= size) {
+        if (offset + 8 > probe)
+            throw Error("header probe of " + std::to_string(probe)
+                        + " bytes ends before the chunk at offset " + std::to_string(offset));
         const auto o = static_cast<std::size_t>(offset);
-        const std::int64_t chunkSize = detail::u32(data, o + 4);
-        // Every chunk body must lie inside the buffer BEFORE anything reads
+        const std::int64_t chunkSize = detail::u32(head, o + 4);
+        // Every chunk body must lie inside the file BEFORE anything reads
         // from it: a crafted or truncated size field must become an explicit
         // error, never an out-of-bounds read.
         if (offset + 8 + chunkSize > size)
             throw Error("truncated file: chunk at offset " + std::to_string(offset) + " claims "
                         + std::to_string(chunkSize) + " bytes, file has "
                         + std::to_string(size - offset - 8) + " left");
-        if (detail::chunkIdIs(data, o, "fmt ")) {
+        if (detail::chunkIdIs(head, o, "fmt ")) {
             // One fmt, one data — a file with duplicates is ambiguous (which
             // one would the pedal index?), so it is refused, not guessed at.
             if (haveFmt)
                 throw Error("malformed file: more than one fmt chunk");
             if (chunkSize < 16)
                 throw Error("malformed fmt chunk");
-            fmtTag = static_cast<int>(detail::u16(data, o + 8));
-            channels = static_cast<int>(detail::u16(data, o + 10));
-            sampleRate = detail::u32(data, o + 12);
-            blockAlign = static_cast<int>(detail::u16(data, o + 20));
-            bitsPerSample = static_cast<int>(detail::u16(data, o + 22));
+            if (offset + 8 + 16 > probe)
+                throw Error("header probe of " + std::to_string(probe)
+                            + " bytes ends inside the fmt chunk at offset " + std::to_string(offset));
+            fmtTag = static_cast<int>(detail::u16(head, o + 8));
+            channels = static_cast<int>(detail::u16(head, o + 10));
+            sampleRate = detail::u32(head, o + 12);
+            blockAlign = static_cast<int>(detail::u16(head, o + 20));
+            bitsPerSample = static_cast<int>(detail::u16(head, o + 22));
             haveFmt = true;
-        } else if (detail::chunkIdIs(data, o, "data")) {
+        } else if (detail::chunkIdIs(head, o, "data")) {
             if (dataBytes >= 0)
                 throw Error("malformed file: more than one data chunk");
             dataBytes = chunkSize;
@@ -145,6 +164,11 @@ inline Info readWavInfo(BytesView data)
 
     return { fmtTag, channels, static_cast<int>(sampleRate), bitsPerSample, blockAlign,
              dataBytes / blockAlign, dataBytes };
+}
+
+inline Info readWavInfo(BytesView data)
+{
+    return readWavInfo(data, static_cast<std::int64_t>(data.size()));
 }
 
 // The canonical rewrite of a frame range [startFrame, endFrame): RIFF + fmt +
@@ -200,6 +224,61 @@ inline Bytes trimmed(BytesView data, std::int64_t startFrame, std::int64_t endFr
     out.insert(out.end(), data.begin() + static_cast<std::ptrdiff_t>(src),
                data.begin() + static_cast<std::ptrdiff_t>(src + static_cast<std::size_t>(sliceBytes)));
     return out;
+}
+
+// A fault in a RIFF/WAVE buffer's STRUCTURE — one no reader can make audio
+// of without inventing some — as a clause to put after the file's name, for
+// an importer to refuse with (issue #139, review). Empty for a sound
+// structure, and for a buffer that is not RIFF/WAVE at all: that is
+// something else's problem. The fmt chunk's fields are not structure: an
+// extensible or 24-bit header is a shape the converter reads, and
+// readWavInfo plus the upload gate decide about it.
+//
+// Chunks past the end are told apart on purpose: a data chunk short of its
+// claim is a recording cut off, named by how much; a data size of
+// 0xFFFFFFFF is a header a writer never finalised; a metadata chunk cut off
+// AFTER a complete data chunk — a LIST trailer — costs no sample and is no
+// fault here (readWavInfo still calls the file truncated, so it goes
+// through the converter, samples intact). Two data chunks are refused
+// because a reader keeps one and drops the other without a word.
+inline std::optional<std::string> riffFault(BytesView data)
+{
+    if (data.size() < 12 || !detail::chunkIdIs(data, 0, "RIFF")
+        || !detail::chunkIdIs(data, 8, "WAVE"))
+        return std::nullopt;
+    constexpr std::int64_t kUnfinalised = 0xFFFFFFFF;
+    const auto size = static_cast<std::int64_t>(data.size());
+    int fmtChunks = 0, dataChunks = 0;
+    std::int64_t offset = 12;
+    while (offset + 8 <= size) {
+        const auto o = static_cast<std::size_t>(offset);
+        const std::int64_t chunkSize = detail::u32(data, o + 4);
+        const bool isData = detail::chunkIdIs(data, o, "data");
+        const bool isFmt = detail::chunkIdIs(data, o, "fmt ");
+        if (isData && chunkSize == kUnfinalised)
+            return "was never finalised: its data chunk's size is still unset";
+        if (offset + 8 + chunkSize > size) {
+            if (isData)
+                return "is cut short: its data chunk claims "
+                     + std::to_string(offset + 8 + chunkSize - size)
+                     + " bytes more than the file holds";
+            break; // a metadata chunk cut off: what stands before it is whole
+        }
+        if (isFmt) {
+            if (++fmtChunks > 1)
+                return "has two fmt chunks";
+            if (chunkSize < 16)
+                return "has a malformed fmt chunk of " + std::to_string(chunkSize) + " bytes";
+        }
+        if (isData && ++dataChunks > 1)
+            return "has two data chunks";
+        offset += 8 + chunkSize + (chunkSize % 2);
+    }
+    if (fmtChunks == 0)
+        return "has no fmt chunk";
+    if (dataChunks == 0)
+        return "has no data chunk";
+    return std::nullopt;
 }
 
 // Rewrite a WAV into the pedal's own canonical shape: RIFF + fmt + data,
