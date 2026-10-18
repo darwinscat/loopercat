@@ -846,6 +846,26 @@ target_link_libraries(history_golden_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_golden_tests COMMAND history_golden_tests)
 
+# The history of a two-track card: the first sighting keeps every track, a
+# take is recorded with its track, and one track's file is never another's.
+juce_add_console_app(history_tracks_tests PRODUCT_NAME "history_tracks_tests")
+target_sources(history_tracks_tests PRIVATE tests/history_tracks_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_tracks_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_tracks_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_tracks_tests COMMAND history_tracks_tests)
+
 # The single-slot Normalize around its plan (#142): the target typed in
 # Settings, the read-only first step, the guard ahead of the write, one step
 # per slot — on synthetic cards, through the recorder as the app wires it.

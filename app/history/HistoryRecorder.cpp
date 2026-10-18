@@ -53,12 +53,16 @@ std::int64_t HistoryRecorder::sessionFor(const std::filesystem::path& volume)
     const std::int64_t now = clock_();
     const auto card = history.card(identity->id, identity->model, identity->name, now);
     history.selectCard(card);
+    // A model this app does not know is refused here, by name, before any
+    // operation on the card has begun.
+    const profile::DeviceProfile& family = profile::byFamilyName(identity->model);
     if (session_ && sessionVolume_ == volume && sessionMarker_ == identity->id)
         return *session_;
     disconnect();
     session_ = history.openSession(card, now);
     sessionVolume_ = volume;
     sessionMarker_ = identity->id;
+    sessionFamily_ = &family;
     return *session_;
 }
 
@@ -73,6 +77,7 @@ void HistoryRecorder::disconnect()
     }
     sessionVolume_.clear();
     sessionMarker_.clear();
+    sessionFamily_ = nullptr;
     if (store_) store_->selectCard(std::nullopt);
 }
 
@@ -162,7 +167,8 @@ void HistoryRecorder::begin(const std::string& opId, const std::string& kind,
         throw Error("operation " + opId + " has already begun");
     firstSeen(volume); // establish the baseline before a write can touch a newly minted card
     const std::int64_t session = *session_;
-    ops_[opId] = Operation { store().beginOp(session, opId, kind, clock_()), kind, volume };
+    ops_[opId] = Operation { store().beginOp(session, opId, kind, clock_()), kind, volume,
+                             sessionFamily_ };
     published(ops_[opId].row);
 }
 
@@ -173,7 +179,7 @@ void HistoryRecorder::beginMaintenance(const std::string& opId, std::int64_t car
     session.bind(1, card);
     if (!session.step()) throw Error("no history session for this card");
     const auto row = store().beginOp(session.integer(0), opId, "forget-history", clock_());
-    ops_[opId] = Operation { row, "forget-history", {} };
+    ops_[opId] = Operation { row, "forget-history", {}, nullptr };
     published(row);
 }
 
@@ -233,8 +239,10 @@ void HistoryRecorder::landed(const std::string& opId, int slot, int track,
                              const std::string& fileName, std::string_view bytes)
 {
     const Operation& op = operation(opId);
+    if (op.family == nullptr)
+        throw Error("operation " + opId + " runs on no card, and no take lands without one");
     store().recordLanded(op.row, slot, track, fileName, bytes,
-                         modifiedMs(volume::wavDir(op.volume, slot) / fileName));
+                         modifiedMs(volume::trackDir(op.volume, *op.family, slot, track) / fileName));
 }
 
 bool HistoryRecorder::reading(const std::string& hash, const wav::LoudnessReading& reading)
@@ -263,12 +271,14 @@ void HistoryRecorder::sightedInOperation(const std::string& opId, int slot, int 
                                          const std::string& hash)
 {
     // A sighting is a fact about the first track's file: the store files it
-    // by slot and name alone (take_sightings has no track), and every read
-    // that files one reads that track (HistoryStore::recordSighting).
-    if (track != commands::kFirstTrack)
+    // by slot and name alone (HistoryStore::kSightedTrack).
+    if (track != HistoryStore::kSightedTrack)
         return;
     const Operation& op = operation(opId);
-    const std::optional<FileStat> seen = statFile(volume::wavDir(op.volume, slot) / fileName);
+    if (op.family == nullptr)
+        throw Error("operation " + opId + " runs on no card, and read no take on one");
+    const std::optional<FileStat> seen =
+        statFile(volume::trackDir(op.volume, *op.family, slot, track) / fileName);
     if (!seen || seen->size != size)
         return; // the entry does not describe the bytes read: nothing to say about it
     const std::optional<std::int64_t> card = store().cardFor(sessionMarker_);
@@ -283,27 +293,33 @@ void HistoryRecorder::sightedInOperation(const std::string& opId, int slot, int 
 
 void HistoryRecorder::recordWhatSlotsHold(const Operation& op)
 {
+    if (op.family == nullptr)
+        throw Error("an operation on no card has no slots to write down");
     const std::vector<int> slots = store().touchedSlots(op.row);
     // A swap is the one operation that moves audio without writing it: the
     // two slots exchange folders, so each one's take is the other's last one.
     const bool swapped = op.kind == "swap" && slots.size() == 2;
     for (const int slot : slots) {
-        if (store().hasAfterAudio(op.row, slot))
-            continue; // the operation wrote a take here and already said so
         const int from = swapped ? (slot == slots.front() ? slots.back() : slots.front()) : slot;
-        const std::filesystem::path dir = volume::wavDir(op.volume, slot);
-        for (const std::string& name : volume::listSlotWavs(op.volume, slot)) {
-            // One stat for the size and the stamp, asked of the earlier row
-            // too: a hash is carried over only for the very file that row
-            // saw, and a hash a stampless row vouched for travels without a
-            // stamp (HistoryStore::heldBefore).
-            const std::optional<FileStat> seen = statFile(dir / name);
-            if (!seen)
-                throw Error("cannot read the directory entry of " + (dir / name).string());
-            const HistoryStore::Held held =
-                store().heldBefore(op.row, from, name, seen->size, seen->modifiedMs);
-            store().recordPresentAudio(op.row, slot, kTrack, name, seen->size, held.hash,
-                                       held.modifiedMs);
+        // Track by track: an operation that landed a take on one track says
+        // nothing about what another one holds.
+        for (int track = 1; track <= op.family->trackCount; ++track) {
+            if (store().hasAfterAudio(op.row, slot, track))
+                continue; // the operation wrote a take here and already said so
+            const std::filesystem::path dir = volume::trackDir(op.volume, *op.family, slot, track);
+            for (const std::string& name : volume::listTrackWavs(op.volume, *op.family, slot, track)) {
+                // One stat for the size and the stamp, asked of the earlier row
+                // too: a hash is carried over only for the very file that row
+                // saw, and a hash a stampless row vouched for travels without a
+                // stamp (HistoryStore::heldBefore).
+                const std::optional<FileStat> seen = statFile(dir / name);
+                if (!seen)
+                    throw Error("cannot read the directory entry of " + (dir / name).string());
+                const HistoryStore::Held held =
+                    store().heldBefore(op.row, from, track, name, seen->size, seen->modifiedMs);
+                store().recordPresentAudio(op.row, slot, track, name, seen->size, held.hash,
+                                           held.modifiedMs);
+            }
         }
     }
 }

@@ -2793,8 +2793,10 @@ void MainComponent::inferLoudnessFromHistory()
                 enqueueLoudnessRead(loaded, currentTargetLufs(), 0);
             continue;
         }
+        // The scan's take is the first track's, and so are the frames.
         sightings.push_back({ row.info.slot,
-                              { row.take->name, row.take->size, row.take->modifiedMs, row.info.frames } });
+                              { row.take->name, row.take->size, row.take->modifiedMs, row.info.frames,
+                                commands::kFirstTrack } });
     }
     if (sightings.empty())
         return;

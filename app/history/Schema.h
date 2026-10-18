@@ -72,6 +72,11 @@
 //                higher sequence recorded a body or a take in the slot. By
 //                card and slot; forgetting a slot's history, or a first
 //                sighting photographing it, takes its sightings with it.
+//                No track: every read that files one reads the first
+//                track's file, and a sighting speaks for that track alone
+//                (HistoryStore::kSightedTrack) — on a two-track card the
+//                second track's file can carry the very same name, size
+//                and stamp.
 //   op_sequence  the highest operation sequence ever issued, one row, moved
 //                by every insert into ops (a trigger). Sequences are what
 //                orders a read among operations (take_sightings), so none

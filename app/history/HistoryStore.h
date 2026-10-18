@@ -182,9 +182,12 @@ public:
     std::string opStatus(std::int64_t op);
     // Every slot an operation touched, by its body or its audio.
     std::vector<int> touchedSlots(std::int64_t op);
-    bool hasAfterAudio(std::int64_t op, int slot);
-    // What a new row for a file of this name inherits from the newest word
-    // about it before `op`. First a real read of these very facts (name,
+    // The operation recorded a take on this track of the slot after it ran.
+    bool hasAfterAudio(std::int64_t op, int slot, int track);
+    // What a new row for a file of this name on this track inherits from the
+    // newest word about it before `op`: rows about the slot's other tracks
+    // are about other files, whatever their names. First — on the first
+    // track, the only one a read is filed for — a real read of these very facts (name,
     // size, stamp) that no earlier operation on the slot came after: the
     // hash of the bytes it read, with the file's stamp. Otherwise the slot's
     // newest row before `op`: that row's hash — only when it carries one,
@@ -203,11 +206,12 @@ public:
         std::optional<std::string> hash;
         std::optional<std::int64_t> modifiedMs;
     };
-    Held heldBefore(std::int64_t op, int slot, const std::string& name, std::int64_t size,
-                    std::int64_t modifiedMs);
+    Held heldBefore(std::int64_t op, int slot, int track, const std::string& name,
+                    std::int64_t size, std::int64_t modifiedMs);
     // heldBefore's hash alone.
-    std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, const std::string& name,
-                                              std::int64_t size, std::int64_t modifiedMs);
+    std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, int track,
+                                              const std::string& name, std::int64_t size,
+                                              std::int64_t modifiedMs);
 
     // --- what a connect can tell from a directory entry (#141) ---
 
@@ -217,13 +221,15 @@ public:
     std::optional<std::int64_t> cardFor(const std::string& markerId);
 
     // A take as a connect scan sees it without reading it: the directory
-    // entry's name, size and stamp (TakeFacts.h), and the frame count the
-    // slot's config says the take has (WavLen).
+    // entry's name, size and stamp (TakeFacts.h), the frame count the slot's
+    // config says the take has (that track's WavLen), and the track whose
+    // folder the entry is in — 0 names none and is refused.
     struct TakeSighting {
         std::string name;
         std::int64_t size = 0;
         std::int64_t modifiedMs = 0;
         std::int64_t frames = 0;
+        int track = 0;
     };
     // The highest operation sequence ever issued, 0 before the first: what a
     // read that begins now comes after. It never goes down, and beginOp never
@@ -233,7 +239,10 @@ public:
     // What a real read of a take saw (#141): the file's name, size and stamp
     // on this card's slot, and the hash of the bytes read under them — the
     // check job's read, the player's pass and a normalize's measurement all
-    // have all of it.
+    // have all of it. Each of them reads the first track and no other (the
+    // player measures a one-track memory only), and the table keeps no track
+    // (Schema.h): a sighting speaks for the first track's file alone, and
+    // the readers below ask it about nothing else.
     // `readBegan` is newestOp() as it stood when the read began; the read is
     // filed after the slot's newest operation at or below it, and every
     // operation that records a body or a take in the slot with a higher
@@ -241,6 +250,10 @@ public:
     // The same facts read again keep the newest read. Refused: a hash that
     // is not 32 bytes, a negative `readBegan`, and (by the table) a slot
     // outside 1..99.
+    // The one track a sighting is about: the first, the take the LUFS column
+    // measures. take_sightings keeps no track (schema v10); a read of
+    // another track's file would need one before it could be filed.
+    static constexpr int kSightedTrack = 1;
     void recordSighting(std::int64_t card, int slot, const std::string& name, std::int64_t size,
                         std::int64_t modifiedMs, const std::string& hash, std::int64_t readBegan,
                         std::int64_t nowMs);
@@ -250,12 +263,12 @@ public:
     //   - a read of these very facts (recordSighting) that no operation
     //     recording a body or a take in the slot came after, by sequence:
     //     its hash — the bytes were read under them;
-    //   - otherwise the slot's newest row for the file name on the first
-    //     track — the take the LUFS column measures — when it is that last
+    //   - otherwise the slot's newest row for the file name on the sighted
+    //     track — the take the LUFS column measures is the first's — when it is that last
     //     operation's own, the operation finished (or is the first
     //     sighting, which commits slot by slot), it carries a hash, its size
     //     and its stamp are the entry's, and the body recorded with it (the
-    //     newest at or before it) says the same WavLen.
+    //     newest at or before it) says the same WavLen in that track's section.
     // All of it or nothing: a row without a hash, with another size or
     // stamp, or without a stamp at all (older than store version 9, or
     // vouched for by such a row) answers nothing and no older row is asked

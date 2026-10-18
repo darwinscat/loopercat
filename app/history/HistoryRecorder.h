@@ -152,11 +152,14 @@ public:
 
 private:
     // An operation in flight: its row, what kind it is (a swap moves audio
-    // between two slots without writing a byte) and the volume it runs on.
+    // between two slots without writing a byte), the volume it runs on and
+    // the model of the card there — how many track folders a slot has.
+    // Maintenance runs on no volume and has no model.
     struct Operation {
         std::int64_t row = 0;
         std::string kind;
         std::filesystem::path volume;
+        const profile::DeviceProfile* family = nullptr;
     };
 
     // An operation that has begun and not finished; refused by name otherwise.
@@ -178,10 +181,6 @@ private:
     void recordWhatSlotsHold(const Operation& op);
     std::int64_t sessionFor(const std::filesystem::path& volume);
 
-    // The RC-5 has one track per memory; slot_audio.track is there for the
-    // pedals that have more.
-    static constexpr int kTrack = 1;
-
     std::filesystem::path dir_;
     Clock clock_;
     std::optional<HistoryStore> store_;
@@ -189,6 +188,9 @@ private:
     std::optional<std::int64_t> session_;
     std::filesystem::path sessionVolume_;
     std::string sessionMarker_;
+    // The card's model, as its marker names it (the marker takes it from the
+    // card's own root when it is minted): where each track's folder is.
+    const profile::DeviceProfile* sessionFamily_ = nullptr;
     std::optional<Snapshot> snapshot_;
     std::map<std::string, Operation> ops_;
     // newestOp(): -1 until the store has opened. Written on the worker,
