@@ -181,6 +181,8 @@ inline juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& e
 // STORAGE — or walk another pedal out of it. MESSAGE THREAD.
 inline juce::String requestStorageModeOfFamily(bool enter, std::string_view family)
 {
+    if (family.empty())
+        return "no card model to choose a pedal by";
     const auto pedal = firstOfFamily(findFamily(), family);
     if (!pedal)
         return "no " + juce::String(std::string(family)) + " MIDI device on the bus";

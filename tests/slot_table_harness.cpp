@@ -289,6 +289,21 @@ int main()
         table.clearAllLoudness();
         CHECK(table.loudnessFor(slot) == nullptr);
         CHECK(table.loudnessFor(emptySlot) == nullptr);
+        // A double-click on the cell reads the slot — on a memory of one
+        // track; on one with two the meter would read the first alone, and
+        // its number would pass for the mix's, so nothing is asked.
+        int reads = 0;
+        table.onLoudnessCellDoubleClicked = [&reads](int) { ++reads; };
+        model->cellDoubleClicked(row, lufsColumn, clickAt(table));
+        CHECK_EQ(reads, 1);
+        auto twoTrack = rows;
+        twoTrack[static_cast<std::size_t>(row)].info.tracks.push_back(
+            twoTrack[static_cast<std::size_t>(row)].info.tracks.front());
+        twoTrack[static_cast<std::size_t>(row)].info.tracks.back().track = 2;
+        table.setRows(twoTrack);
+        model->cellDoubleClicked(row, lufsColumn, clickAt(table));
+        CHECK_EQ(reads, 1);
+        table.setRows(rows);
         // whether the column is on screen, as the preference set it
         table.setOptionalColumns(true, false, true);
         CHECK(table.loudnessColumnVisible());

@@ -844,8 +844,15 @@ inline std::vector<PullJob> pull(const fs::path& volume, const std::vector<int>&
     std::map<std::string, int> seen;
     for (const auto& job : jobs)
         ++seen[job.base];
+    // A name that collides is disambiguated by its slot, and then so are the
+    // other takes of that memory: the two tracks of one memory land under one
+    // stem, side by side, never one prefixed and one not.
+    std::vector<int> prefixed;
+    for (const auto& job : jobs)
+        if (seen[job.base] > 1)
+            prefixed.push_back(job.slot);
     for (auto& job : jobs) {
-        if (seen[job.base] > 1) {
+        if (std::find(prefixed.begin(), prefixed.end(), job.slot) != prefixed.end()) {
             // The slot, and on a model with tracks the track: the two takes of
             // one memory may carry one file name (a vendor upload into both),
             // and the second must not land on the first.
@@ -1433,17 +1440,19 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
 
     // All checks passed — the writes begin. The archive first: whatever the
     // slot holds, on every track, is handed over whole, and leaves the card
-    // only after that.
+    // only after that — every track's take is kept before any track loses
+    // one, so an archive that refuses the second track leaves both on the card.
     requireMemoryJournal(options);
     if (options.journal.slotsChanging)
         options.journal.slotsChanging({ slot });
-    std::error_code ec;
     for (const TrackFile& old : existing) {
         archiveTake(options, "restore", slot, old.track, old.name, readFileBytes(old.path));
         result.archived.push_back(old.name);
+    }
+    std::error_code ec;
+    for (const TrackFile& old : existing)
         if (!fs::remove(old.path, ec) || ec)
             throw Error("cannot remove " + old.path.string());
-    }
     for (int track = 1; track <= family.trackCount; ++track) {
         const Take* take = takeOnTrack(state, track);
         if (take == nullptr)

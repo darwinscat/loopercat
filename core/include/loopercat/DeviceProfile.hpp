@@ -184,15 +184,18 @@ inline constexpr DeviceProfile kRc5 {
     "RC-5", { 0x00, 0x00, 0x00, 0x76 }, 0x0251, 1, 99, kRc5FactorySections, kEveryOperation
 };
 
-// The RC-500's never-touched memory after its name block, exactly as the
-// pedal formats it: the default name plus this reproduces, byte for byte,
-// every factory-empty memory of a real card — 97 and 98 of the 99 in the two
-// banks of one copy (2026-09-16), 95 and 94 in another (2026-09-22). Each
-// track carries the RC-5's fields and the model's own (LoopFx, LoopSync,
-// TempoSync, Input, Output); LOOPFX, CTL and ASSIGN1..8 are sections the
-// RC-5 has not. Whether the pedal's own MEMORY CLEAR leaves the same is for
-// the pedal to answer (the RC-500 checkpoint); a memory nobody touched
-// carries it, and that is the state a clear puts back here.
+// The RC-500's never-touched memory after its name block. DERIVED FROM CARD
+// COPIES, NOT FROM THE FACTORY: no factory-fresh card and no MEMORY CLEAR done
+// by the pedal itself has been seen. The source is the one RC-500 this app
+// has met, its card copied five times as it filled up (2026-09-16, -22, and
+// three on -23). In both banks of every copy, every memory without a take is
+// byte for byte the default name plus this text — 98 of the 99 in the
+// emptiest bank, 92 in the fullest — and every memory that differs holds a
+// take. Each track carries the RC-5's fields and the model's own (LoopFx,
+// LoopSync, TempoSync, Input, Output); LOOPFX, CTL and ASSIGN1..8 are
+// sections the RC-5 has not. A clear on this model puts back the state of a
+// memory nobody touched; whether the pedal's own clear leaves exactly this
+// is the RC-500 checkpoint's to answer.
 inline constexpr std::string_view kRc500FactorySections = R"(
 <TRACK1>
 	<Rev>0</Rev>

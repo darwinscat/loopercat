@@ -416,6 +416,11 @@ private:
     // to it, and Disconnect walks the same pedal out — never "the first RC-5
     // on the bus", which with two pedals is whichever the OS listed first.
     std::optional<pedallink::Pedal> connectTarget;
+    // The card's model as the eject was asked for: a volume mounted by hand
+    // has no chosen pedal, and its exit frame goes to the first pedal of this
+    // model — read before the eject, since a scan after the unmount reads no
+    // card and so no model.
+    std::string ejectFamily;
     bool connectQueryPending = false; // the register is being read: Connect is under way, no frame yet
     pedalbook::Book pedalBook;          // endpoint -> the card it carried, and its name (settings)
     std::optional<marker::Card> card;   // the mounted card's marker, once read

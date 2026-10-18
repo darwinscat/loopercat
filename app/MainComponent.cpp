@@ -562,10 +562,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     // bus is all there is.
                     const juce::String exitError = connectTarget
                         ? pedallink::requestStorageMode(false, *connectTarget)
-                        : pedallink::requestStorageModeOfFamily(false, snapshot.family);
+                        : pedallink::requestStorageModeOfFamily(false, ejectFamily);
                     trace("disconnect: exit-storage frame \xe2\x86\x92 "
                           + (connectTarget ? pedalTag(*connectTarget)
-                                           : "the first " + utf8(snapshot.family) + " on the bus")
+                                           : "the first " + utf8(ejectFamily) + " on the bus")
                           + ": " + (exitError.isEmpty() ? juce::String("sent") : "NOT sent (" + exitError + ")"));
                     connectTarget.reset();
                     if (exitError.isNotEmpty()) {
@@ -1047,6 +1047,7 @@ void MainComponent::beginDisconnect()
     // completion then walks the pedal out of STORAGE.
     engine.stop();
     player.clear();
+    ejectFamily = snapshot.family;
     worker.requestEject();
 }
 
@@ -1157,6 +1158,7 @@ bool MainComponent::beginQuitDisconnect(std::function<void()> done)
         // completion walks the pedal out of STORAGE and finishes the gate.
         engine.stop();
         player.clear();
+        ejectFamily = snapshot.family;
         worker.requestEject();
         break;
     case QuitGate::Plan::joinEject:
@@ -2770,9 +2772,13 @@ void MainComponent::inferLoudnessFromHistory()
     if (pedalBusy || !card || snapshot.state != lifecycle::State::connected || !snapshot.error.empty()
         || !table.loudnessColumnVisible())
         return;
-    // A take, an empty cell, and not the very file a read failed on.
+    // A take, an empty cell, and not the very file a read failed on — on a
+    // memory of one track: the history's readings are of the first track's
+    // bytes (HistoryStore::kSightedTrack), and on a memory with more that
+    // number would pass for the mix's.
     const auto blank = [this](const SlotRow& row) {
-        return row.take && row.info.hasAudio && table.loudnessFor(row.info.slot) == nullptr
+        return row.take && row.info.hasAudio && row.info.tracks.size() <= 1
+            && table.loudnessFor(row.info.slot) == nullptr
             && !(unreadableTakes.contains(row.info.slot) && unreadableTakes.at(row.info.slot) == *row.take);
     };
     const int loaded = player.currentSlot();

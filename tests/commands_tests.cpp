@@ -2881,6 +2881,13 @@ int main()
             CHECK_THROWS(commands::writeSystemPair(volume, settings, testkit::unrecordedWrite()),
                          "set controls refused on an \"RC-500\" card");
         }
+        // The pedal's own settings pair, as it is now: nothing below that is
+        // open on this model may touch it.
+        const auto systemBytes = [&volume] {
+            return std::make_pair(commands::readFileBytes(volume::systemPath(volume, 1)),
+                                  commands::readFileBytes(volume::systemPath(volume, 2)));
+        };
+        const auto settingsBefore = systemBytes();
 
         // What stays closed, each in its own words, the card as it was.
         const auto before = volumeBytes(volume);
@@ -2974,6 +2981,10 @@ int main()
         CHECK((volume::listTrackWavs(volume, profile::kRc500, 1, 2) == std::vector<std::string> { "solo.wav" }));
         CHECK(commands::readFileBytes(tmp.path / "archive" / "solo" / "001_1" / "001_1.WAV") == t1);
 
+        // Pull, rename, clear and restore all ran: the settings pair is the
+        // bytes it was, both banks.
+        CHECK(systemBytes() == settingsBefore);
+
         // Refused, the card as it was: a third track, two takes on one track,
         // a body without its second track, a take the second track's section
         // does not describe, and a one-track body.
@@ -2994,6 +3005,44 @@ int main()
                      "its take \"001_2.WAV\" on track 2 holds 44100 frames");
         CHECK_THROWS(commands::restore(volume, 1, { rc0::factorySlotBody(1), {} }, o), "carries no <TRACK2>");
         CHECK(volumeBytes(volume) == settled);
+    }
+
+    {
+        // An archive that refuses the second track's take stops the restore
+        // with both takes still on the card and the body as it was: every
+        // track is kept before any track loses its file.
+        TempDir tmp;
+        const fs::path volume = testkit::makeTwoTrackCard(
+            tmp.path, { { 1, 1, "001_1.WAV", 4410, 1 }, { 1, 2, "001_2.WAV", 8820, 2 } });
+        const auto before = volumeBytes(volume);
+        int calls = 0;
+        commands::WriteOptions refusing = writeOpts(tmp.path, "refusing");
+        refusing.archive = [&calls](int, int, const std::string&, std::string_view) {
+            if (++calls == 2)
+                throw Error("the history cannot keep this take right now");
+        };
+        const std::string body = testkit::syntheticTwoTrackSlotBody("Memory 1", { 1, 2205 }, { 1, 2205 }, 1200, 1);
+        CHECK_THROWS(commands::restore(volume, 1,
+                                       { body, { { 1, "n.wav", testkit::floatTake(2205, 5) },
+                                                 { 2, "n.wav", testkit::floatTake(2205, 6) } } },
+                                       refusing),
+                     "cannot keep this take");
+        CHECK_EQ(calls, 2);
+        CHECK(volumeBytes(volume) == before);
+    }
+
+    {
+        // A pulled memory's two takes land under one stem even when only one
+        // of them collides with another slot's name.
+        TempDir tmp;
+        const fs::path volume = testkit::makeTwoTrackCard(
+            tmp.path, { { 3, 1, "take.wav", 2205, 1 }, { 3, 2, "take.wav", 2205, 2 },
+                        { 4, 1, "take.wav", 2205, 3 } });
+        const auto jobs = commands::pull(volume, { 3, 4 }, { .dest = tmp.path / "out", .rawNames = true });
+        CHECK_EQ(jobs.size(), 3u);
+        for (const char* name : { "03 - take Track1.wav", "03 - take Track2.wav", "04 - take Track1.wav" })
+            CHECK(fs::exists(tmp.path / "out" / name));
+        CHECK(!fs::exists(tmp.path / "out" / "take Track2.wav"));
     }
 
     // --- a length set as a note value is not a bar count (issue #92) ---

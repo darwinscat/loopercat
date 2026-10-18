@@ -1,0 +1,3 @@
+# The golden texts are compared byte for byte (tests/history_golden_tests.cpp):
+# no line-ending conversion on any checkout.
+/tests/golden/*.txt -text
