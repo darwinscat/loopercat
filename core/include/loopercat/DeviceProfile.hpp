@@ -16,10 +16,11 @@
 //
 // The operation set is the guard's other half. Knowing a model is not the
 // same as being allowed to touch its card: the two-track model is known here
-// and only read, because two of our operations would corrupt such a card
-// silently — a swap carries only the first track's audio across, a clear
-// writes a one-track factory body. On this table they are not untested on
-// it; they are unreachable.
+// and opened one operation at a time, for the ones that carry every track —
+// pull, rename, clear and restore. The others work on the first track alone
+// (push, trim, downmix, normalize, tempo) or move only its audio (swap), and
+// would corrupt such a card silently; on this table they are not untested on
+// it, they are unreachable.
 
 #pragma once
 
@@ -183,23 +184,199 @@ inline constexpr DeviceProfile kRc5 {
     "RC-5", { 0x00, 0x00, 0x00, 0x76 }, 0x0251, 1, 99, kRc5FactorySections, kEveryOperation
 };
 
+// The RC-500's never-touched memory after its name block, exactly as the
+// pedal formats it: the default name plus this reproduces, byte for byte,
+// every factory-empty memory of a real card — 97 and 98 of the 99 in the two
+// banks of one copy (2026-09-16), 95 and 94 in another (2026-09-22). Each
+// track carries the RC-5's fields and the model's own (LoopFx, LoopSync,
+// TempoSync, Input, Output); LOOPFX, CTL and ASSIGN1..8 are sections the
+// RC-5 has not. Whether the pedal's own MEMORY CLEAR leaves the same is for
+// the pedal to answer (the RC-500 checkpoint); a memory nobody touched
+// carries it, and that is the state a clear puts back here.
+inline constexpr std::string_view kRc500FactorySections = R"(
+<TRACK1>
+	<Rev>0</Rev>
+	<PlyLvl>100</PlyLvl>
+	<Pan>50</Pan>
+	<One>0</One>
+	<LoopFx>1</LoopFx>
+	<StrtMod>0</StrtMod>
+	<StpMod>0</StpMod>
+	<Measure>1</Measure>
+	<LoopSync>1</LoopSync>
+	<TempoSync>1</TempoSync>
+	<Input>0</Input>
+	<Output>0</Output>
+	<MeasMod>1</MeasMod>
+	<MeasLen>0</MeasLen>
+	<MeasBtLp>0</MeasBtLp>
+	<RecTmp>1200</RecTmp>
+	<WavStat>0</WavStat>
+	<WavLen>0</WavLen>
+</TRACK1>
+<TRACK2>
+	<Rev>0</Rev>
+	<PlyLvl>100</PlyLvl>
+	<Pan>50</Pan>
+	<One>0</One>
+	<LoopFx>1</LoopFx>
+	<StrtMod>0</StrtMod>
+	<StpMod>0</StpMod>
+	<Measure>1</Measure>
+	<LoopSync>1</LoopSync>
+	<TempoSync>1</TempoSync>
+	<Input>0</Input>
+	<Output>0</Output>
+	<MeasMod>1</MeasMod>
+	<MeasLen>0</MeasLen>
+	<MeasBtLp>0</MeasBtLp>
+	<RecTmp>1200</RecTmp>
+	<WavStat>0</WavStat>
+	<WavLen>0</WavLen>
+</TRACK2>
+<MASTER>
+	<Tempo>1200</Tempo>
+	<DubMode>0</DubMode>
+	<RecAction>1</RecAction>
+	<RecQuantize>0</RecQuantize>
+	<AutoRec>0</AutoRec>
+	<AutoRecSens>50</AutoRecSens>
+	<AutoRecSrc>0</AutoRecSrc>
+	<PlayMode>0</PlayMode>
+	<SinglPlayeChange>0</SinglPlayeChange>
+	<FadeTime>5</FadeTime>
+	<AllStart>0</AllStart>
+	<TrackChain>0</TrackChain>
+	<CurrentTrack>0</CurrentTrack>
+	<AllTrackSel>0</AllTrackSel>
+	<Level>100</Level>
+	<LpMod>0</LpMod>
+	<LpLen>0</LpLen>
+	<TrkMod>1</TrkMod>
+	<Sync>0</Sync>
+</MASTER>
+<LOOPFX>
+	<Sw>0</Sw>
+	<FxType>4</FxType>
+	<RepeatLength>3</RepeatLength>
+	<ShiftShift>3</ShiftShift>
+	<ScatterLength>2</ScatterLength>
+	<VinylFlickFlick>50</VinylFlickFlick>
+</LOOPFX>
+<RHYTHM>
+	<Level>100</Level>
+	<Reverb>30</Reverb>
+	<Pattern>0</Pattern>
+	<Variation>0</Variation>
+	<VariationChange>0</VariationChange>
+	<Kit>0</Kit>
+	<Beat>2</Beat>
+	<Fill>1</Fill>
+	<Part1>1</Part1>
+	<Part2>1</Part2>
+	<Part3>1</Part3>
+	<Part4>0</Part4>
+	<RecCount>0</RecCount>
+	<PlayCount>0</PlayCount>
+	<Start>0</Start>
+	<Stop>1</Stop>
+	<ToneLow>10</ToneLow>
+	<ToneHigh>10</ToneHigh>
+	<State>0</State>
+</RHYTHM>
+<CTL>
+	<Pedal1>28</Pedal1>
+	<Pedal2>36</Pedal2>
+	<Pedal3>27</Pedal3>
+	<Ctl1>44</Ctl1>
+	<Ctl2>53</Ctl2>
+	<Exp>13</Exp>
+</CTL>
+<ASSIGN1>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN1>
+<ASSIGN2>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN2>
+<ASSIGN3>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN3>
+<ASSIGN4>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN4>
+<ASSIGN5>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN5>
+<ASSIGN6>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN6>
+<ASSIGN7>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN7>
+<ASSIGN8>
+	<Sw>0</Sw>
+	<Source>0</Source>
+	<SourceMode>0</SourceMode>
+	<Target>0</Target>
+	<TargetMin>0</TargetMin>
+	<TargetMax>1</TargetMax>
+</ASSIGN8>
+)";
+
 // The two-track RC model, "RC-500" in its card's root element. Sources: its
 // card (the root name, <TRACK1> and <TRACK2> in every memory, audio folders
 // NNN_1 and NNN_2, 99 memories), the sysex probe with both pedals on the bus
 // (model id 00 00 00 77 answers, 76 and 78 are silent; Identity Reply family
-// 0x0377), ioreg (product id 0x0252). Its factory body is not on record here,
-// and reading is the one thing open on it: the browser lists such a card,
-// and nothing changes it — every write, pull included, is still refused.
+// 0x0377), ioreg (product id 0x0252). Open: reading, and the operations that
+// carry every track of a memory — pull, rename, clear, restore (decided for
+// 0.9.6, 2026-10-18). Everything else is refused.
 inline constexpr DeviceProfile kRc500 {
-    "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {}, bit(Operation::read)
+    "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, kRc500FactorySections,
+    operations({ Operation::read, Operation::pull, Operation::rename, Operation::clear,
+                 Operation::restore })
 };
 
 inline constexpr std::array<const DeviceProfile*, 2> kAll { &kRc5, &kRc500 };
 
-// The sentence every refusal ends with. It is deliberate: it names what the
-// app does and promises nothing about what it might do. Only the RC-5 is
-// open for reading today; the day another model is, this sentence changes
-// with the table, not before.
+// The sentence a refusal ends with where nothing of the model is open. It is
+// deliberate: it names what the app does and promises nothing about what it
+// might do. A model this app reads in part is refused with what is open on
+// it instead (require, below).
 inline std::string onlySpeaks()
 {
     return "LooperCat only speaks " + std::string(kRc5.familyName);
@@ -234,17 +411,41 @@ inline const DeviceProfile& byFamilyName(std::string_view familyName)
     throw Error(notOurs(familyName));
 }
 
+// What a model has open beyond reading, in the table's order: "rename, pull,
+// clear and restore". Empty for a model with nothing open.
+inline std::string openOperations(const DeviceProfile& family)
+{
+    std::string list;
+    std::string last;
+    for (unsigned i = 0; i < kOperationCount; ++i) {
+        const auto op = static_cast<Operation>(i);
+        if (op == Operation::read || !family.allows(op))
+            continue;
+        if (!last.empty())
+            list += (list.empty() ? "" : ", ") + last;
+        last = std::string(operationName(op));
+    }
+    if (list.empty())
+        return last;
+    return list + " and " + last;
+}
+
 // The gate every operation passes. A closed read is refused as a card that is
 // not ours; a closed mutation is refused in the mutation's own name, so the
-// gate that fired can be traced from its words.
+// gate that fired can be traced from its words — and, on a model this app
+// reads, with what it does there instead.
 inline void require(const DeviceProfile& family, Operation op)
 {
     if (family.allows(op))
         return;
     if (op == Operation::read)
         throw Error(notOurs(family.familyName));
+    const std::string open = openOperations(family);
     throw Error(std::string(operationName(op)) + " refused on an \""
-                + std::string(family.familyName) + "\" card \xe2\x80\x94 " + onlySpeaks());
+                + std::string(family.familyName) + "\" card \xe2\x80\x94 "
+                + (family.allows(Operation::read) && !open.empty()
+                       ? "on this model LooperCat does " + open + " only"
+                       : onlySpeaks()));
 }
 
 // The backstop under every write: a model with no write open gets none,

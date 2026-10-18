@@ -305,8 +305,8 @@ int main()
         CHECK_THROWS(controls::read(twoTrack, controls::Control::pedal), notOnRecord);
         CHECK_THROWS(controls::readAll(twoTrack), notOnRecord);
         CHECK_THROWS(controls::set(twoTrack, controls::Control::pedal, 28),
-                     "set controls refused on an \"RC-500\" card \xe2\x80\x94 LooperCat only speaks"
-                     " RC-5");
+                     "set controls refused on an \"RC-500\" card \xe2\x80\x94 on this model LooperCat"
+                     " does rename, pull, clear and restore only");
         const std::string unknown = withRoot(system, "RC-505");
         CHECK_THROWS(controls::read(unknown, controls::Control::pedal),
                      "this is an \"RC-505\" card, not an RC-5");

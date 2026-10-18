@@ -89,13 +89,18 @@ int main()
         CHECK_EQ(rc500.usbProductId, 0x0252);
         CHECK_EQ(rc500.trackCount, 2);
         CHECK_EQ(rc500.slotCount, rc0::kSlotCount);
-        CHECK(!rc500.hasFactoryBody());
-        CHECK(!rc500.allowsWrites());
-        // Reading, and reading alone: the browser may list such a card;
-        // nothing may change it, pull included.
-        CHECK_EQ(rc500.operations, profile::bit(profile::Operation::read));
+        CHECK(rc500.hasFactoryBody());
+        CHECK(rc500.allowsWrites());
+        // Reading, and what carries a memory whole, every track of it:
+        // pull, rename, clear, restore. Nothing that works on one track.
+        using profile::Operation;
+        const auto open = [](Operation op) {
+            return op == Operation::read || op == Operation::pull || op == Operation::rename
+                || op == Operation::clear || op == Operation::restore;
+        };
         for (const auto op : kEveryOp)
-            CHECK(rc500.allows(op) == (op == profile::Operation::read));
+            CHECK(rc500.allows(op) == open(op));
+        CHECK_EQ(profile::openOperations(rc500), std::string("rename, pull, clear and restore"));
     }
     // Two entries, distinct names, distinct ids: a lookup can never answer twice.
     {
@@ -159,16 +164,32 @@ int main()
     };
     CHECK_THROWS(profile::require(closed, profile::Operation::read),
                  "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5");
-    profile::require(profile::kRc500, profile::Operation::read); // open: no throw
-    for (const auto op : kEveryOp) {
-        if (op == profile::Operation::read)
-            continue;
+    for (const auto op : { profile::Operation::read, profile::Operation::pull, profile::Operation::rename,
+                           profile::Operation::clear, profile::Operation::restore })
+        profile::require(profile::kRc500, op); // open: no throw
+    // A closed operation on a model this app reads names itself, the model,
+    // and what is open there instead.
+    for (const auto op : { profile::Operation::setOneShot, profile::Operation::setTempo,
+                           profile::Operation::setCountIn, profile::Operation::push,
+                           profile::Operation::trim, profile::Operation::downmix,
+                           profile::Operation::normalize, profile::Operation::swap,
+                           profile::Operation::setControls, profile::Operation::setRhythm,
+                           profile::Operation::setPlayStop })
         CHECK_THROWS(profile::require(profile::kRc500, op),
-                     std::string(profile::operationName(op)) + " refused on an \"RC-500\" card");
-        CHECK_THROWS(profile::require(profile::kRc500, op), "LooperCat only speaks RC-5");
-    }
+                     std::string(profile::operationName(op)) + " refused on an \"RC-500\" card \xe2\x80\x94"
+                         " on this model LooperCat does rename, pull, clear and restore only");
+    // With nothing open, a mutation still says what the app speaks.
+    CHECK_THROWS(profile::require(closed, profile::Operation::push), "LooperCat only speaks RC-5");
+    CHECK_EQ(profile::openOperations(closed), std::string());
+    constexpr profile::DeviceProfile oneOpen {
+        "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {},
+        profile::operations({ profile::Operation::read, profile::Operation::pull })
+    };
+    CHECK_EQ(profile::openOperations(oneOpen), std::string("pull"));
+    CHECK_THROWS(profile::require(oneOpen, profile::Operation::clear), "LooperCat does pull only");
     profile::requireWrites(profile::kRc5);
-    CHECK_THROWS(profile::requireWrites(profile::kRc500), "no write on an \"RC-500\" card");
+    profile::requireWrites(profile::kRc500);
+    CHECK_THROWS(profile::requireWrites(closed), "no write on an \"RC-500\" card");
 
     // --- the factory body ---
 
@@ -176,8 +197,30 @@ int main()
         CHECK(rc0::factorySlotBody(profile::kRc5, slot) == rc0::factorySlotBody(slot));
     CHECK_THROWS(rc0::factorySlotBody(profile::kRc5, 0), "out of range");
     CHECK_THROWS(rc0::factorySlotBody(profile::kRc5, 100), "out of range");
-    CHECK_THROWS(rc0::factorySlotBody(profile::kRc500, 1), "not on record");
-    CHECK_THROWS(rc0::factorySlotBody(profile::kRc500, 0), "out of range"); // the range first
+    CHECK_THROWS(rc0::factorySlotBody(closed, 1), "not on record");
+    CHECK_THROWS(rc0::factorySlotBody(closed, 0), "out of range"); // the range first
+    CHECK_THROWS(rc0::factorySlotBody(profile::kRc500, 100), "out of range");
+    // The two-track model's factory memory, by the format's theory: both
+    // tracks empty and factory-shaped (Measure 1, MeasLen 0, WavStat 0,
+    // WavLen 0), the playback tempo 120.0, the default name — and 99 of them
+    // make a memory file the guard reads as that model's. (That every
+    // never-touched memory of a real card is byte-identical to it is checked
+    // against the card copies, which are not in this repository.)
+    for (const int slot : { 1, 42, 99 }) {
+        const std::string body = rc0::factorySlotBody(profile::kRc500, slot);
+        CHECK_EQ(rc0::decodeName(body), rc0::defaultSlotName(slot) + std::string(4, ' '));
+        for (const int track : { 1, 2 }) {
+            const std::string section = rc0::trackSectionName(track);
+            CHECK_EQ(rc0::sectionField(body, section, "WavStat"), 0);
+            CHECK_EQ(rc0::sectionField(body, section, "WavLen"), 0);
+            CHECK_EQ(rc0::sectionField(body, section, "Measure"), 1);
+            CHECK_EQ(rc0::sectionField(body, section, "MeasLen"), 0);
+            CHECK_EQ(rc0::sectionField(body, section, "RecTmp"), 1200);
+        }
+        CHECK_EQ(rc0::sectionField(body, rc0::kSectionMaster, "Tempo"), 1200);
+        CHECK(body.find(rc0::trackSectionOpen(3)) == std::string::npos);
+        CHECK(body != rc0::factorySlotBody(profile::kRc5, slot));
+    }
 
     // The claim the table makes about the RC-5's factory body, against a real
     // card (fixtures/rc5-card.RC0): every memory that reads as factory-empty

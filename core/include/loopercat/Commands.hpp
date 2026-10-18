@@ -439,7 +439,9 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
                                    const WriteOptions& options)
 {
     sysfile::assertSystemFile(text);
-    profile::requireWrites(rc0::profileOf(text));
+    // The settings pair has one writer, the controls (and their undo): on a
+    // model with those closed it is not written, whatever else is open.
+    profile::require(rc0::profileOf(text), profile::Operation::setControls);
     // Described before anything is written, exactly as a memory write is: a
     // change the history could not describe does not happen, and the card is
     // left as it was. The document on the card is the "before".
@@ -844,8 +846,12 @@ inline std::vector<PullJob> pull(const fs::path& volume, const std::vector<int>&
         ++seen[job.base];
     for (auto& job : jobs) {
         if (seen[job.base] > 1) {
+            // The slot, and on a model with tracks the track: the two takes of
+            // one memory may carry one file name (a vendor upload into both),
+            // and the second must not land on the first.
             const std::string n = std::to_string(job.slot);
-            job.base = (n.size() < 2 ? "0" + n : n) + " - " + job.onPedal;
+            job.base = wav::trackFileName((n.size() < 2 ? "0" + n : n) + " - " + job.onPedal,
+                                          job.track, family.trackCount);
         }
         job.destFile = options.dest / job.base;
     }

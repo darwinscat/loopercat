@@ -28,6 +28,7 @@
 
 #include "support.hpp"
 #include "archive_support.hpp"
+#include "two_track_card.hpp"
 
 #include "../app/OperationId.h"
 
@@ -2836,53 +2837,37 @@ int main()
         CHECK_EQ(body.substr(body.find("<OTHER>"), other.size()), other);
     }
 
-    // --- a two-track card: known, and nothing on it is open ---
+    // --- a two-track card: what is open carries every track ---
     //
-    // The two-track RC model's card (testkit::syntheticTwoTrackMemoryText, its
-    // root "RC-500", two <TRACKn> per memory, NNN_1 and NNN_2 audio folders)
-    // is a model the table knows (DeviceProfile.hpp) with no operation open.
-    // Two of ours would corrupt it silently — a swap carries only NNN_1
-    // across, a clear writes a one-track factory body — so they are not
-    // merely untested here: every read is refused in the guard's old words,
-    // and every mutation is refused in its own name before a byte of the card
-    // has moved. The doctor reports the refusal and does not throw.
+    // The two-track RC model's card (root "RC-500", two <TRACKn> per memory,
+    // NNN_1 and NNN_2 audio folders) has open what carries a memory whole:
+    // reading, pull, rename, clear and restore. The rest works on the first
+    // track alone or moves only its audio, and is refused in its own name,
+    // saying what is open, before a byte of the card has moved — the
+    // settings pair included, whose only writer is the controls.
     {
         TempDir tmp;
-        const fs::path volume = tmp.path / "PEDAL";
-        fs::create_directories(volume / "ROLAND" / "WAVE");
-        fs::create_directories(volume::dataDir(volume));
-        const std::string text = testkit::syntheticTwoTrackMemoryText();
-        for (const int fileNo : { 1, 2 })
-            commands::writeFileBytes(volume::memoryPath(volume, fileNo),
-                                     rc0::setTailMarker(text, fileNo));
-        // Memory 1's two takes, at the addresses the pedal uses: a stereo
-        // take on track 1 that every audio command can open (its channels
-        // differ, so downmix has a fold to make, and it is not silent, so
-        // normalize has a gain to apply), and a second on track 2.
-        putStereoFloatWav(volume, 1, "001_1.WAV", 44100);
-        {
-            const auto bytes = testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 4410 });
-            const fs::path dir = volume::trackDir(volume, profile::kRc500, 1, 2);
-            fs::create_directories(dir);
-            commands::writeFileBytes(dir / "001_2.WAV", bytesOf(bytes));
-        }
-        const auto before = volumeBytes(volume);
-        const std::string notOurs =
-            "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5";
+        const fs::path volume = testkit::makeTwoTrackCard(
+            tmp.path, { { 1, 1, "001_1.WAV", 44100, 1 }, { 1, 2, "001_2.WAV", 22050, 2 },
+                        { 3, 1, "song.wav", 4410, 3 }, { 3, 2, "song.wav", 4410, 4 },
+                        { 11, 2, "011_2.WAV", 8820, 5 } });
+        const std::string text = commands::readMemory(volume);
+        const auto fileOf = [&volume](int slot, int track, const std::string& name) {
+            return volume::trackDir(volume, profile::kRc500, slot, track) / name;
+        };
+        const std::string t1 = commands::readFileBytes(fileOf(1, 1, "001_1.WAV"));
+        const std::string t2 = commands::readFileBytes(fileOf(1, 2, "001_2.WAV"));
 
-        // Every read is open — the newest bank, a pinned bank, the settings
-        // pair — and reads as the two-track card it is: the memories with
-        // their two tracks, nothing changed on the card by looking.
-        (void) notOurs;
+        // Every read is open, and reads as the two-track card it is.
         {
-            const auto memories = catalog::listSlots(commands::readMemory(volume));
+            const auto memories = catalog::listSlots(text);
             CHECK_EQ(memories.size(), static_cast<std::size_t>(rc0::kSlotCount));
             CHECK_EQ(memories.at(0).tracks.size(), 2u);
             CHECK(memories.at(0).tracks.at(1).hasAudio);
+            CHECK(catalog::holdsAudio(memories.at(10)) && !memories.at(10).hasAudio); // track 2 alone
+            CHECK(!catalog::holdsAudio(memories.at(41)));
             CHECK(&rc0::profileOf(commands::readMemory(volume, 1)) == &profile::kRc500);
             CHECK(&rc0::profileOf(commands::readMemory(volume, 2)) == &profile::kRc500);
-            CHECK(commands::readMemoryFor(volume, profile::Operation::read)
-                  == commands::readMemory(volume));
         }
         {
             std::string settings = commands::readFileBytes(LOOPERCAT_RC5_SYSTEM);
@@ -2894,54 +2879,121 @@ int main()
                 commands::writeFileBytes(volume::systemPath(volume, fileNo), settings);
             CHECK(commands::readSystem(volume) == settings); // read, as the memories are
             CHECK_THROWS(commands::writeSystemPair(volume, settings, testkit::unrecordedWrite()),
-                         "no write on an \"RC-500\" card");
+                         "set controls refused on an \"RC-500\" card");
         }
-        const auto beforeWithSettings = volumeBytes(volume);
 
-        // Every mutation, in its own words. The options are complete and the
-        // takes are real, so the profile gate is the only thing that refuses.
+        // What stays closed, each in its own words, the card as it was.
+        const auto before = volumeBytes(volume);
         const commands::WriteOptions write = writeOpts(tmp.path);
         const fs::path source = tmp.path / "take.wav";
         commands::writeFileBytes(
             source, bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 })));
-        const std::string refused =
-            " refused on an \"RC-500\" card \xe2\x80\x94 LooperCat only speaks RC-5";
-        CHECK_THROWS(commands::rename(volume, 1, "Two Tracks", write), "rename" + refused);
+        const std::string refused = " refused on an \"RC-500\" card \xe2\x80\x94 on this model LooperCat"
+                                    " does rename, pull, clear and restore only";
         CHECK_THROWS(commands::setOneShot(volume, { 1 }, true, write), "set one-shot" + refused);
         CHECK_THROWS(commands::setTempo(volume, 1, 1200, write), "set tempo" + refused);
         CHECK_THROWS(commands::setCountIn(volume, { 1 }, true, write), "set count-in" + refused);
         CHECK_THROWS(commands::push(volume, source, 42, { .write = write }), "push" + refused);
-        CHECK_THROWS(commands::pull(volume, { 1 }, { .dest = tmp.path / "pulled" }),
-                     "pull" + refused);
         CHECK_THROWS(commands::trim(volume, 1, 0, 22050, { .write = write }), "trim" + refused);
         CHECK_THROWS(commands::downmixToMono(volume, 1, { .write = write }), "downmix" + refused);
         CHECK_THROWS(commands::normalize(volume, 1, { .targetLufs = -18.0, .write = write }),
                      "normalize" + refused);
-        CHECK_THROWS(commands::clear(volume, { 1 }, { .write = write }), "clear" + refused);
-        CHECK_THROWS(
-            commands::restore(volume, 42, { rc0::slotBody(text, 42), {} }, write),
-            "restore" + refused);
         CHECK_THROWS(commands::swap(volume, 1, 2, write), "swap" + refused);
-        // The backstop under them all, asked directly.
-        CHECK_THROWS(commands::writeMemoryPair(volume, text, testkit::unrecordedWrite()),
-                     "no write on an \"RC-500\" card");
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(tmp.path / "archive"));
 
-        // The doctor reads the card like the browser does and refuses nothing
-        // of it: what it has to say is about takes, not about the model.
+        // The doctor reads the card like the browser does.
+        for (const auto& f : commands::doctor(volume))
+            CHECK(f.message.find("refused") == std::string::npos);
+
+        // Pull: both tracks, named by track, byte for byte; the second track
+        // alone is one file that says it is the second.
         {
-            const auto findings = commands::doctor(volume);
-            for (const auto& f : findings) {
-                CHECK(f.message.find("RC-500") == std::string::npos);
-                CHECK(f.message.find("refused") == std::string::npos);
-            }
+            const auto jobs = commands::pull(volume, { 1, 11 }, { .dest = tmp.path / "pulled" });
+            CHECK_EQ(jobs.size(), 3u);
+            CHECK(commands::readFileBytes(tmp.path / "pulled" / "01 - Memory 1 Track1.wav") == t1);
+            CHECK(commands::readFileBytes(tmp.path / "pulled" / "01 - Memory 1 Track2.wav") == t2);
+            CHECK(fs::exists(tmp.path / "pulled" / "11 - Memory 11 Track2.wav"));
+            CHECK(!fs::exists(tmp.path / "pulled" / "11 - Memory 11 Track1.wav"));
+            // One name on both tracks, kept as it is: two files, not one over the other.
+            const auto raw = commands::pull(volume, { 3 }, { .dest = tmp.path / "raw", .rawNames = true });
+            CHECK_EQ(raw.size(), 2u);
+            CHECK(commands::readFileBytes(tmp.path / "raw" / "03 - song Track1.wav")
+                  == commands::readFileBytes(fileOf(3, 1, "song.wav")));
+            CHECK(commands::readFileBytes(tmp.path / "raw" / "03 - song Track2.wav")
+                  == commands::readFileBytes(fileOf(3, 2, "song.wav")));
+            CHECK(volumeBytes(volume) == before); // a pull changes nothing on the card
         }
 
-        // Not a byte moved, nothing archived, nothing pulled.
-        CHECK(volumeBytes(volume) == beforeWithSettings);
-        CHECK(!fs::exists(tmp.path / "archive"));
-        CHECK(!fs::exists(tmp.path / "backups"));
-        CHECK(!fs::exists(tmp.path / "pulled"));
-        (void) before;
+        // Rename: the name, and nothing else — both takes where they were.
+        commands::rename(volume, 1, "Two Tracks", writeOpts(tmp.path, "rename"));
+        {
+            const std::string after = commands::readMemory(volume);
+            CHECK_EQ(rc0::decodeName(rc0::slotBody(after, 1)), "Two Tracks  ");
+            CHECK(rc0::setName(rc0::slotBody(after, 1), "Memory 1") == rc0::slotBody(text, 1));
+            CHECK(commands::readFileBytes(fileOf(1, 1, "001_1.WAV")) == t1);
+            CHECK(commands::readFileBytes(fileOf(1, 2, "001_2.WAV")) == t2);
+        }
+
+        // Clear, then restore: both tracks gone and both kept, then both back,
+        // byte for byte, the body with them.
+        const commands::SlotState recorded {
+            rc0::slotBody(commands::readMemory(volume), 1),
+            { { 1, "001_1.WAV", t1 }, { 2, "001_2.WAV", t2 } }
+        };
+        const commands::WriteOptions clearing = writeOpts(tmp.path, "clear");
+        const auto cleared = commands::clear(volume, { 1 }, { .write = clearing });
+        CHECK((cleared.archived == std::vector<std::string> { "001_1.WAV", "001_2.WAV" }));
+        CHECK(volume::listTrackWavs(volume, profile::kRc500, 1, 1).empty());
+        CHECK(volume::listTrackWavs(volume, profile::kRc500, 1, 2).empty());
+        CHECK(commands::readFileBytes(tmp.path / "archive" / "clear" / "001_1" / "001_1.WAV") == t1);
+        CHECK(commands::readFileBytes(tmp.path / "archive" / "clear" / "001_2" / "001_2.WAV") == t2);
+        CHECK(rc0::slotBody(commands::readMemory(volume), 1) == rc0::factorySlotBody(profile::kRc500, 1));
+        // The cleared memory and its empty folders agree (the synthetic card's
+        // other recorded memories carry no files, and the doctor says so).
+        for (const auto& f : commands::doctor(volume))
+            CHECK(f.message.find("slot 1 (") == std::string::npos);
+        const auto back = commands::restore(volume, 1, recorded, writeOpts(tmp.path, "restore"));
+        CHECK(back.archived.empty()); // the cleared slot held nothing to keep
+        CHECK((back.frames == std::vector<std::int64_t> { 44100, 22050 }));
+        CHECK(rc0::slotBody(commands::readMemory(volume), 1) == recorded.body);
+        CHECK(commands::readFileBytes(fileOf(1, 1, "001_1.WAV")) == t1);
+        CHECK(commands::readFileBytes(fileOf(1, 2, "001_2.WAV")) == t2);
+
+        // A state with the second track alone, over a memory with both: the
+        // first track's take is kept and goes, the second's is replaced.
+        const std::string solo = testkit::floatTake(8820, 9);
+        const commands::SlotState secondOnly {
+            testkit::syntheticTwoTrackSlotBody("Solo", {}, { 1, 8820 }, 1200, 1), { { 2, "solo.wav", solo } }
+        };
+        const commands::WriteOptions soloing = writeOpts(tmp.path, "solo");
+        const auto soloed = commands::restore(volume, 1, secondOnly, soloing);
+        CHECK((soloed.archived == std::vector<std::string> { "001_1.WAV", "001_2.WAV" }));
+        CHECK((soloed.frames == std::vector<std::int64_t> { 0, 8820 }));
+        CHECK(volume::listTrackWavs(volume, profile::kRc500, 1, 1).empty());
+        CHECK((volume::listTrackWavs(volume, profile::kRc500, 1, 2) == std::vector<std::string> { "solo.wav" }));
+        CHECK(commands::readFileBytes(tmp.path / "archive" / "solo" / "001_1" / "001_1.WAV") == t1);
+
+        // Refused, the card as it was: a third track, two takes on one track,
+        // a body without its second track, a take the second track's section
+        // does not describe, and a one-track body.
+        const auto settled = volumeBytes(volume);
+        const commands::WriteOptions o = writeOpts(tmp.path, "refused");
+        CHECK_THROWS(commands::restore(volume, 1, { recorded.body, { { 1, "a.wav", t1 }, { 3, "c.wav", t2 } } }, o),
+                     "a take on track 3, but an \"RC-500\" memory holds 2 tracks");
+        CHECK_THROWS(commands::restore(volume, 1, { recorded.body, { { 2, "a.wav", t2 }, { 2, "b.wav", t2 } } }, o),
+                     "two takes on track 2");
+        std::string noSecond = recorded.body;
+        noSecond.erase(noSecond.find("<TRACK2>"),
+                       noSecond.find("</TRACK2>") + std::string("</TRACK2>").size() - noSecond.find("<TRACK2>"));
+        CHECK_THROWS(commands::restore(volume, 1, { noSecond, { { 1, "001_1.WAV", t1 } } }, o),
+                     "the body carries no <TRACK2> section");
+        CHECK_THROWS(commands::restore(volume, 1, { recorded.body, { { 1, "001_1.WAV", t1 } } }, o),
+                     "TRACK2 WavStat=1, WavLen=22050 but it carries no take on track 2");
+        CHECK_THROWS(commands::restore(volume, 1, { recorded.body, { { 1, "001_1.WAV", t1 }, { 2, "001_2.WAV", t1 } } }, o),
+                     "its take \"001_2.WAV\" on track 2 holds 44100 frames");
+        CHECK_THROWS(commands::restore(volume, 1, { rc0::factorySlotBody(1), {} }, o), "carries no <TRACK2>");
+        CHECK(volumeBytes(volume) == settled);
     }
 
     // --- a length set as a note value is not a bar count (issue #92) ---
@@ -3073,9 +3125,9 @@ int main()
     // A memory of a multi-track model can hold a take on any of its tracks:
     // the second alone is an ordinary card, because recording the second track
     // first is a thing a player does. So an empty track is skipped and only a
-    // memory with nothing anywhere refuses. The decision half is pure, which
-    // is the only way to test the shape of a two-track pull today: that model's
-    // profile is closed, deliberately, until its face in the app exists.
+    // memory with nothing anywhere refuses. The decision half is pure, so its
+    // shape is tested here without a card; a real two-track card is pulled in
+    // the block about that model above.
 
     {
         const commands::PullOptions named { .dest = "/tmp/out" };
@@ -3089,8 +3141,8 @@ int main()
             if (jobs.size() == 2) {
                 CHECK_EQ(jobs[0].track, 1);
                 CHECK_EQ(jobs[1].track, 2);
-                CHECK_EQ(jobs[0].base, std::string("05 - My Loop T1.wav"));
-                CHECK_EQ(jobs[1].base, std::string("05 - My Loop T2.wav"));
+                CHECK_EQ(jobs[0].base, std::string("05 - My Loop Track1.wav"));
+                CHECK_EQ(jobs[1].base, std::string("05 - My Loop Track2.wav"));
                 CHECK_EQ(jobs[0].onPedal, std::string("005_1.WAV"));
                 CHECK_EQ(jobs[1].onPedal, std::string("005_2.WAV"));
             }
@@ -3104,7 +3156,7 @@ int main()
             CHECK_EQ(jobs.size(), static_cast<std::size_t>(1));
             if (jobs.size() == 1) {
                 CHECK_EQ(jobs[0].track, 2);
-                CHECK_EQ(jobs[0].base, std::string("11 - Solo Two T2.wav"));
+                CHECK_EQ(jobs[0].base, std::string("11 - Solo Two Track2.wav"));
             }
         }
 
@@ -3129,7 +3181,7 @@ int main()
                                                      { { "i-am-projection.wav" }, {} }, named);
             CHECK_EQ(jobs.size(), static_cast<std::size_t>(1));
             if (jobs.size() == 1)
-                CHECK_EQ(jobs[0].base, std::string("i-am-projection T1.wav"));
+                CHECK_EQ(jobs[0].base, std::string("i-am-projection Track1.wav"));
         }
 
         // The one-track model is untouched: no suffix, ever.
@@ -3151,19 +3203,6 @@ int main()
                      "track(s), got 1 file list(s)");
     }
 
-    // And the gate still stands: a card of the multi-track model is not pulled
-    // at all today, whatever this function could do with it.
-    {
-        TempDir tmp;
-        const fs::path volume = tmp.path / "PEDAL";
-        fs::create_directories(volume / "ROLAND" / "WAVE");
-        fs::create_directories(volume::dataDir(volume));
-        const std::string twoTrack = testkit::syntheticTwoTrackMemoryText();
-        for (const int fileNo : { 1, 2 })
-            commands::writeFileBytes(volume::memoryPath(volume, fileNo), twoTrack);
-        CHECK_THROWS(commands::pull(volume, { 1 }, { .dest = tmp.path / "out" }),
-                     "LooperCat only speaks RC-5");
-    }
 
     return testkit::summary("commands");
 }

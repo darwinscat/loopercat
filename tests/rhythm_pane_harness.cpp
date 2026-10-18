@@ -209,7 +209,7 @@ int main()
     type(*level, "90");
     CHECK_EQ(heard.calls, 0);
 
-    // --- a card this app only reads: the same lamps, and the sentence ---
+    // --- a card that keeps the drums closed: the same lamps, and the sentence ---
     pane.permissions = [] { return CardPermissions::of("RC-500"); };
     pane.setSlot(&rows[6]);
     CHECK(allLamps());
@@ -221,7 +221,7 @@ int main()
         bool sentence = false;
         for (auto* child : pane.getChildren())
             if (auto* label = dynamic_cast<juce::Label*>(child))
-                if (label->getText() == juce::String(CardPermissions::writesOnlyTo()))
+                if (label->getText() == juce::String(CardPermissions::of("RC-500").closed))
                     sentence = true;
         CHECK(sentence);
     }

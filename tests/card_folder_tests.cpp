@@ -189,9 +189,21 @@ int main()
         CHECK(volume::looksLikePedal(tmp.path / "Empty"));
         // A model without a factory body on record: refused, and no folder
         // appears — not even the directory.
-        CHECK_THROWS(cardfolder::create(tmp.path / "TwoTrack", profile::kRc500), "not on record");
-        CHECK(!fs::exists(tmp.path / "TwoTrack"));
-        CHECK_THROWS(cardfolder::factoryMemoryDocument(profile::kRc500), "not on record");
+        constexpr profile::DeviceProfile unrecorded {
+            "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {}, profile::bit(profile::Operation::read)
+        };
+        CHECK_THROWS(cardfolder::create(tmp.path / "Unrecorded", unrecorded), "not on record");
+        CHECK(!fs::exists(tmp.path / "Unrecorded"));
+        CHECK_THROWS(cardfolder::factoryMemoryDocument(unrecorded), "not on record");
+        // The two-track model's is on record: its folder reads as that model's
+        // card, every memory factory-empty on both tracks.
+        cardfolder::create(tmp.path / "TwoTrack", profile::kRc500);
+        {
+            const std::string text = commands::readMemory(tmp.path / "TwoTrack");
+            CHECK(&rc0::profileOf(text) == &profile::kRc500);
+            for (const auto& memory : catalog::listSlots(text))
+                CHECK(memory.tracks.size() == 2u && !catalog::holdsAudio(memory));
+        }
     }
 
     // --- export: restore pointed at the folder ---
@@ -290,8 +302,8 @@ int main()
                                      rc0::setTailMarker(foreign, fileNo));
         CHECK(volume::looksLikePedal(twoTrack));
         cardfolder::assertCardFolder(twoTrack); // the shape is a card's
-        // It reads as the two-track card it is, and nothing may be written
-        // into it — import is a look, never a restore.
+        // It reads as the two-track card it is, and a state for it must be a
+        // two-track memory: a one-track body is not one.
         {
             const auto memories = catalog::listSlots(commands::readMemory(twoTrack));
             CHECK_EQ(memories.size(), static_cast<std::size_t>(rc0::kSlotCount));
@@ -299,7 +311,7 @@ int main()
         }
         CHECK_THROWS(commands::restore(twoTrack, 1, recordedState(1, "X", 4410, "001_1.WAV"),
                                        writeOpts(tmp.path)),
-                     "restore refused on an \"RC-500\" card");
+                     "the body carries no <TRACK2> section");
 
         // Not a card: DATA without WAVE, WAVE without DATA, a file, nothing.
         fs::create_directories(tmp.path / "DataOnly" / "ROLAND" / "DATA");

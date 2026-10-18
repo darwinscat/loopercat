@@ -75,13 +75,22 @@ int main()
         CHECK(rc5.rename && rc5.tempo && rc5.oneShot && rc5.countIn && rc5.push && rc5.swap
               && rc5.normalize && rc5.clear && rc5.trim);
         CHECK(rc5.anyWrite());
-        for (const char* name : { "RC-500", "RC-505", "", "rc-5" }) {
+        CHECK(rc5.closed.empty());
+        // The two-track model: what carries every track of a memory, nothing else.
+        const CardPermissions rc500 = CardPermissions::of("RC-500");
+        CHECK(rc500.rename && rc500.pull && rc500.clear && rc500.restore);
+        CHECK(!rc500.tempo && !rc500.oneShot && !rc500.countIn && !rc500.push && !rc500.swap
+              && !rc500.normalize && !rc500.trim && !rc500.downmix && !rc500.rhythm && !rc500.playStop);
+        CHECK_EQ(rc500.closed, "On the RC-500, LooperCat does rename, pull, clear and restore only");
+        for (const char* name : { "RC-505", "", "rc-5" }) {
             const CardPermissions none = CardPermissions::of(name);
             CHECK(!none.anyWrite());
             CHECK(!none.rename && !none.tempo && !none.oneShot && !none.countIn && !none.push
-                  && !none.swap && !none.normalize && !none.clear && !none.trim);
+                  && !none.swap && !none.normalize && !none.clear && !none.trim && !none.pull
+                  && !none.restore && !none.downmix);
+            CHECK(none.closed.empty());
         }
-        CHECK_EQ(CardPermissions::writesOnlyTo(), "LooperCat writes only to the RC-5");
+        CHECK_EQ(CardPermissions::writesOnlyTo(), "LooperCat writes only to the RC-5 and the RC-500");
         CHECK(profile::findFamily("RC-500") == &profile::kRc500);
         CHECK(profile::findFamily("RC-505") == nullptr);
     }
@@ -147,9 +156,9 @@ int main()
     CHECK_EQ(hintClicks, 0);
     CHECK(!table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
 
-    // A card this app only reads: the same clicks call nobody, the drag is
+    // A card nothing is open on: the same clicks call nobody, the drag is
     // not wanted, and the name's double-click plays rather than edits.
-    table.permissions = [] { return CardPermissions::of("RC-500"); };
+    table.permissions = [] { return CardPermissions::of("RC-505"); };
     click(oneShotColumn);
     click(countInColumn);
     click(wavColumn);
@@ -159,6 +168,19 @@ int main()
     CHECK(!table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
     doubleClick(nameColumn);
     CHECK_EQ(activations, 1);
+
+    // The two-track model: One Shot, Count-In and push stay closed — the
+    // same lamps, no drag — and the name, which is open, takes the editing
+    // path on a double-click instead of playing.
+    table.permissions = [] { return CardPermissions::of("RC-500"); };
+    click(oneShotColumn);
+    click(countInColumn);
+    CHECK_EQ(oneShotClicks, 0);
+    CHECK_EQ(countInClicks, 0);
+    CHECK(!table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
+    table.onRenameCommitted = nullptr;
+    doubleClick(nameColumn);
+    CHECK_EQ(activations, 1); // unchanged: the edit path, no play
 
     // The RC-5: the pill is the toggle, the hint is a button, the drag is
     // wanted, and the name's double-click takes the editing path instead of
