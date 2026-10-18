@@ -4,6 +4,7 @@
 #pragma once
 
 #include "HistoryStore.h"
+#include "RecordedState.h"
 #include "SlotRows.h"
 
 #include <loopercat/Commands.hpp>
@@ -54,18 +55,7 @@ inline void restoreOperation(HistoryStore& store, std::int64_t op, const std::fi
     for (const HistoryStore::CardEntry::Slot& touched : entry->slots) {
         if (entry->kind == "snapshot" && touched.slot != *snapshotSlot)
             continue;
-        if (!touched.facts.afterBody)
-            throw Error("that row recorded no state for slot " + std::to_string(touched.slot));
-        commands::SlotState state;
-        state.body = *touched.facts.afterBody;
-        if (touched.facts.takeHash) {
-            std::optional<std::string> bytes = store.takeBytes(*touched.facts.takeHash);
-            if (!bytes)
-                throw Error("the take of slot " + std::to_string(touched.slot)
-                            + " in that state is no longer kept");
-            state.takes.push_back({ commands::kFirstTrack, touched.facts.takeName, std::move(*bytes) });
-        }
-        states.emplace_back(touched.slot, std::move(state));
+        states.emplace_back(touched.slot, recordedState(store, touched.facts, touched.slot));
     }
     for (const auto& [slot, state] : states)
         commands::restore(volume, slot, state, options);

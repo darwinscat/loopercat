@@ -20,6 +20,27 @@ namespace loopercat::history
 namespace
 {
 
+// The rows of a (track, name, hash, kept count) query ordered by track and
+// name, one take per track: a track folder holds one take, and where it held
+// two files the first by name speaks for it.
+std::vector<HistoryStore::SlotTake> takesByTrack(sqlite::Statement& rows)
+{
+    std::vector<HistoryStore::SlotTake> out;
+    while (rows.step()) {
+        const int track = static_cast<int>(rows.integer(0));
+        if (!out.empty() && out.back().track == track)
+            continue;
+        HistoryStore::SlotTake take;
+        take.track = track;
+        take.name = rows.text(1);
+        if (!rows.isNull(2))
+            take.hash = rows.blob(2);
+        take.kept = take.hash.has_value() && rows.integer(3) > 0;
+        out.push_back(std::move(take));
+    }
+    return out;
+}
+
 // Every storage property the store's promises rest on, read back rather than
 // assumed: a pragma that silently did not take is how a file meant to return
 // space never can, or a foreign key meant to hold does not.
@@ -673,19 +694,17 @@ void HistoryStore::fillSlotFacts(TimelineEntry& row, int slot)
     totals.step();
     row.takeCount = totals.integer(0);
     row.takeBytes = totals.integer(1);
-    // Offer the state's take, or the one kept before the slot was emptied.
-    sqlite::Statement take(db_, "SELECT name, hash, "
-                                "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash), side "
-                                "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
-                                "ORDER BY CASE side WHEN 'after' THEN 0 ELSE 1 END LIMIT 1");
-    take.bind(1, row.op).bind(2, slot);
-    if (take.step()) {
-        row.takeName = take.text(0);
-        if (!take.isNull(1))
-            row.takeHash = take.blob(1);
-        row.takeKept = row.takeHash && take.integer(2) > 0;
-        row.takeIsAfter = take.text(3) == "after";
-    }
+    // Offer the state's takes, or the ones kept before the slot was emptied.
+    sqlite::Statement after(db_, "SELECT 1 FROM slot_audio WHERE op = ?1 AND slot = ?2 "
+                                 "AND side = 'after' LIMIT 1");
+    after.bind(1, row.op).bind(2, slot);
+    row.takeIsAfter = after.step();
+    sqlite::Statement takes(db_, "SELECT track, name, hash, "
+                                 "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
+                                 "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 AND a.side = ?3 "
+                                 "ORDER BY a.track, a.name");
+    takes.bind(1, row.op).bind(2, slot).bindText(3, row.takeIsAfter ? "after" : "before");
+    row.takes = takesByTrack(takes);
     if (row.kind == "swap") {
         sqlite::Statement other(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
                                      "AND slot <> ?2 LIMIT 1");
@@ -1099,10 +1118,11 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
 
     sqlite::Statement bodies(db_, "SELECT before_body, after_body FROM slot_changes "
                                   "WHERE op = ?1 AND slot = ?2");
-    sqlite::Statement archived(db_, "SELECT name, hash, "
+    sqlite::Statement archived(db_, "SELECT track, name, hash, "
                                     "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
                                     "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
-                                    "AND a.side = 'before' AND a.hash IS NOT NULL LIMIT 1");
+                                    "AND a.side = 'before' AND a.hash IS NOT NULL "
+                                    "ORDER BY a.track, a.name");
     for (CardEntry& entry : entries) {
         for (const int slot : touchedSlots(entry.op)) {
             CardEntry::Slot touched;
@@ -1124,8 +1144,7 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
             bodies.reset();
             fillSlotFacts(facts, slot);
             archived.bind(1, entry.op).bind(2, slot);
-            if (archived.step())
-                touched.archived = TakeRef { archived.text(0), archived.blob(1), archived.integer(2) > 0 };
+            touched.archived = takesByTrack(archived);
             archived.reset();
             entry.slots.push_back(std::move(touched));
         }

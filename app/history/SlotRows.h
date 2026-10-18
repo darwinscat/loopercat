@@ -35,8 +35,8 @@ struct Row {
     // History window wears: a row that did not finish must not read as
     // something that happened.
     std::string state;
-    bool playable = false;   // its take's bytes are in the store
-    bool restorable = false; // its state can be put back onto the card
+    bool playable = false;   // a take's bytes are in the store: the first kept one, by track
+    bool restorable = false; // its state can be put back onto the card, every track's take with it
     std::string takeHash;    // the bytes Play would sound, empty when there are none
 };
 
@@ -65,17 +65,23 @@ inline constexpr std::string_view kNothingChanged = "nothing changed";
 // the card: the player already has it on the Audio tab, and the store holds
 // no copy — it keeps a take when something replaces it, not before.
 //
-// A row can be restored when it recorded a state (a body), that state's take
-// can be produced (none to produce, or bytes in the store), and it is not
-// the newest row — the state the slot is already in is not somewhere to go
-// back to.
+// A row can be restored when it recorded a state (a body), every take of
+// that state can be produced (none to produce, or bytes in the store, on each
+// track), and it is not the newest row — the state the slot is already in is
+// not somewhere to go back to. The takes a row archived (a clear, an undo
+// that emptied the slot) are no part of the state it left: they are offered
+// to listen to, and a restore of that state puts back none of them.
 // One row from what one operation recorded about one slot. `newest` is
 // whether that operation is the last one on the slot — the rule above — and
 // it is the caller's to say, because a slot's own timeline and the whole
 // card's read it differently.
 inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
 {
-    const bool hasTake = entry.takeHash.has_value() || !entry.takeName.empty();
+    const bool hasTake = !entry.takes.empty();
+    const bool allKept = std::all_of(entry.takes.begin(), entry.takes.end(),
+                                     [](const HistoryStore::SlotTake& t) { return t.kept; });
+    const auto firstKept = std::find_if(entry.takes.begin(), entry.takes.end(),
+                                        [](const HistoryStore::SlotTake& t) { return t.kept; });
     // A row that only names the slot recorded nothing here; one that says so
     // and carries a state or a take is not the store's — refused, not read.
     if (entry.subjectOnly && (entry.beforeBody || entry.afterBody || hasTake))
@@ -89,9 +95,9 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     const bool onCard = newest && entry.takeIsAfter && entry.kind != "snapshot";
     story::Take take = story::Take::none;
     if (hasTake)
-        take = onCard          ? story::Take::onCard
-            : entry.takeKept   ? story::Take::kept
-                               : story::Take::lost;
+        take = onCard   ? story::Take::onCard
+            : allKept   ? story::Take::kept
+                        : story::Take::lost;
 
     Row row;
     row.op = entry.op;
@@ -100,7 +106,7 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                              .beforeBody = entry.beforeBody,
                              .afterBody = entry.afterBody,
                              .swappedWith = entry.swappedWith,
-                             .takeName = entry.takeName,
+                             .takeName = hasTake ? entry.takes.front().name : std::string(),
                              .take = take,
                              .status = entry.status,
                              .note = entry.note });
@@ -114,10 +120,10 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     // name after it does not read as a change.
     if (entry.subjectOnly && entry.status == "done" && row.line.detail.empty())
         row.line.detail = std::string(kNothingChanged);
-    row.playable = entry.takeKept;
-    row.restorable = !newest && entry.afterBody.has_value() && (!hasTake || entry.takeKept);
-    if (entry.takeKept && entry.takeHash)
-        row.takeHash = *entry.takeHash;
+    row.playable = firstKept != entry.takes.end();
+    row.restorable = !newest && entry.afterBody.has_value() && (!entry.takeIsAfter || allKept);
+    if (row.playable)
+        row.takeHash = *firstKept->hash;
     return row;
 }
 

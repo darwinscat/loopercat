@@ -143,6 +143,17 @@ public:
     void recordSubject(std::int64_t op, int slot);
     std::vector<int> subjects(std::int64_t op); // ascending
 
+    // A take a row names on one track: its file name, the hash of its bytes
+    // (absent when the store never saw them), and whether those bytes are
+    // kept — it can be played, exported or put back.
+    struct SlotTake {
+        int track = 0;
+        std::string name;
+        std::optional<std::string> hash;
+        bool kept = false;
+        bool operator==(const SlotTake&) const = default;
+    };
+
     // One row of a slot's timeline, with everything the tab needs to write a
     // sentence and to know what it may offer for it.
     struct TimelineEntry {
@@ -155,16 +166,18 @@ public:
         std::optional<std::string> beforeBody;
         std::optional<std::string> afterBody;
         std::optional<int> swappedWith; // the slot a swap exchanged with
-        // The state's take, or the archived take when the slot was emptied.
-        std::string takeName;
-        std::optional<std::string> takeHash;
-        bool takeKept = false; // the bytes are in the store: it can be played
-        // The take is the one the operation left in the slot (its 'after'
-        // side). False when the row offers the take it archived instead — a
-        // clear or an undo that emptied the slot. That take is
-        // not on the card, whatever the row's place in the timeline.
+        // The state's takes, one per track that held one, by track — or,
+        // when the operation left no take in the slot, the takes it archived.
+        // A track folder that held two files offers the first by name; the
+        // count and bytes below are every file's.
+        std::vector<SlotTake> takes;
         std::int64_t takeCount = 0;
         std::int64_t takeBytes = 0;
+        // The takes are the ones the operation left in the slot (its 'after'
+        // side), and so the state's own. False when the row offers the takes
+        // it archived instead — a clear or an undo that emptied the slot.
+        // Those are not on the card, whatever the row's place in the
+        // timeline, and they are no part of the state the row recorded.
         bool takeIsAfter = false;
         // The operation was about this slot and recorded nothing here — a
         // normalize that found its slot at target (#144). The row says what
@@ -402,12 +415,6 @@ public:
         std::string after;
     };
 
-    // A take named by a row: what an operation archived before it wrote.
-    struct TakeRef {
-        std::string name;
-        std::string hash;
-        bool kept = false; // the bytes are in the store
-    };
     struct CardEntry {
         std::int64_t op = 0;
         std::int64_t at = 0;
@@ -422,9 +429,10 @@ public:
             int slot = 0;
             bool newest = false;
             TimelineEntry facts;
-            // The take this operation replaced or removed in the slot — its
-            // 'before' row — which is what putting the operation back needs.
-            std::optional<TakeRef> archived;
+            // The takes this operation replaced or removed in the slot, one
+            // per track, by track — its 'before' rows, each with a hash —
+            // which is what putting the operation back needs.
+            std::vector<SlotTake> archived;
         };
         std::vector<Slot> slots; // ascending by slot
         // The slots the operation was about (#144), ascending — beside the

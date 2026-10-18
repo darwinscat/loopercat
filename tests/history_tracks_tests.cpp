@@ -16,12 +16,22 @@
 //   - a sighting speaks for the first track only — the table keeps no track
 //     — and a loudness reading is a fact about bytes, whichever track holds
 //     them
+//   - a row reads its takes back one per track, in track order; it can be
+//     restored only when every track's take can be produced, and what it
+//     restores is what the operation LEFT — the takes a clear archived are
+//     no part of the empty slot it left, on any card
+//   - Undo puts back each track's archived take, empties a track a take
+//     arrived into, and leaves alone a track the operation did not change
 
 #include "support.hpp"
 #include "two_track_card.hpp"
 
+#include "../app/history/CardRestore.h"
 #include "../app/history/HistoryRecorder.h"
 #include "../app/history/HistoryStore.h"
+#include "../app/history/RecordedState.h"
+#include "../app/history/SlotRows.h"
+#include "../app/history/Undo.h"
 
 #include <loopercat/Commands.hpp>
 
@@ -265,6 +275,234 @@ int main()
         CHECK(store.readingFor(HistoryStore::contentHash(first)).has_value());
         CHECK_EQ(count(store.db(), "SELECT count(*) FROM take_sightings WHERE name = '004_1.WAV'"), 1);
         rec->finish("op-measure", "");
+    }
+
+    // --- a row reads its takes back one per track ---
+    {
+        TempDir tmp;
+        const fs::path volume = testkit::makeTwoTrackCard(
+            tmp.path, { { 1, 1, "001_1.WAV", 4410, 1 }, { 1, 2, "001_2.WAV", 8820, 2 },
+                        { 11, 2, "011_2.WAV", 4410, 5 } });
+        const auto rec = std::make_shared<HistoryRecorder>(tmp.path / "history", tick);
+        const auto snapshot = rec->firstSeen(volume);
+        if (snapshot)
+            for (int slot = 1; slot <= 99; ++slot)
+                rec->snapshotStep(*snapshot, slot);
+        HistoryStore& store = rec->store();
+        const auto one = store.slotTimeline(1);
+        CHECK_EQ(one.size(), 1u);
+        if (one.size() == 1u) {
+            const std::vector<HistoryStore::SlotTake> both {
+                { 1, "001_1.WAV", hashOf(takePath(volume, 1, 1, "001_1.WAV")), true },
+                { 2, "001_2.WAV", hashOf(takePath(volume, 1, 2, "001_2.WAV")), true } };
+            CHECK(one.front().takes == both);
+            CHECK(one.front().takeIsAfter);
+            CHECK_EQ(one.front().takeCount, 2);
+            // The state, as restore takes it: both takes, each on its own track.
+            const commands::SlotState state = history::recordedState(store, one.front(), 1);
+            CHECK_EQ(state.takes.size(), 2u);
+            if (state.takes.size() == 2u) {
+                CHECK(state.takes[0].track == 1 && state.takes[0].fileName == "001_1.WAV");
+                CHECK(state.takes[1].track == 2 && state.takes[1].fileName == "001_2.WAV");
+                CHECK(state.takes[1].bytes == commands::readFileBytes(takePath(volume, 1, 2, "001_2.WAV")));
+            }
+            CHECK(state.body == *one.front().afterBody);
+        }
+        const auto eleven = store.slotTimeline(11);
+        CHECK(eleven.size() == 1u && eleven.front().takes.size() == 1u
+              && eleven.front().takes.front().track == 2);
+        // The card's view reads the same takes as the slot's.
+        for (const auto& entry : store.cardTimeline())
+            for (const auto& touched : entry.slots)
+                if (touched.slot == 1)
+                    CHECK(touched.facts.takes == one.front().takes);
+    }
+
+    // --- restorable only when every track's take can be produced ---
+    {
+        using Entry = HistoryStore::TimelineEntry;
+        const std::string body = testkit::syntheticTwoTrackSlotBody("Two", { 1, 4410 }, { 1, 8820 }, 1200, 1);
+        Entry restored;
+        restored.op = 1;
+        restored.kind = "restore";
+        restored.actor = "app";
+        restored.status = "done";
+        restored.afterBody = body;
+        restored.takeIsAfter = true;
+        restored.takes = { { 1, "001_1.WAV", std::string(32, '\x11'), true },
+                           { 2, "001_2.WAV", std::string(32, '\x22'), true } };
+        Entry later = restored;
+        later.op = 2;
+        CHECK(history::rows::forSlot({ restored, later }).front().restorable);
+        CHECK(history::rows::forSlot({ restored, later }).front().playable);
+        CHECK_EQ(history::rows::forSlot({ restored, later }).front().takeHash, std::string(32, '\x11'));
+        // The second track's bytes are gone: the pair cannot go back whole,
+        // and the first still plays.
+        restored.takes[1].kept = false;
+        CHECK(!history::rows::forSlot({ restored, later }).front().restorable);
+        CHECK(history::rows::forSlot({ restored, later }).front().playable);
+        CHECK_EQ(history::rows::forSlot({ restored, later }).front().line.audio,
+                 std::string("take no longer kept"));
+        // The first track's are gone: what plays is the second's.
+        restored.takes[1].kept = true;
+        restored.takes[0].kept = false;
+        CHECK(!history::rows::forSlot({ restored, later }).front().restorable);
+        CHECK_EQ(history::rows::forSlot({ restored, later }).front().takeHash, std::string(32, '\x22'));
+        // A take the store never saw (no hash) is not one Restore can produce.
+        restored.takes[0] = { 1, "001_1.WAV", std::nullopt, false };
+        CHECK(!history::rows::forSlot({ restored, later }).front().restorable);
+
+        // The state reader refuses, by track, a take it cannot produce.
+        TempDir tmp;
+        HistoryStore store(tmp.path / "history");
+        CHECK_THROWS(history::recordedState(store, restored, 7), "slot 7 on track 1 in that state");
+        Entry noBody = later;
+        noBody.afterBody.reset();
+        CHECK_THROWS(history::recordedState(store, noBody, 7), "recorded no state for slot 7");
+    }
+
+    // --- what a clear left is the empty slot, on any card ---
+    //
+    // A clear archives the slot's takes and leaves it empty. Its row offers
+    // the archived takes to listen to; its state is the empty slot, and
+    // putting that state back archives what the slot holds by then and puts
+    // back none of the cleared takes. On the RC-5, where it can be run.
+    {
+        TempDir tmp;
+        const fs::path volume = tmp.path / "BOSS RC-5";
+        fs::create_directories(volume / "ROLAND" / "WAVE");
+        fs::create_directories(volume::dataDir(volume));
+        const std::string text = testkit::syntheticMemoryText();
+        for (const int fileNo : { 1, 2 })
+            commands::writeFileBytes(volume::memoryPath(volume, fileNo), rc0::setTailMarker(text, fileNo));
+        const auto rec = std::make_shared<HistoryRecorder>(tmp.path / "history", tick);
+        const auto snapshot = rec->firstSeen(volume);
+        if (snapshot)
+            for (int slot = 1; slot <= 99; ++slot)
+                rec->snapshotStep(*snapshot, slot);
+        const fs::path source = tmp.path / "loop.wav";
+        const auto runOp = [&](const std::string& id, const std::string& kind, const auto& work) {
+            std::string error;
+            try {
+                rec->begin(id, kind, volume);
+                work(history::withHistory(rec, { .opId = id }));
+            } catch (const std::exception& e) {
+                error = e.what();
+            }
+            rec->finish(id, error);
+            return error;
+        };
+        commands::writeFileBytes(source, testkit::floatTake(132300, 1));
+        CHECK_EQ(runOp("push-1", "push", [&](const commands::WriteOptions& o) {
+            commands::push(volume, source, 4, { .write = o });
+        }), std::string());
+        CHECK_EQ(runOp("clear-1", "clear", [&](const commands::WriteOptions& o) {
+            commands::clear(volume, { 4 }, { .write = o });
+        }), std::string());
+        commands::writeFileBytes(source, testkit::floatTake(176400, 2));
+        CHECK_EQ(runOp("push-2", "push", [&](const commands::WriteOptions& o) {
+            commands::push(volume, source, 4, { .write = o });
+        }), std::string());
+        HistoryStore& store = rec->store();
+        std::int64_t clearOp = 0;
+        for (const auto& entry : store.cardTimeline())
+            if (entry.kind == "clear")
+                clearOp = entry.op;
+        const auto rows = history::rows::forCard(store.cardTimeline());
+        for (const auto& row : rows)
+            if (row.op == clearOp) {
+                CHECK(row.restorable());
+                CHECK(row.playable()); // the cleared take can still be heard
+            }
+        const std::string pushed = commands::readFileBytes(volume::wavDir(volume, 4) / "loop.wav");
+        CHECK_EQ(runOp("restore-clear", "restore", [&](const commands::WriteOptions& o) {
+            history::restoreOperation(store, clearOp, volume, o);
+        }), std::string());
+        CHECK(volume::listSlotWavs(volume, 4).empty());
+        CHECK(rc0::slotBody(commands::readMemory(volume), 4) == rc0::factorySlotBody(4));
+        CHECK(store.takeBytes(HistoryStore::contentHash(pushed)) == pushed); // archived on its way out
+    }
+
+    // --- Undo, track by track ---
+    {
+        using Card = HistoryStore::CardEntry;
+        const auto twoTrack = [](long long t1, long long t2) {
+            return testkit::syntheticTwoTrackSlotBody("Two", { t1 > 0 ? 1 : 0, t1 }, { t2 > 0 ? 1 : 0, t2 },
+                                                      1200, 1);
+        };
+        const auto cardOf = [](const char* kind, Card::Slot slot) {
+            Card entry;
+            entry.op = 7;
+            entry.at = 7000;
+            entry.kind = kind;
+            entry.actor = "app";
+            entry.status = "done";
+            entry.session = 1;
+            entry.slots = { std::move(slot) };
+            return entry;
+        };
+        // A clear of both tracks: both go back from the history.
+        Card::Slot cleared;
+        cleared.slot = 5;
+        cleared.facts.beforeBody = twoTrack(4410, 8820);
+        cleared.facts.afterBody = twoTrack(0, 0);
+        cleared.archived = { { 1, "005_1.WAV", std::string(32, '\x01'), true },
+                             { 2, "005_2.WAV", std::string(32, '\x02'), true } };
+        const auto plan = history::undo::plan({ cardOf("clear", cleared) }, 7);
+        CHECK(plan.possible());
+        CHECK(plan.steps.size() == 1u && plan.steps.front().takes.size() == 2u);
+        if (plan.steps.size() == 1u && plan.steps.front().takes.size() == 2u) {
+            CHECK(plan.steps.front().takes[0].track == 1 && plan.steps.front().takes[0].name == "005_1.WAV");
+            CHECK(plan.steps.front().takes[1].track == 2 && plan.steps.front().takes[1].hash == std::string(32, '\x02'));
+            CHECK(plan.steps.front().emptied.empty());
+        }
+        // The second track's take is gone: refused, naming the track.
+        cleared.archived[1].kept = false;
+        const auto lost = history::undo::plan({ cardOf("clear", cleared) }, 7);
+        CHECK(lost.refusal == history::undo::Refusal::takeNotKept);
+        CHECK(lost.reason.find("on track 2") != std::string::npos);
+        // A write that replaced the second track's take over a first track it
+        // did not touch: track 2 goes back, track 1 is left as it is.
+        Card::Slot second;
+        second.slot = 5;
+        second.facts.beforeBody = twoTrack(4410, 8820);
+        second.facts.afterBody = twoTrack(4410, 2205);
+        second.archived = { { 2, "005_2.WAV", std::string(32, '\x02'), true } };
+        const auto mixed = history::undo::plan({ cardOf("restore", second) }, 7);
+        CHECK(mixed.possible() && mixed.steps.size() == 1u);
+        if (mixed.steps.size() == 1u) {
+            CHECK(mixed.steps.front().takes.size() == 1u && mixed.steps.front().takes.front().track == 2);
+            CHECK(mixed.steps.front().emptied.empty()); // track 1 held a take before: it stays
+            CHECK(!mixed.steps.front().keepsAudio());
+        }
+        // A take that arrived on the second track into nothing leaves with
+        // the undo; the first track, holding its take before and after, stays.
+        Card::Slot arrived;
+        arrived.slot = 5;
+        arrived.facts.beforeBody = twoTrack(4410, 0);
+        arrived.facts.afterBody = twoTrack(4410, 2205);
+        const auto into = history::undo::plan({ cardOf("restore", arrived) }, 7);
+        CHECK(into.possible() && into.steps.size() == 1u);
+        if (into.steps.size() == 1u) {
+            CHECK(into.steps.front().takes.empty());
+            CHECK((into.steps.front().emptied == std::vector<int> { 2 }));
+        }
+        // The first track recorded alone into an empty memory: only it goes.
+        Card::Slot firstOnly;
+        firstOnly.slot = 5;
+        firstOnly.facts.beforeBody = twoTrack(0, 8820);
+        firstOnly.facts.afterBody = twoTrack(4410, 8820);
+        const auto t1 = history::undo::plan({ cardOf("restore", firstOnly) }, 7);
+        CHECK(t1.steps.size() == 1u && (t1.steps.front().emptied == std::vector<int> { 1 }));
+        // A rename of a two-track memory touches no audio.
+        Card::Slot renamed;
+        renamed.slot = 5;
+        renamed.facts.beforeBody = twoTrack(4410, 8820);
+        renamed.facts.afterBody = twoTrack(4410, 8820);
+        const auto r = history::undo::plan({ cardOf("rename", renamed) }, 7);
+        CHECK(r.steps.size() == 1u && r.steps.front().keepsAudio());
+        CHECK(history::undo::trackSectionsIn(twoTrack(0, 0)) == 2);
+        CHECK(history::undo::bodyHoldsTake(twoTrack(0, 8820), 2) && !history::undo::bodyHoldsTake(twoTrack(0, 8820), 1));
     }
 
     return testkit::summary("history_tracks_tests");

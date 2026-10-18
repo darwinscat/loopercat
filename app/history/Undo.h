@@ -110,15 +110,25 @@ enum class Refusal {
     takeNotKept       // the take the slot held before is no longer in the store
 };
 
+// A take that goes back onto one track of a slot, out of the store.
+struct TakeBack {
+    int track = 0;
+    std::string name;
+    std::string hash;
+};
+
 // What one slot goes back to. The body absent: it did not change, keep it.
-// `keepTake`: the audio did not change, leave the file alone. Otherwise the
-// take named here goes back — or, with none named, the slot goes empty.
+// A track named in `takes` gets that take back; one in `emptied` goes empty
+// — a take arrived into nothing, and leaves with the undo; every other track
+// keeps the take it holds, because the operation did not change its audio.
 struct Step {
     int slot = 0;
     std::optional<std::string> body;
-    bool keepTake = false;
-    std::optional<std::string> takeName;
-    std::optional<std::string> takeHash;
+    std::vector<TakeBack> takes; // ascending by track
+    std::vector<int> emptied;    // ascending
+    // The audio of no track goes back: the body alone, if anything, and the
+    // files are left alone.
+    bool keepsAudio() const { return takes.empty() && emptied.empty(); }
 };
 
 // One section of the pedal's own settings goes back to the text it had.
@@ -150,13 +160,26 @@ struct Plan {
     bool possible() const { return refusal == Refusal::none; }
 };
 
-// Whether a slot's body says it held a take: empty only when both the
-// pedal's own flag and the length say so (Rc0.hpp, the rule #83 restores
-// by). Anything else is read as held — the direction that never removes.
-inline bool bodyHoldsTake(const std::string& body)
+// Whether a slot's body says one of its tracks held a take: empty only when
+// both the pedal's own flag and the length in that track's section say so
+// (Rc0.hpp, the rule #83 restores by). Anything else is read as held — the
+// direction that never removes.
+inline bool bodyHoldsTake(const std::string& body, int track)
 {
-    return rc0::sectionField(body, rc0::kSectionTrack1, "WavStat") != rc0::kWavStatNone
-        || rc0::sectionField(body, rc0::kSectionTrack1, "WavLen") != 0;
+    const std::string section = rc0::trackSectionName(track);
+    return rc0::sectionField(body, section, "WavStat") != rc0::kWavStatNone
+        || rc0::sectionField(body, section, "WavLen") != 0;
+}
+
+// The tracks a memory body describes: TRACK1, TRACK2, ... as far as they go.
+// The plan reads the model off the body it would put back; the run checks it
+// against the card (UndoRun.h).
+inline int trackSectionsIn(const std::string& body)
+{
+    int tracks = 0;
+    while (body.find(rc0::trackSectionOpen(tracks + 1)) != std::string::npos)
+        ++tracks;
+    return tracks;
 }
 
 inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int64_t target)
@@ -226,22 +249,33 @@ inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int6
             Step step;
             step.slot = touched.slot;
             step.body = touched.facts.beforeBody;
-            if (touched.archived) {
-                // The take this operation replaced or removed — exactly what was there.
-                if (!touched.archived->kept)
+            // The takes this operation replaced or removed — exactly what was
+            // there, track by track.
+            for (const HistoryStore::SlotTake& archived : touched.archived) {
+                const std::string onTrack = archived.track != 1 || touched.archived.size() > 1
+                    ? " on track " + std::to_string(archived.track)
+                    : std::string();
+                if (!archived.kept || !archived.hash)
                     return refuse(Refusal::takeNotKept,
-                                  "the take slot " + std::to_string(touched.slot)
-                                      + " held before is no longer kept",
+                                  "the take slot " + std::to_string(touched.slot) + " held before"
+                                      + onTrack + " is no longer kept",
                                   touched.slot);
-                step.takeName = touched.archived->name;
-                step.takeHash = touched.archived->hash;
-            } else if (touched.facts.beforeBody) {
-                // Nothing archived means nothing replaced: a take the body
-                // names is still on the card and stays. A body that says
-                // empty lets the slot go back to empty — a take arrived into
-                // nothing, and leaves with the undo.
-                step.keepTake = bodyHoldsTake(*touched.facts.beforeBody);
-            } else {
+                step.takes.push_back({ archived.track, archived.name, *archived.hash });
+            }
+            const auto archivedOn = [&touched](int track) {
+                return std::any_of(touched.archived.begin(), touched.archived.end(),
+                                   [track](const HistoryStore::SlotTake& t) { return t.track == track; });
+            };
+            if (touched.facts.beforeBody) {
+                // Nothing archived on a track means nothing replaced there: a
+                // take the body names is still on the card and stays. A body
+                // that says the track was empty lets it go back to empty — a
+                // take arrived into nothing, and leaves with the undo.
+                const std::string& before = *touched.facts.beforeBody;
+                for (int track = 1; track <= trackSectionsIn(before); ++track)
+                    if (!archivedOn(track) && !bodyHoldsTake(before, track))
+                        step.emptied.push_back(track);
+            } else if (touched.archived.empty()) {
                 return refuse(Refusal::stateNotRecorded,
                               "what slot " + std::to_string(touched.slot)
                                   + " held before that operation was not recorded",

@@ -41,6 +41,7 @@
 //     stamp in every other case
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/history/HistoryStore.h"
 #include "../app/history/Schema.h"
@@ -439,11 +440,11 @@ int main()
             CHECK(rows[1].beforeBody.has_value() && *rows[1].beforeBody == "body-before");
             CHECK(rows[1].afterBody.has_value() && *rows[1].afterBody == "body-after");
             // the live row offers the take its state holds...
-            CHECK(rows[1].takeHash == HistoryStore::contentHash(fresh));
-            CHECK(!rows[1].takeKept); // ...whose bytes are on the card, not in the store
+            CHECK(testkit::firstTake(rows[1]).hash == HistoryStore::contentHash(fresh));
+            CHECK(!testkit::firstTake(rows[1]).kept); // ...whose bytes are on the card, not in the store
             // ...and the clear row offers the one it kept, which can be played
-            CHECK(rows[0].takeHash == HistoryStore::contentHash(take(15000, 43)));
-            CHECK(rows[0].takeKept);
+            CHECK(testkit::firstTake(rows[0]).hash == HistoryStore::contentHash(take(15000, 43)));
+            CHECK(testkit::firstTake(rows[0]).kept);
         }
         // and nothing from another slot leaks in
         CHECK(r.store.slotTimeline(6).empty());
@@ -475,13 +476,13 @@ int main()
         const auto op = r.store.beginOp(r.session, "op-gone", "clear", 2000);
         r.store.keepAudio(op, 9, 1, "009_1.WAV", bytes, 2000);
         r.store.finishOp(op, OpStatus::done, "");
-        CHECK(r.store.slotTimeline(9).front().takeKept);
+        CHECK(testkit::firstTake(r.store.slotTimeline(9).front()).kept);
         sqlite::Statement drop(r.store.db(), "DELETE FROM blobs WHERE hash = ?1");
         drop.bindBlob(1, HistoryStore::contentHash(bytes)).run();
         const auto after = r.store.slotTimeline(9);
         CHECK_EQ(after.size(), 1u);
-        CHECK(after.front().takeHash.has_value()); // we still know which take it was
-        CHECK(!after.front().takeKept);            // and that its bytes are gone
+        CHECK(testkit::firstTake(after.front()).hash.has_value()); // we still know which take it was
+        CHECK(!testkit::firstTake(after.front()).kept);            // and that its bytes are gone
     }
 
     // --- what an operation was about, apart from what it changed (#144) ---
@@ -513,7 +514,7 @@ int main()
             CHECK_EQ(seven[1].op, nothing);
             CHECK(seven[1].subjectOnly);
             CHECK(!seven[1].beforeBody && !seven[1].afterBody);
-            CHECK(seven[1].takeName.empty() && !seven[1].takeHash && !seven[1].takeKept);
+            CHECK(testkit::firstTake(seven[1]).name.empty() && !testkit::firstTake(seven[1]).hash && !testkit::firstTake(seven[1]).kept);
             CHECK_EQ(seven[1].takeCount, 0);
             CHECK_EQ(seven[1].note, why);
             CHECK_EQ(seven[1].status, std::string("done"));

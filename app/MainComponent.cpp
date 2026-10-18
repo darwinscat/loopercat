@@ -1383,23 +1383,13 @@ void MainComponent::restoreFromHistory(std::int64_t op)
         "restore", options,
         { "Restore slot " + juce::String(slot) + " to " + found->line.action, slot,
           [rec = recorder, op, slot, options](const volume::fs::path& volumePath) {
-              commands::SlotState state;
-              for (const auto& entry : rec->store().slotTimeline(slot)) {
-                  if (entry.op != op)
-                      continue;
-                  if (!entry.afterBody)
-                      throw Error("that row recorded no state to go back to");
-                  state.body = *entry.afterBody;
-                  if (entry.takeHash) {
-                      const auto bytes = rec->store().takeBytes(*entry.takeHash);
-                      if (!bytes)
-                          throw Error("the take of that state is no longer kept");
-                      state.takes.push_back({ commands::kFirstTrack, entry.takeName, *bytes });
-                  }
-              }
-              if (state.body.empty())
+              std::optional<commands::SlotState> state;
+              for (const auto& entry : rec->store().slotTimeline(slot))
+                  if (entry.op == op)
+                      state = history::recordedState(rec->store(), entry, slot);
+              if (!state)
                   throw Error("that row is not in this slot's history any more");
-              commands::restore(volumePath, slot, state, options);
+              commands::restore(volumePath, slot, *state, options);
           } }));
 }
 
@@ -3325,9 +3315,15 @@ void MainComponent::feedHistoryWindow()
                                      entry.slot = take.slot;
                                      break;
                                  }
+                             // The name of the very take Play sounds: on a
+                             // two-track memory the slot holds two.
                              for (const auto& touched : timeline[i].slots)
                                  if (touched.slot == entry.slot)
-                                     entry.takeName = touched.facts.takeName;
+                                     for (const auto& take : touched.facts.takes)
+                                         if (take.hash && *take.hash == entry.takeHash) {
+                                             entry.takeName = take.name;
+                                             break;
+                                         }
                              entry.action = juce::String(row.action);
                              entry.slots = row.touchedSlots();
                              entry.isSnapshot = row.kind == "snapshot";

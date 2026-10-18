@@ -23,6 +23,7 @@
 //   - while a job runs, nothing is offered; an empty timeline says so
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/HistoryWindow.h"
 #include "../app/AppMenu.h"
@@ -74,9 +75,9 @@ HistoryWindow::Row firstSeen(const std::vector<int>& withTakes)
         touched.facts.status = entry.status;
         if (std::find(withTakes.begin(), withTakes.end(), slot) != withTakes.end()) {
             touched.facts.afterBody = rc0::factorySlotBody(slot);
-            touched.facts.takeName = "TEST_" + std::to_string(slot) + ".WAV";
-            touched.facts.takeHash = std::string(32, static_cast<char>(slot));
-            touched.facts.takeKept = true;
+            testkit::takeOf(touched.facts).name = "TEST_" + std::to_string(slot) + ".WAV";
+            testkit::takeOf(touched.facts).hash = std::string(32, static_cast<char>(slot));
+            testkit::takeOf(touched.facts).kept = true;
             touched.facts.takeIsAfter = true;
             touched.facts.takeCount = 1;
             touched.facts.takeBytes = 1719900;
