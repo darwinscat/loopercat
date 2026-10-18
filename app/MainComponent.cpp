@@ -1394,7 +1394,7 @@ void MainComponent::restoreFromHistory(std::int64_t op)
                       const auto bytes = rec->store().takeBytes(*entry.takeHash);
                       if (!bytes)
                           throw Error("the take of that state is no longer kept");
-                      state.take = commands::Take { entry.takeName, *bytes };
+                      state.takes.push_back({ commands::kFirstTrack, entry.takeName, *bytes });
                   }
               }
               if (state.body.empty())

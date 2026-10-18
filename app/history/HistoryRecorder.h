@@ -60,13 +60,13 @@ public:
     // history is about the history, and a subject would write the slot
     // straight back into what was just forgotten (ForgetSlotJob.h).
     void subject(const std::string& opId, int slot);
-    void keepAudio(const std::string& opId, int slot, const std::string& fileName,
+    void keepAudio(const std::string& opId, int slot, int track, const std::string& fileName,
                    std::string_view bytes);
     void bodies(const std::string& opId, const std::vector<commands::SlotChange>& changes);
     // A take has landed on the card: its row carries the hash of the bytes
     // the core handed over and the modification time the card's directory
     // entry now shows for the file (#141).
-    void landed(const std::string& opId, int slot, const std::string& fileName,
+    void landed(const std::string& opId, int slot, int track, const std::string& fileName,
                 std::string_view bytes);
     // A loudness reading of bytes the worker has in hand, filed under their
     // content hash (#140) — a fact about bytes, not about an operation, so
@@ -91,8 +91,8 @@ public:
     // hash of the bytes read, placed just before the operation's own rows
     // so that anything it then records in the slot makes the read history.
     // Nothing when the entry's size is not the bytes'.
-    void sightedInOperation(const std::string& opId, int slot, const std::string& fileName,
-                            std::int64_t size, const std::string& hash);
+    void sightedInOperation(const std::string& opId, int slot, int track,
+                            const std::string& fileName, std::int64_t size, const std::string& hash);
     // The newest operation the history has begun, by sequence, for a read
     // about to begin to note as its place (#141): absent until the store has
     // opened. Any thread — a read begins on the player's thread too. It

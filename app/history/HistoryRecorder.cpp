@@ -217,10 +217,10 @@ std::int64_t HistoryRecorder::opRow(const std::string& opId) const
     return operation(opId).row;
 }
 
-void HistoryRecorder::keepAudio(const std::string& opId, int slot, const std::string& fileName,
-                                std::string_view bytes)
+void HistoryRecorder::keepAudio(const std::string& opId, int slot, int track,
+                                const std::string& fileName, std::string_view bytes)
 {
-    store().keepAudio(opRow(opId), slot, kTrack, fileName, bytes, clock_());
+    store().keepAudio(opRow(opId), slot, track, fileName, bytes, clock_());
 }
 
 void HistoryRecorder::bodies(const std::string& opId,
@@ -229,11 +229,11 @@ void HistoryRecorder::bodies(const std::string& opId,
     store().recordBodies(opRow(opId), changes);
 }
 
-void HistoryRecorder::landed(const std::string& opId, int slot, const std::string& fileName,
-                             std::string_view bytes)
+void HistoryRecorder::landed(const std::string& opId, int slot, int track,
+                             const std::string& fileName, std::string_view bytes)
 {
     const Operation& op = operation(opId);
-    store().recordLanded(op.row, slot, kTrack, fileName, bytes,
+    store().recordLanded(op.row, slot, track, fileName, bytes,
                          modifiedMs(volume::wavDir(op.volume, slot) / fileName));
 }
 
@@ -258,9 +258,15 @@ bool HistoryRecorder::sighted(const std::filesystem::path& volume, int slot, con
     return true;
 }
 
-void HistoryRecorder::sightedInOperation(const std::string& opId, int slot, const std::string& fileName,
-                                         std::int64_t size, const std::string& hash)
+void HistoryRecorder::sightedInOperation(const std::string& opId, int slot, int track,
+                                         const std::string& fileName, std::int64_t size,
+                                         const std::string& hash)
 {
+    // A sighting is a fact about the first track's file: the store files it
+    // by slot and name alone (take_sightings has no track), and every read
+    // that files one reads that track (HistoryStore::recordSighting).
+    if (track != commands::kFirstTrack)
+        return;
     const Operation& op = operation(opId);
     const std::optional<FileStat> seen = statFile(volume::wavDir(op.volume, slot) / fileName);
     if (!seen || seen->size != size)
@@ -340,16 +346,16 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     if (options.opId.empty())
         throw Error("an operation cannot be recorded without an id");
     const std::string opId = options.opId;
-    options.archive = [recorder, opId](
-                          int slot, const std::string& fileName, std::string_view bytes) {
-        recorder->keepAudio(opId, slot, fileName, bytes);
+    options.archive = [recorder, opId](int slot, int track, const std::string& fileName,
+                                       std::string_view bytes) {
+        recorder->keepAudio(opId, slot, track, fileName, bytes);
     };
     options.journal.bodiesChanging = [recorder, opId](const std::vector<commands::SlotChange>& changes) {
         recorder->bodies(opId, changes);
     };
-    options.journal.audioWritten = [recorder, opId](int slot, const std::string& fileName,
+    options.journal.audioWritten = [recorder, opId](int slot, int track, const std::string& fileName,
                                                     std::string_view bytes) {
-        recorder->landed(opId, slot, fileName, bytes);
+        recorder->landed(opId, slot, track, fileName, bytes);
     };
     options.journal.slotsChanging = [recorder, opId](const std::vector<int>& slots) {
         recorder->preserveSlots(opId, slots);
@@ -359,7 +365,8 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
     // follows. Inside an operation the card's session is open, so the
     // reading always goes in; a store that cannot take it stops the command
     // here, before the card is touched, like every other hook.
-    options.journal.loudnessMeasured = [recorder, opId](int slot, const std::string& fileName,
+    options.journal.loudnessMeasured = [recorder, opId](int slot, int track,
+                                                        const std::string& fileName,
                                                         std::string_view bytes,
                                                         const wav::LoudnessReading& reading) {
         const std::string hash = HistoryStore::contentHash(bytes);
@@ -369,7 +376,8 @@ commands::WriteOptions withHistory(const std::shared_ptr<HistoryRecorder>& recor
         // A measurement is a real read: what it saw goes in too, so a
         // normalize that finds its slot at target tells the next connect
         // which bytes the slot holds (#141, review S12).
-        recorder->sightedInOperation(opId, slot, fileName, static_cast<std::int64_t>(bytes.size()), hash);
+        recorder->sightedInOperation(opId, slot, track, fileName,
+                                     static_cast<std::int64_t>(bytes.size()), hash);
         if (recorder->onMeasured)
             recorder->onMeasured(slot, reading);
     };

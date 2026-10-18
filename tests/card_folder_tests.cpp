@@ -97,8 +97,8 @@ commands::SlotState recordedState(int slot, const std::string& name, int frames,
     body = rc0::setName(body, name);
     body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat", rc0::kWavStatIndexed);
     body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavLen", frames);
-    return { body, commands::Take { fileName, bytesOf(testkit::syntheticWav(
-                                                  { .tag = 3, .bits = 32, .frames = frames })) } };
+    return { body, { commands::Take { 1, fileName, bytesOf(testkit::syntheticWav(
+                                                  { .tag = 3, .bits = 32, .frames = frames })) } } };
 }
 
 commands::WriteOptions writeOpts(const fs::path& root, std::string opId = opid::make("op"))
@@ -226,7 +226,7 @@ int main()
         CHECK(volume::listSlotWavs(root, 5) == std::vector<std::string> { "005_1.WAV" });
         CHECK(volume::listSlotWavs(root, 42) == std::vector<std::string> { "chorus.wav" });
         CHECK(volume::listSlotWavs(root, 99) == std::vector<std::string> { "099_1.WAV" });
-        CHECK(commands::readFileBytes(volume::wavDir(root, 42) / "chorus.wav") == s42.take->bytes);
+        CHECK(commands::readFileBytes(volume::wavDir(root, 42) / "chorus.wav") == s42.takes.front().bytes);
         // The bodies are the states', byte for byte; the other 96 memories are
         // still the factory body, byte for byte.
         CHECK(rc0::slotBody(text, 5) == s5.body);
@@ -254,9 +254,9 @@ int main()
         const auto result = commands::restore(root, 42, later, opts);
         CHECK(result.archived == std::vector<std::string> { "chorus.wav" });
         CHECK(commands::readFileBytes(tmp.path / "archive" / "op-42b" / "042_1" / "chorus.wav")
-              == s42.take->bytes);
+              == s42.takes.front().bytes);
         CHECK(commands::readFileBytes(volume::wavDir(root, 42) / "chorus.wav")
-              == later.take->bytes);
+              == later.takes.front().bytes);
         CHECK_EQ(catalog::readSlot(commands::readMemory(root), 42).name, "Chorus v2   ");
         // Without an archive it is refused, and the folder is as it was.
         const auto before = folderBytes(root);

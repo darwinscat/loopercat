@@ -339,7 +339,7 @@ inline void apply(HistoryStore& store, const Plan& plan, const fs::path& volume,
             if (!bytes)
                 throw Error("the take slot " + std::to_string(step.slot)
                             + " held before is no longer kept");
-            state.take = commands::Take { *step.takeName, std::move(*bytes) };
+            state.takes.push_back({ commands::kFirstTrack, *step.takeName, std::move(*bytes) });
         }
         commands::restore(volume, step.slot, state, options);
     }

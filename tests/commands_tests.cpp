@@ -262,7 +262,7 @@ commands::SlotState recordOnPedal(const fs::path& volume, int slot, const std::s
     commands::writeMemoryPair(volume, rc0::replaceSlotBody(text, slot, body),
                               testkit::unrecordedWrite());
     return { rc0::slotBody(commands::readMemory(volume), slot),
-             commands::Take { name, commands::readFileBytes(volume::wavDir(volume, slot) / name) } };
+             { commands::Take { 1, name, commands::readFileBytes(volume::wavDir(volume, slot) / name) } } };
 }
 
 // --- a real card, and the field-level view of a change ---
@@ -423,7 +423,7 @@ int main()
         commands::writeFileBytes(source, commands::readFileBytes(volume::wavDir(volume, 3) / "003_1.WAV"));
         CHECK_THROWS(commands::push(volume, source, 8, {}), "bodiesChanging journal");
         CHECK(volumeBytes(volume) == before);
-        CHECK_THROWS(commands::restore(volume, 3, { rc0::factorySlotBody(3), std::nullopt }, noJournal),
+        CHECK_THROWS(commands::restore(volume, 3, { rc0::factorySlotBody(3), {} }, noJournal),
                      "bodiesChanging journal");
         CHECK(volumeBytes(volume) == before);
     }
@@ -467,7 +467,7 @@ int main()
         const auto before = volumeBytes(volume);
         auto write = writeOpts(tmp.path);
         int archived = 0;
-        write.archive = [&](int slot, const std::string&, std::string_view) {
+        write.archive = [&](int slot, int, const std::string&, std::string_view) {
             CHECK(volumeBytes(volume) == before);
             ++archived;
             if (slot == 6)
@@ -477,7 +477,7 @@ int main()
         CHECK_EQ(archived, 3);
         CHECK(volumeBytes(volume) == before);
         archived = 0;
-        write.archive = [&](int, const std::string&, std::string_view) {
+        write.archive = [&](int, int, const std::string&, std::string_view) {
             CHECK(volumeBytes(volume) == before);
             ++archived;
         };
@@ -506,7 +506,7 @@ int main()
         const auto recording = [](const fs::path& volume, std::vector<Kept>& kept) {
             return commands::WriteOptions {
                 .opId = opid::make("rec"),
-                .archive = [&volume, &kept](int slot, const std::string& name,
+                .archive = [&volume, &kept](int slot, int, const std::string& name,
                                             std::string_view bytes) {
                     const fs::path onCard = volume::wavDir(volume, slot) / name;
                     kept.push_back({ slot, name, std::string(bytes),
@@ -611,7 +611,7 @@ int main()
 
         const commands::WriteOptions failing {
             .opId = "archive-fails",
-            .archive = [](int, const std::string&, std::string_view) {
+            .archive = [](int, int, const std::string&, std::string_view) {
                 throw Error("the archive is full");
             },
             .journal = testkit::noOpJournal(),
@@ -625,7 +625,7 @@ int main()
         CHECK_THROWS(commands::normalize(volume, 14, { .targetLufs = -18.0, .write = failing }),
                      "the archive is full");
         CHECK_THROWS(commands::clear(volume, { 15 }, { .write = failing }), "the archive is full");
-        CHECK_THROWS(commands::restore(volume, 16, { rc0::factorySlotBody(16), std::nullopt }, failing),
+        CHECK_THROWS(commands::restore(volume, 16, { rc0::factorySlotBody(16), {} }, failing),
                      "the archive is full");
 
         CHECK(volumeBytes(volume) == before);
@@ -747,7 +747,7 @@ int main()
             options.journal.bodiesChanging = [&](const std::vector<commands::SlotChange>& c) {
                 bodies = c;
             };
-            options.journal.audioWritten = [&](int slot, const std::string& name,
+            options.journal.audioWritten = [&](int slot, int, const std::string& name,
                                                std::string_view bytes) {
                 landedName.emplace_back(slot, name);
                 landedBytes.emplace_back(bytes);
@@ -1490,8 +1490,8 @@ int main()
         commands::setTempo(volume, 5, 1120, testkit::unrecordedWrite());
         const commands::SlotState good {
             rc0::slotBody(commands::readMemory(volume), 5),
-            commands::Take { "005_1.WAV",
-                             commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV") }
+            { commands::Take { 1, "005_1.WAV",
+                             commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV") } }
         };
         CHECK(params::computeSlotParams(2646000).tempoTenths != 1120);
         CHECK_EQ(rc0::field(good.body, "Tempo"), 1120);
@@ -1504,7 +1504,7 @@ int main()
         const std::string present = commands::readMemory(volume);
         const std::string newerTake =
             commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV");
-        CHECK(newerTake != good.take->bytes);
+        CHECK(newerTake != good.takes.front().bytes);
 
         const commands::WriteOptions options = writeOpts(tmp.path, "restore-5");
         const auto result = commands::restore(volume, 5, good, options);
@@ -1516,8 +1516,8 @@ int main()
         CHECK_EQ(rc0::field(rc0::slotBody(after, 5), "Tempo"), 1120);
         CHECK_EQ(rc0::decodeName(rc0::slotBody(after, 5)), "Good Take   ");
         CHECK((volume::listSlotWavs(volume, 5) == std::vector<std::string> { "005_1.WAV" }));
-        CHECK(commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV") == good.take->bytes);
-        CHECK_EQ(result.frames, 2646000);
+        CHECK(commands::readFileBytes(volume::wavDir(volume, 5) / "005_1.WAV") == good.takes.front().bytes);
+        CHECK((result.frames == std::vector<std::int64_t> { 2646000 })); // the RC-5's one track
 
         // The other 98 slots are the PRESENT's, byte for byte — slot 6's new
         // name included: an old document is never written wholesale.
@@ -1547,7 +1547,7 @@ int main()
         putWav(volume, 9, "b.wav", { .tag = 3, .bits = 32, .frames = 8820 });
         const std::string a = commands::readFileBytes(volume::wavDir(volume, 9) / "a.wav");
         const std::string b = commands::readFileBytes(volume::wavDir(volume, 9) / "b.wav");
-        const commands::SlotState cleared { rc0::factorySlotBody(9), std::nullopt };
+        const commands::SlotState cleared { rc0::factorySlotBody(9), {} };
 
         const commands::WriteOptions options = writeOpts(tmp.path);
         const auto result = commands::restore(volume, 9, cleared, options);
@@ -1556,10 +1556,10 @@ int main()
         CHECK(commands::readFileBytes(keptTake(tmp.path, options, 9, "b.wav")) == b);
         CHECK(volume::listSlotWavs(volume, 9).empty());
         CHECK(rc0::slotBody(commands::readMemory(volume), 9) == rc0::factorySlotBody(9));
-        CHECK_EQ(result.frames, 0);
+        CHECK((result.frames == std::vector<std::int64_t> { 0 }));
         CHECK(commands::doctor(volume).empty()); // the body and the empty folder agree
 
-        const auto empty = commands::restore(volume, 10, { rc0::factorySlotBody(10), std::nullopt },
+        const auto empty = commands::restore(volume, 10, { rc0::factorySlotBody(10), {} },
                                              withoutArchive(writeOpts(tmp.path)));
         CHECK(empty.archived.empty());
         CHECK(rc0::slotBody(commands::readMemory(volume), 10) == rc0::factorySlotBody(10));
@@ -1573,26 +1573,26 @@ int main()
         const fs::path volume = makePedal(tmp.path);
         const commands::SlotState whole = recordOnPedal(volume, 5, "005_1.WAV", 4410);
         const std::string& body = whole.body;
-        const std::string& bytes = whole.take->bytes;
+        const std::string& bytes = whole.takes.front().bytes;
         const auto before = volumeBytes(volume);
         const commands::WriteOptions options = writeOpts(tmp.path);
 
         // The body counts 8820 frames while the take holds 4410 — and the
         // other way round, a take of another length under the same name.
-        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavLen", 8820), whole.take },
+        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavLen", 8820), whole.takes },
                                        options),
                      "WavLen=8820 but its take \"005_1.WAV\" holds 4410 frames");
         const std::string longer =
             bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 8820 }));
-        CHECK_THROWS(commands::restore(volume, 5, { body, commands::Take { "005_1.WAV", longer } },
+        CHECK_THROWS(commands::restore(volume, 5, { body, { commands::Take { 1, "005_1.WAV", longer } } },
                                        options),
                      "WavLen=4410 but its take \"005_1.WAV\" holds 8820 frames");
         // A body that claims audio with no take to go with it: "restore the
         // settings" alone is exactly the half that is refused.
-        CHECK_THROWS(commands::restore(volume, 5, { body, std::nullopt }, options),
+        CHECK_THROWS(commands::restore(volume, 5, { body, {} }, options),
                      "WavLen=4410 but it carries no take");
         // A take beside a body that says the slot is empty.
-        CHECK_THROWS(commands::restore(volume, 5, { rc0::factorySlotBody(5), whole.take }, options),
+        CHECK_THROWS(commands::restore(volume, 5, { rc0::factorySlotBody(5), whole.takes }, options),
                      "WavStat=0, WavLen=0 but its take");
         // WavStat is what the pedal — and doctor — read as "this slot holds a
         // take": a body that claims one beside no take (the slot doctor
@@ -1600,13 +1600,13 @@ int main()
         // denies the one it brings, is not a unit either, whatever WavLen says.
         CHECK_THROWS(commands::restore(volume, 5,
                                        { rc0::setField(rc0::factorySlotBody(5), "WavStat", 1),
-                                         std::nullopt },
+                                         {} },
                                        options),
                      "WavStat=1, WavLen=0 but it carries no take");
-        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavStat", 0), whole.take },
+        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavStat", 0), whole.takes },
                                        options),
                      "WavStat=0, WavLen=4410 but its take");
-        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavStat", 2), whole.take },
+        CHECK_THROWS(commands::restore(volume, 5, { rc0::setField(body, "WavStat", 2), whole.takes },
                                        options),
                      "WavStat=2, WavLen=4410 but its take");
         // A take the pedal does not play — 16-bit, or mono — is refused at the
@@ -1614,15 +1614,15 @@ int main()
         // recorded from a card looks like this, and the pedal would discard
         // it at its next boot rather than index it (issue #44).
         CHECK_THROWS(commands::restore(volume, 5,
-                                       { body, commands::Take { "005_1.WAV",
+                                       { body, { commands::Take { 1, "005_1.WAV",
                                                                 bytesOf(testkit::syntheticWav(
-                                                                    { .tag = 1, .bits = 16, .frames = 4410 })) } },
+                                                                    { .tag = 1, .bits = 16, .frames = 4410 })) } } },
                                        options),
                      "32-bit float");
         CHECK_THROWS(commands::restore(volume, 5,
-                                       { body, commands::Take { "005_1.WAV",
+                                       { body, { commands::Take { 1, "005_1.WAV",
                                                                 bytesOf(testkit::syntheticWav(
-                                                                    { .tag = 3, .channels = 1, .bits = 32, .frames = 4410 })) } },
+                                                                    { .tag = 3, .channels = 1, .bits = 32, .frames = 4410 })) } } },
                                        options),
                      "stereo");
 
@@ -1632,25 +1632,100 @@ int main()
         CHECK_THROWS(commands::restore(volume, 5, {}, options), "needs a slot body");
         for (const char* name : { "", ".", "..", "../005_1.WAV", "WAVE/005_1.WAV", "._005_1.WAV",
                                   ".DS_Store" })
-            CHECK_THROWS(commands::restore(volume, 5, { body, commands::Take { name, bytes } },
+            CHECK_THROWS(commands::restore(volume, 5, { body, { commands::Take { 1, name, bytes } } },
                                            options),
                          "not a file name a take can carry");
-        CHECK_THROWS(commands::restore(volume, 5, { body, commands::Take { "005_1.WAV", "" } },
+        CHECK_THROWS(commands::restore(volume, 5, { body, { commands::Take { 1, "005_1.WAV", "" } } },
                                        options),
                      "RIFF");
         CHECK_THROWS(commands::restore(volume, 5,
-                                       { body, commands::Take { "005_1.WAV", "not audio at all" } },
+                                       { body, { commands::Take { 1, "005_1.WAV", "not audio at all" } } },
                                        options),
                      "RIFF");
-        CHECK_THROWS(commands::restore(volume, 5, { body + "</mem>", whole.take }, options),
+        CHECK_THROWS(commands::restore(volume, 5, { body + "</mem>", whole.takes }, options),
                      "<mem> block");
-        CHECK_THROWS(commands::restore(volume, 5, { body + "<mem id=\"98\">", whole.take }, options),
+        CHECK_THROWS(commands::restore(volume, 5, { body + "<mem id=\"98\">", whole.takes }, options),
                      "<mem> block");
         CHECK_THROWS(commands::restore(volume, 5, whole, withoutArchive(options)), "needs an archive");
 
         CHECK(volumeBytes(volume) == before);
         CHECK(!fs::exists(tmp.path / "archive"));
         CHECK(!fs::exists(tmp.path / "backups"));
+    }
+
+    // --- a state holds at most one take per track, on a track the model has ---
+    //
+    // Theory: a memory's state is its body plus the takes its track folders
+    // hold, one per track. The RC-5 has one track and the two-track model
+    // two; a take on a track the model does not have, a second take on one
+    // track, or a body whose track sections are not the model's, is not a
+    // state of that model at all — refused by name, before anything moves.
+
+    {
+        const auto take = [](int track) {
+            return commands::Take { track, "take.wav", "bytes" };
+        };
+        const std::string where = "restore of slot 7";
+        const auto fits = [&where](const profile::DeviceProfile& family,
+                                   const std::vector<commands::Take>& takes) {
+            try {
+                commands::requireTakesFit(family, takes, where);
+                return true;
+            } catch (const Error&) {
+                return false;
+            }
+        };
+        CHECK(fits(profile::kRc500, {}));
+        CHECK(fits(profile::kRc500, { take(1) }));
+        CHECK(fits(profile::kRc500, { take(2) })); // the second track alone is a normal memory
+        CHECK(fits(profile::kRc500, { take(2), take(1) }));
+        CHECK(fits(profile::kRc5, { take(1) }));
+        CHECK_THROWS(commands::requireTakesFit(profile::kRc500, { take(1), take(3) }, where),
+                     "restore of slot 7: a take on track 3, but an \"RC-500\" memory holds 2 tracks");
+        CHECK_THROWS(commands::requireTakesFit(profile::kRc500, { take(0) }, where), "track 0");
+        CHECK_THROWS(commands::requireTakesFit(profile::kRc500, { take(-1) }, where), "track -1");
+        CHECK_THROWS(commands::requireTakesFit(profile::kRc500, { take(2), take(2) }, where),
+                     "two takes on track 2");
+        CHECK_THROWS(commands::requireTakesFit(profile::kRc5, { take(2) }, where),
+                     "an \"RC-5\" memory holds one track");
+        CHECK_THROWS(commands::requireTakesFit(profile::kRc5, { take(1), take(1) }, where),
+                     "two takes on track 1");
+        // A take that names no track is not quietly the first one's.
+        CHECK_THROWS(commands::requireTakesFit(profile::kRc5, { commands::Take {} }, where),
+                     "track 0");
+    }
+
+    {
+        // The same on a real RC-5 card, through restore: every refusal comes
+        // before a byte moves and before the archive is asked for anything.
+        TempDir tmp;
+        const fs::path volume = makePedal(tmp.path);
+        const commands::SlotState whole = recordOnPedal(volume, 5, "005_1.WAV", 4410);
+        const commands::Take& take = whole.takes.front();
+        const auto before = volumeBytes(volume);
+        const commands::WriteOptions options = writeOpts(tmp.path);
+
+        CHECK_THROWS(commands::restore(volume, 5, { whole.body, { commands::Take { 2, take.fileName, take.bytes } } },
+                                       options),
+                     "a take on track 2, but an \"RC-5\" memory holds one track");
+        CHECK_THROWS(commands::restore(volume, 5, { whole.body, { take, take } }, options),
+                     "two takes on track 1");
+        // A body with a second track section is not an RC-5 memory: written,
+        // it would make the card one this app refuses to read.
+        const std::string track2 = "<TRACK2>\n\t<WavStat>0</WavStat>\n\t<WavLen>0</WavLen>\n</TRACK2>\n";
+        CHECK_THROWS(commands::restore(volume, 5, { whole.body + track2, whole.takes }, options),
+                     "carries a <TRACK2> section");
+        // And one without its track section describes no take at all.
+        std::string noTrack = whole.body;
+        const auto from = noTrack.find("<TRACK1>");
+        const auto to = noTrack.find("</TRACK1>");
+        CHECK(from != std::string::npos && to != std::string::npos);
+        noTrack.erase(from, to + std::string("</TRACK1>").size() - from);
+        CHECK_THROWS(commands::restore(volume, 5, { noTrack, {} }, options),
+                     "carries no <TRACK1> section");
+
+        CHECK(volumeBytes(volume) == before);
+        CHECK(!fs::exists(tmp.path / "archive"));
     }
 
     {
@@ -1675,7 +1750,7 @@ int main()
             heard = changes;
             cardWhenHeard = commands::readMemory(volume);
         };
-        options.journal.audioWritten = [&](int slot, const std::string& name,
+        options.journal.audioWritten = [&](int slot, int, const std::string& name,
                                            std::string_view landedView) {
             landed.emplace_back(slot, name);
             landedBytes = std::string(landedView);
@@ -1692,7 +1767,7 @@ int main()
         CHECK_EQ(landed.size(), 1u);
         if (landed.size() == 1u) {
             CHECK((landed.front() == std::pair<int, std::string> { 7, "take.wav" }));
-            CHECK(landedBytes == recorded.take->bytes);
+            CHECK(landedBytes == recorded.takes.front().bytes);
         }
     }
 
@@ -2533,7 +2608,7 @@ int main()
         };
         std::vector<Heard> heard;
         const auto listening = [&](commands::WriteOptions options) {
-            options.journal.loudnessMeasured = [&](int slot, const std::string& name,
+            options.journal.loudnessMeasured = [&](int slot, int, const std::string& name,
                                                    std::string_view bytes,
                                                    const wav::LoudnessReading& reading) {
                 heard.push_back({ slot, name, std::string(bytes), reading });
@@ -2671,8 +2746,8 @@ int main()
         // the reverse of the tempo change, the take included.
         const commands::SlotState trimmed {
             rc0::slotBody(afterTrim, 11),
-            commands::Take { "011_1.WAV",
-                             commands::readFileBytes(volume::wavDir(volume, 11) / "011_1.WAV") }
+            { commands::Take { 1, "011_1.WAV",
+                             commands::readFileBytes(volume::wavDir(volume, 11) / "011_1.WAV") } }
         };
         commands::setTempo(volume, 11, 905, writeOpts(tmp.path));
         const std::string beforeRestore = memory();
@@ -2684,7 +2759,7 @@ int main()
                  "TRACK1.Measure 11->12, TRACK1.MeasLen 4->5, TRACK1.RecTmp 905->1200, "
                  "MASTER.Tempo 905->1200");
         CHECK(commands::readFileBytes(volume::wavDir(volume, 11) / "011_1.WAV")
-              == trimmed.take->bytes);
+              == trimmed.takes.front().bytes);
     }
 
     // --- the section is the address: a same-named tag elsewhere is not the field ---
@@ -2738,8 +2813,8 @@ int main()
         const std::string takeName = volume::listSlotWavs(volume, 5).front();
         const commands::SlotState pushedState {
             rc0::slotBody(pushed, 5),
-            commands::Take { takeName,
-                             commands::readFileBytes(volume::wavDir(volume, 5) / takeName) }
+            { commands::Take { 1, takeName,
+                             commands::readFileBytes(volume::wavDir(volume, 5) / takeName) } }
         };
 
         // trim to 10 s at the kept 128.0 BPM: 21.3 beats, 5 bars.
@@ -2844,7 +2919,7 @@ int main()
                      "normalize" + refused);
         CHECK_THROWS(commands::clear(volume, { 1 }, { .write = write }), "clear" + refused);
         CHECK_THROWS(
-            commands::restore(volume, 42, { rc0::slotBody(text, 42), std::nullopt }, write),
+            commands::restore(volume, 42, { rc0::slotBody(text, 42), {} }, write),
             "restore" + refused);
         CHECK_THROWS(commands::swap(volume, 1, 2, write), "swap" + refused);
         // The backstop under them all, asked directly.

@@ -63,7 +63,7 @@ inline void restoreOperation(HistoryStore& store, std::int64_t op, const std::fi
             if (!bytes)
                 throw Error("the take of slot " + std::to_string(touched.slot)
                             + " in that state is no longer kept");
-            state.take = commands::Take { touched.facts.takeName, std::move(*bytes) };
+            state.takes.push_back({ commands::kFirstTrack, touched.facts.takeName, std::move(*bytes) });
         }
         states.emplace_back(touched.slot, std::move(state));
     }
