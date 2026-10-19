@@ -8,6 +8,7 @@
 
 #include "history/WriteOptionsFactory.h"
 #include "history/HistoryRecorder.h"
+#include "history/ExportTakeJob.h"
 #include "history/ForgetSlotJob.h"
 #include "ClearSlotHistoryAction.h"
 #include "history/SlotLoudness.h"
@@ -770,6 +771,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(history);
     history.onClearHistory = [this](int slot) { clearSlotHistory(slot); };
     history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
+    history.onExportTake = [this](std::int64_t op) { exportFromHistory(op); };
     // The History window (#73): the view knows nothing of the store; its
     // four callbacks come back here, and every one of them ends in a re-read.
     historyView.onPlay = [this](std::int64_t op) { playFromWindow(op); };
@@ -1350,6 +1352,32 @@ void MainComponent::playArchivedTake(int slot, std::string hash, juce::String ti
                          });
                      },
                      nullptr, 0, true, true, false });
+}
+
+// "Export take...": the row's take, written where the player chose. The
+// dialog proposes the take's own name and has asked about a file already
+// there; the write is the history's bytes and nothing else — the pedal is
+// neither read nor written, so the job needs no card.
+void MainComponent::exportFromHistory(std::int64_t op)
+{
+    const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
+                                    [op](const history::rows::Row& row) { return row.op == op; });
+    if (found == historyEntries.end() || found->takeHash.empty())
+        return; // the pane offers Export only for a row whose take is kept
+    const juce::String name = utf8(history::exportName(found->takeName, selectedSlot));
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Export take", juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile(name),
+        "*.wav");
+    juce::Component::SafePointer<MainComponent> safe(this);
+    fileChooser->launchAsync(
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+            | juce::FileBrowserComponent::warnAboutOverwriting,
+        [safe, hash = found->takeHash](const juce::FileChooser& chooser) {
+            const juce::File file = chooser.getResult();
+            if (safe == nullptr || file == juce::File())
+                return; // dismissed
+            safe->worker.enqueue(history::exportTakeJob(safe->recorder, hash, fsPath(file)));
+        });
 }
 
 // Putting a recorded state back: the slot's body and its take, as one unit,

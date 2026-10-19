@@ -7,7 +7,7 @@
 #include "../app/HistoryPane.h"
 #include "../app/history/CardRestore.h"
 #include "../app/history/HistoryRecorder.h"
-#include "../app/history/TakeExport.h"
+#include "../app/history/ExportTakeJob.h"
 
 #include <bit>
 #include <chrono>
@@ -282,15 +282,31 @@ int main()
         pane.setRows(std::move(shown), 4);
 
         // The cleared take is still the player's: the cleared row's menu
-        // exports it, and the file is the very bytes that left the slot.
+        // exports it, under its own name, and the file is the very bytes
+        // that left the slot. The export is the history's alone: it needs no
+        // card, and the card is the same bytes after it.
         int exports = 0;
         pane.onExportTake = [&](std::int64_t op) {
             ++exports;
             CHECK_EQ(op, rows.back().op);
-            const fs::path file = fixture.root / "exported.wav";
-            CHECK_EQ(history::exportTake(fixture.rec->store(), rows.back().takeHash, file),
-                     static_cast<std::int64_t>(take.size()));
+            CHECK_EQ(history::exportName(rows.back().takeName, 4), name);
+            const auto cardBefore = fixture.cardBytes();
+            const fs::path file = fixture.root / "exported" / name;
+            fs::create_directories(file.parent_path());
+            auto job = history::exportTakeJob(fixture.rec, rows.back().takeHash, file);
+            CHECK(!job.needsVolume);
+            CHECK_EQ(job.slot, 0);
+            CHECK(!job.background && !job.quiet); // the player asked, and is told
+            CHECK(job.description == "Export take to " + juce::String(name));
+            CHECK(job.before == nullptr && job.after == nullptr); // no operation in the history
+            job.work(fs::path()); // what the worker hands a job that needs no card
             CHECK(commands::readFileBytes(file) == take);
+            CHECK(fixture.cardBytes() == cardBefore);
+
+            auto gone = history::exportTakeJob(fixture.rec, history::HistoryStore::contentHash("never kept"),
+                                               fixture.root / "exported" / "gone.wav");
+            CHECK_THROWS(gone.work(fs::path()), "no longer kept in the history");
+            CHECK(!fs::exists(fixture.root / "exported" / "gone.wav"));
         };
         pane.choose(rows.back().op, historymenu::Entry::exportTake);
         CHECK_EQ(exports, 1);

@@ -38,6 +38,7 @@ struct Row {
     bool playable = false;   // its take's bytes are in the store
     bool restorable = false; // its state can be put back onto the card
     std::string takeHash;    // the bytes Play would sound, empty when there are none
+    std::string takeName;    // their name on the card, beside the hash: what Export proposes
 };
 
 // The words for an operation's outcome or origin, shared by the slot's rows
@@ -116,8 +117,10 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
         row.line.detail = std::string(kNothingChanged);
     row.playable = entry.takeKept;
     row.restorable = !newest && entry.afterBody.has_value() && (!hasTake || entry.takeKept);
-    if (entry.takeKept && entry.takeHash)
+    if (entry.takeKept && entry.takeHash) {
         row.takeHash = *entry.takeHash;
+        row.takeName = entry.takeName;
+    }
     return row;
 }
 

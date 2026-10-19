@@ -7,9 +7,13 @@
 
 #include <loopercat/Commands.hpp>
 
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 //==============================================================================
 // loopercat::history::exportTake — an archived take, written where the
@@ -25,6 +29,27 @@ namespace loopercat::history
 {
 
 inline constexpr const char* kExportPartial = ".part";
+inline constexpr std::string_view kExportExtension = ".wav";
+
+// The name the save dialog proposes for a take: the take's own name, the one
+// the card gave it and the row shows, so the file a player saves is the take
+// they recognize. It gains ".wav" only when it does not end so already, in
+// any case — the pedal's own recordings are upper case. A take without a name
+// (the store requires one, so this is a row from elsewhere) is proposed as
+// "slot N take.wav": the dialog still opens on something the player can
+// recognize and change.
+inline std::string exportName(const std::string& takeName, int slot)
+{
+    if (takeName.empty())
+        return "slot " + std::to_string(slot) + " take" + std::string(kExportExtension);
+    const bool hasExtension = takeName.size() >= kExportExtension.size()
+        && std::equal(kExportExtension.begin(), kExportExtension.end(),
+                      takeName.end() - static_cast<std::ptrdiff_t>(kExportExtension.size()),
+                      [](char want, char got) {
+                          return want == static_cast<char>(std::tolower(static_cast<unsigned char>(got)));
+                      });
+    return hasExtension ? takeName : takeName + std::string(kExportExtension);
+}
 
 // Returns the bytes written.
 inline std::int64_t exportTake(HistoryStore& store, const std::string& hash,
