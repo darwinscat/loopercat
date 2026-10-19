@@ -65,7 +65,7 @@ inline Step run(const volume::fs::path& volume, int slot, history::HistoryRecord
 
 inline std::string changedSinceMeasured(int slot)
 {
-    return "slot " + std::to_string(slot) + " changed since it was measured — Normalize again";
+    return "slot " + std::to_string(slot) + " changed since it was measured - Normalize again";
 }
 
 // The slot still holds the very bytes the first step measured — the hash is

@@ -22,9 +22,9 @@ using Refusal = JobOutcome::Refusal;
 
 namespace {
 const std::string kFirstSnapshot = "Record the card's first snapshot";
-const std::string kCoreTail = " \xe2\x80\x94 refusing to touch the volume";
+const std::string kCoreTail = " - refusing to touch the volume";
 const std::string kStopped = "Saving the original stopped; it will finish next time you connect.";
-const std::string kDisconnected = "Pedal disconnected \xe2\x80\x94 back on the looper screen";
+const std::string kDisconnected = "Pedal disconnected \xe2\x80\x94 back on the looper screen";  // utf8-data: the departure's words as the app writes them
 const std::string kHistory = "the history could not record it: ";
 } // namespace
 
@@ -373,7 +373,7 @@ int main()
 
     {
         FirstSnapshotNotice notice;
-        for (const std::string told : { "Volume ejected.", "Volume ejected\xe2\x80\xa6", "Volume ejected!", "Volume ejected?" }) {
+        for (const std::string told : { "Volume ejected.", "Volume ejected\xe2\x80\xa6", "Volume ejected!", "Volume ejected?" }) {  // utf8-data: a sentence ending in an ellipsis
             notice.interrupted(JobOutcome::refused(State::ejected), 5);
             CHECK(notice.departure(told) == std::optional<std::string>(told + " " + kStopped));
         }

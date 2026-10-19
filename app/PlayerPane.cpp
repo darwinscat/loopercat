@@ -608,8 +608,8 @@ double PlayerPane::secondsAt(float x) const
 void PlayerPane::updateTransportRow()
 {
     playButton_.setEnabled(engine_.hasSource());
-    playButton_.setButtonText(juce::String::fromUTF8(engine_.isPlaying() ? "\xe2\x96\xa0"    // stop square
-                                                                         : "\xe2\x96\xb6")); // play triangle
+    playButton_.setButtonText(engine_.isPlaying() ? juce::String::fromUTF8("\xe2\x96\xa0")   // stop square
+                                                  : juce::String::fromUTF8("\xe2\x96\xb6")); // play triangle
     loopButton_.setToggleState(engine_.isLooping(), juce::dontSendNotification);
     lastPaintedPlaying_ = engine_.isPlaying();
     updateLoudnessButtons();

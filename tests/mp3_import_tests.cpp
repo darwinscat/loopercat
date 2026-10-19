@@ -135,7 +135,7 @@ int main()
                 CHECK(!out.sourceFormat->factual); // a decoder's samples, not the file's
                 CHECK_EQ(out.sourceFormat->encoding.toStdString(), std::string("MP3"));
                 CHECK_EQ(wavimport::describeConversion(*out.sourceFormat).toStdString(),
-                         std::string("MP3 \xe2\x86\x92 32-bit float"));
+                         juce::String::fromUTF8("MP3 \xe2\x86\x92 32-bit float").toStdString());
             }
             juce::MemoryBlock raw;
             CHECK(out.file.loadFileAsData(raw));

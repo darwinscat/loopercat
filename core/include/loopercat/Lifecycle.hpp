@@ -126,7 +126,7 @@ public:
     {
         if (state_ != State::connected)
             throw Error(std::string("eject requested while ") + stateName(state_)
-                        + " — eject is only legal while connected");
+                        + " - eject is only legal while connected");
         state_ = State::ejecting;
         deviceLostWhileEjecting_ = false;
     }
@@ -135,7 +135,7 @@ public:
     {
         if (state_ != State::ejecting)
             throw Error(std::string("eject completion while ") + stateName(state_)
-                        + " — no eject was in flight");
+                        + " - no eject was in flight");
         if (unmounted)
             state_ = deviceLostWhileEjecting_ ? State::disconnected : State::ejected;
         else

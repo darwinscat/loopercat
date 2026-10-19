@@ -231,8 +231,8 @@ int main()
     {
         TempDir tmp;
         Ready r(tmp.path);
-        const std::string before = std::string("<mem id=\"4\">", 12) + std::string("\0\xff\x01", 3);
-        const std::string after = std::string("<mem id=\"4\">", 12) + std::string("\xfe\0\0", 3);
+        const std::string before = std::string("<mem id=\"4\">", 12) + std::string("\0\xff\x01", 3);  // utf8-data: a body's raw bytes
+        const std::string after = std::string("<mem id=\"4\">", 12) + std::string("\xfe\0\0", 3);  // utf8-data: a body's raw bytes
         const auto op = r.store.beginOp(r.session, "op-rename", "rename", 2000);
         r.store.recordBodies(op, { { 5, before, after }, { 6, "b6", "a6" } });
         sqlite::Statement read(r.store.db(), "SELECT before_body, after_body FROM slot_changes "

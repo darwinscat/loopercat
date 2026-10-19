@@ -303,24 +303,24 @@ int main()
         const auto converted = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                              .takeName = "song-pedal.wav", .take = story::Take::onCard,
                                              .status = "done",
-                                             .note = "48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo" });
+                                             .note = "48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo" });  // utf8-data: a job's note as the importer writes it
         CHECK_EQ(converted.detail,
-                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo"));
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo"));  // utf8-data: the same note, passed through
         CHECK_EQ(converted.audio, std::string("in the slot now"));
 
         const auto both = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                         .takeName = "song-pedal.wav", .take = story::Take::onCard,
                                         .status = "done",
-                                        .note = "24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB; "
+                                        .note = "24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB; "  // utf8-data: a job's note as the importer writes it
                                             + std::string(story::kNoteLengthReplaced) });
         CHECK_EQ(both.detail,
-                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB"
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB"  // utf8-data: the same note, passed through
                              " - note length replaced by bars"));
 
         // no bodies (a row an older store kept): the name and the sentence
         const auto bare = story::tell({ .kind = "push", .takeName = "song.wav", .take = story::Take::kept,
-                                        .status = "done", .note = "MP3 \xe2\x86\x92 32-bit float" });
-        CHECK_EQ(bare.detail, std::string("song.wav - MP3 \xe2\x86\x92 32-bit float"));
+                                        .status = "done", .note = "MP3 \xe2\x86\x92 32-bit float" });  // utf8-data: a job's note as the importer writes it
+        CHECK_EQ(bare.detail, std::string("song.wav - MP3 \xe2\x86\x92 32-bit float"));  // utf8-data: the same note, passed through
 
         // a note that is only the fact adds nothing twice
         const auto onlyFact = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
@@ -340,10 +340,10 @@ int main()
         CHECK_EQ(failedBodies.detail, std::string("take.wav - 4:36 - 111.1 BPM"));
         // an interrupted one, and a row an older build wrote with no status: the same
         const auto interrupted = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
-                                               .status = "interrupted", .note = "24-bit \xe2\x86\x92 32-bit float" });
+                                               .status = "interrupted", .note = "24-bit \xe2\x86\x92 32-bit float" });  // utf8-data: a job's note as the importer writes it
         CHECK_EQ(interrupted.detail, std::string("take.wav"));
         const auto unknown = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
-                                           .note = "24-bit \xe2\x86\x92 32-bit float" });
+                                           .note = "24-bit \xe2\x86\x92 32-bit float" });  // utf8-data: a job's note as the importer writes it
         CHECK_EQ(unknown.detail, std::string("take.wav"));
 
         // the helper itself: the fact is dropped wherever it sits, the rest keeps its order

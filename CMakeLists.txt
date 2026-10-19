@@ -322,6 +322,17 @@ loopercat_core_test(linux_device_rules_tests)
 # rules above, so every lane checks that an RC-500 is not taken for an RC-5.
 loopercat_core_test(pedal_port_name_tests)
 
+# Every non-ASCII string literal in app/, core/ and tests/ is the direct
+# argument of fromUTF8(...) or utf8(...), plain ASCII, or data marked as such:
+# JUCE reads a bare const char* as ASCII, which is how operations.log carried
+# mojibake in the 0.9.6 previews. The lint, and the lint tried on planted sources.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME utf8_literals_lint
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_utf8_literals.py
+                 ${CMAKE_CURRENT_SOURCE_DIR}/app ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_test(NAME utf8_literals_lint_tests
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_utf8_literals_test.py)
+
 endif()  # LOOPERCAT_BUILD_TESTS
 
 if(LOOPERCAT_BUILD_APP)

@@ -152,7 +152,7 @@ inline std::string choiceLabel(std::string_view family, std::string_view endpoin
 {
     if (known)
         return known->name;
-    return std::string(family) + " \xe2\x80\x94 first meeting (endpoint " + std::string(endpoint) + ")";
+    return std::string(family) + " - first meeting (endpoint " + std::string(endpoint) + ")";
 }
 
 } // namespace loopercat::pedalbook

@@ -26,10 +26,10 @@ int main()
     // --- units, not bytes: ASCII one each, BMP one each, astral two ---
     CHECK_EQ(fatname::utf16Units(""), std::size_t { 0 });
     CHECK_EQ(fatname::utf16Units("abc.wav"), std::size_t { 7 });
-    CHECK_EQ(fatname::utf16Units("caf\xc3\xa9"), std::size_t { 4 });              // é: 2 bytes, 1 unit
-    CHECK_EQ(fatname::utf16Units("\xe2\x86\x92"), std::size_t { 1 });             // →: 3 bytes, 1 unit
-    CHECK_EQ(fatname::utf16Units("\xf0\x9f\x98\x80"), std::size_t { 2 });         // 😀: 4 bytes, 2 units
-    CHECK_EQ(fatname::utf16Units("a\xf0\x9f\x98\x80z"), std::size_t { 4 });
+    CHECK_EQ(fatname::utf16Units("caf\xc3\xa9"), std::size_t { 4 });              // é: 2 bytes, 1 unit; utf8-data: a file name's bytes
+    CHECK_EQ(fatname::utf16Units("\xe2\x86\x92"), std::size_t { 1 });             // →: 3 bytes, 1 unit; utf8-data: a file name's bytes
+    CHECK_EQ(fatname::utf16Units("\xf0\x9f\x98\x80"), std::size_t { 2 });         // 😀: 4 bytes, 2 units; utf8-data: a file name's bytes
+    CHECK_EQ(fatname::utf16Units("a\xf0\x9f\x98\x80z"), std::size_t { 4 });  // utf8-data: a file name's bytes
     CHECK_EQ(fatname::utf16Units(std::string(255, 'a')), std::size_t { 255 });
     CHECK_EQ(fatname::utf16Units(std::string(256, 'a')), std::size_t { 256 });
 
@@ -60,7 +60,7 @@ int main()
     // --- what a FAT name may hold is not refused: spaces, dots, unicode, 0x7f ---
     CHECK(!fatname::forbiddenCharacter("").has_value());
     CHECK(!fatname::forbiddenCharacter("My Song (take 2).wav").has_value());
-    CHECK(!fatname::forbiddenCharacter("caf\xc3\xa9 \xe2\x80\x93 live.wav").has_value());
+    CHECK(!fatname::forbiddenCharacter("caf\xc3\xa9 \xe2\x80\x93 live.wav").has_value());  // utf8-data: a file name's bytes
     CHECK(!fatname::forbiddenCharacter("v1.2 mix-pedal.wav").has_value());
     CHECK(!fatname::forbiddenCharacter(std::string("a\x7f", 2)).has_value());
 
@@ -72,16 +72,16 @@ int main()
                                "aux-pedal.wav", "nul1.wav", "song.wav", ".wav" })
         CHECK(!fatname::isDeviceName(plain));
     // the superscript digits Windows reserves alongside 1-3: all twelve, in any case, with and without an extension
-    for (const char* sup : { "\xc2\xb9", "\xc2\xb2", "\xc2\xb3" }) {
+    for (const char* sup : { "\xc2\xb9", "\xc2\xb2", "\xc2\xb3" }) {  // utf8-data: superscript digits
         for (const char* device : { "COM", "LPT", "com", "lpt" }) {
             CHECK(fatname::isDeviceName(std::string(device) + sup));
             CHECK(fatname::isDeviceName(std::string(device) + sup + ".wav"));
         }
     }
     // ...and only those: a degree sign (C2 B0), a superscript four (E2 81 B4), a digit followed by more
-    CHECK(!fatname::isDeviceName("COM\xc2\xb0.wav"));
-    CHECK(!fatname::isDeviceName("COM\xe2\x81\xb4.wav"));
-    CHECK(!fatname::isDeviceName("COM\xc2\xb9x.wav"));
+    CHECK(!fatname::isDeviceName("COM\xc2\xb0.wav"));  // utf8-data: a file name's bytes
+    CHECK(!fatname::isDeviceName("COM\xe2\x81\xb4.wav"));  // utf8-data: a file name's bytes
+    CHECK(!fatname::isDeviceName("COM\xc2\xb9x.wav"));  // utf8-data: a file name's bytes
     CHECK(!fatname::isDeviceName("COM1x.wav"));
 
     return testkit::summary("fat_name");

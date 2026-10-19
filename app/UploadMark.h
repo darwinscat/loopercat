@@ -57,11 +57,11 @@ inline void assertSuffix(std::string_view suffix)
 {
     if (const auto c = fatname::forbiddenCharacter(suffix))
         throw Error("the mark cannot contain " + fatname::describeCharacter(*c)
-                    + " — a file name on the card cannot hold it");
+                    + " - a file name on the card cannot hold it");
     const std::size_t units = fatname::utf16Units(suffix);
     if (units > kMaxSuffixUnits)
         throw Error("the mark is " + std::to_string(units) + " characters long; it can be at most "
-                    + std::to_string(kMaxSuffixUnits) + " — a file name on the card holds "
+                    + std::to_string(kMaxSuffixUnits) + " - a file name on the card holds "
                     + std::to_string(fatname::kMaxLandedUnits) + ", and the name needs room in front");
 }
 
@@ -97,7 +97,7 @@ inline std::string landedName(std::string_view sourceFileName, std::string_view 
     if (units > fatname::kMaxLandedUnits)
         throw Error("\"" + name + "\" is " + std::to_string(units)
                     + " characters long; a file name on the card holds at most "
-                    + std::to_string(fatname::kMaxLandedUnits) + " — shorten the file name"
+                    + std::to_string(fatname::kMaxLandedUnits) + " - shorten the file name"
                     + (audio == Audio::rebuilt ? " or the mark" : ""));
     return name;
 }

@@ -1003,7 +1003,7 @@ int main()
                 ++changedOtherSlots;
         CHECK_EQ(changedOtherSlots, 0);
 
-        CHECK_THROWS(commands::rename(volume, 42, "\xd0\x9a\xd0\x9e\xd0\xa2", writeOpts(tmp.path)),
+        CHECK_THROWS(commands::rename(volume, 42, "\xd0\x9a\xd0\x9e\xd0\xa2", writeOpts(tmp.path)),  // utf8-data: a name the card cannot hold
                      "ASCII");
         CHECK_THROWS(commands::rename(volume, 0, "X", writeOpts(tmp.path)), "out of range");
     }
@@ -1295,7 +1295,7 @@ int main()
         // units, not bytes: 200 "é" are 400 bytes and 200 units
         std::string accented;
         for (int i = 0; i < 200; ++i)
-            accented += "\xc3\xa9";
+            accented += "\xc3\xa9";  // utf8-data: a file name's bytes
         commands::assertLandedName(accented + ".wav");
         ++testkit::checksRun; // the two names above were accepted
 
@@ -1330,7 +1330,7 @@ int main()
         // ...and what only looks reserved is not: a word that starts with a
         // device name, COM10, a mark after the stem
         for (const char* fine : { "console.wav", "COM10.wav", "aux-pedal.wav", "My Song (take 2).wav",
-                                  "caf\xc3\xa9 \xe2\x80\x93 live.wav" })
+                                  "caf\xc3\xa9 \xe2\x80\x93 live.wav" })  // utf8-data: a file name's bytes
             commands::assertLandedName(fine);
         ++testkit::checksRun; // all accepted
     }
@@ -2793,7 +2793,7 @@ int main()
         }
         const auto before = volumeBytes(volume);
         const std::string notOurs =
-            "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5";
+            "this is an \"RC-500\" card, not an RC-5 - LooperCat only speaks RC-5";
 
         // Every read is open — the newest bank, a pinned bank, the settings
         // pair — and reads as the two-track card it is: the memories with
@@ -2830,7 +2830,7 @@ int main()
         commands::writeFileBytes(
             source, bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 })));
         const std::string refused =
-            " refused on an \"RC-500\" card \xe2\x80\x94 LooperCat only speaks RC-5";
+            " refused on an \"RC-500\" card - LooperCat only speaks RC-5";
         CHECK_THROWS(commands::rename(volume, 1, "Two Tracks", write), "rename" + refused);
         CHECK_THROWS(commands::setOneShot(volume, { 1 }, true, write), "set one-shot" + refused);
         CHECK_THROWS(commands::setTempo(volume, 1, 1200, write), "set tempo" + refused);

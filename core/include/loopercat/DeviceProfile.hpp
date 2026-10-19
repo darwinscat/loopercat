@@ -212,7 +212,7 @@ inline std::string onlySpeaks()
 inline std::string notOurs(std::string_view familyName)
 {
     return "this is an \"" + std::string(familyName) + "\" card, not an "
-         + std::string(kRc5.familyName) + " \xe2\x80\x94 " + onlySpeaks();
+         + std::string(kRc5.familyName) + " - " + onlySpeaks();
 }
 
 // The profile whose card writes this root name, or nothing: for a caller
@@ -244,7 +244,7 @@ inline void require(const DeviceProfile& family, Operation op)
     if (op == Operation::read)
         throw Error(notOurs(family.familyName));
     throw Error(std::string(operationName(op)) + " refused on an \""
-                + std::string(family.familyName) + "\" card \xe2\x80\x94 " + onlySpeaks());
+                + std::string(family.familyName) + "\" card - " + onlySpeaks());
 }
 
 // The backstop under every write: a model with no write open gets none,
@@ -252,7 +252,7 @@ inline void require(const DeviceProfile& family, Operation op)
 inline void requireWrites(const DeviceProfile& family)
 {
     if (!family.allowsWrites())
-        throw Error("no write on an \"" + std::string(family.familyName) + "\" card \xe2\x80\x94 "
+        throw Error("no write on an \"" + std::string(family.familyName) + "\" card - "
                     + onlySpeaks());
 }
 

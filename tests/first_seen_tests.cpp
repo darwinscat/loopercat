@@ -353,7 +353,7 @@ static int runTests()
                      std::string("Saving the original stopped; it will finish next time you connect."));
             CHECK_EQ(jobwords::firstSnapshotInterruptedLog(14, *ending),
                      std::string("first snapshot interrupted at slot 14: pedal is disconnected "
-                                 "\xe2\x80\x94 refusing to touch the volume"));
+                                 "- refusing to touch the volume"));
         }
         CHECK_EQ(rec->store().opStatus(baseline.op), std::string("interrupted"));
         CHECK_EQ(rec->store().touchedSlots(baseline.op).size(), 13u);
@@ -464,7 +464,7 @@ static int runTests()
         FirstSnapshotNotice notice;
         CHECK(notice.departed(lifecycle::State::ejecting, true, run->completed.load())
               == std::optional<std::string>("first snapshot interrupted at slot 7: pedal is ejecting "
-                                            "\xe2\x80\x94 refusing to touch the volume"));
+                                            "- refusing to touch the volume"));
         // A refused step moves nothing: the run still stands at 6.
         auto seven = history::firstSeenJob(rec, run, 7, [](int, const JobOutcome&) {});
         seven.after(JobOutcome::refused(lifecycle::State::ejecting));

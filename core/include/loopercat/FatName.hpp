@@ -93,7 +93,7 @@ inline bool isDeviceName(std::string_view name)
     const std::string_view digit = std::string_view(head).substr(3);
     if (digit.size() == 1)
         return digit[0] >= '1' && digit[0] <= '9';
-    return digit == "\xc2\xb9" || digit == "\xc2\xb2" || digit == "\xc2\xb3"; // ¹ ² ³
+    return digit == "\xc2\xb9" || digit == "\xc2\xb2" || digit == "\xc2\xb3"; // utf8-data: ¹ ² ³, the bytes Windows reserves
 }
 
 } // namespace loopercat::fatname

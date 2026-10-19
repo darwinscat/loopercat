@@ -308,7 +308,7 @@ inline void putBodyBack(const fs::path& volume, int slot, const std::string& bod
             != rc0::sectionField(now, rc0::kSectionTrack1, field))
             throw Error("slot " + std::to_string(slot)
                         + " holds another take than it did then (" + field
-                        + " differs) — its settings would not match its audio, so nothing was"
+                        + " differs) - its settings would not match its audio, so nothing was"
                           " put back");
     commands::writeMemoryPair(volume, rc0::replaceSlotBody(document, slot, body), options);
 }
@@ -367,7 +367,7 @@ inline Checked check(HistoryStore& store, bool redo, std::int64_t target)
     const Targets targets = store.offeredTargets();
     const std::optional<std::int64_t> offered = redo ? targets.redo : targets.undo;
     if (!offered || *offered != target)
-        throw Error(std::string("the history moved on since the press — nothing was written;"
+        throw Error(std::string("the history moved on since the press - nothing was written;"
                                 " press ")
                     + (redo ? "Redo" : "Undo") + " again");
     const auto timeline = store.cardTimeline();
