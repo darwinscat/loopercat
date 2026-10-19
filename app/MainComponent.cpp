@@ -393,7 +393,11 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     };
 
     settingsButton.onClick = [this] { openSettings(); };
-    bottomTabs.onTabChanged = [this](int index) { showBottomTab(index); };
+    // The tab at index k shows Face(k) — the invariant BottomPane.h states
+    // and bottom_pane_tests holds it to.
+    bottomTabs.onTabChanged = [this](int index) {
+        showBottomTab(static_cast<bottompane::Face>(index));
+    };
 
     player.onVolumeChanged = [this](double percent) {
         if (auto* file = settings.file())
@@ -786,7 +790,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     setWantsKeyboardFocus(true); // Space toggles playback
 
     applyColumnPreferences();
-    showBottomTab(kAudioTab);
+    showBottomTab(bottompane::audio);
     applySnapshot({}); // the no-pedal state, until the first scan lands
     setSize(920, 680);
 
@@ -1392,17 +1396,22 @@ void MainComponent::applyHistoryRows(std::vector<HistoryPane::Row> rows, int slo
     history.setRows(std::move(rows), slot);
 }
 
-// The bottom pane has four faces for the selected slot: listen to it (the
-// player), set it up (its properties), its drums (the rhythm), and what
-// happened to it (the history). One pane, so the table never moves.
-void MainComponent::showBottomTab(int index)
+// The bottom pane has one place and four faces for the selected slot: listen
+// to it (the player), set it up (its properties), its drums (the rhythm), and
+// what happened to it (the history). One pane, so the table never moves.
+//
+// Three of the faces are tabs. Rhythm is hidden in 0.9.6 and reached only by
+// the --rhythm snapshot, which is why the face in view is remembered here
+// instead of read back off the strip: the strip cannot name it.
+void MainComponent::showBottomTab(bottompane::Face face)
 {
+    bottomFace = face;
     const bool mounted = table.isVisible();
-    player.setVisible(mounted && index == kAudioTab);
-    inspector.setVisible(mounted && index == kPropertiesTab);
-    rhythmPane.setVisible(mounted && index == kRhythmTab);
-    history.setVisible(mounted && index == kHistoryTab);
-    if (mounted && index == kHistoryTab)
+    player.setVisible(mounted && face == bottompane::audio);
+    inspector.setVisible(mounted && face == bottompane::properties);
+    rhythmPane.setVisible(mounted && face == bottompane::rhythm);
+    history.setVisible(mounted && face == bottompane::history);
+    if (mounted && face == bottompane::history)
         updateHistory();
     resized();
 }
@@ -1882,7 +1891,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     table.setVisible(mounted);
     bottomTabs.setVisible(mounted);
     hint.setVisible(!mounted);
-    showBottomTab(bottomTabs.selected()); // the pane follows the pedal in and out
+    showBottomTab(bottomFace); // the pane follows the pedal in and out
     if (!mounted)
         selectedSlot = 0;
     updateInspector();
@@ -3214,7 +3223,8 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     }
     if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)
         && table.isVisible()) {
-        bottomTabs.select(bottomTabs.selected() == kPropertiesTab ? kAudioTab : kPropertiesTab);
+        bottomTabs.select(bottomTabs.selected() == bottompane::properties ? bottompane::audio
+                                                                           : bottompane::properties);
         return true;
     }
     return false;

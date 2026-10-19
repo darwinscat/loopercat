@@ -19,6 +19,7 @@
 #include "AudioEngine.h"
 #include "BannerStrip.h"
 #include "BatchOverlay.h"
+#include "BottomPane.h"
 #include "DeviceWatcher.h"
 #include "FirstSnapshotNotice.h"
 #include "LooperMark.h"
@@ -93,9 +94,11 @@ public:
     // programmatic slot selection, and "is the waveform drawn yet".
     void refreshNow();
     void selectSlot(int slot);
-    void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
-    void showHistory() { bottomTabs.select(kHistoryTab); }       // --history, for snapshots
-    void showRhythm() { bottomTabs.select(kRhythmTab); }         // --rhythm, for snapshots
+    void showProperties() { bottomTabs.select(bottompane::properties); } // --properties
+    void showHistory() { bottomTabs.select(bottompane::history); }       // --history
+    // --rhythm, for snapshots. The tab is hidden in 0.9.6, so the pane is
+    // reached past a strip that no longer names it (BottomPane.h).
+    void showRhythm() { showBottomTab(bottompane::rhythm); }
     bool historyReady() const { return historyRows > 0; }        // its rows have landed
     // The card's own name (issue #99): read from its marker once the volume
     // is up, minted when it has none. For the --snapshot seam: whether that
@@ -180,9 +183,6 @@ public:
     bool keyPressed(const juce::KeyPress& key) override;
 
 private:
-    static constexpr int kAudioTab = 0, kPropertiesTab = 1, kRhythmTab = 2,
-                         kHistoryTab = 3; // the bottom pane's faces
-
     void applySnapshot(const PedalSnapshot& snapshot);
     void slotChosen(int slot, bool startPlaying);
     void openSettings();
@@ -228,7 +228,7 @@ private:
     // Mutations: every action becomes a queued worker job with the standard
     // write options (history hooks and a fresh operation id).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
-    void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
+    void showBottomTab(bottompane::Face face); // which face the bottom pane wears
     void updateInspector();                 // push the selected row into the panel
     void clearSlotHistory(int slot);
     bool clearingHistory = false;
@@ -380,9 +380,9 @@ private:
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
-    // The strip names the slot ahead of its tabs (#145): one place, true
-    // for Audio, Properties, Rhythm and History alike.
-    TabStrip bottomTabs { { "Audio", "Properties", "Rhythm", "History" }, TabStrip::Lead::label };
+    // The strip names the slot ahead of its tabs (#145): one place, true for
+    // every face of the pane under it.
+    TabStrip bottomTabs { bottompane::tabTitles(), TabStrip::Lead::label };
     HistoryPane history;
     SlotInspector inspector;
     RhythmPane rhythmPane;
@@ -420,6 +420,9 @@ private:
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
+    // The face in view. Not every face is a tab — Rhythm is hidden in 0.9.6
+    // — so the strip's selection cannot answer this on its own.
+    bottompane::Face bottomFace = bottompane::audio;
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // a pedal whose card this build reads is on USB (normal mode)

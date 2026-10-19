@@ -1133,6 +1133,24 @@ target_link_libraries(app_menu_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME app_menu_tests COMMAND app_menu_tests)
 
+# The bottom pane's faces after Rhythm was hidden (0.9.6): three tabs, and a
+# face the strip cannot reach — driven through the very strip the window
+# builds from them.
+juce_add_console_app(bottom_pane_tests PRODUCT_NAME "bottom_pane_tests")
+target_sources(bottom_pane_tests PRIVATE tests/bottom_pane_tests.cpp)
+target_compile_definitions(bottom_pane_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(bottom_pane_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME bottom_pane_tests COMMAND bottom_pane_tests)
+
 # The tab strip's lead column (#145): geometry and hit test, driven without
 # a mouse — the label names no tab, and the tabs never move.
 juce_add_console_app(tab_strip_tests PRODUCT_NAME "tab_strip_tests")
