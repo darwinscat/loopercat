@@ -625,6 +625,29 @@ target_link_libraries(play_stop_card_harness PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME play_stop_card_harness COMMAND play_stop_card_harness)
 
+# The Properties studio after Start & Stop was hidden (0.9.6): the real
+# SlotInspector, laid out and painted — two cards side by side, and nothing
+# drawn where the third one sat.
+juce_add_console_app(slot_inspector_harness PRODUCT_NAME "slot_inspector_harness")
+target_sources(slot_inspector_harness PRIVATE tests/slot_inspector_harness.cpp
+    app/SlotInspector.cpp
+    app/PlayStopCard.cpp
+    app/SlotTable.cpp)
+target_compile_definitions(slot_inspector_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(slot_inspector_harness PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME slot_inspector_harness COMMAND slot_inspector_harness)
+
 # The Rhythm tab against what the card permits (CardPermissions.h) and what
 # the slot holds: the real RhythmPane, its switch pressed and its fields
 # changed the way JUCE delivers them — app tier, same ctest.

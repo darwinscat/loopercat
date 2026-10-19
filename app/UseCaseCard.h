@@ -67,6 +67,10 @@ public:
         setInterceptsMouseClicks(true, false);
     }
 
+    // The pedal's own word for the thing this card is, for the owner and
+    // the tests.
+    const juce::String& title() const { return title_; }
+
     std::function<void()> onToggle;
 
     void setState(bool on, juce::String meaning, juce::String cost = {})
