@@ -23,7 +23,7 @@ using Refusal = JobOutcome::Refusal;
 namespace {
 const std::string kFirstSnapshot = "Record the card's first snapshot";
 const std::string kCoreTail = " \xe2\x80\x94 refusing to touch the volume";
-const std::string kStopped = "The card's first snapshot stopped; it will finish next time you connect.";
+const std::string kStopped = "Saving the original stopped; it will finish next time you connect.";
 const std::string kDisconnected = "Pedal disconnected \xe2\x80\x94 back on the looper screen";
 const std::string kHistory = "the history could not record it: ";
 } // namespace

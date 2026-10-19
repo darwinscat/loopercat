@@ -862,7 +862,7 @@ std::vector<retention::Blob> HistoryStore::keptBlobs(const UndoTargets& targets)
         if (read.integer(5) != 0 && !read.isNull(6))
             blob.created = read.integer(6);
         if (blob.snapshotOnly)
-            blob.label = "Card first seen — " + blob.label;
+            blob.label = "Original — " + blob.label;
         const Holds holds = holdsOn(blob.hash, allTargets);
         blob.pinned = holds.pinned;
         blob.undo = holds.undo;

@@ -176,7 +176,9 @@ inline Line tell(const Facts& facts)
         line.action = "Cleared slot history";
         line.detail = facts.note;
     } else if (facts.kind == "snapshot") {
-        line.action = "Card first seen";
+        // The take the slot held when the app first met the card: what it was
+        // before LooperCat touched it.
+        line.action = "Original";
         line.detail = facts.takeName;
         if (!facts.note.empty())
             line.detail += (line.detail.empty() ? "" : "; ") + facts.note;

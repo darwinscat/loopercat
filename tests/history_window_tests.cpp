@@ -322,7 +322,7 @@ int main()
         HistoryWindow window;
         HistoryWindow::Row baseline;
         baseline.op = 42;
-        baseline.action = "Card first seen";
+        baseline.action = "Original";
         baseline.slots = { 1, 2, 3 };
         baseline.isSnapshot = true;
         baseline.restorable = true;

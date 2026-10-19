@@ -62,6 +62,11 @@ inline constexpr std::string_view kNothingChanged = "nothing changed";
 
 // The rows of one slot, in the order the store gave them (oldest first).
 //
+// A slot that was empty when the card was first seen has no Original row:
+// there was nothing there, and a row saying so would read as something that
+// happened. A first sighting that failed for the slot keeps its row — the
+// slot was not seen, which is not the same as empty.
+//
 // The newest row is the state the slot is in now, so its take is the one on
 // the card: the player already has it on the Audio tab, and the store holds
 // no copy — it keeps a take when something replaces it, not before.
@@ -70,6 +75,14 @@ inline constexpr std::string_view kNothingChanged = "nothing changed";
 // can be produced (none to produce, or bytes in the store), and it is not
 // the newest row — the state the slot is already in is not somewhere to go
 // back to.
+// The first sighting found the slot holding no take: no audio was recorded
+// on its side of the slot, and the sighting did not fail there.
+inline bool emptyAtFirstSight(const HistoryStore::TimelineEntry& entry)
+{
+    return entry.kind == "snapshot" && entry.status != "failed" && entry.takeCount == 0
+        && entry.takeName.empty() && !entry.takeHash;
+}
+
 // One row from what one operation recorded about one slot. `newest` is
 // whether that operation is the last one on the slot — the rule above — and
 // it is the caller's to say, because a slot's own timeline and the whole
@@ -139,7 +152,8 @@ inline std::vector<Row> forSlot(const std::vector<HistoryStore::TimelineEntry>& 
     std::vector<Row> out;
     out.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i)
-        out.push_back(one(entries[i], i == newest));
+        if (!emptyAtFirstSight(entries[i]))
+            out.push_back(one(entries[i], i == newest));
     return out;
 }
 

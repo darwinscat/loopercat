@@ -249,26 +249,23 @@ int main()
         CHECK(volume::listSlotWavs(fixture.card, 4).empty());
         CHECK(rc0::slotBody(commands::readMemory(fixture.card), 4) == rc0::factorySlotBody(4));
         const auto rows = history::rows::forSlot(fixture.rec->store().slotTimeline(4));
-        const std::size_t expectedRows = onPedal ? 2u : 3u;
+        // A take the pedal recorded was there when the card was first seen:
+        // its Original row is the state to go back to. A pushed take was
+        // not, and a slot empty at first sight has no Original row at all.
+        const std::size_t expectedRows = 2u;
         CHECK_EQ(rows.size(), expectedRows);
         if (rows.size() != expectedRows)
             continue;
-        const auto& snapshot = rows[0];
-        const int restoreIndex = onPedal ? 0 : 1;
-        const auto& original = rows[static_cast<std::size_t>(restoreIndex)];
+        const auto& original = rows[0];
         const auto& cleared = rows.back();
-        CHECK_EQ(snapshot.line.action, std::string("Card first seen"));
-        CHECK_EQ(snapshot.playable, onPedal);
-        CHECK_EQ(snapshot.takeHash.empty(), !onPedal);
-        CHECK(snapshot.restorable);
-        CHECK_EQ(original.line.action, std::string(onPedal ? "Card first seen" : "Pushed"));
+        CHECK_EQ(original.line.action, std::string(onPedal ? "Original" : "Pushed"));
         CHECK(original.playable);
         CHECK(original.restorable);
         CHECK_EQ(original.takeHash, history::HistoryStore::contentHash(take));
         CHECK(fixture.rec->store().takeBytes(original.takeHash) == take);
         if (onPedal) {
-            CHECK_EQ(snapshot.line.detail, name);
-            CHECK_EQ(snapshot.line.audio, std::string("take kept"));
+            CHECK_EQ(original.line.detail, name);
+            CHECK_EQ(original.line.audio, std::string("take kept"));
         }
         CHECK_EQ(cleared.line.action, std::string("Cleared"));
         CHECK(cleared.playable);

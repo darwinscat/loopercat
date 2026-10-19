@@ -350,5 +350,50 @@ int main()
         CHECK(rows::forSlot({}).empty());
     }
 
+    // --- the card as first seen (0.9.6): a slot that held a take has its
+    // Original row, named by it; one that was empty has none — absence is
+    // not something that happened; a sighting that failed there keeps its
+    // row, since not seen is not empty ---
+    {
+        Entry pushed = op(2, "push");
+        pushed.beforeBody = empty;
+        pushed.afterBody = loaded;
+        pushed.takeName = "take.wav";
+        pushed.takeHash = std::string(32, '\x22');
+        pushed.takeIsAfter = true;
+
+        Entry emptySeen = op(1, "snapshot");
+        emptySeen.afterBody = empty;
+        CHECK(rows::forSlot({ emptySeen }).empty());
+        const auto afterEmpty = rows::forSlot({ emptySeen, pushed });
+        CHECK_EQ(afterEmpty.size(), 1u);
+        CHECK(!afterEmpty.empty() && afterEmpty.front().line.action == "Pushed");
+        CHECK(!afterEmpty.empty() && !afterEmpty.front().restorable); // still the slot's newest state
+
+        Entry held = op(1, "snapshot");
+        held.afterBody = loaded;
+        held.takeName = "pedal.wav";
+        held.takeHash = std::string(32, '\x33');
+        held.takeKept = true;
+        held.takeIsAfter = true;
+        held.takeCount = 1;
+        const auto afterHeld = rows::forSlot({ held, pushed });
+        CHECK_EQ(afterHeld.size(), 2u);
+        if (afterHeld.size() == 2) {
+            CHECK_EQ(afterHeld[0].line.action, std::string("Original"));
+            CHECK_EQ(afterHeld[0].line.detail, std::string("pedal.wav"));
+            CHECK(afterHeld[0].restorable && afterHeld[0].playable);
+            CHECK_EQ(afterHeld[0].takeName, std::string("pedal.wav"));
+        }
+
+        Entry failed = op(1, "snapshot");
+        failed.status = "failed";
+        failed.note = "cannot read slot 4";
+        const auto afterFailed = rows::forSlot({ failed });
+        CHECK_EQ(afterFailed.size(), 1u);
+        CHECK(!afterFailed.empty() && afterFailed.front().line.action == "Original");
+        CHECK(!afterFailed.empty() && afterFailed.front().state == "failed");
+    }
+
     return testkit::summary("slot_rows_tests");
 }

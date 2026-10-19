@@ -339,6 +339,16 @@ int main()
         CHECK_EQ(story::sentencesBesides("a;b", "b"), std::string("a;b")); // not the join
     }
 
+    // --- the card as first seen: the Original, named by the take it held ---
+    {
+        const story::Line line = story::tell({ .kind = "snapshot", .afterBody = pushed,
+                                               .takeName = "deep-space.wav", .take = story::Take::kept,
+                                               .status = "done" });
+        CHECK_EQ(line.action, std::string("Original"));
+        CHECK_EQ(line.detail, std::string("deep-space.wav"));
+        CHECK_EQ(line.audio, std::string("take kept"));
+    }
+
     // --- a row's clock: the time alone on the reference's own day, the date
     // with it on any other — the History tab's two forms ---
     {

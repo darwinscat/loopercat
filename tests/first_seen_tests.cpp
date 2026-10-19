@@ -176,14 +176,19 @@ static int runTests()
             CHECK(!entry.beforeBody);
             CHECK(entry.afterBody == rc0::slotBody(before, slot));
             const auto rows = history::rows::forSlot(timeline);
-            CHECK_EQ(rows.front().line.action, std::string("Card first seen"));
+            // A slot that held a take has its Original row, named by the take;
+            // one that was empty has no row at all (0.9.6).
+            CHECK_EQ(rows.size(), std::size_t { takes.contains(slot) ? 1u : 0u });
             if (takes.contains(slot)) {
                 CHECK_EQ(entry.takeName, std::string("Original.wav"));
                 CHECK(entry.takeHash == HistoryStore::contentHash(takes[slot]));
                 CHECK(entry.takeKept);
                 CHECK(store.takeBytes(*entry.takeHash) == takes[slot]);
-                CHECK_EQ(rows.front().line.detail, std::string("Original.wav"));
-                CHECK_EQ(rows.front().line.audio, std::string("take kept"));
+                if (rows.size() == 1) {
+                    CHECK_EQ(rows.front().line.action, std::string("Original"));
+                    CHECK_EQ(rows.front().line.detail, std::string("Original.wav"));
+                    CHECK_EQ(rows.front().line.audio, std::string("take kept"));
+                }
                 expectedBytes += static_cast<std::int64_t>(takes[slot].size());
             } else {
                 CHECK(!entry.takeHash);
@@ -194,7 +199,7 @@ static int runTests()
         CHECK_EQ(store.keptBlobs(store.offeredTargets()).size(), 4u);
         const auto cardRows = history::rows::forCard(store.cardTimeline());
         CHECK_EQ(cardRows.size(), 1u);
-        CHECK_EQ(cardRows.front().action, std::string("Card first seen"));
+        CHECK_EQ(cardRows.front().action, std::string("Original"));
         CHECK_EQ(cardRows.front().takes.size(), 99u);
         CHECK_EQ(cardRows.front().detail, std::string("4 takes, ") + history::retention::bytesText(expectedBytes));
 
@@ -204,8 +209,18 @@ static int runTests()
             write(rec, card, "push", [&](const auto& options) {
                 commands::push(card, source, slot, { .force = true, .write = options });
             });
-            const auto timeline = store.slotTimeline(slot);
-            CHECK(history::rows::forSlot(timeline).front().restorable);
+            // The tab offers the original back for a slot that held a take;
+            // slot 8 was empty at first sight and has no Original row (0.9.6).
+            // The card's first-sighting row restores either.
+            const auto slotRows = history::rows::forSlot(store.slotTimeline(slot));
+            CHECK(!slotRows.empty());
+            if (!slotRows.empty() && takes.contains(slot)) {
+                CHECK_EQ(slotRows.front().line.action, std::string("Original"));
+                CHECK(slotRows.front().restorable);
+            } else if (!slotRows.empty()) {
+                CHECK_EQ(slotRows.size(), 1u);
+                CHECK_EQ(slotRows.front().line.action, std::string("Pushed"));
+            }
             const auto row = history::rows::forCard(store.cardTimeline()).front();
             CHECK(row.restorable());
             const auto eligible = row.restorableSlots();
@@ -335,7 +350,7 @@ static int runTests()
             CHECK(!ending->failed());
             CHECK(!ending->told(refused.quiet)); // the worker tells nobody: no banner line
             CHECK_EQ(jobwords::firstSnapshotInterrupted(*ending),
-                     std::string("The card's first snapshot stopped; it will finish next time you connect."));
+                     std::string("Saving the original stopped; it will finish next time you connect."));
             CHECK_EQ(jobwords::firstSnapshotInterruptedLog(14, *ending),
                      std::string("first snapshot interrupted at slot 14: pedal is disconnected "
                                  "\xe2\x80\x94 refusing to touch the volume"));

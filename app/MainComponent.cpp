@@ -1754,7 +1754,7 @@ void MainComponent::updateStatusText()
     // A memory holds a loop when any of its tracks does — on the RC-5 that
     // is its one track, as ever.
     if (firstSeenRun && !firstSeenRun->cancelled && !firstSeenSettled) {
-        status.setText("Saving card first seen: " + juce::String(firstSeenCount) + " of 99 slots",
+        status.setText("Saving the original: " + juce::String(firstSeenCount) + " of 99 slots",
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
         return;

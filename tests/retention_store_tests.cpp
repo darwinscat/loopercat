@@ -266,7 +266,7 @@ int main()
         if (originalBlob) {
             CHECK(originalBlob->snapshotOnly);
             CHECK(!originalBlob->held());
-            CHECK_EQ(originalBlob->label, std::string("Card first seen — slot 1 original.wav"));
+            CHECK_EQ(originalBlob->label, std::string("Original — slot 1 original.wav"));
         }
         const auto hashes = [](const retention::Plan& plan) {
             std::vector<std::string> out;

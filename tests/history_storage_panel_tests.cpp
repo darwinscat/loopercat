@@ -175,9 +175,9 @@ int main()
     // --- the offer, list and confirmed release put first-seen takes last ---
     {
         HistoryStoragePanel panel;
-        auto original = blob("original", "Card first seen — slot 1 take.wav", 100 * MB, 1000);
+        auto original = blob("original", "Original — slot 1 take.wav", 100 * MB, 1000);
         original.snapshotOnly = true;
-        auto newerOriginal = blob("newer-original", "Card first seen — slot 2 take.wav", 100 * MB, 2000);
+        auto newerOriginal = blob("newer-original", "Original — slot 2 take.wav", 100 * MB, 2000);
         newerOriginal.snapshotOnly = true;
         panel.show(facts({ newerOriginal, blob("new", "slot 3 take.wav", 100 * MB, 4000),
                            original, blob("old", "slot 4 take.wav", 100 * MB, 3000) }, 200 * MB));
