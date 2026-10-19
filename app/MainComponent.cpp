@@ -27,7 +27,7 @@
 #include <loopercat/Wav.hpp>
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
-#include <felitronics/appkit/Brand.h> // feedTheCatUrl — the family tip jar
+#include <felitronics/appkit/Brand.h> // the family palette
 
 #include <BinaryData.h>
 
@@ -440,36 +440,17 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     };
 
     // The toolbar carries only the primary story — Connect / Disconnect and
-    // the empty-slot view filter; service actions live in the Maintenance
-    // menu, About in the app menu (platform standard).
+    // the empty-slot view filter; service actions live in Settings, About in
+    // the macOS app menu (platform standard) and under the version badge.
     for (auto* button : { &connectButton, &disconnectButton }) {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
         button->setEnabled(false);
     }
     connectButton.onClick = [this] { beginConnect(); };
     disconnectButton.onClick = [this] { beginDisconnect(); };
-    appMenu = std::make_unique<AppMenu>(AppMenu::Actions {
-        .about = [this] { showAbout(); },
-        .cleanJunk = [this] { runCleanJunk(); },
-        .feedTheCat = [] {
-            // Signed like the badge's own link: which app, which machine, which wrapper.
-            felitronics::appkit::brand::feedTheCatLink("LooperCat",
-                                                       felitronics::appkit::brand::feedTheCatUrl,
-                                                       kBadgeFormat)
-                .launchInDefaultBrowser();
-        },
-        .maintenanceEnabled = [this] {
-            return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
-                && !pedalBusy;
-        },
-        .cleanJunkEnabled = [this] { return CardPermissions::of(snapshot.family).anyWrite(); },
-        .undo = [this] { pressUndo(false); },
-        .redo = [this] { pressUndo(true); },
-        .undoText = [this] { return undoMenuText(false); },
-        .redoText = [this] { return undoMenuText(true); },
-        .undoEnabled = [this] { return undoEnabled(false); },
-        .redoEnabled = [this] { return undoEnabled(true); },
-        .openHistory = [this] { openHistoryWindow(); } });
+    // About is all the menu bar left behind (0.9.6): the popover it opens
+    // carries the tip jar's link, on every platform.
+    appMenu = std::make_unique<AppMenu>(AppMenu::Actions { .about = [this] { showAbout(); } });
 
     showEmptyToggle.setColour(juce::ToggleButton::textColourId, kStatusText);
     showEmptyToggle.setColour(juce::ToggleButton::tickColourId,
@@ -1448,8 +1429,6 @@ void MainComponent::updateToolbar()
     connectButton.setEnabled(midiPedalPresent && !pedalBusy && !connectQueryPending
                              && snapshot.state == lifecycle::State::disconnected
                              && !connectAttempt.active() && !connectHoldActive());
-    if (appMenu != nullptr)
-        appMenu->menuItemsChanged(); // the Maintenance items follow the same gate
 }
 
 // The card's identity, from the card itself (issues #98, #99). The marker at
@@ -3462,6 +3441,8 @@ void MainComponent::pinFromWindow(std::int64_t op, bool pinned)
     worker.enqueue(std::move(job));
 }
 
+// Undo writes to the card like any operation: a card honestly connected, in
+// a model this app writes to, and no job of the player's running.
 bool MainComponent::historyKeys(const juce::KeyPress& key)
 {
     if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
@@ -3475,8 +3456,6 @@ bool MainComponent::historyKeys(const juce::KeyPress& key)
     return false;
 }
 
-// Undo writes to the card like any operation: a card honestly connected, in
-// a model this app writes to, and no job of the player's running.
 bool MainComponent::cardTakesEdits() const
 {
     return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
@@ -3495,8 +3474,6 @@ void MainComponent::refreshUndoOffer()
                                  return;
                              safe->undoOffer = offer;
                              ++safe->undoOfferReads;
-                             if (safe->appMenu != nullptr)
-                                 safe->appMenu->menuItemsChanged();
                          });
                      },
                      nullptr, 0, true, true, false });
@@ -3642,8 +3619,6 @@ void MainComponent::settleHistoryEdit(juce::String outcome)
     historyEditDescription.clear();
     historyEditOutcome = std::move(outcome);
     ++historyEditsDone;
-    if (appMenu != nullptr)
-        appMenu->menuItemsChanged();
 }
 
 } // namespace loopercat

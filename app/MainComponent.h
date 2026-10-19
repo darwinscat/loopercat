@@ -440,7 +440,7 @@ private:
     // the frame, and the view keeps its rows and selection for the next open.
     HistoryWindow historyView;
     std::unique_ptr<HistoryWindowHost> historyHost;
-    std::unique_ptr<AppMenu> appMenu; // after the components its actions touch
+    std::unique_ptr<AppMenu> appMenu; // after the badge its About item opens
     app::DeviceWatcher deviceWatcher; // before the worker: its probe runs on the worker thread
     // The history (#72). Only the worker thread touches it; declared before the
     // worker so it outlives the thread, and shared with every queued job's

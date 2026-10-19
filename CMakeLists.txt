@@ -1094,6 +1094,22 @@ target_link_libraries(history_pane_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_pane_tests COMMAND history_pane_tests)
 
+# The app menu, all that is left of the menu bar (0.9.6): About LooperCat and
+# nothing else, with the old items' ids dead.
+juce_add_console_app(app_menu_tests PRODUCT_NAME "app_menu_tests")
+target_sources(app_menu_tests PRIVATE tests/app_menu_tests.cpp)
+target_compile_definitions(app_menu_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(app_menu_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME app_menu_tests COMMAND app_menu_tests)
+
 # The tab strip's lead column (#145): geometry and hit test, driven without
 # a mouse — the label names no tab, and the tabs never move.
 juce_add_console_app(tab_strip_tests PRODUCT_NAME "tab_strip_tests")

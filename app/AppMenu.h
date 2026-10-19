@@ -9,14 +9,20 @@
 #include <utility>
 
 //==============================================================================
-// loopercat::AppMenu — the native macOS menu bar. About lives in the app menu
-// (the platform-standard home), Edit carries Undo and Redo over the history
-// (#73) — each item names what it would put back, "Undo trim of slot 14" —
-// Window opens the card's whole history, Maintenance carries the service actions
-// (junk sweep) that would otherwise crowd the toolbar — the
-// toolbar keeps only the primary Connect / Disconnect story — and Help holds
-// "Feed the Cat", the family tip jar. Windows/Linux have no menu bar; there
-// the tip jar lives in the version badge's About popover.
+// loopercat::AppMenu — the macOS app menu, and nothing else.
+//
+// The menu bar went in 0.9.6: Edit's Undo and Redo are hidden with their keys,
+// Maintenance's junk sweep moved to a Settings tab, Window had only the
+// card's whole history to open and that window is hidden too, and Help held
+// one link — the family tip jar, which the version badge's About popover has
+// carried on every platform all along. Windows and Linux never had a bar
+// (#25); now nobody does.
+//
+// What is left is the item macOS puts in the app menu by platform convention,
+// About LooperCat, beside the Hide and Quit that AppKit adds itself. JUCE
+// hangs those extras off a MenuBarModel, so this is still one — with a menu
+// bar of no names — and it is still the one owner of the Mac main menu: the
+// destructor hands it back.
 //==============================================================================
 namespace loopercat {
 
@@ -25,33 +31,27 @@ class AppMenu final : public juce::MenuBarModel
 public:
     struct Actions {
         std::function<void()> about;
-        std::function<void()> cleanJunk;
-        std::function<void()> feedTheCat;         // Help → the family tip jar, in the browser
-        std::function<bool()> maintenanceEnabled; // pedal connected and idle
-        std::function<bool()> cleanJunkEnabled;   // and the card is one this app writes to
-        // Edit → Undo / Redo (#73): the words are read when the menu opens,
-        // from what the history offers right now; greyed out while the
-        // pedal is busy or away, or with nothing to put back.
-        std::function<void()> undo;
-        std::function<void()> redo;
-        std::function<juce::String()> undoText;
-        std::function<juce::String()> redoText;
-        std::function<bool()> undoEnabled;
-        std::function<bool()> redoEnabled;
-        // Window → History: the whole card's timeline. The store is on this
-        // computer, so it needs no pedal.
-        std::function<void()> openHistory;
     };
+
+    // The app menu's own items, exactly as the constructor hands them to
+    // JUCE. A static function because that is the only way to read them back:
+    // what AppKit does with the menu afterwards is not ours to ask about.
+    static juce::PopupMenu appleMenuItems(std::function<void()> about)
+    {
+        juce::PopupMenu menu;
+        menu.addItem("About LooperCat", [open = std::move(about)] {
+            if (open)
+                open();
+        });
+        return menu;
+    }
 
     explicit AppMenu(Actions actions) : actions_(std::move(actions))
     {
 #if JUCE_MAC
-        juce::PopupMenu appMenuExtras;
-        appMenuExtras.addItem("About LooperCat", [about = actions_.about] {
-            if (about)
-                about();
-        });
-        juce::MenuBarModel::setMacMainMenu(this, &appMenuExtras);
+        // setMacMainMenu takes a copy of the extras; the local one is enough.
+        const juce::PopupMenu extras = appleMenuItems(actions_.about);
+        juce::MenuBarModel::setMacMainMenu(this, &extras);
 #endif
     }
 
@@ -63,54 +63,16 @@ public:
 #endif
     }
 
-    juce::StringArray getMenuBarNames() override { return { "Edit", "Maintenance", "Window", "Help" }; }
+    juce::StringArray getMenuBarNames() override { return {}; }
 
-    juce::PopupMenu getMenuForIndex(int, const juce::String& name) override
-    {
-        juce::PopupMenu menu;
-        if (name == "Edit") {
-            const auto item = [](int id, const std::function<juce::String()>& text,
-                                 const std::function<bool()>& enabled, const char* keys) {
-                juce::PopupMenu::Item entry(text ? text() : juce::String());
-                entry.itemID = id;
-                entry.isEnabled = enabled && enabled();
-                entry.shortcutKeyDescription = juce::String::fromUTF8(keys);
-                return entry;
-            };
-            menu.addItem(item(kUndo, actions_.undoText, actions_.undoEnabled, "\xe2\x8c\x98Z"));
-            menu.addItem(item(kRedo, actions_.redoText, actions_.redoEnabled,
-                              "\xe2\x87\xa7\xe2\x8c\x98Z"));
-        } else if (name == "Window") {
-            menu.addItem(kOpenHistory, "History", true);
-        } else if (name == "Maintenance") {
-            const bool enabled = actions_.maintenanceEnabled && actions_.maintenanceEnabled();
-            // The sweep writes to the card: a card of a model this app only
-            // reads keeps its junk, and the item says so by staying grey.
-            menu.addItem(kCleanJunk, "Clean junk from the pedal",
-                         enabled && actions_.cleanJunkEnabled && actions_.cleanJunkEnabled());
-        } else if (name == "Help") {
-            menu.addItem(kFeedTheCat, "Feed the Cat");
-        }
-        return menu;
-    }
+    juce::PopupMenu getMenuForIndex(int, const juce::String&) override { return {}; }
 
-    void menuItemSelected(int itemId, int) override
-    {
-        if (itemId == kCleanJunk && actions_.cleanJunk)
-            actions_.cleanJunk();
-        else if (itemId == kFeedTheCat && actions_.feedTheCat)
-            actions_.feedTheCat();
-        else if (itemId == kUndo && actions_.undo)
-            actions_.undo();
-        else if (itemId == kRedo && actions_.redo)
-            actions_.redo();
-        else if (itemId == kOpenHistory && actions_.openHistory)
-            actions_.openHistory();
-    }
+    // No bar, no items, no ids: the About item carries its own action, so
+    // nothing arrives here. An id that used to mean something now means
+    // nothing, which is what a stale menu must do.
+    void menuItemSelected(int, int) override {}
 
 private:
-    enum { kCleanJunk = 1, kFeedTheCat, kUndo, kRedo, kOpenHistory };
-
     const Actions actions_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AppMenu)
