@@ -1323,21 +1323,8 @@ void MainComponent::clearSlotHistory(int slot)
 
 // Listening to a take the store kept: the bytes become a file on this
 // computer and the player opens it. Nothing is read from the pedal, so this
-// works while the pedal is busy — "which take was the good one" is the whole
-// reason the takes are kept.
-void MainComponent::playFromHistory(std::int64_t op)
-{
-    const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
-                                    [op](const history::rows::Row& row) { return row.op == op; });
-    if (found == historyEntries.end() || found->takeHash.empty())
-        return;
-    // The slot tab's own timeline, so the take is the selected slot's: the
-    // tab strip names it, and the title says only which take (#145).
-    playArchivedTake(selectedSlot, found->takeHash,
-                     juce::String(found->line.action)
-                         + juce::String::fromUTF8(" \xc2\xb7 from the history"));
-}
-
+// works while the pedal is busy. Only the History window offers it now; the
+// tab's rows export a take instead.
 void MainComponent::playArchivedTake(int slot, std::string hash, juce::String title)
 {
     juce::Component::SafePointer<MainComponent> safe(this);

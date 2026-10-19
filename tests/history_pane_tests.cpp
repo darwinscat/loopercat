@@ -71,6 +71,8 @@ int main()
             CHECK(lines[1].text == juce::String::fromUTF8("Export take\xe2\x80\xa6"));
             CHECK(!lines[2].enabled);
             CHECK(lines[3].text == juce::String::fromUTF8("Clear history of this slot\xe2\x80\xa6"));
+            for (const auto& line : lines)
+                CHECK(!line.text.containsIgnoreCase("play")); // the tab no longer plays a take
         }
         CHECK(pane.menuFor(9).empty()); // no such row, no menu
     }
