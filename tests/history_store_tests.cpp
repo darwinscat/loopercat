@@ -44,6 +44,9 @@
 
 #include "../app/history/HistoryStore.h"
 #include "../app/history/Schema.h"
+#include "../app/history/SlotRows.h"
+
+#include <loopercat/Rc0.hpp>
 
 #include <array>
 #include <bit>
@@ -1218,6 +1221,82 @@ int main()
         CHECK(!slot9.empty() && slot9.front().op == first);
         CHECK(!slot9.empty() && !slot9.front().restores && !slot9.front().restoredAt);
         CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 0);
+    }
+
+    // --- ATTACK (review of feat/history-row-menu): a restore names a row by
+    // its sequence, and a time is claimed only when that row is there. A
+    // reference the store cannot resolve - planted past the foreign key, as
+    // a file touched by another tool would carry it - must not read as a
+    // restore back to the epoch. ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::string vacant = rc0::factorySlotBody(4);
+        const std::string loaded = rc0::setSectionField(vacant, rc0::kSectionTrack1, "WavLen", 44100);
+        const auto pushed = r.store.beginOp(r.session, "op-push", "push", 1000);
+        r.store.recordBodies(pushed, { { 4, vacant, loaded } });
+        r.store.finishOp(pushed, OpStatus::done, "");
+        const auto restore = r.store.beginOp(r.session, "op-restore", "restore", 2000);
+        r.store.setRestores(restore, pushed);
+        r.store.recordBodies(restore, { { 4, loaded, vacant } });
+        r.store.finishOp(restore, OpStatus::done, "");
+        {
+            auto outside = sqlite::Db::open(tmp.path / "history.db");
+            outside.exec("PRAGMA foreign_keys = OFF");
+            outside.exec("UPDATE ops SET restores = 424242 WHERE seq = " + std::to_string(restore));
+        }
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 1);
+        const auto rows = r.store.slotTimeline(4);
+        CHECK_EQ(rows.size(), 2u);
+        if (rows.size() == 2) {
+            CHECK(!rows[1].restoredAt.has_value()); // no row, no time
+            const auto made = history::rows::forSlot(rows);
+            CHECK_EQ(made.size(), 2u);
+            if (made.size() == 2)
+                CHECK_EQ(made[1].line.detail, std::string("empty slot")); // what came back, and no clock it does not have
+        }
+        for (const auto& entry : r.store.cardTimeline())
+            if (entry.op == restore)
+                CHECK(!entry.restoredAt.has_value());
+    }
+
+    // --- ATTACK (review): restores chained across slots, forgotten in either
+    // order, against the new foreign key. A restore of a two-slot row is
+    // about both slots; a restore of that restore is about one. Forgetting
+    // either slot drops whole only the operations with no state left, and
+    // every reference to a dropped row goes with it. ---
+    {
+        TempDir tmp;
+        Ready r(tmp.path);
+        const std::int64_t card = *r.store.selectedCard();
+        const auto finished = [&r](const std::string& id, const std::string& kind, std::int64_t at,
+                                   std::vector<int> slots, std::optional<std::int64_t> target) {
+            const auto op = r.store.beginOp(r.session, id, kind, at);
+            if (target)
+                r.store.setRestores(op, *target);
+            for (const int slot : slots)
+                r.store.recordBodies(op, { { slot, id + "-before", id + "-after" } });
+            r.store.finishOp(op, OpStatus::done, "");
+            return op;
+        };
+        const auto swapped = finished("op-swap", "swap", 1000, { 4, 9 }, std::nullopt);
+        const auto first = finished("op-restore-1", "restore", 2000, { 4, 9 }, swapped);
+        const auto second = finished("op-restore-2", "restore", 3000, { 9 }, first);
+        const auto restoresOf = [&r](std::int64_t op) {
+            sqlite::Statement read(r.store.db(), "SELECT restores FROM ops WHERE seq = ?1");
+            read.bind(1, op);
+            return read.step() && !read.isNull(0) ? std::optional<std::int64_t>(read.integer(0)) : std::nullopt;
+        };
+        r.store.forgetSlot(card, 4, 4000, true);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 0);
+        CHECK(restoresOf(first) == swapped);  // the swap keeps its slot-9 state: still a row to name
+        CHECK(restoresOf(second) == first);
+        r.store.forgetSlot(card, 9, 5000, true);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 0);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM ops WHERE seq IN (" + std::to_string(swapped) + ", "
+                                         + std::to_string(first) + ", " + std::to_string(second) + ")"),
+                 0);
+        CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM ops WHERE restores IS NOT NULL"), 0);
     }
 
     return testkit::summary("history_store_tests");

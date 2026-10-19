@@ -571,6 +571,44 @@ int main()
             CHECK_EQ(count(again.db(), "SELECT restores FROM ops WHERE id = 'new-restore'"), 1);
         }
     }
+    // --- ATTACK (review of feat/history-row-menu): the v11 step is the LAST
+    // of four from a v7 file, and the one of one from a v10 file. A file that
+    // already carries a `restores` column (a build between releases wrote
+    // it) makes that step fail: from v7 the v8, v9 and v10 steps that ran
+    // before it go back with it and the file is v7 whole; from v10 nothing
+    // moves. A second open says the same. ---
+    for (const std::int64_t version : { std::int64_t { 7 }, std::int64_t { 10 } }) {
+        TempDir tmp;
+        {
+            auto db = sqlite::Db::open(tmp.path / "history.db");
+            db.exec("PRAGMA page_size = 16384");
+            db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+            for (std::int64_t step = 0; step <= version - schema::kBaseVersion; ++step)
+                db.exec(schema::kSteps[step]);
+            db.exec("ALTER TABLE ops ADD COLUMN restores INTEGER REFERENCES ops(seq)"); // planted
+            db.exec("PRAGMA user_version = " + std::to_string(version));
+            db.exec("INSERT INTO cards(model, label, first_seen, last_seen, marker_id, undo_floor) VALUES ('RC-5', 'A', 1, 1, 'planted', 0)");
+            db.exec("INSERT INTO sessions(card, connected_at) VALUES (1, 1)");
+            db.exec("INSERT INTO ops(id, session, kind, actor, status, at) VALUES ('old-trim', 1, 'trim', 'app', 'done', 2)");
+            db.exec("INSERT INTO slot_changes(op, slot, before_body, after_body) VALUES (1, 4, x'61', x'62')");
+        }
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            CHECK_THROWS(HistoryStore(tmp.path), "duplicate column name");
+            auto db = sqlite::Db::open(tmp.path / "history.db");
+            CHECK_EQ(schema::pragmaInteger(db, "user_version"), version);
+            CHECK_EQ(count(db, "SELECT count(*) FROM ops"), 1);
+            CHECK_EQ(count(db, "SELECT count(*) FROM slot_changes"), 1);
+            CHECK_EQ(count(db, "SELECT count(*) FROM pragma_table_info('ops') WHERE name = 'restores'"), 1);
+            CHECK_EQ(count(db, "SELECT count(*) FROM pragma_integrity_check WHERE integrity_check = 'ok'"), 1);
+            if (version == 7) {
+                CHECK_EQ(count(db, "SELECT count(*) FROM sqlite_master WHERE name IN "
+                                   "('op_subjects', 'op_subjects_by_slot', 'loudness_readings', 'take_sightings', "
+                                   "'op_sequence', 'op_sequence_moves')"),
+                         0);
+                CHECK_EQ(count(db, "SELECT count(*) FROM pragma_table_info('slot_audio') WHERE name = 'modified'"), 0);
+            }
+        }
+    }
     {
         TempDir freshDir, migratedDir;
         {

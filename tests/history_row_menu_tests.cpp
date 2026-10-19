@@ -173,5 +173,75 @@ int main()
         checkMenu({ pushed, about }, 1, { "a normalize that changed nothing", false, false });
     }
 
+    // --- ATTACK (review of feat/history-row-menu): a line that can be chosen
+    // is a promise the restore primitive must be able to keep. commands::restore
+    // refuses a body and a take that disagree, so Restore must be grey on a
+    // row whose state has no take of its own to produce beside a body that
+    // claims one, and on a row whose body claims none beside a kept file. ---
+    {
+        const std::string vacant = bodyWith(0, "Memory42"); // WavStat=0, WavLen=0
+        Entry pushed = op(2, "push");
+        pushed.beforeBody = vacant;
+        pushed.afterBody = loaded;
+        pushed.takeName = "take.wav";
+        pushed.takeHash = hash;
+        pushed.takeIsAfter = true;
+
+        // The first sighting met a stray file in a slot whose body says it
+        // holds no loop: Export it, yes; put body and file back together, no.
+        Entry stray = op(1, "snapshot");
+        stray.afterBody = vacant;
+        stray.takeName = "STRAY.WAV";
+        stray.takeHash = std::string(32, '\x46');
+        stray.takeKept = true;
+        stray.takeIsAfter = true;
+        stray.takeCount = 1;
+        checkMenu({ stray, pushed }, 0, { "an Original row of a stray file in a slot without a loop", false, true });
+
+        // A trim cut off before its new take landed: the archived take is
+        // the OLD one (exportable), the trimmed state has none to produce.
+        Entry cutTrim = op(1, "trim");
+        cutTrim.status = "interrupted";
+        cutTrim.beforeBody = loaded;
+        cutTrim.afterBody = rc0::setSectionField(bodyWith(441000, "TEST_42_HIST"), rc0::kSectionTrack1,
+                                                 "WavStat", rc0::kWavStatIndexed);
+        cutTrim.takeName = "take.wav";
+        cutTrim.takeHash = std::string(32, '\x47');
+        cutTrim.takeKept = true;
+        cutTrim.takeIsAfter = false;
+        checkMenu({ cutTrim, pushed }, 0, { "a trim cut off before its take landed", false, true });
+    }
+
+    // --- ATTACK (review): a restore put a kept take back onto the card. The
+    // newest row's take is on the card AND in the store: Export stands,
+    // Restore does not - the slot is already in that state. ---
+    {
+        Entry pushed = op(1, "push");
+        pushed.beforeBody = empty;
+        pushed.afterBody = loaded;
+        pushed.takeName = "take.wav";
+        pushed.takeHash = hash;
+        pushed.takeKept = true;
+        pushed.takeIsAfter = true;
+        Entry cleared = op(2, "clear");
+        cleared.beforeBody = loaded;
+        cleared.afterBody = empty;
+        cleared.takeName = "take.wav";
+        cleared.takeHash = hash;
+        cleared.takeKept = true;
+        cleared.takeIsAfter = false;
+        Entry restored = op(3, "restore");
+        restored.beforeBody = empty;
+        restored.afterBody = loaded;
+        restored.takeName = "take.wav";
+        restored.takeHash = hash;
+        restored.takeKept = true;
+        restored.takeIsAfter = true;
+        restored.restores = 1;
+        restored.restoredAt = 1000;
+        checkMenu({ pushed, cleared, restored }, 2, { "the newest restore of a kept take", false, true });
+        checkMenu({ pushed, cleared, restored }, 1, { "the clear before it", true, true });
+    }
+
     return testkit::summary("history_row_menu_tests");
 }

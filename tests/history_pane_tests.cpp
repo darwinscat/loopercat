@@ -152,6 +152,39 @@ int main()
         CHECK_EQ(calls.cleared.size(), std::size_t { 1 });
     }
 
+    // --- ATTACK (review of feat/history-row-menu): the menu was opened on one
+    // slot's row and the slot changed under it. "Clear history of this slot..."
+    // was read against the slot the row was shown in, and "Restore this state"
+    // against that slot's row. A swap's operation is a row of BOTH its slots,
+    // so the operation alone does not say which slot the menu was about: a
+    // choice that arrives once another slot is selected must not act on the
+    // slot now shown. (The case above, "another slot selected", clears the new
+    // slot; by this theory it must clear none.) ---
+    {
+        HistoryPane pane;
+        Calls calls;
+        listen(pane, calls);
+        pane.setRows({ row(6, false, true) }, 4); // the swap of slots 4 and 9, as slot 4 shows it
+        // the menu opens here, on slot 4's row of operation 6, then...
+        pane.setRows({ row(6, false, true) }, 9); // ...slot 9 is selected: the same operation, its other row
+        pane.choose(6, Entry::clearHistory);
+        pane.choose(6, Entry::restore);
+        CHECK(calls.cleared.empty());
+        CHECK(calls.restored.empty());
+    }
+
+    // --- rows read again with a row added before the one the menu is about:
+    // the choice stays with its operation, not with its place in the list ---
+    {
+        HistoryPane pane;
+        Calls calls;
+        listen(pane, calls);
+        pane.setRows({ row(5, true, true) }, 4);
+        pane.setRows({ row(2, false, false), row(5, true, true) }, 4);
+        pane.choose(5, Entry::exportTake);
+        CHECK(calls.exported == std::vector<std::int64_t> { 5 });
+    }
+
     // --- a callback nobody set is not a crash ---
     {
         HistoryPane pane;

@@ -17,8 +17,11 @@
 
 #include "../app/history/SlotStory.h"
 
+#include <clocale>
 #include <cstdint>
+#include <cstdlib>
 #include <ctime>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -417,6 +420,79 @@ int main()
                                          .status = "done", .note = "stray words",
                                          .at = sameDay, .restoredAt = restoredAt });
         CHECK_EQ(noted.detail, std::string("a.wav - 0:39 - 113.0 BPM - back to 17:52"));
+    }
+
+    // --- ATTACK (review of feat/history-row-menu): the clock at its edges, in
+    // a zone that keeps daylight time (Europe/Berlin), set for this block
+    // alone. A moment is a millisecond count; its minute is the local clock's
+    // minute, before the epoch as after it. ---
+#if !defined(_WIN32)
+    {
+        const char* hadZone = std::getenv("TZ");
+        const std::optional<std::string> oldZone =
+            hadZone != nullptr ? std::optional<std::string>(hadZone) : std::nullopt;
+        setenv("TZ", "Europe/Berlin", 1);
+        tzset();
+        // midnight, and the last millisecond before it
+        CHECK_EQ(story::clockWords(localMs(2026, 10, 11, 0, 0), localMs(2026, 10, 11, 12, 0)), std::string("00:00"));
+        CHECK_EQ(story::clockWords(localMs(2026, 10, 12, 0, 0) - 1, localMs(2026, 10, 12, 0, 0)),
+                 std::string("11 Oct 23:59"));
+        // the year's edge
+        CHECK_EQ(story::clockWords(localMs(2025, 12, 31, 23, 59), localMs(2026, 1, 1, 0, 0)),
+                 std::string("31 Dec 23:59"));
+        CHECK_EQ(story::clockWords(localMs(2026, 1, 1, 0, 0), localMs(2025, 12, 31, 23, 59)),
+                 std::string("01 Jan 00:00"));
+        // the day the clocks go forward (2026-03-29, 02:00 becomes 03:00)
+        CHECK_EQ(story::clockWords(localMs(2026, 3, 29, 1, 59), localMs(2026, 3, 29, 3, 1)), std::string("01:59"));
+        CHECK_EQ(story::clockWords(localMs(2026, 3, 29, 3, 0), localMs(2026, 3, 28, 23, 0)),
+                 std::string("29 Mar 03:00"));
+        CHECK_EQ(story::clockWords(localMs(2026, 3, 29, 1, 59) + 60'000, localMs(2026, 3, 29, 1, 59)),
+                 std::string("03:00")); // the minute after 01:59 is 03:00
+        // the day they go back (2026-10-25): 02:30 happens twice, and both are 02:30
+        const std::int64_t fallBack = localMs(2026, 10, 25, 1, 30); // 01:30 CEST, before the repeated hour
+        CHECK_EQ(story::clockWords(fallBack + 3'600'000, fallBack), std::string("02:30"));
+        CHECK_EQ(story::clockWords(fallBack + 7'200'000, fallBack), std::string("02:30"));
+        CHECK_EQ(story::clockWords(fallBack + 7'200'000, localMs(2026, 10, 26, 9, 0)), std::string("25 Oct 02:30"));
+        // the epoch is 1970-01-01 01:00 in Berlin; the millisecond before it is 00:59
+        CHECK_EQ(story::clockWords(0, 0), std::string("01:00"));
+        CHECK_EQ(story::clockWords(-1000, 0), std::string("00:59"));
+        CHECK_EQ(story::clockWords(-1, 0), std::string("00:59"));
+        CHECK_EQ(story::clockWords(-1, -1), std::string("00:59"));
+        // the ends of the count: refused or read, never a crash
+        for (const std::int64_t edge : { std::numeric_limits<std::int64_t>::max(), std::numeric_limits<std::int64_t>::min() }) {
+            try {
+                const std::string words = story::clockWords(edge, 0);
+                CHECK(!words.empty());
+            } catch (const Error&) {
+                CHECK(true);
+            }
+        }
+        if (oldZone)
+            setenv("TZ", oldZone->c_str(), 1);
+        else
+            unsetenv("TZ");
+        tzset();
+    }
+#endif
+
+    // --- ATTACK (review): the month's name is strftime's, which answers in
+    // the process locale. A row's words are built in a JUCE-free header and
+    // are meant to be ASCII (the lint's rule); under a locale with another
+    // alphabet they are not, and the column and the row would both change
+    // alphabet with the locale. ---
+    {
+        const char* was = std::setlocale(LC_TIME, nullptr);
+        const std::string before = was != nullptr ? was : "C";
+        if (std::setlocale(LC_TIME, "ru_RU.UTF-8") != nullptr) {
+            const std::string words =
+                story::clockWords(localMs(2026, 10, 11, 17, 52), localMs(2026, 10, 12, 0, 0));
+            std::setlocale(LC_TIME, before.c_str());
+            bool ascii = true;
+            for (const char c : words)
+                ascii = ascii && static_cast<unsigned char>(c) < 0x80;
+            CHECK(ascii);
+            CHECK_EQ(words, std::string("11 Oct 17:52"));
+        }
     }
 
     return testkit::summary("slot_story_tests");

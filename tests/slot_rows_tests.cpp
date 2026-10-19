@@ -395,5 +395,121 @@ int main()
         CHECK(!afterFailed.empty() && afterFailed.front().state == "failed");
     }
 
+    // --- ATTACK (review of feat/history-row-menu): a row may promise a restore
+    // only when its state could pass the restore primitive's own gate.
+    // commands::restore puts a body and a take back TOGETHER and refuses a
+    // pair that disagrees: a body with WavStat=1 and WavLen=N needs a take of
+    // its own, holding N frames, that the store can produce; a body with
+    // WavStat=0 and WavLen=0 needs none. The take a row archived on its way
+    // out (its 'before' side) is not the state's take, and a body that claims
+    // a loop beside nothing the store can produce is a state that cannot go
+    // back. (The existing case above, "the state a cut-off write recorded can
+    // be offered back", reads the same shape as restorable; the primitive
+    // refuses that body, so the promise cannot be kept.) ---
+    {
+        const auto indexed = [&](long long frames, const std::string& name) {
+            return rc0::setSectionField(bodyWith(frames, name), rc0::kSectionTrack1, "WavStat",
+                                        rc0::kWavStatIndexed);
+        };
+        const std::string loop = indexed(1719900, "TEST_42_HIST");
+        const std::string cut = indexed(441000, "TEST_42_HIST");
+        const std::string vacant = bodyWith(0, "Memory42"); // WavStat=0, WavLen=0: the factory shape
+
+        Entry later = op(3, "rename");
+        later.beforeBody = cut;
+        later.afterBody = indexed(441000, "LATER");
+        later.takeName = "take.wav";
+        later.takeHash = std::string(32, '\x45');
+        later.takeIsAfter = true;
+
+        // A trim cut off after the bodies went down and before the new take
+        // landed: the only take on the row is the OLD one it archived. Its
+        // state is the trimmed body, whose take never reached the card or the store.
+        Entry cutTrim = op(2, "trim");
+        cutTrim.status = "interrupted";
+        cutTrim.beforeBody = loop;
+        cutTrim.afterBody = cut;
+        cutTrim.takeName = "take.wav";
+        cutTrim.takeHash = std::string(32, '\x44');
+        cutTrim.takeKept = true;
+        cutTrim.takeIsAfter = false; // the archived 'before' side
+        {
+            const auto made = rows::forSlot({ cutTrim, later });
+            CHECK_EQ(made.size(), 2u);
+            CHECK(made.size() == 2 && made[0].playable);     // the old take can still be exported
+            CHECK(made.size() == 2 && !made[0].restorable);  // the trimmed state has no take to produce
+        }
+        // The same cut-off trim with no take row at all: the body claims a
+        // loop of 0:10 and nothing can be put beside it.
+        Entry bareTrim = cutTrim;
+        bareTrim.takeName.clear();
+        bareTrim.takeHash.reset();
+        bareTrim.takeKept = false;
+        {
+            const auto made = rows::forSlot({ bareTrim, later });
+            CHECK(made.size() == 2 && !made[0].restorable);
+        }
+        // The first sighting met a stray file in a slot whose body says it
+        // holds no loop (the slot doctor reports): the file is kept and the
+        // row is Original, but body and file cannot go back together.
+        Entry stray = op(1, "snapshot");
+        stray.afterBody = vacant;
+        stray.takeName = "STRAY.WAV";
+        stray.takeHash = std::string(32, '\x46');
+        stray.takeKept = true;
+        stray.takeIsAfter = true;
+        stray.takeCount = 1;
+        {
+            const auto made = rows::forSlot({ stray, later });
+            CHECK_EQ(made.size(), 2u);
+            CHECK(!made.empty() && made.front().line.action == "Original");
+            CHECK(!made.empty() && made.front().playable);    // the bytes can be exported
+            CHECK(!made.empty() && !made.front().restorable); // the pair would be refused
+        }
+    }
+
+    // --- ATTACK (review): the Original row is the card as it was first met.
+    // A slot photographed whole, in a first sighting that was later cut off
+    // at some other slot, keeps saying which take it held: the interruption
+    // happened elsewhere, and this slot's photograph is complete (the store
+    // commits each slot whole). And a slot whose body says it holds a loop
+    // was not seen empty, whatever its folder held: the Audio tab shows that
+    // slot as loaded (SlotInfo::hasAudio reads WavStat), so the history
+    // cannot answer that nothing was there. ---
+    {
+        Entry pushed = op(2, "push");
+        pushed.beforeBody = empty;
+        pushed.afterBody = loaded;
+        pushed.takeName = "take.wav";
+        pushed.takeHash = std::string(32, '\x22');
+        pushed.takeIsAfter = true;
+
+        Entry photographed = op(1, "snapshot");
+        photographed.status = "interrupted";
+        photographed.note = "The card disconnected before its first snapshot finished";
+        photographed.afterBody = loaded;
+        photographed.takeName = "pedal.wav";
+        photographed.takeHash = std::string(32, '\x33');
+        photographed.takeKept = true;
+        photographed.takeIsAfter = true;
+        photographed.takeCount = 1;
+        const auto cutOff = rows::forSlot({ photographed, pushed });
+        CHECK_EQ(cutOff.size(), 2u);
+        if (cutOff.size() == 2) {
+            CHECK_EQ(cutOff[0].line.action, std::string("Original"));
+            CHECK(cutOff[0].line.detail.find("pedal.wav") != std::string::npos); // which take it held
+            CHECK(cutOff[0].line.detail.find("disconnected") == std::string::npos); // not what happened elsewhere
+            CHECK(cutOff[0].restorable);
+            CHECK_EQ(cutOff[0].takeName, std::string("pedal.wav"));
+        }
+
+        Entry claims = op(1, "snapshot");
+        claims.afterBody = rc0::setSectionField(loaded, rc0::kSectionTrack1, "WavStat", rc0::kWavStatIndexed);
+        // no take rows: the folder was empty, the body says 0:39 of audio
+        const auto claimed = rows::forSlot({ claims, pushed });
+        CHECK_EQ(claimed.size(), 2u);
+        CHECK(!claimed.empty() && claimed.front().line.action == "Original");
+    }
+
     return testkit::summary("slot_rows_tests");
 }

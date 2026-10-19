@@ -332,6 +332,10 @@ add_test(NAME utf8_literals_lint
                  ${CMAKE_CURRENT_SOURCE_DIR}/app ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME utf8_literals_lint_tests
          COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_utf8_literals_test.py)
+# The lint attacked: escapes the compiler splices, sources it must be able
+# to read, suffixes it must not pass over (review of feat/history-row-menu).
+add_test(NAME utf8_literals_lint_attack_tests
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_utf8_literals_attack_test.py)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 
@@ -915,6 +919,27 @@ target_link_libraries(first_seen_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME first_seen_tests COMMAND first_seen_tests)
+
+# "Export take..." as the worker runs it (review of feat/history-row-menu):
+# no card, no operation, the bytes whole through a folder in any alphabet.
+juce_add_console_app(export_take_job_tests PRODUCT_NAME "export_take_job_tests")
+target_sources(export_take_job_tests PRIVATE tests/export_take_job_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(export_take_job_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(export_take_job_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_events
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME export_take_job_tests COMMAND export_take_job_tests)
 
 # Injected confirmations and the recorded worker job: no native windows.
 juce_add_console_app(clear_history_action_tests PRODUCT_NAME "clear_history_action_tests")
