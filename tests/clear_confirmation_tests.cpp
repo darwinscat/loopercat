@@ -4,11 +4,10 @@
 #include "support.hpp"
 
 #include "../app/ClearSlotAction.h"
-#include "../app/AudioEngine.h"
 #include "../app/HistoryPane.h"
 #include "../app/history/CardRestore.h"
 #include "../app/history/HistoryRecorder.h"
-#include "../app/history/TakeAudition.h"
+#include "../app/history/TakeExport.h"
 
 #include <bit>
 #include <chrono>
@@ -20,42 +19,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kBlock = 512;
 constexpr int kFrames = 88200; // one bar at 120 BPM, accepted by the pedal
 
 float rampSample(int frame)
 {
     return static_cast<float>(frame - kFrames / 2) / 131072.0f;
 }
-
-// The real playback callback runs against a device description, without hardware.
-struct FakeDevice final : juce::AudioIODevice {
-    FakeDevice() : juce::AudioIODevice("fake", "fake-type") {}
-    juce::StringArray getOutputChannelNames() override { return { "L", "R" }; }
-    juce::StringArray getInputChannelNames() override { return {}; }
-    juce::Array<double> getAvailableSampleRates() override { return { 44100.0 }; }
-    juce::Array<int> getAvailableBufferSizes() override { return { kBlock }; }
-    int getDefaultBufferSize() override { return kBlock; }
-    juce::String open(const juce::BigInteger&, const juce::BigInteger&, double, int) override { return {}; }
-    void close() override {}
-    bool isOpen() override { return true; }
-    void start(juce::AudioIODeviceCallback*) override {}
-    void stop() override {}
-    bool isPlaying() override { return false; }
-    juce::String getLastError() override { return {}; }
-    int getCurrentBufferSizeSamples() override { return kBlock; }
-    double getCurrentSampleRate() override { return 44100.0; }
-    int getCurrentBitDepth() override { return 16; }
-    juce::BigInteger getActiveOutputChannels() const override
-    {
-        juce::BigInteger b;
-        b.setRange(0, 2, true);
-        return b;
-    }
-    juce::BigInteger getActiveInputChannels() const override { return {}; }
-    int getOutputLatencyInSamples() override { return 0; }
-    int getInputLatencyInSamples() override { return 0; }
-};
 
 enum class TakeOrigin { push, pedal };
 
@@ -154,15 +123,6 @@ void checkTimeline(Fixture& fixture, std::initializer_list<std::string> kinds)
 void settle()
 {
     juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
-}
-
-juce::Button* buttonNamed(juce::Component& parent, const juce::String& name)
-{
-    for (auto* child : parent.getChildren())
-        if (auto* button = dynamic_cast<juce::Button*>(child))
-            if (button->getButtonText() == name)
-                return button;
-    return nullptr;
 }
 
 } // namespace
@@ -320,55 +280,20 @@ int main()
                 juce::String(row.state), juce::String(row.line.audio), row.playable, row.restorable,
                 row.op });
         pane.setRows(std::move(shown), 4);
-        history::TakeAudition audition(fixture.root / "audition");
-        AudioEngine engine;
-        FakeDevice device;
-        engine.audioDeviceAboutToStart(&device);
-        int plays = 0;
-        pane.onPlay = [&](std::int64_t op) {
-            ++plays;
+
+        // The cleared take is still the player's: the cleared row's menu
+        // exports it, and the file is the very bytes that left the slot.
+        int exports = 0;
+        pane.onExportTake = [&](std::int64_t op) {
+            ++exports;
             CHECK_EQ(op, rows.back().op);
-            const auto file = audition.materialize(fixture.rec->store(), rows.back().takeHash);
-            CHECK(file.has_value());
-            if (!file)
-                return;
-            CHECK(commands::readFileBytes(*file) == take);
-            CHECK(engine.load(juce::File(juce::String(file->string()))).wasOk());
-            engine.play();
+            const fs::path file = fixture.root / "exported.wav";
+            CHECK_EQ(history::exportTake(fixture.rec->store(), rows.back().takeHash, file),
+                     static_cast<std::int64_t>(take.size()));
+            CHECK(commands::readFileBytes(file) == take);
         };
-        auto* play = buttonNamed(pane, "Play");
-        CHECK(play != nullptr && play->isEnabled());
-        if (play != nullptr)
-            play->triggerClick();
-        settle();
-        CHECK_EQ(plays, 1);
-        CHECK(engine.isPlaying());
-        bool heard = false;
-        const auto deadline = juce::Time::getMillisecondCounterHiRes() + 5000;
-        while (!heard && juce::Time::getMillisecondCounterHiRes() < deadline) {
-            float left[kBlock] {}, right[kBlock] {};
-            float* outputs[] { left, right };
-            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, kBlock, {});
-            for (int i = 0; i < kBlock; ++i) {
-                if (std::abs(left[i]) < 1.0e-6f)
-                    continue;
-                const auto frame = static_cast<int>(std::lround(left[i] * 131072.0f)) + kFrames / 2;
-                CHECK(frame >= 0 && frame < kFrames / 4);
-                bool matches = true;
-                for (int sample = i; sample < kBlock; ++sample)
-                    if (std::abs(left[sample] - rampSample(frame + sample - i)) >= 1.0e-6f
-                        || std::abs(left[sample] + right[sample]) >= 1.0e-6f)
-                        matches = false;
-                CHECK(matches);
-                heard = true;
-                break;
-            }
-            if (!heard)
-                juce::Thread::sleep(10);
-        }
-        CHECK(heard);
-        engine.unload();
-        engine.audioDeviceStopped();
+        pane.choose(rows.back().op, historymenu::Entry::exportTake);
+        CHECK_EQ(exports, 1);
 
         int restores = 0;
         pane.onRestore = [&](std::int64_t op) {
@@ -380,13 +305,7 @@ int main()
                 history::restoreOperation(fixture.rec->store(), op, fixture.card, write, 4);
             });
         };
-        for (auto* child : pane.getChildren())
-            if (auto* list = dynamic_cast<juce::ListBox*>(child))
-                list->selectRow(restoreIndex);
-        auto* restore = buttonNamed(pane, "Restore this state");
-        CHECK(restore != nullptr && restore->isEnabled());
-        if (restore != nullptr)
-            restore->triggerClick();
+        pane.choose(original.op, historymenu::Entry::restore);
         settle();
         CHECK_EQ(restores, 1);
         if (onPedal)

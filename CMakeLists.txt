@@ -296,6 +296,9 @@ target_link_libraries(slot_rows_tests PRIVATE loopercat_sqlite3)
 # The same decision for the whole card's rows (the History window).
 loopercat_core_test(card_rows_tests)
 target_link_libraries(card_rows_tests PRIVATE loopercat_sqlite3)
+# The menu a row of the History tab opens, over the rows a real store makes.
+loopercat_core_test(history_row_menu_tests)
+target_link_libraries(history_row_menu_tests PRIVATE loopercat_sqlite3)
 # Undo and Redo over the timeline: the cursor and the plan, pure.
 loopercat_core_test(undo_tests)
 target_link_libraries(undo_tests PRIVATE loopercat_sqlite3)

@@ -769,7 +769,6 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(rhythmPane);
     addChildComponent(history);
     history.onClearHistory = [this](int slot) { clearSlotHistory(slot); };
-    history.onPlay = [this](std::int64_t op) { playFromHistory(op); };
     history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
     // The History window (#73): the view knows nothing of the store; its
     // four callbacks come back here, and every one of them ends in a re-read.
