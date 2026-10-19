@@ -646,10 +646,12 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
         if (!read.isNull(7))
             row.afterBody = read.blob(7);
         row.subjectOnly = read.integer(8) == 0;
-        if (!read.isNull(9)) {
+        // A time only for a row the store still holds: a reference it cannot
+        // resolve names no moment.
+        if (!read.isNull(9))
             row.restores = read.integer(9);
+        if (!read.isNull(10))
             row.restoredAt = read.integer(10);
-        }
         rows.push_back(std::move(row));
     }
 
@@ -1120,10 +1122,10 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
         entry.session = read.integer(7);
         if (!read.isNull(8))
             entry.reverts = read.integer(8);
-        if (!read.isNull(9)) {
+        if (!read.isNull(9))
             entry.restores = read.integer(9);
+        if (!read.isNull(10))
             entry.restoredAt = read.integer(10);
-        }
         entries.push_back(std::move(entry));
     }
 

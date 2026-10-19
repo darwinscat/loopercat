@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <optional>
 #include <string>
@@ -92,11 +93,17 @@ inline std::string bpm(long long tenths)
 // A moment as a row's clock reads it on this computer: "17:52" on the same
 // day as `reference`, "11 Oct 17:52" on any other — the forms the History
 // tab's own column uses, so a row that names another row's time names it the
-// way that row shows it.
+// way that row shows it. The month is named here, not by strftime's %b:
+// the process locale must not turn a row's words into another alphabet.
 inline std::string clockWords(std::int64_t atMs, std::int64_t referenceMs)
 {
+    static constexpr const char* kMonths[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     const auto local = [](std::int64_t ms) {
-        const std::time_t seconds = static_cast<std::time_t>(ms / 1000);
+        // The second the millisecond falls in: before the epoch too, where
+        // division alone would round toward it.
+        const std::int64_t whole = ms / 1000 - (ms % 1000 < 0 ? 1 : 0);
+        const std::time_t seconds = static_cast<std::time_t>(whole);
         std::tm out {};
 #if defined(_WIN32)
         if (localtime_s(&out, &seconds) != 0)
@@ -110,10 +117,13 @@ inline std::string clockWords(std::int64_t atMs, std::int64_t referenceMs)
     const std::tm reference = local(referenceMs);
     const bool sameDay = at.tm_year == reference.tm_year && at.tm_yday == reference.tm_yday;
     char text[32];
-    const std::size_t length = std::strftime(text, sizeof text, sameDay ? "%H:%M" : "%d %b %H:%M", &at);
-    if (length == 0)
+    const int length = sameDay
+        ? std::snprintf(text, sizeof text, "%02d:%02d", at.tm_hour, at.tm_min)
+        : std::snprintf(text, sizeof text, "%02d %s %02d:%02d", at.tm_mday, kMonths[at.tm_mon],
+                        at.tm_hour, at.tm_min);
+    if (length <= 0 || static_cast<std::size_t>(length) >= sizeof text)
         throw Error("the clock cannot write the moment " + std::to_string(atMs));
-    return std::string(text, length);
+    return std::string(text, static_cast<std::size_t>(length));
 }
 
 // Every number comes from the section that owns it, as catalog::readSlot
