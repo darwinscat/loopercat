@@ -256,6 +256,12 @@ loopercat_core_test(connect_gate_tests)
 # What the app remembers about the pedals it has met (issue #98): pure, so
 # it is a core suite though it lives in app/.
 loopercat_core_test(pedal_book_tests)
+# The doors 0.9.6 closed, proved shut by reading app/ as text: a key binding
+# and a window opener are not things a headless suite can ask MainComponent
+# about, because MainComponent wants a pedal, a worker and a screen.
+loopercat_core_test(hidden_features_tests)
+target_compile_definitions(hidden_features_tests PRIVATE
+    LOOPERCAT_APP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app")
 # What a file name on the card may be (FatName.hpp): FAT's rules and Windows's.
 loopercat_core_test(fat_name_tests)
 # The name a pushed file lands under (issue #139): pure, so it is a core

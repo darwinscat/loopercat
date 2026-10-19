@@ -141,10 +141,13 @@ public:
     std::string volumePath() const;
     std::vector<std::string> bannerLines() const;
 
-    // The card's whole history in a window of its own (#73): Window ->
-    // History. The view is fed on the worker from the store, needs no pedal,
-    // and is read again after every job. Public for the --history-window
-    // seam, which feeds the very view the window shows without a window.
+    // The card's whole history in a window of its own (#73). Hidden in
+    // 0.9.6: nothing in the app opens it any more. A slot's own History tab
+    // is where a player looks, and the pin only this window could set has no
+    // home until it is back -- rows already pinned stay pinned. The code and
+    // the --history-window seam stay, and the seam is what feeds the view
+    // from here: on the worker, out of the store, with no pedal and no
+    // window.
     void openHistoryWindow();
     void feedHistoryWindow();
     HistoryWindow& historyWindowView() { return historyView; }
