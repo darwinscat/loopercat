@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True  # ctest runs this in the source tree: leave noth
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_utf8_literals as lint  # noqa: E402
 
-DASH = "—"
+DASH = "\u2014"
 
 
 def flagged(source):
@@ -36,7 +36,7 @@ class Evasions(unittest.TestCase):
 
     def test_an_escape_split_by_a_line_continuation(self):
         # Phase 2 of translation splices the lines before the escape is read:
-        # the compiler sees —, \xe2 and \342 and writes high bytes.
+        # the compiler sees U+2014, \xe2 and \342 and writes high bytes.
         for source in ('auto s = "\\u20\\\n14";\n',
                        'auto s = "\\x\\\ne2";\n',
                        'auto s = "\\3\\\n42";\n'):

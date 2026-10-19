@@ -24,7 +24,7 @@ literal that breaks the rule and exits 1; exits 0 when there is none.
 import os
 import sys
 
-SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".mm", ".c", ".cc", ".inl")
+SOURCE_SUFFIXES = (".h", ".hh", ".hpp", ".hxx", ".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".inl", ".ipp")
 UTF8_SINKS = ("fromUTF8", "utf8")
 DATA_MARKER = "utf8-data:"
 HEX = set("0123456789abcdefABCDEF")
@@ -69,45 +69,56 @@ def _escape_is_high(text, k):
     return False, k + 1
 
 
-def tokenize(text):
-    """Returns (tokens, marker_lines): the tokens that matter, and the lines
-    whose comments carry the data marker with a reason."""
-    tokens = []
-    markers = set()
-    i, n, line = 0, len(text), 1
-
-    def comment(body, start_line):
-        at = body.find(DATA_MARKER)
-        if at >= 0 and body[at + len(DATA_MARKER):].strip():
-            markers.add(start_line)
-
+def splice(text):
+    """Translation phases 1 and 2, as the compiler runs them before any token
+    is read: CRLF and CR end a line like LF, and a backslash at the end of a
+    line joins it to the next. Returns the joined text and, for each of its
+    characters, the source line it came from."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    out, lines = [], []
+    line, i, n = 1, 0, len(text)
     while i < n:
-        c = text[i]
-        if c == "\n":
-            line += 1
-            i += 1
-            continue
-        if c in " \t\r\f\v":
-            i += 1
-            continue
-        if c == "\\" and i + 1 < n and text[i + 1] == "\n":
+        if text[i] == "\\" and i + 1 < n and text[i + 1] == "\n":
             line += 1
             i += 2
             continue
+        out.append(text[i])
+        lines.append(line)
+        if text[i] == "\n":
+            line += 1
+        i += 1
+    lines.append(line)  # the end of the text has a line too
+    return "".join(out), lines
+
+
+def tokenize(source):
+    """Returns (tokens, marker_lines): the tokens that matter, and the lines
+    whose comments carry the data marker with a reason."""
+    text, line_of = splice(source)
+    tokens = []
+    markers = set()
+    i, n = 0, len(text)
+
+    def comment(body, at):
+        found = body.find(DATA_MARKER)
+        if found >= 0 and body[found + len(DATA_MARKER):].strip():
+            markers.add(line_of[at])
+
+    while i < n:
+        c = text[i]
+        if c in " \t\n\f\v":
+            i += 1
+            continue
         if text.startswith("//", i):
-            start, start_line = i, line
-            while i < n and text[i] != "\n":
-                if text[i] == "\\" and i + 1 < n and text[i + 1] == "\n":
-                    line += 1
-                    i += 1
-                i += 1
-            comment(text[start:i], start_line)
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            comment(text[i:end], i)
+            i = end
             continue
         if text.startswith("/*", i):
             end = text.find("*/", i + 2)
             end = n if end < 0 else end + 2
-            comment(text[i:end], line)
-            line += text.count("\n", i, end)
+            comment(text[i:end], i)
             i = end
             continue
         prefix = ""
@@ -118,26 +129,23 @@ def tokenize(text):
             word = text[i:j]
             raw_prefixes = ("R", "u8R", "uR", "UR", "LR")
             if j < n and text[j] == '"' and word in raw_prefixes:
-                start_line = line
                 close_paren = text.find("(", j)
                 if close_paren < 0:
-                    raise SyntaxError(f"line {line}: a raw string with no opening parenthesis")
+                    raise SyntaxError(f"line {line_of[i]}: a raw string with no opening parenthesis")
                 delimiter = text[j + 1:close_paren]
                 end = text.find(")" + delimiter + '"', close_paren)
                 if end < 0:
-                    raise SyntaxError(f"line {line}: a raw string that never ends")
+                    raise SyntaxError(f"line {line_of[i]}: a raw string that never ends")
                 body = text[close_paren + 1:end]
-                tokens.append(Token("str", body, start_line, narrow=(word == "R"),
+                tokens.append(Token("str", body, line_of[i], narrow=(word == "R"),
                                     wide_bytes=any(ord(ch) > 0x7F for ch in body)))
-                stop = end + len(delimiter) + 2
-                line += text.count("\n", i, stop)
-                i = stop
+                i = end + len(delimiter) + 2
                 continue
             if j < n and text[j] in "\"'" and word in ALL_PREFIXES:
                 prefix = word
                 i = j
             else:
-                tokens.append(Token("id", word, line))
+                tokens.append(Token("id", word, line_of[i]))
                 i = j
                 continue
         c = text[i]
@@ -152,35 +160,33 @@ def tokenize(text):
                     j += 2  # a digit separator, not a character literal
                 else:
                     break
-            tokens.append(Token("other", text[i:j], line))
+            tokens.append(Token("other", text[i:j], line_of[i]))
             i = j
             continue
         if c in "\"'":
-            quote, start_line, j, high = c, line, i + 1, False
-            while j < n and text[j] != quote:
-                if text[j] == "\n":
-                    raise SyntaxError(f"line {start_line}: a literal that runs past its line")
-                if text[j] == "\\":
-                    if j + 1 < n and text[j + 1] == "\n":
-                        line += 1
-                        j += 2
-                        continue
+            quote, j, high = c, i + 1, False
+            while j < n and text[j] != quote and text[j] != "\n":
+                if text[j] == "\\" and j + 1 < n:
                     escaped_high, j = _escape_is_high(text, j + 1)
                     high = high or escaped_high
                     continue
                 if ord(text[j]) > 0x7F:
                     high = True
                 j += 1
-            if j >= n:
-                raise SyntaxError(f"line {start_line}: a literal that never ends")
+            if j >= n or text[j] != quote:
+                # No closing quote on its line: not a literal the compiler
+                # reads - an apostrophe in #error text, prose under #if 0.
+                tokens.append(Token("punct", c, line_of[i]))
+                i += 1
+                continue
             if quote == '"':
-                tokens.append(Token("str", text[i + 1:j], start_line,
+                tokens.append(Token("str", text[i + 1:j], line_of[i],
                                     narrow=prefix in NARROW_PREFIXES, wide_bytes=high))
             else:
-                tokens.append(Token("other", text[i:j + 1], start_line))
+                tokens.append(Token("other", text[i:j + 1], line_of[i]))
             i = j + 1
             continue
-        tokens.append(Token("punct", c, line))
+        tokens.append(Token("punct", c, line_of[i]))
         i += 1
     return tokens, markers
 
