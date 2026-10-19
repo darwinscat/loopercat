@@ -1245,14 +1245,14 @@ void MainComponent::updateHistory()
                      [rec = recorder, slot, safe, alive = uiAlive](const volume::fs::path&) {
                          std::vector<HistoryPane::Row> rows;
                          auto entries = history::rows::forSlot(rec->store().slotTimeline(slot));
-                         for (const auto& row : entries) {
-                             const juce::Time when(row.at);
-                             const bool today = when.getDayOfYear()
-                                 == juce::Time::getCurrentTime().getDayOfYear();
-                             rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
-                                              row.line.action, row.line.detail, row.state,
-                                              row.line.audio, row.playable, row.restorable, row.op });
-                         }
+                         // One clock for the column and for a Restored row's
+                         // "back to": the time a row names is the time that
+                         // row shows.
+                         const auto now = static_cast<std::int64_t>(juce::Time::currentTimeMillis());
+                         for (const auto& row : entries)
+                             rows.push_back({ utf8(history::story::clockWords(row.at, now)),
+                                              utf8(row.line.action), utf8(row.line.detail), utf8(row.state),
+                                              utf8(row.line.audio), row.playable, row.restorable, row.op });
                          juce::MessageManager::callAsync(
                              [safe, rows, loaded = std::move(entries), slot, alive, loadedCard = rec->store().selectedCard()]() mutable {
                                  if (*alive && safe != nullptr && safe->selectedSlot == slot) {
@@ -1413,6 +1413,7 @@ void MainComponent::restoreFromHistory(std::int64_t op)
               }
               if (state.body.empty())
                   throw Error("that row is not in this slot's history any more");
+              rec->restores(options.opId, op); // named before the card is touched
               commands::restore(volumePath, slot, state, options);
           } }));
 }
@@ -3452,6 +3453,7 @@ void MainComponent::restoreFromWindow(std::int64_t op, std::optional<int> snapsh
     worker.enqueue(recorded("restore", options,
                             { "Restore " + where + " to " + entry->action, slots.size() == 1 ? slots[0] : 0,
                               [rec = recorder, op, options, snapshotSlot](const volume::fs::path& volumePath) {
+                                  rec->restores(options.opId, op); // named before the card is touched
                                   history::restoreOperation(rec->store(), op, volumePath, options, snapshotSlot);
                               } },
                             slots)); // about every slot it puts back, however many the job names

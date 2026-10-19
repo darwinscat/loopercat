@@ -318,6 +318,7 @@ int main()
             if (op != original.op)
                 return;
             fixture.run("restore", [&](const auto& write) {
+                fixture.rec->restores("restore", op); // as the app names it, before the card
                 history::restoreOperation(fixture.rec->store(), op, fixture.card, write, 4);
             });
         };
@@ -332,6 +333,20 @@ int main()
         for (const int bank : { 1, 2 })
             CHECK(rc0::slotBody(commands::readFileBytes(volume::memoryPath(fixture.card, bank)), 4) == body);
         CHECK(volume::listSlotWavs(fixture.card, 4) == std::vector<std::string> { name });
+        // The Restored row says what came back, and from which row by that
+        // row's clock (the same day, so the time alone).
+        const auto after = history::rows::forSlot(fixture.rec->store().slotTimeline(4));
+        CHECK(!after.empty() && after.back().line.action == "Restored");
+        if (!after.empty()) {
+            const std::string& detail = after.back().line.detail;
+            const juce::Time then(original.at), now(after.back().at);
+            const bool sameDay = then.getYear() == now.getYear() && then.getDayOfYear() == now.getDayOfYear();
+            const std::string backTo
+                = " - back to " + then.formatted(sameDay ? "%H:%M" : "%d %b %H:%M").toStdString();
+            const std::string facts = name + " - 0:02 - "; // the take, its two seconds, then the tempo
+            CHECK_EQ(detail.substr(0, facts.size()), facts);
+            CHECK(detail.size() >= backTo.size() && detail.substr(detail.size() - backTo.size()) == backTo);
+        }
         const auto restored = volume::wavDir(fixture.card, 4) / name;
         CHECK(fs::is_regular_file(restored));
         if (fs::is_regular_file(restored))

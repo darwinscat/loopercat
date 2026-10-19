@@ -620,7 +620,8 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
                            "SELECT o.seq, o.at, o.kind, o.actor, o.status, o.note, "
                            "       c.before_body, c.after_body, "
                            "       o.seq IN (SELECT op FROM slot_changes WHERE slot = ?1 "
-                           "                 UNION SELECT op FROM slot_audio WHERE slot = ?1) "
+                           "                 UNION SELECT op FROM slot_audio WHERE slot = ?1), "
+                           "       o.restores, (SELECT t.at FROM ops t WHERE t.seq = o.restores) "
                            "FROM ops o LEFT JOIN slot_changes c ON c.op = o.seq AND c.slot = ?1 "
                            "WHERE o.seq IN (SELECT op FROM slot_changes WHERE slot = ?1 "
                            "                UNION SELECT op FROM slot_audio WHERE slot = ?1 "
@@ -645,6 +646,10 @@ std::vector<HistoryStore::TimelineEntry> HistoryStore::slotTimeline(int slot)
         if (!read.isNull(7))
             row.afterBody = read.blob(7);
         row.subjectOnly = read.integer(8) == 0;
+        if (!read.isNull(9)) {
+            row.restores = read.integer(9);
+            row.restoredAt = read.integer(10);
+        }
         rows.push_back(std::move(row));
     }
 
@@ -770,6 +775,28 @@ void HistoryStore::setReverts(std::int64_t op, std::int64_t target)
     set.bind(1, op).bind(2, target).run();
     if (db_.changes() != 1)
         throw Error("no operation " + std::to_string(op));
+}
+
+void HistoryStore::setRestores(std::int64_t op, std::int64_t target)
+{
+    if (op == target)
+        throw Error("a restore cannot go back to itself");
+    sqlite::Statement kind(db_, "SELECT o.kind, s.card FROM ops o JOIN sessions s ON s.id = o.session "
+                                "WHERE o.seq = ?1");
+    kind.bind(1, op);
+    if (!kind.step())
+        throw Error("no operation " + std::to_string(op));
+    if (kind.text(0) != "restore")
+        throw Error("operation " + std::to_string(op) + " is a " + kind.text(0) + ", not a restore");
+    const std::int64_t card = kind.integer(1);
+    sqlite::Statement held(db_, "SELECT count(*) FROM ops o JOIN sessions s ON s.id = o.session "
+                                "WHERE o.seq = ?1 AND s.card = ?2");
+    held.bind(1, target).bind(2, card);
+    held.step();
+    if (held.integer(0) == 0)
+        throw Error("that row is not in the history any more");
+    sqlite::Statement set(db_, "UPDATE ops SET restores = ?2 WHERE seq = ?1");
+    set.bind(1, op).bind(2, target).run();
 }
 
 std::vector<HistoryStore::UndoTargets> HistoryStore::retentionTargets(const UndoTargets& offered)
@@ -1021,6 +1048,10 @@ HistoryStore::ForgetPlan HistoryStore::forgetSlot(std::int64_t cardId, int slot,
                 names.bind(1, op).run();
                 sqlite::Statement unrefer(db_, "UPDATE ops SET reverts = NULL WHERE reverts = ?1");
                 unrefer.bind(1, op).run();
+                // A restore that went back here keeps standing and says what
+                // came back; where from is forgotten with the row.
+                sqlite::Statement unrestore(db_, "UPDATE ops SET restores = NULL WHERE restores = ?1");
+                unrestore.bind(1, op).run();
                 sqlite::Statement baseline(db_, "UPDATE cards SET snapshot_op = NULL WHERE snapshot_op = ?1");
                 baseline.bind(1, op).run();
                 sqlite::Statement drop(db_, "DELETE FROM ops WHERE seq = ?1");
@@ -1069,7 +1100,8 @@ std::int64_t HistoryStore::vacuum(int pages)
 std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
 {
     std::vector<CardEntry> entries;
-    sqlite::Statement read(db_, "SELECT seq, at, kind, actor, status, note, pinned, session, reverts "
+    sqlite::Statement read(db_, "SELECT seq, at, kind, actor, status, note, pinned, session, reverts, "
+                                "       restores, (SELECT t.at FROM ops t WHERE t.seq = ops.restores) "
                                 "FROM ops WHERE session IN (SELECT id FROM sessions WHERE card = ?1) "
                                 "ORDER BY at, seq");
     if (selectedCard_)
@@ -1088,6 +1120,10 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
         entry.session = read.integer(7);
         if (!read.isNull(8))
             entry.reverts = read.integer(8);
+        if (!read.isNull(9)) {
+            entry.restores = read.integer(9);
+            entry.restoredAt = read.integer(10);
+        }
         entries.push_back(std::move(entry));
     }
 
@@ -1108,6 +1144,8 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
             facts.actor = entry.actor;
             facts.status = entry.status;
             facts.note = entry.note;
+            facts.restores = entry.restores;
+            facts.restoredAt = entry.restoredAt;
             bodies.bind(1, entry.op).bind(2, slot);
             if (bodies.step()) {
                 if (!bodies.isNull(0))

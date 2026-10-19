@@ -104,7 +104,9 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                              .takeName = entry.takeName,
                              .take = take,
                              .status = entry.status,
-                             .note = entry.note });
+                             .note = entry.note,
+                             .at = entry.at,
+                             .restoredAt = entry.restoredAt });
     row.state = stateWords(entry.status, entry.actor);
     // A row that did not finish carries its reason where its numbers would
     // be: what it recorded on the way is not what the slot came to hold.

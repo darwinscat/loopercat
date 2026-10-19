@@ -17,6 +17,9 @@
 
 #include "../app/history/SlotStory.h"
 
+#include <cstdint>
+#include <ctime>
+#include <optional>
 #include <string>
 
 using namespace loopercat;
@@ -36,6 +39,25 @@ std::string bodyWith(long long wavLen, long long tempo, const std::string& name,
 
 constexpr long long kFrames4m36 = 12193650; // 276.5 s, the pushed loop
 constexpr long long kFrames0m39 = 1719900;  // 39.0 s, what the trim left
+
+// A wall-clock moment on this computer, in the store's milliseconds: the
+// clock a player reads, built from its own fields rather than from the
+// function under test.
+std::int64_t localMs(int year, int month, int day, int hour, int minute, int second = 0)
+{
+    std::tm fields {};
+    fields.tm_year = year - 1900;
+    fields.tm_mon = month - 1;
+    fields.tm_mday = day;
+    fields.tm_hour = hour;
+    fields.tm_min = minute;
+    fields.tm_sec = second;
+    fields.tm_isdst = -1;
+    const std::time_t seconds = std::mktime(&fields);
+    if (seconds == static_cast<std::time_t>(-1))
+        throw Error("no such local moment");
+    return static_cast<std::int64_t>(seconds) * 1000;
+}
 
 } // namespace
 
@@ -315,6 +337,61 @@ int main()
         CHECK_EQ(story::sentencesBesides("b", "b"), std::string(""));
         CHECK_EQ(story::sentencesBesides("", "b"), std::string(""));
         CHECK_EQ(story::sentencesBesides("a;b", "b"), std::string("a;b")); // not the join
+    }
+
+    // --- a row's clock: the time alone on the reference's own day, the date
+    // with it on any other — the History tab's two forms ---
+    {
+        const std::int64_t at = localMs(2026, 10, 11, 17, 52);
+        CHECK_EQ(story::clockWords(at, at), std::string("17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 11, 23, 59, 59)), std::string("17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 11, 0, 0)), std::string("17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 12, 0, 0)), std::string("11 Oct 17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 10, 23, 59)), std::string("11 Oct 17:52"));
+        // the minute is cut, never rounded up — 17:52:59 is still 17:52
+        CHECK_EQ(story::clockWords(at + 59'999, at), std::string("17:52"));
+        CHECK_EQ(story::clockWords(localMs(2026, 10, 11, 0, 0), at), std::string("00:00"));
+        // the same day of another year is another day
+        CHECK_EQ(story::clockWords(localMs(2025, 1, 5, 9, 7), localMs(2026, 1, 5, 9, 7)),
+                 std::string("05 Jan 09:07"));
+    }
+
+    // --- a restore says what came back and which row it came from ---
+    {
+        const std::int64_t restoredAt = localMs(2026, 10, 11, 17, 52);
+        const std::int64_t sameDay = localMs(2026, 10, 11, 18, 3);
+        const std::int64_t nextDay = localMs(2026, 10, 12, 9, 30);
+        const auto restore = [&](std::optional<std::string> after, std::string takeName,
+                                 std::int64_t at, std::optional<std::int64_t> to) {
+            return story::tell({ .kind = "restore",
+                                 .beforeBody = bodyWith(kFrames4m36, 1111, "Memory42"),
+                                 .afterBody = std::move(after),
+                                 .takeName = std::move(takeName),
+                                 .take = story::Take::onCard,
+                                 .status = "done",
+                                 .at = at,
+                                 .restoredAt = to });
+        };
+        const auto line = restore(trimmed, "i-am-projection.wav", sameDay, restoredAt);
+        CHECK_EQ(line.action, std::string("Restored"));
+        CHECK_EQ(line.detail, std::string("i-am-projection.wav - 0:39 - 113.0 BPM - back to 17:52"));
+        CHECK_EQ(restore(trimmed, "i-am-projection.wav", nextDay, restoredAt).detail,
+                 std::string("i-am-projection.wav - 0:39 - 113.0 BPM - back to 11 Oct 17:52"));
+        // back to a state that held no take
+        CHECK_EQ(restore(bodyWith(0, 1200, "Memory42"), "", sameDay, restoredAt).detail,
+                 std::string("empty slot - back to 17:52"));
+        // a restore recorded before the store kept its row, or whose row was
+        // forgotten: what came back, and no invented time
+        CHECK_EQ(restore(trimmed, "i-am-projection.wav", sameDay, std::nullopt).detail,
+                 std::string("i-am-projection.wav - 0:39 - 113.0 BPM"));
+        // no state recorded (cut off before the card was written): where it was going
+        CHECK_EQ(restore(std::nullopt, "", sameDay, restoredAt).detail, std::string("back to 17:52"));
+        // the job writes no note; one that is there says nothing more about the row
+        const auto noted = story::tell({ .kind = "restore", .beforeBody = pushed, .afterBody = trimmed,
+                                         .takeName = "a.wav", .take = story::Take::onCard,
+                                         .status = "done", .note = "stray words",
+                                         .at = sameDay, .restoredAt = restoredAt });
+        CHECK_EQ(noted.detail, std::string("a.wav - 0:39 - 113.0 BPM - back to 17:52"));
     }
 
     return testkit::summary("slot_story_tests");

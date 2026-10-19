@@ -1149,5 +1149,76 @@ int main()
         CHECK(reopened.beginOp(session, "op-reopened", "rename", 5000) > after);
     }
 
+    // --- a restore names the row it went back to (0.9.6): the store finds
+    // that row and its time, a restore of a restore names the restore, a
+    // wrong target is refused, and forgetting the row it named leaves the
+    // restore standing with no time to claim ---
+    {
+        TempDir tmp;
+        std::int64_t card = 0, pushed = 0, renamed = 0, first = 0, second = 0;
+        {
+            Ready r(tmp.path);
+            card = *r.store.selectedCard();
+            const auto finished = [&r](const std::string& id, const std::string& kind, std::int64_t at,
+                                       std::vector<int> slots, std::optional<std::int64_t> target) {
+                const auto op = r.store.beginOp(r.session, id, kind, at);
+                if (target)
+                    r.store.setRestores(op, *target);
+                for (const int slot : slots)
+                    r.store.recordBodies(op, { { slot, id + "-before", id + "-after" } });
+                r.store.finishOp(op, OpStatus::done, "");
+                return op;
+            };
+            pushed = finished("op-push", "push", 1000, { 4 }, std::nullopt);
+            renamed = finished("op-rename", "rename", 2000, { 4 }, std::nullopt);
+            first = finished("op-restore-1", "restore", 3000, { 4, 9 }, pushed);
+            second = finished("op-restore-2", "restore", 4000, { 4 }, first); // back to what the first left
+
+            CHECK_THROWS(r.store.setRestores(second, second), "itself");
+            CHECK_THROWS(r.store.setRestores(renamed, pushed), "not a restore");
+            CHECK_THROWS(r.store.setRestores(second, 999), "not in the history any more");
+            CHECK_THROWS(r.store.setRestores(999, pushed), "no operation 999");
+            const auto otherSession = r.store.openSession(r.store.card("other-RC-5", "RC-5", "Other", 5000), 5000);
+            const auto elsewhere = r.store.beginOp(otherSession, "op-elsewhere", "push", 5000);
+            r.store.finishOp(elsewhere, OpStatus::done, "");
+            CHECK_THROWS(r.store.setRestores(second, elsewhere), "not in the history any more");
+            CHECK_EQ(count(r.store.db(), "SELECT restores FROM ops WHERE seq = " + std::to_string(second)), first);
+            CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM ops WHERE restores IS NOT NULL"), 2);
+        }
+
+        HistoryStore reopened(tmp.path); // what was named is on disk, not in memory
+        reopened.selectCard(card);
+        const auto rowFor = [](const std::vector<HistoryStore::TimelineEntry>& rows, std::int64_t op) {
+            for (const auto& row : rows)
+                if (row.op == op)
+                    return row;
+            throw Error("no row for operation " + std::to_string(op));
+        };
+        const auto slot4 = reopened.slotTimeline(4);
+        CHECK(!rowFor(slot4, pushed).restores && !rowFor(slot4, pushed).restoredAt);
+        CHECK(!rowFor(slot4, renamed).restores);
+        CHECK(rowFor(slot4, first).restores == pushed);
+        CHECK(rowFor(slot4, first).restoredAt == std::int64_t { 1000 });
+        CHECK(rowFor(slot4, second).restores == first);
+        CHECK(rowFor(slot4, second).restoredAt == std::int64_t { 3000 });
+        // the whole card's rows carry the same, on the operation and on each slot's facts
+        for (const auto& entry : reopened.cardTimeline())
+            if (entry.op == first) {
+                CHECK(entry.restores == pushed && entry.restoredAt == std::int64_t { 1000 });
+                for (const auto& touched : entry.slots)
+                    CHECK(touched.facts.restoredAt == std::int64_t { 1000 });
+            }
+
+        // Slot 4 forgotten: the push it went back to goes whole; the first
+        // restore keeps its slot-9 state and stands, without a time.
+        reopened.forgetSlot(card, 4, 6000, true);
+        CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM ops WHERE seq = " + std::to_string(pushed)), 0);
+        const auto slot9 = reopened.slotTimeline(9);
+        CHECK_EQ(slot9.size(), std::size_t { 1 });
+        CHECK(!slot9.empty() && slot9.front().op == first);
+        CHECK(!slot9.empty() && !slot9.front().restores && !slot9.front().restoredAt);
+        CHECK_EQ(count(reopened.db(), "SELECT count(*) FROM pragma_foreign_key_check"), 0);
+    }
+
     return testkit::summary("history_store_tests");
 }
