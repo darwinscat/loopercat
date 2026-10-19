@@ -51,7 +51,16 @@ inline std::string exportName(const std::string& takeName, int slot)
     return hasExtension ? takeName : takeName + std::string(kExportExtension);
 }
 
-// Returns the bytes written.
+// A path as words for a sentence: its own UTF-8, never the host's narrow
+// code page (Windows), in which a folder named outside it is not spelled.
+inline std::string pathWords(const std::filesystem::path& path)
+{
+    const std::u8string text = path.u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
+// Returns the bytes written. A refusal names the file the player chose, not
+// the partial name the bytes went under on their way.
 inline std::int64_t exportTake(HistoryStore& store, const std::string& hash,
                                const std::filesystem::path& file)
 {
@@ -60,10 +69,14 @@ inline std::int64_t exportTake(HistoryStore& store, const std::string& hash,
     const std::optional<std::string> bytes = store.takeBytes(hash);
     if (!bytes)
         throw Error("that take is no longer kept in the history");
-    const std::filesystem::path partial(file.string() + kExportPartial);
+    std::filesystem::path partial = file;
+    partial += kExportPartial; // the path's own characters, whatever the code page
     std::error_code ec;
     try {
         commands::writeFileBytes(partial, *bytes);
+    } catch (const Error&) {
+        std::filesystem::remove(partial, ec);
+        throw Error("cannot write " + pathWords(file));
     } catch (...) {
         std::filesystem::remove(partial, ec);
         throw;
@@ -72,7 +85,7 @@ inline std::int64_t exportTake(HistoryStore& store, const std::string& hash,
     if (ec) {
         std::error_code ignored;
         std::filesystem::remove(partial, ignored);
-        throw Error("cannot write " + file.string() + ": " + ec.message());
+        throw Error("cannot write " + pathWords(file) + ": " + ec.message());
     }
     return static_cast<std::int64_t>(bytes->size());
 }
