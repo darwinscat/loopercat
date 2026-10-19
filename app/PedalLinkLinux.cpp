@@ -158,7 +158,7 @@ juce::String requestStorageMode(bool enter, const Pedal& pedal)
         const auto frame = enter ? sysex::enterStorageMode(pedal.modelId()) : sysex::exitStorageMode(pedal.modelId());
         return sendFrame(portOf(pedal), frame);
     } catch (const Error& e) {
-        return e.what();
+        return utf8(e.what());
     }
 }
 

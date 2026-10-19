@@ -11,10 +11,14 @@
 namespace loopercat
 {
 
-// The one crossing from core std::strings (UTF-8 bytes: error messages with
-// typographic dashes, filesystem paths, on-pedal filenames) into juce::String.
-// juce::String(const char*/std::string) widens BYTES (Latin-1), which turns
-// any multi-byte character into mojibake — every boundary goes through here.
+// The crossing from core std::strings (UTF-8 bytes: filesystem paths,
+// on-pedal filenames, a pedal's name, the core's words) into juce::String,
+// said where it happens. juce::String(std::string) decodes UTF-8 as well, but
+// juce::String(const char*) reads ASCII: the bytes of e.what(), or of a
+// literal on the left of `+` or alone, are widened one by one into Latin-1
+// mojibake, and nothing at the call site shows which of the two a conversion
+// took. A literal holding a byte above 0x7f goes through here or through
+// juce::String::fromUTF8 (tools/check_utf8_literals.py holds the tree to it).
 inline juce::String utf8(const std::string& bytes)
 {
     return juce::String::fromUTF8(bytes.c_str(), static_cast<int>(bytes.size()));

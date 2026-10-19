@@ -503,8 +503,9 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                 return;
             // The pedal surrendered the medium — the attempt stops resending;
             // the mount + scan pipeline reports its own failures from here.
-            trace(connectAttempt.active() ? "connect: a disk appeared \xe2\x80\x94 the pedal heard us"
-                                          : "connect: a disk appeared with no attempt running (storage mode by hand?)");
+            trace(connectAttempt.active()
+                      ? juce::String::fromUTF8("connect: a disk appeared \xe2\x80\x94 the pedal heard us")
+                      : juce::String("connect: a disk appeared with no attempt running (storage mode by hand?)"));
             connectAttempt.diskAppeared();
             worker.pokeRescan();
         });
@@ -563,7 +564,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     const juce::String exitError = connectTarget
                         ? pedallink::requestStorageMode(false, *connectTarget)
                         : pedallink::requestStorageMode(false);
-                    trace("disconnect: exit-storage frame \xe2\x86\x92 "
+                    trace(juce::String::fromUTF8("disconnect: exit-storage frame \xe2\x86\x92 ")
                           + (connectTarget ? pedalTag(*connectTarget) : juce::String("the first pedal on the bus"))
                           + ": " + (exitError.isEmpty() ? juce::String("sent") : "NOT sent (" + exitError + ")"));
                     connectTarget.reset();
@@ -938,8 +939,8 @@ void MainComponent::beginConnect()
                             }
                             const auto index = static_cast<std::size_t>(chosen) - 1;
                             safe->connectTarget = pedals[index];
-                            safe->trace("connect: chose \xe2\x80\x9c" + utf8(labels[index]) + "\xe2\x80\x9d = "
-                                        + pedalTag(pedals[index]));
+                            safe->trace(juce::String::fromUTF8("connect: chose \xe2\x80\x9c") + utf8(labels[index])
+                                        + juce::String::fromUTF8("\xe2\x80\x9d = ") + pedalTag(pedals[index]));
                             safe->askPedalBeforeConnect(*safe->connectTarget);
                         });
 }
@@ -1018,13 +1019,13 @@ void MainComponent::gateConnect(std::optional<storage::State> answer)
     switch (decision.verdict) {
     case connectgate::Verdict::refuse:
         // Nothing is sent, nothing is retried: the sentence says what to do.
-        trace("connect: refused, nothing sent \xe2\x80\x94 " + utf8(decision.reason));
+        trace(juce::String::fromUTF8("connect: refused, nothing sent \xe2\x80\x94 ") + utf8(decision.reason));
         connectTarget.reset();
         banners.showError(banners::Source::connection, utf8(decision.reason));
         break;
     case connectgate::Verdict::alreadyInStorage:
         // The pedal is offering its medium already: no frame, just look for it.
-        trace("connect: already in storage mode, no frame \xe2\x80\x94 looking for the card");
+        trace(juce::String::fromUTF8("connect: already in storage mode, no frame \xe2\x80\x94 looking for the card"));
         toast.show(juce::String::fromUTF8(
             "The pedal is in storage mode already \xe2\x80\x94 looking for its card\xe2\x80\xa6"));
         worker.pokeRescan();
@@ -1084,7 +1085,7 @@ void MainComponent::sendEnterStorage()
 {
     lastConnectSendError = connectTarget ? pedallink::requestStorageMode(true, *connectTarget)
                                          : pedallink::requestStorageMode(true);
-    trace("connect: enter-storage frame \xe2\x86\x92 "
+    trace(juce::String::fromUTF8("connect: enter-storage frame \xe2\x86\x92 ")
           + (connectTarget ? pedalTag(*connectTarget) : juce::String("the first pedal on the bus")) + ": "
           + (lastConnectSendError.isEmpty() ? juce::String("sent") : "NOT sent (" + lastConnectSendError + ")"));
 }
@@ -1100,7 +1101,7 @@ void MainComponent::tickConnectAttempt()
         sendEnterStorage();
         return;
     case connect::Action::giveUp:
-        trace("connect: gave up \xe2\x80\x94 no disk appeared after the resend budget"
+        trace(juce::String::fromUTF8("connect: gave up \xe2\x80\x94 no disk appeared after the resend budget")
               + (lastConnectSendError.isEmpty() ? juce::String() : "; last send error: " + lastConnectSendError));
         banners.showError(
             banners::Source::connection,
@@ -1623,7 +1624,8 @@ void MainComponent::renamePedal()
         auto* self = safe.getComponent();
         const std::string cardId = self->card->id;
         juce::Component::SafePointer<MainComponent> again(self);
-        self->worker.enqueue({ "Rename the pedal to \xe2\x80\x9c" + utf8(newName) + "\xe2\x80\x9d",
+        self->worker.enqueue({ juce::String::fromUTF8("Rename the pedal to \xe2\x80\x9c") + utf8(newName)
+                                   + juce::String::fromUTF8("\xe2\x80\x9d"),
                                0,
                                [newName, again, rec = self->recorder, alive = self->uiAlive](const volume::fs::path& volumePath) {
                                    const marker::Written written = marker::rename(volumePath, newName);
@@ -1656,7 +1658,7 @@ void MainComponent::runCleanJunk()
                          // every write to it (DeviceProfile.hpp), in its words.
                          if (!CardPermissions::of(family).anyWrite())
                              throw Error("clean junk refused on an \"" + family
-                                         + "\" card \xe2\x80\x94 " + profile::onlySpeaks());
+                                         + "\" card - " + profile::onlySpeaks());
                          // Mutations treat a sweep survivor as a warning; this
                          // action's one job IS the sweep, so a survivor is the
                          // job failing and says so.
@@ -2064,7 +2066,8 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     // panel now (and the two lamp columns still flip on click), so this menu
     // stopped being a second copy of them.
     juce::PopupMenu menu;
-    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace audio\xe2\x80\xa6" : "Push audio here\xe2\x80\xa6"));
+    menu.addItem(3, occupied ? juce::String::fromUTF8("Replace audio\xe2\x80\xa6")
+                             : juce::String::fromUTF8("Push audio here\xe2\x80\xa6"));
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
     juce::PopupMenu downmix;
     downmix.addItem(6, juce::String::fromUTF8("Both outputs\xe2\x80\xa6"));

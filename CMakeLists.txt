@@ -683,6 +683,21 @@ target_link_libraries(pedal_link_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME pedal_link_tests COMMAND pedal_link_tests)
 
+# operations.log: a line with a non-ASCII reason in it comes back byte for byte.
+juce_add_console_app(operations_log_tests PRODUCT_NAME "operations_log_tests")
+target_sources(operations_log_tests PRIVATE tests/operations_log_tests.cpp)
+target_compile_definitions(operations_log_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(operations_log_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME operations_log_tests COMMAND operations_log_tests)
+
 # ----------------------------------------------------------------------------
 # The playback harness: the REAL AudioEngine pumped through its device
 # callback with a fake device — samples must match the frame-index ramp, so
