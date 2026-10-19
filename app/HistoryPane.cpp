@@ -106,8 +106,10 @@ std::vector<HistoryPane::MenuLine> HistoryPane::menuFor(std::int64_t op) const
     return lines;
 }
 
-void HistoryPane::choose(std::int64_t op, historymenu::Entry entry)
+void HistoryPane::choose(int slot, std::int64_t op, historymenu::Entry entry)
 {
+    if (slot != slot_)
+        return; // the menu was about a slot the pane no longer shows
     bool enabled = false;
     for (const MenuLine& line : menuFor(op))
         if (line.entry == entry)
@@ -116,10 +118,10 @@ void HistoryPane::choose(std::int64_t op, historymenu::Entry entry)
         return;
     switch (entry) {
         case historymenu::Entry::restore:
-            if (onRestore) onRestore(op);
+            if (onRestore) onRestore(slot, op);
             break;
         case historymenu::Entry::exportTake:
-            if (onExportTake) onExportTake(op);
+            if (onExportTake) onExportTake(slot, op);
             break;
         case historymenu::Entry::clearHistory:
             if (onClearHistory) onClearHistory(slot_);
@@ -129,14 +131,15 @@ void HistoryPane::choose(std::int64_t op, historymenu::Entry entry)
     }
 }
 
-// The menu belongs to the row, not to the selection: it remembers the
-// operation, so rows read again while it is open cannot turn the choice
-// onto another row.
+// The menu belongs to the row, not to the selection: it remembers the slot
+// and the operation, so rows read again, or another slot selected, while it
+// is open cannot turn the choice onto another row.
 void HistoryPane::showMenu(int row, juce::Rectangle<int> screenArea)
 {
     if (row < 0 || row >= static_cast<int>(rows_.size()))
         return;
     const std::int64_t op = rows_[static_cast<std::size_t>(row)].op;
+    const int slot = slot_;
     juce::PopupMenu menu;
     for (const MenuLine& line : menuFor(op)) {
         if (line.entry == historymenu::Entry::separator)
@@ -146,14 +149,14 @@ void HistoryPane::showMenu(int row, juce::Rectangle<int> screenArea)
     }
     juce::Component::SafePointer<HistoryPane> safe(this);
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(screenArea),
-                       [safe, op](int id) {
+                       [safe, slot, op](int id) {
                            if (safe == nullptr)
                                return;
                            for (const historymenu::Entry entry :
                                 { historymenu::Entry::restore, historymenu::Entry::exportTake,
                                   historymenu::Entry::clearHistory })
                                if (itemId(entry) == id)
-                                   safe->choose(op, entry);
+                                   safe->choose(slot, op, entry);
                        });
 }
 

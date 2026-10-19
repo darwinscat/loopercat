@@ -49,9 +49,11 @@ public:
     void setBusy(bool busy); // a worker job is running: the menu waits
     void clear();
 
-    std::function<void(std::int64_t)> onRestore;
-    std::function<void(std::int64_t)> onExportTake;
-    std::function<void(int)> onClearHistory; // the slot, not the row
+    // Each says the slot the menu was opened on, beside the row's operation:
+    // a swap is a row of both its slots, so the operation alone is not enough.
+    std::function<void(int slot, std::int64_t op)> onRestore;
+    std::function<void(int slot, std::int64_t op)> onExportTake;
+    std::function<void(int slot)> onClearHistory; // the slot, not the row
 
     // The menu the row of operation `op` offers, as it is drawn: what each
     // line says and whether it can be chosen. Empty when no row is that
@@ -63,10 +65,12 @@ public:
     };
     std::vector<MenuLine> menuFor(std::int64_t op) const;
 
-    // A line of that menu, chosen. The rule is asked again at the moment of
-    // the choice: the menu may have been open while the pedal became busy or
-    // the rows were read again, and a choice made on a stale menu does nothing.
-    void choose(std::int64_t op, historymenu::Entry entry);
+    // A line of the menu that was opened on the row of operation `op` while
+    // the pane showed `slot`, chosen. The rule is asked again at the moment
+    // of the choice: the menu may have been open while the pedal became busy,
+    // the rows were read again, or another slot was selected, and a choice
+    // made on a stale menu does nothing.
+    void choose(int slot, std::int64_t op, historymenu::Entry entry);
 
     void resized() override;
 

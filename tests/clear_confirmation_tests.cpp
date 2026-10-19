@@ -283,8 +283,9 @@ int main()
         // that left the slot. The export is the history's alone: it needs no
         // card, and the card is the same bytes after it.
         int exports = 0;
-        pane.onExportTake = [&](std::int64_t op) {
+        pane.onExportTake = [&](int slot, std::int64_t op) {
             ++exports;
+            CHECK_EQ(slot, 4);
             CHECK_EQ(op, rows.back().op);
             CHECK_EQ(history::exportName(rows.back().takeName, 4), name);
             const auto cardBefore = fixture.cardBytes();
@@ -305,12 +306,13 @@ int main()
             CHECK_THROWS(gone.work(fs::path()), "no longer kept in the history");
             CHECK(!fs::exists(fixture.root / "exported" / "gone.wav"));
         };
-        pane.choose(rows.back().op, historymenu::Entry::exportTake);
+        pane.choose(4, rows.back().op, historymenu::Entry::exportTake);
         CHECK_EQ(exports, 1);
 
         int restores = 0;
-        pane.onRestore = [&](std::int64_t op) {
+        pane.onRestore = [&](int slot, std::int64_t op) {
             ++restores;
+            CHECK_EQ(slot, 4);
             CHECK_EQ(op, original.op);
             if (op != original.op)
                 return;
@@ -319,7 +321,7 @@ int main()
                 history::restoreOperation(fixture.rec->store(), op, fixture.card, write, 4);
             });
         };
-        pane.choose(original.op, historymenu::Entry::restore);
+        pane.choose(4, original.op, historymenu::Entry::restore);
         settle();
         CHECK_EQ(restores, 1);
         if (onPedal)

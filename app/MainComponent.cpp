@@ -771,8 +771,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(rhythmPane);
     addChildComponent(history);
     history.onClearHistory = [this](int slot) { clearSlotHistory(slot); };
-    history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
-    history.onExportTake = [this](std::int64_t op) { exportFromHistory(op); };
+    history.onRestore = [this](int slot, std::int64_t op) { restoreFromHistory(slot, op); };
+    history.onExportTake = [this](int slot, std::int64_t op) { exportFromHistory(slot, op); };
     // The History window (#73): the view knows nothing of the store; its
     // four callbacks come back here, and every one of them ends in a re-read.
     historyView.onPlay = [this](std::int64_t op) { playFromWindow(op); };
@@ -1359,13 +1359,15 @@ void MainComponent::playArchivedTake(int slot, std::string hash, juce::String ti
 // dialog proposes the take's own name and has asked about a file already
 // there; the write is the history's bytes and nothing else — the pedal is
 // neither read nor written, so the job needs no card.
-void MainComponent::exportFromHistory(std::int64_t op)
+void MainComponent::exportFromHistory(int slot, std::int64_t op)
 {
+    if (slot != selectedSlot)
+        return; // the player moved on while the menu was open
     const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
                                     [op](const history::rows::Row& row) { return row.op == op; });
     if (found == historyEntries.end() || found->takeHash.empty())
         return; // the pane offers Export only for a row whose take is kept
-    const juce::String name = utf8(history::exportName(found->takeName, selectedSlot));
+    const juce::String name = utf8(history::exportName(found->takeName, slot));
     fileChooser = std::make_unique<juce::FileChooser>(
         "Export take", juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile(name),
         "*.wav");
@@ -1385,13 +1387,14 @@ void MainComponent::exportFromHistory(std::int64_t op)
 // through the core primitive — never through push, which would recompute the
 // tempo the state carries. It is an operation like any other, so it is
 // recorded, and can be undone in turn.
-void MainComponent::restoreFromHistory(std::int64_t op)
+void MainComponent::restoreFromHistory(int slot, std::int64_t op)
 {
+    if (slot != selectedSlot)
+        return; // the player moved on while the menu was open
     const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
                                     [op](const history::rows::Row& row) { return row.op == op; });
     if (found == historyEntries.end() || !found->restorable)
         return;
-    const int slot = selectedSlot;
     const auto options = makeWriteOptions();
     releasePlayerIfHolding(slot, slot); // the restore rewrites the slot's audio (issue #26)
     worker.enqueue(recorded(

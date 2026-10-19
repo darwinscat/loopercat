@@ -225,8 +225,8 @@ private:
     std::optional<std::int64_t> historyCard;
     void updateHistory();                   // ask the worker for the selected slot's timeline
     void applyHistoryRows(std::vector<HistoryPane::Row> rows, int slot);
-    void restoreFromHistory(std::int64_t op); // a recorded state, back onto the card
-    void exportFromHistory(std::int64_t op);  // a kept take, to a file the player chose
+    void restoreFromHistory(int slot, std::int64_t op); // a recorded state, back onto the card
+    void exportFromHistory(int slot, std::int64_t op);  // a kept take, to a file the player chose
     void playArchivedTake(int slot, std::string hash, juce::String title); // the window's Play
 
     // The History window's rows as the owner needs them for the buttons: the
