@@ -366,9 +366,14 @@ static int runTests()
             note.bind(1, baseline.op);
             CHECK(note.step());
             CHECK_EQ(note.text(0), std::string("stopped when the pedal was disconnected"));
-            const auto slotOne = history::rows::forSlot(rec->store().slotTimeline(1)).front().line;
-            CHECK(slotOne.detail.find("stopped when the pedal was disconnected") != std::string::npos);
-            CHECK(slotOne.detail.find("refusing to touch") == std::string::npos);
+            // A slot it photographed is whole: its Original row names the
+            // take and claims no interruption - that is the card's row's to
+            // say, above (0.9.6).
+            const auto slotOne = history::rows::forSlot(rec->store().slotTimeline(1)).front();
+            CHECK_EQ(slotOne.line.action, std::string("Original"));
+            CHECK(slotOne.line.detail.find("stopped when") == std::string::npos);
+            CHECK(slotOne.line.detail.find("refusing to touch") == std::string::npos);
+            CHECK(slotOne.state.empty());
         }
         putTake(card, 1, 4321);
         if (restartApp) { rec.reset(); rec = recorderAt(tmp.path / "history"); }

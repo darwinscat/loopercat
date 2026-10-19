@@ -62,6 +62,9 @@ inline std::string stateWords(const std::string& status, const std::string& acto
 // no word for what it did there: nothing, by its own account.
 inline constexpr std::string_view kNothingChanged = "nothing changed";
 
+// What a slot's first-sighting row counts as once the slot is photographed.
+inline const std::string kSightingDone = "done";
+
 // The rows of one slot, in the order the store gave them (oldest first).
 //
 // A slot that was empty when the card was first seen has no Original row:
@@ -83,12 +86,16 @@ inline constexpr std::string_view kNothingChanged = "nothing changed";
 // disagrees, so the body's own WavStat decides: a body that says the slot
 // holds a loop needs its take, kept in the store; one that says it holds
 // none needs none — a stray file beside it is not part of the state.
-// The first sighting found the slot holding no take: no audio was recorded
-// on its side of the slot, and the sighting did not fail there.
+// The first sighting found the slot empty: no take on its side of the slot,
+// a body that says it holds no loop (WavStat, what the Audio tab reads), and
+// a read that did not fail there. A body that claims a loop beside an empty
+// folder was not seen empty.
 inline bool emptyAtFirstSight(const HistoryStore::TimelineEntry& entry)
 {
     return entry.kind == "snapshot" && entry.status != "failed" && entry.takeCount == 0
-        && entry.takeName.empty() && !entry.takeHash;
+        && entry.takeName.empty() && !entry.takeHash
+        && (!entry.afterBody
+            || rc0::sectionField(*entry.afterBody, rc0::kSectionTrack1, "WavStat") != rc0::kWavStatIndexed);
 }
 
 // One row from what one operation recorded about one slot. `newest` is
@@ -115,6 +122,13 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
             : entry.takeKept   ? story::Take::kept
                                : story::Take::lost;
 
+    // A first sighting commits slot by slot: a slot it photographed is whole
+    // while the sighting still runs, and after it was cut off at another
+    // slot. That slot's row is its Original, finished; the interruption is
+    // the card's row's to tell. Only a slot the sighting failed to read says so.
+    const std::string& status =
+        entry.kind == "snapshot" && entry.status != "failed" ? kSightingDone : entry.status;
+
     Row row;
     row.op = entry.op;
     row.at = entry.at;
@@ -124,14 +138,14 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                              .swappedWith = entry.swappedWith,
                              .takeName = entry.takeName,
                              .take = take,
-                             .status = entry.status,
+                             .status = status,
                              .note = entry.note,
                              .at = entry.at,
                              .restoredAt = entry.restoredAt });
-    row.state = stateWords(entry.status, entry.actor);
+    row.state = stateWords(status, entry.actor);
     // A row that did not finish carries its reason where its numbers would
     // be: what it recorded on the way is not what the slot came to hold.
-    if (entry.status != "done" && !entry.note.empty())
+    if (status != "done" && !entry.note.empty())
         row.line.detail = entry.note;
     // A finished operation that was about the slot and has no word for what
     // it did there did nothing there — said plainly, so "Renamed" with no

@@ -177,11 +177,10 @@ inline Line tell(const Facts& facts)
         line.detail = facts.note;
     } else if (facts.kind == "snapshot") {
         // The take the slot held when the app first met the card: what it was
-        // before LooperCat touched it.
+        // before LooperCat touched it. The sighting's own note is about the
+        // card - where it was cut off - and is the card's row's to say.
         line.action = "Original";
         line.detail = facts.takeName;
-        if (!facts.note.empty())
-            line.detail += (line.detail.empty() ? "" : "; ") + facts.note;
     } else if (facts.kind == "push") {
         line.action = "Pushed";
         line.detail = facts.takeName;
