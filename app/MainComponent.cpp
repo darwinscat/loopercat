@@ -3178,8 +3178,6 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     // to prevent (issue #61).
     if (batchOverlay.isVisible())
         return true;
-    if (historyKeys(key))
-        return true;
     // Standard list ergonomics: select every row — the way to point a check
     // (or a batch) at the whole setlist without a dedicated button.
     if (key == juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0) && table.isVisible()) {
@@ -3251,7 +3249,7 @@ void MainComponent::openHistoryWindow()
 {
     if (historyHost == nullptr)
         historyHost = std::make_unique<HistoryWindowHost>(
-            historyView, [this](const juce::KeyPress& key) { return historyKeys(key); });
+            historyView);
     historyHost->setVisible(true);
     historyHost->toFront(true);
     feedHistoryWindow();
@@ -3443,19 +3441,6 @@ void MainComponent::pinFromWindow(std::int64_t op, bool pinned)
 
 // Undo writes to the card like any operation: a card honestly connected, in
 // a model this app writes to, and no job of the player's running.
-bool MainComponent::historyKeys(const juce::KeyPress& key)
-{
-    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
-        pressUndo(true);
-        return true;
-    }
-    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)) {
-        pressUndo(false);
-        return true;
-    }
-    return false;
-}
-
 bool MainComponent::cardTakesEdits() const
 {
     return snapshot.state == lifecycle::State::connected && snapshot.error.empty()

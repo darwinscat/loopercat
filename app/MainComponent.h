@@ -150,10 +150,13 @@ public:
     HistoryWindow& historyWindowView() { return historyView; }
     int historyWindowFeeds() const { return historyWindowFed; }
 
-    // Edit -> Undo / Redo over the history (#73), and Cmd-Z / Cmd-Shift-Z.
-    // What is on offer is read from the store after every job; a press is
-    // planned on the worker, may ask first (the speed bump), and runs as one
-    // recorded operation. Public for the --undo / --redo seam.
+    // Undo / Redo over the history (#73). Hidden in 0.9.6: the menu that
+    // carried them is gone and so are their keys, and a slot's own history
+    // puts a state back instead (Restore rewrites the body AND the take).
+    // The machinery stays, reachable from the --undo / --redo seam: what is
+    // on offer is read from the store after every job; a press is planned on
+    // the worker, may ask first (the speed bump), and runs as one recorded
+    // operation.
     void pressUndo(bool redo);
     juce::String undoMenuText(bool redo) const;
     bool undoEnabled(bool redo) const;
@@ -249,7 +252,6 @@ private:
     void exportFromWindow(std::int64_t op);
     void restoreFromWindow(std::int64_t op, std::optional<int> snapshotSlot = std::nullopt);
     void pinFromWindow(std::int64_t op, bool pinned);
-    bool historyKeys(const juce::KeyPress& key); // Cmd-Z / Cmd-Shift-Z, from either window
 
     // A press of Undo or Redo, planned on the worker and handed back.
     struct HistoryEdit {
