@@ -21,8 +21,11 @@
 #include <vector>
 
 //==============================================================================
-// loopercat::history::undo — carrying out Undo and Redo (#73): the words the
-// Edit menu wears, the speed bump's reasons, and the run itself.
+// loopercat::history::undo — carrying out Undo and Redo (#73): the words an
+// offer wears, the speed bump's reasons, and the run itself. The menu that
+// used to wear those words is gone (0.9.6); they are what the --undo-plan
+// and --history-window seams print, and what the menu will say when it is
+// back.
 //
 // Undo.h decides WHAT a revert would put back; this carries it out on the
 // card, as one operation of kind 'undo' or 'redo' that names its target
@@ -52,9 +55,9 @@ namespace fs = std::filesystem;
 
 // --- words ---
 
-// An operation, as the Edit menu names what it undoes: "trim of slot 14",
-// "swap of slots 3 and 7", "controls change of the pedal settings". A kind
-// this build has no words for is named as recorded — never guessed.
+// An operation, as an Undo offer names what it would put back: "trim of slot
+// 14", "swap of slots 3 and 7", "controls change of the pedal settings". A
+// kind this build has no words for is named as recorded — never guessed.
 inline std::string kindWords(const std::string& kind)
 {
     static const std::map<std::string, std::string> words {

@@ -283,9 +283,9 @@ private:
     }
 
     // --history-window <file.png>: the History window's view, fed from the
-    // store through the worker exactly as Window -> History feeds it, printed
-    // row by row with what each row offers, and rendered. The Edit menu's two
-    // items are printed too, as the menu would read them now.
+    // store through the worker exactly as the window's own open fed it,
+    // printed row by row with what each row offers, and rendered. What Undo
+    // and Redo would put back is printed too, in the words they would use.
     static int runHistoryWindow(const juce::String& path, const std::string& explicitVolume,
                                 const juce::File& dataOverride)
     {
@@ -322,7 +322,7 @@ private:
         const auto item = [&content](bool redo) {
             return content.undoMenuText(redo) + (content.undoEnabled(redo) ? "" : " (disabled)");
         };
-        std::cout << "Edit menu: " << item(false) << " / " << item(true) << std::endl;
+        std::cout << "undo / redo: " << item(false) << " / " << item(true) << std::endl;
         return writePng(view, path);
     }
 
@@ -339,7 +339,7 @@ private:
             const auto timeline = store.cardTimeline();
             const auto targets = store.offeredTargets();
             const history::undo::Offer offer = history::undo::offerFrom(targets, timeline);
-            std::cout << "Edit menu: " << history::undo::menuText(false, offer) << " / "
+            std::cout << "undo / redo: " << history::undo::menuText(false, offer) << " / "
                       << history::undo::menuText(true, offer) << std::endl;
             std::optional<std::int64_t> target;
             if (which == "undo")

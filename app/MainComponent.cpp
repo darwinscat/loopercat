@@ -795,7 +795,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     setSize(920, 680);
 
     worker.start();
-    refreshUndoOffer(); // the Edit menu names its targets from the first open
+    refreshUndoOffer(); // what Undo would put back, known from the first open
     startTimer(kMidiPollIntervalMs); // presence poll — cheap device-list scan, message thread
 }
 
