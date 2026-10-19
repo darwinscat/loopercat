@@ -6,6 +6,8 @@
 #include "HistoryStore.h"
 #include "SlotStory.h"
 
+#include <loopercat/Rc0.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <string>
@@ -71,10 +73,16 @@ inline constexpr std::string_view kNothingChanged = "nothing changed";
 // the card: the player already has it on the Audio tab, and the store holds
 // no copy — it keeps a take when something replaces it, not before.
 //
-// A row can be restored when it recorded a state (a body), that state's take
-// can be produced (none to produce, or bytes in the store), and it is not
-// the newest row — the state the slot is already in is not somewhere to go
-// back to.
+// A row can be restored when it recorded a state that the restore primitive
+// will put back, and it is not the newest row — the state the slot is
+// already in is not somewhere to go back to. A state is the body the
+// operation left and the take it left beside it (its 'after' side), never
+// the take it archived on the way out: a clear, or an undo that emptied the
+// slot, offers that one for export, and its state is the empty slot.
+// commands::restore puts body and take back together and refuses a pair that
+// disagrees, so the body's own WavStat decides: a body that says the slot
+// holds a loop needs its take, kept in the store; one that says it holds
+// none needs none — a stray file beside it is not part of the state.
 // The first sighting found the slot holding no take: no audio was recorded
 // on its side of the slot, and the sighting did not fail there.
 inline bool emptyAtFirstSight(const HistoryStore::TimelineEntry& entry)
@@ -131,7 +139,11 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     if (entry.subjectOnly && entry.status == "done" && row.line.detail.empty())
         row.line.detail = std::string(kNothingChanged);
     row.playable = entry.takeKept;
-    row.restorable = !newest && entry.afterBody.has_value() && (!hasTake || entry.takeKept);
+    const bool stateTake = hasTake && entry.takeIsAfter;
+    const bool bodyHoldsLoop = entry.afterBody
+        && rc0::sectionField(*entry.afterBody, rc0::kSectionTrack1, "WavStat") == rc0::kWavStatIndexed;
+    row.restorable = !newest && entry.afterBody.has_value() && bodyHoldsLoop == stateTake
+        && (!stateTake || entry.takeKept);
     if (entry.takeKept && entry.takeHash) {
         row.takeHash = *entry.takeHash;
         row.takeName = entry.takeName;

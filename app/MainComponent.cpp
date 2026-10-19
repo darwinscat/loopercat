@@ -1405,7 +1405,8 @@ void MainComponent::restoreFromHistory(std::int64_t op)
                   if (!entry.afterBody)
                       throw Error("that row recorded no state to go back to");
                   state.body = *entry.afterBody;
-                  if (entry.takeHash) {
+                  // The take the operation left in the slot, not the one it archived.
+                  if (entry.takeHash && entry.takeIsAfter) {
                       const auto bytes = rec->store().takeBytes(*entry.takeHash);
                       if (!bytes)
                           throw Error("the take of that state is no longer kept");

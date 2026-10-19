@@ -58,7 +58,8 @@ inline void restoreOperation(HistoryStore& store, std::int64_t op, const std::fi
             throw Error("that row recorded no state for slot " + std::to_string(touched.slot));
         commands::SlotState state;
         state.body = *touched.facts.afterBody;
-        if (touched.facts.takeHash) {
+        // The take the operation left in the slot, not the one it archived.
+        if (touched.facts.takeHash && touched.facts.takeIsAfter) {
             std::optional<std::string> bytes = store.takeBytes(*touched.facts.takeHash);
             if (!bytes)
                 throw Error("the take of slot " + std::to_string(touched.slot)

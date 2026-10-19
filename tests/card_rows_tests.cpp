@@ -23,10 +23,14 @@ using Card = loopercat::history::HistoryStore::CardEntry;
 
 namespace {
 
+// A body as the card writes it: a slot with a loop says so (WavStat) beside
+// its length, an empty one says neither.
 std::string bodyWith(long long wavLen, const std::string& name)
 {
     std::string body = rc0::setSectionField(rc0::factorySlotBody(42), rc0::kSectionTrack1,
                                             "WavLen", wavLen);
+    body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat",
+                                wavLen > 0 ? rc0::kWavStatIndexed : rc0::kWavStatNone);
     return rc0::setName(body, name);
 }
 
@@ -54,6 +58,16 @@ Card::Slot touched(const Card& card, int slot, bool newest)
     out.facts.status = card.status;
     out.facts.note = card.note;
     return out;
+}
+
+// The take a state with a loop holds, kept in the store: the recorder writes
+// it beside the body after every operation the app finishes.
+void keptTake(Card::Slot& slot, const std::string& name, char hashByte)
+{
+    slot.facts.takeName = name;
+    slot.facts.takeHash = std::string(32, hashByte);
+    slot.facts.takeKept = true;
+    slot.facts.takeIsAfter = true;
 }
 
 } // namespace
@@ -103,6 +117,7 @@ int main()
         slot.facts.beforeBody = empty;
         slot.facts.afterBody = loaded;
         slot.facts.takeName = "take.wav";
+        slot.facts.takeIsAfter = true; // the take the operation left in the slot
         slot.facts.takeHash = std::string(32, '\x11');
         slot.facts.takeKept = true;
         pushed.slots = { slot };
@@ -123,6 +138,7 @@ int main()
         slot.facts.beforeBody = empty;
         slot.facts.afterBody = loaded;
         slot.facts.takeName = "take.wav";
+        slot.facts.takeIsAfter = true; // the take the operation left in the slot
         slot.facts.takeHash = std::string(32, '\x33');
         slot.facts.takeKept = false; // released, or never kept
         pushed.slots = { slot };
@@ -164,12 +180,14 @@ int main()
         a.facts.beforeBody = loaded;
         a.facts.afterBody = shorter;
         a.facts.takeName = "a.wav";
+        a.facts.takeIsAfter = true; // the take the operation left in the slot
         a.facts.takeHash = std::string(32, '\x11');
         a.facts.takeKept = true;
         Card::Slot b = touched(two, 2, false);
         b.facts.beforeBody = loaded;
         b.facts.afterBody = shorter;
         b.facts.takeName = "b.wav";
+        b.facts.takeIsAfter = true; // the take the operation left in the slot
         b.facts.takeHash = std::string(32, '\x22');
         b.facts.takeKept = false; // this one's bytes are gone
         two.slots = { a, b };
@@ -187,6 +205,7 @@ int main()
         slot.facts.beforeBody = empty;
         slot.facts.afterBody = loaded;
         slot.facts.takeName = "take.wav";
+        slot.facts.takeIsAfter = true; // the take the operation left in the slot
         slot.facts.takeHash = std::string(32, '\x11');
         slot.facts.takeKept = true;
         Card trimmed = op(2, 2000, "trim");
@@ -194,6 +213,7 @@ int main()
         later.facts.beforeBody = loaded;
         later.facts.afterBody = shorter;
         later.facts.takeName = "take.wav";
+        later.facts.takeIsAfter = true; // the take the operation left in the slot
         later.facts.takeHash = std::string(32, '\x22');
         pushed.slots = { slot };
         trimmed.slots = { later };
@@ -275,6 +295,7 @@ int main()
         Card::Slot c = touched(mixed, 12, false);
         c.facts.beforeBody = loaded;
         c.facts.afterBody = shorter;
+        keptTake(c, "c.wav", '\x51');
         mixed.slots = { c };
         mixed.subjects = { 43 };
         CHECK(rows::forCard({ mixed }).front().slots() == (std::vector<int> { 12, 43 }));
@@ -292,9 +313,11 @@ int main()
         Card::Slot a = touched(two, 40, false);
         a.facts.beforeBody = loaded;
         a.facts.afterBody = shorter;
+        keptTake(a, "a.wav", '\x52');
         Card::Slot b = touched(two, 3, false);
         b.facts.beforeBody = loaded;
         b.facts.afterBody = shorter;
+        keptTake(b, "b.wav", '\x53');
         two.slots = { b, a };
         two.subjects = { 7, 12, 40 };
         const auto made = rows::forCard({ two });

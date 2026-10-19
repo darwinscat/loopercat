@@ -25,10 +25,14 @@ using Entry = loopercat::history::HistoryStore::TimelineEntry;
 
 namespace {
 
+// A body as the card writes it: a slot with a loop says so (WavStat) beside
+// its length, an empty one says neither.
 std::string bodyWith(long long wavLen, const std::string& name)
 {
     std::string body = rc0::setSectionField(rc0::factorySlotBody(42), rc0::kSectionTrack1,
                                             "WavLen", wavLen);
+    body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat",
+                                wavLen > 0 ? rc0::kWavStatIndexed : rc0::kWavStatNone);
     return rc0::setName(body, name);
 }
 
@@ -76,6 +80,7 @@ int main()
         pushed.takeName = "take.wav";
         pushed.takeHash = std::string(32, '\x11');
         pushed.takeKept = true;
+        pushed.takeIsAfter = true;
         Entry trimmed = op(2, "trim");
         trimmed.beforeBody = loaded;
         trimmed.afterBody = bodyWith(441000, "TEST_42_HIST");
@@ -285,10 +290,11 @@ int main()
         CHECK_EQ(cut[0].line.detail, cutTrim.note);
         CHECK_EQ(cut[1].state, std::string("failed"));
         CHECK_EQ(cut[1].line.detail, failedTempo.note);
-        // the state a cut-off write recorded can be offered back like any
-        // other (it is not where the slot is); the last state row is the
-        // slot's place, whatever its outcome, so it is not somewhere to go back to
-        CHECK(cut[0].restorable);
+        // the state a cut-off write recorded says the slot holds a loop and
+        // carries no take beside it: the restore primitive would refuse the
+        // pair, so it is not offered. The last state row is the slot's place,
+        // whatever its outcome, so it is not somewhere to go back to either.
+        CHECK(!cut[0].restorable);
         CHECK(!cut[1].restorable);
 
         // an interrupted row without a reason keeps the numbers it recorded, and the state

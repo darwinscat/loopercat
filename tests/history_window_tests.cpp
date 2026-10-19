@@ -73,7 +73,10 @@ HistoryWindow::Row firstSeen(const std::vector<int>& withTakes)
         touched.facts.actor = entry.actor;
         touched.facts.status = entry.status;
         if (std::find(withTakes.begin(), withTakes.end(), slot) != withTakes.end()) {
-            touched.facts.afterBody = rc0::factorySlotBody(slot);
+            touched.facts.afterBody = rc0::setSectionField(
+                rc0::setSectionField(rc0::factorySlotBody(slot), rc0::kSectionTrack1, "WavStat",
+                                     rc0::kWavStatIndexed),
+                rc0::kSectionTrack1, "WavLen", 441000); // a slot with a loop says so
             touched.facts.takeName = "TEST_" + std::to_string(slot) + ".WAV";
             touched.facts.takeHash = std::string(32, static_cast<char>(slot));
             touched.facts.takeKept = true;

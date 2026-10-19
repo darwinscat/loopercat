@@ -25,10 +25,14 @@ using historymenu::Item;
 
 namespace {
 
+// A body as the card writes it: a slot with a loop says so (WavStat) beside
+// its length, an empty one says neither.
 std::string bodyWith(long long wavLen, const std::string& name)
 {
     std::string body = rc0::setSectionField(rc0::factorySlotBody(42), rc0::kSectionTrack1,
                                             "WavLen", wavLen);
+    body = rc0::setSectionField(body, rc0::kSectionTrack1, "WavStat",
+                                wavLen > 0 ? rc0::kWavStatIndexed : rc0::kWavStatNone);
     return rc0::setName(body, name);
 }
 
@@ -115,16 +119,23 @@ int main()
         Entry renamed = op(2, "rename");
         renamed.beforeBody = loaded;
         renamed.afterBody = rc0::setName(loaded, "RENAMED");
+        // The recorder writes the take a slot holds after every operation:
+        // a rename's state is its body and that same take.
+        renamed.takeName = "take.wav";
+        renamed.takeHash = hash;
+        renamed.takeKept = kept;
+        renamed.takeIsAfter = true;
         checkMenu({ pushed, renamed }, 0,
                   { kept ? "an older push, take kept" : "an older push, take released", kept, kept });
-        // A rename records a body and no take: a state to go back to, nothing to export.
+        // An older rename: its state goes back only with its take in the store.
         Entry pushedAgain = op(3, "push");
         pushedAgain.beforeBody = renamed.afterBody;
         pushedAgain.afterBody = loaded;
         pushedAgain.takeName = "other.wav";
         pushedAgain.takeHash = std::string(32, '\x22');
         pushedAgain.takeIsAfter = true;
-        checkMenu({ pushed, renamed, pushedAgain }, 1, { "an older rename", true, false });
+        checkMenu({ pushed, renamed, pushedAgain }, 1,
+                  { kept ? "an older rename, take kept" : "an older rename, take released", kept, kept });
     }
 
     // A clear: the newest row, so nothing to restore — its take left the
