@@ -1094,6 +1094,23 @@ target_link_libraries(history_pane_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_pane_tests COMMAND history_pane_tests)
 
+# The card sweep after it moved from the Maintenance menu to a Settings tab
+# (0.9.6): the gate as a function of what the window knows, and the thin tab
+# over it.
+juce_add_console_app(maintenance_tests PRODUCT_NAME "maintenance_tests")
+target_sources(maintenance_tests PRIVATE tests/maintenance_tests.cpp)
+target_compile_definitions(maintenance_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(maintenance_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME maintenance_tests COMMAND maintenance_tests)
+
 # The app menu, all that is left of the menu bar (0.9.6): About LooperCat and
 # nothing else, with the old items' ids dead.
 juce_add_console_app(app_menu_tests PRODUCT_NAME "app_menu_tests")

@@ -1429,6 +1429,11 @@ void MainComponent::updateToolbar()
     connectButton.setEnabled(midiPedalPresent && !pedalBusy && !connectQueryPending
                              && snapshot.state == lifecycle::State::disconnected
                              && !connectAttempt.active() && !connectHoldActive());
+    // The card sweep is gated on the same facts, and its tab is live while
+    // the player watches: push the offer again rather than make them reopen
+    // Settings to see the button wake up.
+    if (maintenancePanel != nullptr)
+        maintenancePanel->show(maintenanceOffer());
 }
 
 // The card's identity, from the card itself (issues #98, #99). The marker at
@@ -1609,6 +1614,14 @@ void MainComponent::savePedalBook()
         file->setValue(kPedalBookKey, juce::String::fromUTF8(pedalBook.serialize().c_str()));
         file->saveIfNeeded();
     }
+}
+
+maintenance::Offer MainComponent::maintenanceOffer() const
+{
+    return maintenance::offer({ .connected = snapshot.state == lifecycle::State::connected
+                                    && snapshot.error.empty(),
+                                .busy = pedalBusy,
+                                .family = snapshot.family });
 }
 
 void MainComponent::runCleanJunk()
@@ -3070,6 +3083,13 @@ std::unique_ptr<SettingsDialog> MainComponent::makeSettingsDialog()
     // The storage panel (issue #74) is fed by the worker, where the store
     // lives, and reads nothing itself. A SafePointer, because the dialog may
     // be closed while a read or a release is still on the worker's queue.
+    // The card sweep, where the Maintenance menu used to be: the panel says
+    // what is on offer and the window answers the press, exactly as the menu
+    // item did. The offer is pushed now and again on every toolbar refresh.
+    maintenancePanel = juce::Component::SafePointer<MaintenancePanel>(&dialog->maintenance());
+    dialog->maintenance().onCleanJunk = [this] { runCleanJunk(); };
+    dialog->maintenance().show(maintenanceOffer());
+
     juce::Component::SafePointer<HistoryStoragePanel> panel(&dialog->storage());
     dialog->storage().onLimitChanged = [this, panel](std::int64_t bytes) {
         if (auto* file = settings.file()) {

@@ -215,6 +215,10 @@ private:
     void trace(const juce::String& line); // one step of a connection into operations.log
 
     void runCleanJunk();
+    // Whether the card sweep is on offer, and why not: the gates the
+    // Maintenance menu used to carry, now read by its Settings tab
+    // (MaintenanceOffer.h).
+    maintenance::Offer maintenanceOffer() const;
     void restoreListening(); // the selected occupied slot is the one in the player
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
@@ -276,6 +280,11 @@ private:
     juce::String historyEditOutcome;
     int historyRows = 0; // what the tab last received, for the --history seam
     void applyColumnPreferences();          // Settings -> Columns, onto the table
+    // The Maintenance tab of a Settings dialog that is open right now: its
+    // button follows the pedal, so the window pushes the offer again
+    // whenever the toolbar's own gate moves. Null when no dialog is open,
+    // and a SafePointer because the player can close one at any moment.
+    juce::Component::SafePointer<MaintenancePanel> maintenancePanel;
     // Settings -> History (issue #74): the limit in force, the read that
     // feeds the panel, and the press that frees what it offered.
     std::int64_t historyLimit();
