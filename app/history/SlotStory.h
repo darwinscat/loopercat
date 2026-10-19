@@ -257,6 +257,14 @@ inline Line tell(const Facts& facts)
             (void) was;
             line.detail = "back to " + (now > 0 ? minutes(now) : std::string("empty"));
         }
+    } else if (facts.kind == "rhythm") {
+        // The slot's drums and the pedal's Start & Stop, by the names the
+        // app gives them — the rows outlive the tabs that set them.
+        line.action = "Rhythm";
+        line.detail = facts.note;
+    } else if (facts.kind == "playstop") {
+        line.action = "Start & Stop";
+        line.detail = facts.note;
     } else if (facts.kind == "downmix") {
         line.action = "Folded to mono";
         line.detail = facts.note;

@@ -169,6 +169,21 @@ int main()
         CHECK_EQ(line.audio, std::string("take no longer kept"));
     }
 
+    // --- the app's own names for a slot's drums and its Start & Stop, never
+    // the kinds the store files them under ---
+    {
+        const story::Line rhythm = story::tell({ .kind = "rhythm", .beforeBody = pushed,
+                                                 .afterBody = pushed, .status = "done" });
+        CHECK_EQ(rhythm.action, std::string("Rhythm"));
+        const story::Line playStop = story::tell({ .kind = "playstop", .beforeBody = pushed,
+                                                   .afterBody = pushed, .status = "done" });
+        CHECK_EQ(playStop.action, std::string("Start & Stop"));
+        for (const story::Line& line : { rhythm, playStop }) {
+            CHECK(line.action.find("rhythm") == std::string::npos);
+            CHECK(line.action.find("playstop") == std::string::npos);
+        }
+    }
+
     // --- a row this build has no words for says its own name ---
     {
         const story::Line line = story::tell({ .kind = "teleport", .note = "to slot 99" });

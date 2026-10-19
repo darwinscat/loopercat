@@ -529,6 +529,16 @@ int main()
         e.system.push_back({ "CTL", "<CTL></CTL>", "<CTL>x</CTL>" });
         CHECK_EQ(undo::operationWords(e), std::string("frobnicate of slot 1 and the pedal settings"));
         CHECK_EQ(undo::menuText(false, {}), std::string("Undo"));
+        // the app's names, not the store's kinds
+        HistoryStore::CardEntry drums;
+        drums.kind = "rhythm";
+        drums.slots.resize(1);
+        drums.slots[0].slot = 4;
+        CHECK_EQ(undo::operationWords(drums), std::string("Rhythm change of slot 4"));
+        drums.kind = "playstop";
+        CHECK_EQ(undo::operationWords(drums), std::string("Start & Stop change of slot 4"));
+        CHECK_EQ(undo::kindWords("rhythm"), std::string("Rhythm change"));
+        CHECK_EQ(undo::kindWords("playstop"), std::string("Start & Stop change"));
     }
 
     // --- a section spliced back: only its bytes change ---
