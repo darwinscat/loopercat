@@ -49,11 +49,13 @@ int main()
         CHECK(d.verdict == connectgate::Verdict::sendFrame);
         CHECK(d.reason.empty());
     }
-    // the sentence is one line of plain text with a real dash, no placeholder
+    // the sentence is one line of plain ASCII text, no placeholder: words
+    // made outside JUCE are ASCII, so they cannot arrive as Latin-1
     {
         const std::string s = connectgate::kBusySentence;
         CHECK(s.find('\n') == std::string::npos);
-        CHECK(s.find("\xe2\x80\x94") != std::string::npos);
+        for (const char c : s)
+            CHECK(static_cast<unsigned char>(c) < 0x80);
         CHECK(s.find('?') == std::string::npos);
     }
     return testkit::summary("connect_gate_tests");

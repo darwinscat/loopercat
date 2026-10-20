@@ -111,7 +111,7 @@ public:
         case Refusal::ghost:
         case Refusal::ejected:
             return std::string("pedal is ") + lifecycle::stateName(stateOf(refusal))
-                 + " \xe2\x80\x94 refusing to touch the volume";
+                 + " - refusing to touch the volume";
         case Refusal::noVolume:
             return "no pedal volume mounted";
         }

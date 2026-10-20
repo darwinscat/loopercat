@@ -287,7 +287,7 @@ int main()
 
     CHECK_THROWS(rc0::encodeName("ThirteenChars"), "longer than 12");
     CHECK_THROWS(rc0::encodeName(""), "non-empty");
-    CHECK_THROWS(rc0::encodeName("K\xd0\x9eTIK"), "ASCII"); // non-ASCII bytes
+    CHECK_THROWS(rc0::encodeName("K\xd0\x9eTIK"), "ASCII"); // non-ASCII bytes; utf8-data: a name the card cannot hold
     CHECK_THROWS(rc0::encodeName("tab\there"), "ASCII");    // control chars
     CHECK_EQ(rc0::encodeName("Cold Gaze"), "Cold Gaze   ");
 
@@ -308,7 +308,7 @@ int main()
     }
 
     CHECK_THROWS(rc0::decodeName("<C01>65</C01>"), "expected 12");
-    CHECK_THROWS(rc0::setName(rc0::slotBody(FILE_TEXT, 1), "\xd0\x9a\xd0\x9e\xd0\xa2"), "ASCII");
+    CHECK_THROWS(rc0::setName(rc0::slotBody(FILE_TEXT, 1), "\xd0\x9a\xd0\x9e\xd0\xa2"), "ASCII");  // utf8-data: a name the card cannot hold
     CHECK_THROWS(rc0::setName("<TRACK1></TRACK1>", "Name"), "missing <NAME>");
 
     // A char code that cannot be a byte is refused, not silently masked.

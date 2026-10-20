@@ -101,7 +101,7 @@ inline std::optional<State> parseReply(std::span<const std::uint8_t> frame,
     }
     static constexpr char digits[] = "0123456789abcdef";
     throw Error(std::string("the pedal's storage register reads 0x") + digits[value >> 4] + digits[value & 0x0F]
-                + " \xe2\x80\x94 a state this app does not know");
+                + " - a state this app does not know");
 }
 
 // For logs and probes — not the words a player sees (those are the window's).

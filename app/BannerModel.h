@@ -116,11 +116,11 @@ private:
         switch (state_) {
         case lifecycle::State::ghost:
             return Line { commands::Level::error,
-                          "The pedal left without an eject \xe2\x80\x94 what you see is a stale "
-                          "copy and nothing reaches the pedal. Cleaning up\xe2\x80\xa6" };
+                          "The pedal left without an eject - what you see is a stale "
+                          "copy and nothing reaches the pedal. Cleaning up..." };
         case lifecycle::State::ejected:
             return Line { commands::Level::info,
-                          "Volume ejected \xe2\x80\x94 safe to disconnect the pedal." };
+                          "Volume ejected - safe to disconnect the pedal." };
         case lifecycle::State::disconnected:
         case lifecycle::State::connected:
         case lifecycle::State::ejecting:

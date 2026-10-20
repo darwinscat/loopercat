@@ -57,18 +57,18 @@ inline Verdict describe(const std::vector<Seen>& pedals)
     if (!readable.empty()) {
         out.connectable = true;
         if (readable.size() == 1) {
-            out.hint = readable.front() + " detected \xe2\x80\x94 click Connect to browse loops";
-            out.status = readable.front() + " on USB \xe2\x80\x94 ready to connect";
+            out.hint = readable.front() + " detected - click Connect to browse loops";
+            out.status = readable.front() + " on USB - ready to connect";
         } else {
             const std::string n = std::to_string(readable.size());
-            out.hint = n + " loopers detected \xe2\x80\x94 click Connect and choose one";
-            out.status = n + " loopers on USB \xe2\x80\x94 ready to connect";
+            out.hint = n + " loopers detected - click Connect and choose one";
+            out.status = n + " loopers on USB - ready to connect";
         }
         return out;
     }
     if (!closed.empty()) {
-        out.hint = closed.front() + " detected \xe2\x80\x94 " + profile::onlySpeaks();
-        out.status = closed.front() + " on USB \xe2\x80\x94 not readable yet";
+        out.hint = closed.front() + " detected - " + profile::onlySpeaks();
+        out.status = closed.front() + " on USB - not readable yet";
         return out;
     }
     out.hint = "Connect your looper via USB";

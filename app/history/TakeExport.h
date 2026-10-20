@@ -7,9 +7,13 @@
 
 #include <loopercat/Commands.hpp>
 
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 //==============================================================================
 // loopercat::history::exportTake — an archived take, written where the
@@ -25,8 +29,38 @@ namespace loopercat::history
 {
 
 inline constexpr const char* kExportPartial = ".part";
+inline constexpr std::string_view kExportExtension = ".wav";
 
-// Returns the bytes written.
+// The name the save dialog proposes for a take: the take's own name, the one
+// the card gave it and the row shows, so the file a player saves is the take
+// they recognize. It gains ".wav" only when it does not end so already, in
+// any case — the pedal's own recordings are upper case. A take without a name
+// (the store requires one, so this is a row from elsewhere) is proposed as
+// "slot N take.wav": the dialog still opens on something the player can
+// recognize and change.
+inline std::string exportName(const std::string& takeName, int slot)
+{
+    if (takeName.empty())
+        return "slot " + std::to_string(slot) + " take" + std::string(kExportExtension);
+    const bool hasExtension = takeName.size() >= kExportExtension.size()
+        && std::equal(kExportExtension.begin(), kExportExtension.end(),
+                      takeName.end() - static_cast<std::ptrdiff_t>(kExportExtension.size()),
+                      [](char want, char got) {
+                          return want == static_cast<char>(std::tolower(static_cast<unsigned char>(got)));
+                      });
+    return hasExtension ? takeName : takeName + std::string(kExportExtension);
+}
+
+// A path as words for a sentence: its own UTF-8, never the host's narrow
+// code page (Windows), in which a folder named outside it is not spelled.
+inline std::string pathWords(const std::filesystem::path& path)
+{
+    const std::u8string text = path.u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
+// Returns the bytes written. A refusal names the file the player chose, not
+// the partial name the bytes went under on their way.
 inline std::int64_t exportTake(HistoryStore& store, const std::string& hash,
                                const std::filesystem::path& file)
 {
@@ -35,10 +69,14 @@ inline std::int64_t exportTake(HistoryStore& store, const std::string& hash,
     const std::optional<std::string> bytes = store.takeBytes(hash);
     if (!bytes)
         throw Error("that take is no longer kept in the history");
-    const std::filesystem::path partial(file.string() + kExportPartial);
+    std::filesystem::path partial = file;
+    partial += kExportPartial; // the path's own characters, whatever the code page
     std::error_code ec;
     try {
         commands::writeFileBytes(partial, *bytes);
+    } catch (const Error&) {
+        std::filesystem::remove(partial, ec);
+        throw Error("cannot write " + pathWords(file));
     } catch (...) {
         std::filesystem::remove(partial, ec);
         throw;
@@ -47,7 +85,7 @@ inline std::int64_t exportTake(HistoryStore& store, const std::string& hash,
     if (ec) {
         std::error_code ignored;
         std::filesystem::remove(partial, ignored);
-        throw Error("cannot write " + file.string() + ": " + ec.message());
+        throw Error("cannot write " + pathWords(file) + ": " + ec.message());
     }
     return static_cast<std::int64_t>(bytes->size());
 }

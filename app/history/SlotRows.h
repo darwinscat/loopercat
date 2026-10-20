@@ -6,6 +6,8 @@
 #include "HistoryStore.h"
 #include "SlotStory.h"
 
+#include <loopercat/Rc0.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <string>
@@ -38,6 +40,7 @@ struct Row {
     bool playable = false;   // its take's bytes are in the store
     bool restorable = false; // its state can be put back onto the card
     std::string takeHash;    // the bytes Play would sound, empty when there are none
+    std::string takeName;    // their name on the card, beside the hash: what Export proposes
 };
 
 // The words for an operation's outcome or origin, shared by the slot's rows
@@ -59,16 +62,42 @@ inline std::string stateWords(const std::string& status, const std::string& acto
 // no word for what it did there: nothing, by its own account.
 inline constexpr std::string_view kNothingChanged = "nothing changed";
 
+// What a slot's first-sighting row counts as once the slot is photographed.
+inline const std::string kSightingDone = "done";
+
 // The rows of one slot, in the order the store gave them (oldest first).
+//
+// A slot that was empty when the card was first seen has no Original row:
+// there was nothing there, and a row saying so would read as something that
+// happened. A first sighting that failed for the slot keeps its row — the
+// slot was not seen, which is not the same as empty.
 //
 // The newest row is the state the slot is in now, so its take is the one on
 // the card: the player already has it on the Audio tab, and the store holds
 // no copy — it keeps a take when something replaces it, not before.
 //
-// A row can be restored when it recorded a state (a body), that state's take
-// can be produced (none to produce, or bytes in the store), and it is not
-// the newest row — the state the slot is already in is not somewhere to go
-// back to.
+// A row can be restored when it recorded a state that the restore primitive
+// will put back, and it is not the newest row — the state the slot is
+// already in is not somewhere to go back to. A state is the body the
+// operation left and the take it left beside it (its 'after' side), never
+// the take it archived on the way out: a clear, or an undo that emptied the
+// slot, offers that one for export, and its state is the empty slot.
+// commands::restore puts body and take back together and refuses a pair that
+// disagrees, so the body's own WavStat decides: a body that says the slot
+// holds a loop needs its take, kept in the store; one that says it holds
+// none needs none — a stray file beside it is not part of the state.
+// The first sighting found the slot empty: no take on its side of the slot,
+// a body that says it holds no loop (WavStat, what the Audio tab reads), and
+// a read that did not fail there. A body that claims a loop beside an empty
+// folder was not seen empty.
+inline bool emptyAtFirstSight(const HistoryStore::TimelineEntry& entry)
+{
+    return entry.kind == "snapshot" && entry.status != "failed" && entry.takeCount == 0
+        && entry.takeName.empty() && !entry.takeHash
+        && (!entry.afterBody
+            || rc0::sectionField(*entry.afterBody, rc0::kSectionTrack1, "WavStat") != rc0::kWavStatIndexed);
+}
+
 // One row from what one operation recorded about one slot. `newest` is
 // whether that operation is the last one on the slot — the rule above — and
 // it is the caller's to say, because a slot's own timeline and the whole
@@ -93,6 +122,13 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
             : entry.takeKept   ? story::Take::kept
                                : story::Take::lost;
 
+    // A first sighting commits slot by slot: a slot it photographed is whole
+    // while the sighting still runs, and after it was cut off at another
+    // slot. That slot's row is its Original, finished; the interruption is
+    // the card's row's to tell. Only a slot the sighting failed to read says so.
+    const std::string& status =
+        entry.kind == "snapshot" && entry.status != "failed" ? kSightingDone : entry.status;
+
     Row row;
     row.op = entry.op;
     row.at = entry.at;
@@ -102,12 +138,14 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                              .swappedWith = entry.swappedWith,
                              .takeName = entry.takeName,
                              .take = take,
-                             .status = entry.status,
-                             .note = entry.note });
-    row.state = stateWords(entry.status, entry.actor);
+                             .status = status,
+                             .note = entry.note,
+                             .at = entry.at,
+                             .restoredAt = entry.restoredAt });
+    row.state = stateWords(status, entry.actor);
     // A row that did not finish carries its reason where its numbers would
     // be: what it recorded on the way is not what the slot came to hold.
-    if (entry.status != "done" && !entry.note.empty())
+    if (status != "done" && !entry.note.empty())
         row.line.detail = entry.note;
     // A finished operation that was about the slot and has no word for what
     // it did there did nothing there — said plainly, so "Renamed" with no
@@ -115,9 +153,15 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
     if (entry.subjectOnly && entry.status == "done" && row.line.detail.empty())
         row.line.detail = std::string(kNothingChanged);
     row.playable = entry.takeKept;
-    row.restorable = !newest && entry.afterBody.has_value() && (!hasTake || entry.takeKept);
-    if (entry.takeKept && entry.takeHash)
+    const bool stateTake = hasTake && entry.takeIsAfter;
+    const bool bodyHoldsLoop = entry.afterBody
+        && rc0::sectionField(*entry.afterBody, rc0::kSectionTrack1, "WavStat") == rc0::kWavStatIndexed;
+    row.restorable = !newest && entry.afterBody.has_value() && bodyHoldsLoop == stateTake
+        && (!stateTake || entry.takeKept);
+    if (entry.takeKept && entry.takeHash) {
         row.takeHash = *entry.takeHash;
+        row.takeName = entry.takeName;
+    }
     return row;
 }
 
@@ -134,7 +178,8 @@ inline std::vector<Row> forSlot(const std::vector<HistoryStore::TimelineEntry>& 
     std::vector<Row> out;
     out.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i)
-        out.push_back(one(entries[i], i == newest));
+        if (!emptyAtFirstSight(entries[i]))
+            out.push_back(one(entries[i], i == newest));
     return out;
 }
 
