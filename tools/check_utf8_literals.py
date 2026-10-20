@@ -14,8 +14,14 @@ written in ASCII instead. Bytes that are data, not words (a FAT name with an
 accent, a malformed sequence a parser must refuse), are allowed by a comment
 on the literal's first line: `// utf8-data: <why>`.
 
-Wide (L), UTF-16/32 (u, U) and u8 literals are not narrow bytes and are not
-checked. Comments are free text.
+Whatever the literal - narrow or wide, u8, a character, inside fromUTF8 or
+marked as data - a byte above 0x7f is written as an escape, never typed
+raw: MSVC reads a source in the system's code page, so an n-tilde typed in
+u8"..." compiles to other bytes on Windows than on a Mac (CI, 0.9.6).
+
+Wide (L), UTF-16/32 (u, U) and u8 literals are not narrow bytes, so the
+first rule leaves them alone; the second holds for them too. Comments are
+free text.
 
 Usage: check_utf8_literals.py <dir-or-file>...   Prints file:line for each
 literal that breaks the rule and exits 1; exits 0 when there is none.
@@ -34,14 +40,15 @@ ALL_PREFIXES = ("u8", "u", "U", "L")
 
 
 class Token:
-    __slots__ = ("kind", "value", "line", "narrow", "wide_bytes")
+    __slots__ = ("kind", "value", "line", "narrow", "wide_bytes", "typed_high")
 
-    def __init__(self, kind, value, line, narrow=False, wide_bytes=False):
-        self.kind = kind  # "id", "str", "punct", "other"
+    def __init__(self, kind, value, line, narrow=False, wide_bytes=False, typed_high=False):
+        self.kind = kind  # "id", "str", "char", "punct", "other"
         self.value = value
         self.line = line
         self.narrow = narrow
         self.wide_bytes = wide_bytes  # holds a byte above 0x7f
+        self.typed_high = typed_high  # a character above 0x7f typed raw in the source
 
 
 def _escape_is_high(text, k):
@@ -137,8 +144,9 @@ def tokenize(source):
                 if end < 0:
                     raise SyntaxError(f"line {line_of[i]}: a raw string that never ends")
                 body = text[close_paren + 1:end]
+                high = any(ord(ch) > 0x7F for ch in body)
                 tokens.append(Token("str", body, line_of[i], narrow=(word == "R"),
-                                    wide_bytes=any(ord(ch) > 0x7F for ch in body)))
+                                    wide_bytes=high, typed_high=high))
                 i = end + len(delimiter) + 2
                 continue
             if j < n and text[j] in "\"'" and word in ALL_PREFIXES:
@@ -164,14 +172,14 @@ def tokenize(source):
             i = j
             continue
         if c in "\"'":
-            quote, j, high = c, i + 1, False
+            quote, j, high, typed = c, i + 1, False, False
             while j < n and text[j] != quote and text[j] != "\n":
                 if text[j] == "\\" and j + 1 < n:
                     escaped_high, j = _escape_is_high(text, j + 1)
                     high = high or escaped_high
                     continue
                 if ord(text[j]) > 0x7F:
-                    high = True
+                    high = typed = True
                 j += 1
             if j >= n or text[j] != quote:
                 # No closing quote on its line: not a literal the compiler
@@ -181,9 +189,9 @@ def tokenize(source):
                 continue
             if quote == '"':
                 tokens.append(Token("str", text[i + 1:j], line_of[i],
-                                    narrow=prefix in NARROW_PREFIXES, wide_bytes=high))
+                                    narrow=prefix in NARROW_PREFIXES, wide_bytes=high, typed_high=typed))
             else:
-                tokens.append(Token("other", text[i:j + 1], line_of[i]))
+                tokens.append(Token("char", text[i:j + 1], line_of[i], typed_high=typed))
             i = j + 1
             continue
         tokens.append(Token("punct", c, line_of[i]))
@@ -197,6 +205,8 @@ def violations(text):
     out = []
     k = 0
     while k < len(tokens):
+        if tokens[k].kind == "char" and tokens[k].typed_high:
+            out.append(tokens[k].line)  # a typed character: the code page decides its bytes
         if tokens[k].kind != "str":
             k += 1
             continue
@@ -204,7 +214,9 @@ def violations(text):
         while end < len(tokens) and tokens[end].kind == "str":
             end += 1
         run = tokens[k:end]
-        if any(t.narrow and t.wide_bytes for t in run):
+        if any(t.typed_high for t in run):
+            out.append(run[0].line)  # typed, not escaped: the code page decides its bytes
+        elif any(t.narrow and t.wide_bytes for t in run):
             direct = (k >= 2 and tokens[k - 1].kind == "punct" and tokens[k - 1].value == "("
                       and tokens[k - 2].kind == "id" and tokens[k - 2].value in UTF8_SINKS
                       and end < len(tokens) and tokens[end].kind == "punct"
@@ -245,11 +257,12 @@ def main(argv):
             found += 1
             continue
         for line in lines:
-            print(f"{path}:{line}: a non-ASCII string literal outside fromUTF8(...) or utf8(...)")
+            print(f"{path}:{line}: a non-ASCII literal typed raw, or outside fromUTF8(...) or utf8(...)")
             found += 1
     if found:
-        print(f"{found} literal(s) would reach JUCE as Latin-1; write them through fromUTF8/utf8, "
-              f"in ASCII, or mark data with '// {DATA_MARKER} <why>'")
+        print(f"{found} literal(s) would reach JUCE as Latin-1 or compile to other bytes on Windows: "
+              f"write each byte above 0x7f as an escape, through fromUTF8/utf8, in ASCII, "
+              f"or mark data with '// {DATA_MARKER} <why>'")
         return 1
     return 0
 

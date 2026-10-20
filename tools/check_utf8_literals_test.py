@@ -72,14 +72,27 @@ class Caught(unittest.TestCase):
     def test_a_marker_on_another_line_does_not_count(self):
         self.assertEqual(flagged('// utf8-data: a FAT name\nauto s = "caf\\xc3\\xa9";\n'), [2])
 
+    def test_a_typed_character_in_any_literal(self):
+        # MSVC reads a source in the system's code page: a character typed
+        # raw compiles to other bytes on Windows, wherever it sits.
+        for source in ('auto s = juce::String::fromUTF8("a ' + DASH + ' b");\n',
+                       'auto s = utf8("' + DASH + '");\n',
+                       'auto s = "caf\u00e9"; // utf8-data: a FAT name\n',
+                       'auto s = L"' + DASH + '";\n', 'auto s = u"' + DASH + '";\n',
+                       'auto s = U"' + DASH + '";\n', 'auto s = u8"' + DASH + '";\n',
+                       'auto s = LR"(' + DASH + ')";\n', "auto c = '\u00e9';\n",
+                       "auto c = u8'\u00e9';\n"):
+            with self.subTest(source=source):
+                self.assertEqual(flagged(source), [1])
+
 
 class Allowed(unittest.TestCase):
     def test_the_two_sinks(self):
-        for source in ('auto s = juce::String::fromUTF8("a ' + DASH + ' b");\n',
+        for source in ('auto s = juce::String::fromUTF8("a \\xe2\\x80\\x94 b");\n',
                        'auto s = juce::String::fromUTF8 ( "a \\xe2\\x80\\x94 b" );\n',
                        'auto s = juce::String::fromUTF8("\\xe2\\x80\\x94", 3);\n',
-                       'auto s = utf8("' + DASH + '");\n',
-                       'auto s = juce::String::fromUTF8("a "\n    "' + DASH + '");\n'):
+                       'auto s = utf8("\\u2014");\n',
+                       'auto s = juce::String::fromUTF8("a "\n    "\\342\\200\\224");\n'):
             with self.subTest(source=source):
                 self.assertEqual(flagged(source), [])
 
@@ -90,9 +103,9 @@ class Allowed(unittest.TestCase):
         self.assertEqual(flagged('// a ' + DASH + ' b "' + DASH + '"\n/* "' + DASH + '" */ int x;\n'), [])
 
     def test_wide_and_character_literals(self):
-        for source in ('auto s = L"' + DASH + '";\n', 'auto s = u"' + DASH + '";\n',
-                       'auto s = U"' + DASH + '";\n', 'auto s = u8"' + DASH + '";\n',
-                       "char c = '\\xe2';\n", 'auto s = LR"(' + DASH + ')";\n'):
+        for source in ('auto s = L"\\u2014";\n', 'auto s = u"\\u2014";\n',
+                       'auto s = U"\\u2014";\n', 'auto s = u8"\\u2014";\n',
+                       "char c = '\\xe2';\n", 'auto s = LR"(plain)";\n'):
             with self.subTest(source=source):
                 self.assertEqual(flagged(source), [])
 
@@ -127,7 +140,7 @@ class Command(unittest.TestCase):
 
     def test_a_clean_tree_passes(self):
         result = self.run_on({"core/a.hpp": 'auto a = "a - b";\n',
-                              "app/b.cpp": 'auto b = juce::String::fromUTF8("' + DASH + '");\n',
+                              "app/b.cpp": 'auto b = juce::String::fromUTF8("\\xe2\\x80\\x94");\n',
                               "notes.txt": '"' + DASH + '" is not a source file\n'})
         self.assertEqual(result.returncode, 0, result.stdout)
 

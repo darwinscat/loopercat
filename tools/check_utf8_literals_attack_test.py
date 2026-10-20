@@ -89,18 +89,21 @@ class StillCaught(unittest.TestCase):
         self.assertEqual(flagged('auto s = R"(\\u2014 is text here, not an escape)";\n'), [])
 
     def test_wide_raw_strings_are_not_narrow(self):
+        # Not narrow - and a raw string has no escapes, so a byte above 0x7f
+        # in one is always typed, which the code page decides on Windows.
         for prefix in ("u8R", "uR", "UR", "LR"):
             with self.subTest(prefix=prefix):
-                self.assertEqual(flagged('auto s = ' + prefix + '"(' + DASH + ')";\n'), [])
+                self.assertEqual(flagged('auto s = ' + prefix + '"(plain)";\n'), [])
+                self.assertEqual(flagged('auto s = ' + prefix + '"(' + DASH + ')";\n'), [1])
 
     def test_a_user_defined_literal_suffix_keeps_the_literal_narrow(self):
         self.assertEqual(flagged('auto s = "' + DASH + '"sv;\n'), [1])
         self.assertEqual(flagged('auto s = "' + DASH + '"_s;\n'), [1])
-        self.assertEqual(flagged('auto s = u8"' + DASH + '"sv;\n'), [])
+        self.assertEqual(flagged('auto s = u8"\\u2014"sv;\n'), [])
 
     def test_the_sink_with_a_comment_or_a_continuation_before_the_literal(self):
-        self.assertEqual(flagged('auto s = juce::String::fromUTF8(/* words */ "' + DASH + '");\n'), [])
-        self.assertEqual(flagged('auto s = utf8( \\\n    "' + DASH + '" \\\n);\n'), [])
+        self.assertEqual(flagged('auto s = juce::String::fromUTF8(/* words */ "\\u2014");\n'), [])
+        self.assertEqual(flagged('auto s = utf8( \\\n    "\\u2014" \\\n);\n'), [])
 
     def test_a_sink_that_is_only_named_like_one_is_not_trusted_by_a_cast(self):
         self.assertEqual(flagged('auto s = juce::String::fromUTF8((const char*) "' + DASH + '");\n'), [1])

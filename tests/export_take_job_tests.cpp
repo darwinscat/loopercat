@@ -87,9 +87,9 @@ int main()
     // --- a folder and a name in another alphabet, as the save dialog hands
     // them over (juce::File -> fsPath), and the job as the worker reads it ---
     {
-        const fs::path dir = tmp.path / fs::path(std::u8string(u8"papá - café"));
+        const fs::path dir = tmp.path / fs::path(std::u8string(u8"pap\u00e1 - caf\u00e9"));
         fs::create_directories(dir);
-        const fs::path chosen = dir / fs::path(std::u8string(u8"take ñ — one.wav"));
+        const fs::path chosen = dir / fs::path(std::u8string(u8"take \u00f1 \u2014 one.wav"));
         const juce::File asChosen(utf8(chosen.u8string()));
         CHECK(fsPath(asChosen).u8string() == chosen.u8string());
 
