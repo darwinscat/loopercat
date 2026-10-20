@@ -351,7 +351,7 @@ inline commands::SlotState stateFor(HistoryStore& store, const Step& step, const
         if (files.size() > 1)
             throw Error("slot " + std::to_string(step.slot) + " holds " + std::to_string(files.size())
                         + " files on track " + std::to_string(track)
-                        + " — which one stays cannot be told, so nothing was put back");
+                        + " - which one stays cannot be told, so nothing was put back");
         if (files.size() == 1)
             state.takes.push_back({ track, files.front(),
                                     commands::readFileBytes(volume::trackDir(volume, family, step.slot, track)
