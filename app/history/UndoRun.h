@@ -12,6 +12,7 @@
 #include <loopercat/Rc0.hpp>
 #include <loopercat/SystemFile.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -254,12 +255,18 @@ inline std::string describe(const Plan& plan, const std::vector<HistoryStore::Ca
     for (const Step& step : plan.steps) {
         out += "  slot " + std::to_string(step.slot) + ": "
             + (step.body ? "body back" : "body as it is");
-        if (step.keepTake)
+        // A plan about the first track alone reads as a one-track slot's.
+        const bool firstTrackOnly =
+            std::all_of(step.takes.begin(), step.takes.end(), [](const TakeBack& t) { return t.track == 1; })
+            && std::all_of(step.emptied.begin(), step.emptied.end(), [](int t) { return t == 1; });
+        if (step.keepsAudio())
             out += ", its take stays";
-        else if (step.takeName)
-            out += ", take \"" + *step.takeName + "\" back from the history";
-        else
-            out += ", the slot goes empty";
+        for (const TakeBack& take : step.takes)
+            out += ", take \"" + take.name + "\" back from the history"
+                + (firstTrackOnly ? std::string() : " to track " + std::to_string(take.track));
+        for (const int track : step.emptied)
+            out += firstTrackOnly ? std::string(", the slot goes empty")
+                                  : ", track " + std::to_string(track) + " goes empty";
         out += "\n";
     }
     for (const SystemStep& step : plan.system)
@@ -295,21 +302,64 @@ inline std::string spliceSection(std::string_view text, const std::string& secti
     return std::string(text.substr(0, from)) + sectionText + std::string(text.substr(to));
 }
 
-// A slot's body back beside the take it holds now — the operation did not
-// change its audio. Refused when the body does not describe that take.
+// A slot's body back beside the takes it holds now — the operation did not
+// change its audio. Refused when the body does not describe those takes, on
+// any of the card's tracks.
 inline void putBodyBack(const fs::path& volume, int slot, const std::string& body,
                         const commands::WriteOptions& options)
 {
     const std::string document = commands::readMemoryFor(volume, profile::Operation::restore);
+    const profile::DeviceProfile& family = rc0::profileOf(document);
     const std::string now = rc0::slotBody(document, slot);
-    for (const char* field : { "WavStat", "WavLen" })
-        if (rc0::sectionField(body, rc0::kSectionTrack1, field)
-            != rc0::sectionField(now, rc0::kSectionTrack1, field))
-            throw Error("slot " + std::to_string(slot)
-                        + " holds another take than it did then (" + field
-                        + " differs) — its settings would not match its audio, so nothing was"
-                          " put back");
+    for (int track = 1; track <= family.trackCount; ++track) {
+        const std::string section = rc0::trackSectionName(track);
+        for (const char* field : { "WavStat", "WavLen" })
+            if (rc0::sectionField(body, section, field) != rc0::sectionField(now, section, field))
+                throw Error("slot " + std::to_string(slot) + " holds another take than it did then ("
+                            + (family.trackCount == 1 ? std::string() : section + " ") + field
+                            + " differs) — its settings would not match its audio, so nothing was"
+                              " put back");
+    }
     commands::writeMemoryPair(volume, rc0::replaceSlotBody(document, slot, body), options);
+}
+
+// The state one step puts back, whole, for the core's restore: the takes the
+// plan names out of the store, nothing on a track it empties, and on every
+// other track the take the card holds there now, byte for byte — restore ends
+// a track it is given no take for empty, and the operation did not change
+// that one.
+inline commands::SlotState stateFor(HistoryStore& store, const Step& step, const fs::path& volume)
+{
+    const std::string document = commands::readMemoryFor(volume, profile::Operation::restore);
+    const profile::DeviceProfile& family = rc0::profileOf(document);
+    commands::SlotState state;
+    state.body = step.body ? *step.body : rc0::slotBody(document, step.slot);
+    for (const TakeBack& back : step.takes) {
+        std::optional<std::string> bytes = store.takeBytes(back.hash);
+        if (!bytes)
+            throw Error("the take slot " + std::to_string(step.slot)
+                        + " held before is no longer kept");
+        state.takes.push_back({ back.track, back.name, std::move(*bytes) });
+    }
+    for (int track = 1; track <= family.trackCount; ++track) {
+        const bool named = std::any_of(step.takes.begin(), step.takes.end(),
+                                       [track](const TakeBack& t) { return t.track == track; });
+        const bool emptied = std::find(step.emptied.begin(), step.emptied.end(), track) != step.emptied.end();
+        if (named || emptied)
+            continue;
+        const std::vector<std::string> files = volume::listTrackWavs(volume, family, step.slot, track);
+        if (files.size() > 1)
+            throw Error("slot " + std::to_string(step.slot) + " holds " + std::to_string(files.size())
+                        + " files on track " + std::to_string(track)
+                        + " - which one stays cannot be told, so nothing was put back");
+        if (files.size() == 1)
+            state.takes.push_back({ track, files.front(),
+                                    commands::readFileBytes(volume::trackDir(volume, family, step.slot, track)
+                                                            / files.front()) });
+    }
+    std::sort(state.takes.begin(), state.takes.end(),
+              [](const commands::Take& a, const commands::Take& b) { return a.track < b.track; });
+    return state;
 }
 
 // What a plan puts back, carried out on the card. The store is read for the
@@ -322,26 +372,12 @@ inline void apply(HistoryStore& store, const Plan& plan, const fs::path& volume,
     if (plan.swapBack)
         commands::swap(volume, plan.swapBack->first, plan.swapBack->second, options);
     for (const Step& step : plan.steps) {
-        if (step.keepTake) {
+        if (step.keepsAudio()) {
             if (step.body)
                 putBodyBack(volume, step.slot, *step.body, options);
             continue; // nothing changed in this slot that needs putting back
         }
-        commands::SlotState state;
-        state.body = step.body
-            ? *step.body
-            : rc0::slotBody(commands::readMemoryFor(volume, profile::Operation::restore), step.slot);
-        if (step.takeName) {
-            if (!step.takeHash)
-                throw Error("the take slot " + std::to_string(step.slot)
-                            + " held before has no recorded content");
-            std::optional<std::string> bytes = store.takeBytes(*step.takeHash);
-            if (!bytes)
-                throw Error("the take slot " + std::to_string(step.slot)
-                            + " held before is no longer kept");
-            state.take = commands::Take { *step.takeName, std::move(*bytes) };
-        }
-        commands::restore(volume, step.slot, state, options);
+        commands::restore(volume, step.slot, stateFor(store, step, volume), options);
     }
     if (!plan.system.empty()) {
         const std::string before = commands::readSystem(volume);

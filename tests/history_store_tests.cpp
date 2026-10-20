@@ -41,6 +41,7 @@
 //     stamp in every other case
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/history/HistoryStore.h"
 #include "../app/history/Schema.h"
@@ -439,11 +440,11 @@ int main()
             CHECK(rows[1].beforeBody.has_value() && *rows[1].beforeBody == "body-before");
             CHECK(rows[1].afterBody.has_value() && *rows[1].afterBody == "body-after");
             // the live row offers the take its state holds...
-            CHECK(rows[1].takeHash == HistoryStore::contentHash(fresh));
-            CHECK(!rows[1].takeKept); // ...whose bytes are on the card, not in the store
+            CHECK(testkit::firstTake(rows[1]).hash == HistoryStore::contentHash(fresh));
+            CHECK(!testkit::firstTake(rows[1]).kept); // ...whose bytes are on the card, not in the store
             // ...and the clear row offers the one it kept, which can be played
-            CHECK(rows[0].takeHash == HistoryStore::contentHash(take(15000, 43)));
-            CHECK(rows[0].takeKept);
+            CHECK(testkit::firstTake(rows[0]).hash == HistoryStore::contentHash(take(15000, 43)));
+            CHECK(testkit::firstTake(rows[0]).kept);
         }
         // and nothing from another slot leaks in
         CHECK(r.store.slotTimeline(6).empty());
@@ -475,13 +476,13 @@ int main()
         const auto op = r.store.beginOp(r.session, "op-gone", "clear", 2000);
         r.store.keepAudio(op, 9, 1, "009_1.WAV", bytes, 2000);
         r.store.finishOp(op, OpStatus::done, "");
-        CHECK(r.store.slotTimeline(9).front().takeKept);
+        CHECK(testkit::firstTake(r.store.slotTimeline(9).front()).kept);
         sqlite::Statement drop(r.store.db(), "DELETE FROM blobs WHERE hash = ?1");
         drop.bindBlob(1, HistoryStore::contentHash(bytes)).run();
         const auto after = r.store.slotTimeline(9);
         CHECK_EQ(after.size(), 1u);
-        CHECK(after.front().takeHash.has_value()); // we still know which take it was
-        CHECK(!after.front().takeKept);            // and that its bytes are gone
+        CHECK(testkit::firstTake(after.front()).hash.has_value()); // we still know which take it was
+        CHECK(!testkit::firstTake(after.front()).kept);            // and that its bytes are gone
     }
 
     // --- what an operation was about, apart from what it changed (#144) ---
@@ -503,7 +504,7 @@ int main()
         CHECK(r.store.subjects(nothing) == std::vector<int> { 7 });
         CHECK(r.store.subjects(push).empty());
         CHECK(r.store.touchedSlots(nothing).empty()); // a subject is not a touch
-        CHECK(!r.store.hasAfterAudio(nothing, 7));
+        CHECK(!r.store.hasAfterAudio(nothing, 7, 1));
 
         const auto seven = r.store.slotTimeline(7);
         CHECK_EQ(seven.size(), 2u);
@@ -513,7 +514,7 @@ int main()
             CHECK_EQ(seven[1].op, nothing);
             CHECK(seven[1].subjectOnly);
             CHECK(!seven[1].beforeBody && !seven[1].afterBody);
-            CHECK(seven[1].takeName.empty() && !seven[1].takeHash && !seven[1].takeKept);
+            CHECK(testkit::firstTake(seven[1]).name.empty() && !testkit::firstTake(seven[1]).hash && !testkit::firstTake(seven[1]).kept);
             CHECK_EQ(seven[1].takeCount, 0);
             CHECK_EQ(seven[1].note, why);
             CHECK_EQ(seven[1].status, std::string("done"));
@@ -762,31 +763,31 @@ int main()
         r.store.finishOp(push, OpStatus::done, "");
         const auto next = r.store.beginOp(r.session, "op-next", "rename", 3000);
         // the same file: name, size and stamp as the row saw them
-        CHECK(r.store.hashHeldBefore(next, 5, "005_1.WAV", 3000, 1000) == hashA);
+        CHECK(r.store.hashHeldBefore(next, 5, 1, "005_1.WAV", 3000, 1000) == hashA);
         // another file under the same name: a different stamp, or a different size
-        CHECK(!r.store.hashHeldBefore(next, 5, "005_1.WAV", 3000, 2000).has_value());
-        CHECK(!r.store.hashHeldBefore(next, 5, "005_1.WAV", 3001, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 5, 1, "005_1.WAV", 3000, 2000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 5, 1, "005_1.WAV", 3001, 1000).has_value());
         // another slot, another name: nothing to carry
-        CHECK(!r.store.hashHeldBefore(next, 6, "005_1.WAV", 3000, 1000).has_value());
-        CHECK(!r.store.hashHeldBefore(next, 5, "006_1.WAV", 3000, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 6, 1, "005_1.WAV", 3000, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(next, 5, 1, "006_1.WAV", 3000, 1000).has_value());
         // only rows before the operation asking
-        CHECK(!r.store.hashHeldBefore(push, 5, "005_1.WAV", 3000, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(push, 5, 1, "005_1.WAV", 3000, 1000).has_value());
         // the newest row has no hash: the last word, and an older match is not consulted
         r.store.recordPresentAudio(next, 5, 1, "005_1.WAV", 3000, std::nullopt, 2000);
         r.store.finishOp(next, OpStatus::done, "");
         const auto later = r.store.beginOp(r.session, "op-later", "rename", 4000);
-        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 2000).has_value());
-        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 1000).has_value()); // not even for the old stamp
+        CHECK(!r.store.hashHeldBefore(later, 5, 1, "005_1.WAV", 3000, 2000).has_value());
+        CHECK(!r.store.hashHeldBefore(later, 5, 1, "005_1.WAV", 3000, 1000).has_value()); // not even for the old stamp
         // a row from before the store kept stamps is asked only what it knows:
         // name and size carry its hash, whatever stamp the file has now; a
         // different size is still another file
         sqlite::Statement unstamp(r.store.db(), "UPDATE slot_audio SET modified = NULL WHERE slot = 7");
         unstamp.run();
-        CHECK(r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 1000) == HistoryStore::contentHash(take(3000, 152)));
-        CHECK(r.store.hashHeldBefore(later, 7, "007_1.WAV", 3000, 987654321) == HistoryStore::contentHash(take(3000, 152)));
-        CHECK(!r.store.hashHeldBefore(later, 7, "007_1.WAV", 2999, 1000).has_value());
+        CHECK(r.store.hashHeldBefore(later, 7, 1, "007_1.WAV", 3000, 1000) == HistoryStore::contentHash(take(3000, 152)));
+        CHECK(r.store.hashHeldBefore(later, 7, 1, "007_1.WAV", 3000, 987654321) == HistoryStore::contentHash(take(3000, 152)));
+        CHECK(!r.store.hashHeldBefore(later, 7, 1, "007_1.WAV", 2999, 1000).has_value());
         // and a stamped row stays held to its stamp: the allowance is for old rows only
-        CHECK(!r.store.hashHeldBefore(later, 5, "005_1.WAV", 3000, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(later, 5, 1, "005_1.WAV", 3000, 1000).has_value());
         // another card's rows are another card's
         r.store.finishOp(later, OpStatus::done, "");
         const auto other = r.store.openSession(r.store.card("other", "RC-5", "Other", 5000), 5000);
@@ -795,7 +796,7 @@ int main()
         r.store.finishOp(elsewhere, OpStatus::done, "");
         r.store.selectCard(1);
         const auto back = r.store.beginOp(r.session, "op-back", "rename", 7000);
-        CHECK(!r.store.hashHeldBefore(back, 9, "009_1.WAV", 3000, 1000).has_value());
+        CHECK(!r.store.hashHeldBefore(back, 9, 1, "009_1.WAV", 3000, 1000).has_value());
     }
 
     // --- what a connect can tell from a directory entry (#141) ---
@@ -826,18 +827,18 @@ int main()
         const std::int64_t card = *r.store.selectedCard();
         using Sighting = HistoryStore::TakeSighting;
         // all four facts agree: the take is recognised
-        CHECK(r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 132300 }) == hashA);
+        CHECK(r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 132300, 1 }) == hashA);
         // any one of them off: nothing — a name, a size, a stamp, a WavLen
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_2.WAV", 3000, kStamp, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 2999, kStamp, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3001, kStamp, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 2000, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 1, 132300 }).has_value()); // no tolerance
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp - 1, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 132301 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 0 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_2.WAV", 3000, kStamp, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 2999, kStamp, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3001, kStamp, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 2000, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 1, 132300, 1 }).has_value()); // no tolerance
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp - 1, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 132301, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 0, 1 }).has_value());
         // another slot: nothing, even for the same facts
-        CHECK(!r.store.hashOfSighting(card, 6, Sighting { "005_1.WAV", 3000, kStamp, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 6, Sighting { "005_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
         // a rewrite of the take without a body of its own (a normalize): the
         // newest row wins, the body on record with it is the one before
         const std::string b = take(3000, 162);
@@ -845,10 +846,10 @@ int main()
         const auto normalize = r.store.beginOp(r.session, "op-normalize", "normalize", 3000);
         r.store.recordLanded(normalize, 5, 1, "005_1.WAV", b, kStamp + 4000);
         r.store.finishOp(normalize, OpStatus::done, "");
-        CHECK(r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 4000, 132300 }) == hashB);
+        CHECK(r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 4000, 132300, 1 }) == hashB);
         // the file as the older row saw it: the newest row is the last word,
         // and the older one is not consulted
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
         // a later body with another WavLen, and a newest row that names the
         // file without a hash (bytes the store did not know): the slot's
         // last word cannot vouch, so nothing — not for the old facts either
@@ -856,25 +857,25 @@ int main()
         r.store.recordBodies(trim, { { 5, bodyWith(132300), bodyWith(88200) } });
         r.store.recordPresentAudio(trim, 5, 1, "005_1.WAV", 2000, std::nullopt, kStamp + 6000);
         r.store.finishOp(trim, OpStatus::done, "");
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 2000, kStamp + 6000, 88200 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 4000, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 2000, kStamp + 6000, 88200, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 5, Sighting { "005_1.WAV", 3000, kStamp + 4000, 132300, 1 }).has_value());
         // a row without a stamp (older than store version 9) gets no
         // allowance here: three facts are not four
         const auto old = r.store.beginOp(r.session, "op-old", "push", 5000);
         r.store.recordBodies(old, { { 7, testkit::syntheticSlotBody("Memory 07"), bodyWith(44100) } });
         r.store.recordLanded(old, 7, 1, "007_1.WAV", a, kStamp);
         r.store.finishOp(old, OpStatus::done, "");
-        CHECK(r.store.hashOfSighting(card, 7, Sighting { "007_1.WAV", 3000, kStamp, 44100 }) == hashA);
+        CHECK(r.store.hashOfSighting(card, 7, Sighting { "007_1.WAV", 3000, kStamp, 44100, 1 }) == hashA);
         sqlite::Statement unstamp(r.store.db(), "UPDATE slot_audio SET modified = NULL WHERE slot = 7");
         unstamp.run();
-        CHECK(!r.store.hashOfSighting(card, 7, Sighting { "007_1.WAV", 3000, kStamp, 44100 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 7, Sighting { "007_1.WAV", 3000, 0, 44100 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 7, Sighting { "007_1.WAV", 3000, kStamp, 44100, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 7, Sighting { "007_1.WAV", 3000, 0, 44100, 1 }).has_value());
         // a take row with no body on record for the slot: nothing to hold
         // WavLen against, so nothing
         const auto bodiless = r.store.beginOp(r.session, "op-bodiless", "push", 6000);
         r.store.recordLanded(bodiless, 8, 1, "008_1.WAV", a, kStamp);
         r.store.finishOp(bodiless, OpStatus::done, "");
-        CHECK(!r.store.hashOfSighting(card, 8, Sighting { "008_1.WAV", 3000, kStamp, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 8, Sighting { "008_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
         // another card: its rows are its own, in both directions
         const auto otherCard = r.store.card("other", "RC-5", "Other", 7000);
         const auto other = r.store.openSession(otherCard, 7000);
@@ -882,9 +883,9 @@ int main()
         r.store.recordBodies(elsewhere, { { 9, testkit::syntheticSlotBody("Memory 09"), bodyWith(132300) } });
         r.store.recordLanded(elsewhere, 9, 1, "009_1.WAV", a, kStamp);
         r.store.finishOp(elsewhere, OpStatus::done, "");
-        CHECK(r.store.hashOfSighting(otherCard, 9, Sighting { "009_1.WAV", 3000, kStamp, 132300 }) == hashA);
-        CHECK(!r.store.hashOfSighting(card, 9, Sighting { "009_1.WAV", 3000, kStamp, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(otherCard, 7, Sighting { "007_1.WAV", 3000, kStamp, 44100 }).has_value());
+        CHECK(r.store.hashOfSighting(otherCard, 9, Sighting { "009_1.WAV", 3000, kStamp, 132300, 1 }) == hashA);
+        CHECK(!r.store.hashOfSighting(card, 9, Sighting { "009_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(otherCard, 7, Sighting { "007_1.WAV", 3000, kStamp, 44100, 1 }).has_value());
         // the card a marker names, looked up and not touched: last_seen stays
         CHECK(r.store.cardFor("other") == otherCard);
         CHECK(r.store.cardFor("test-RC-5") == card);
@@ -906,19 +907,19 @@ int main()
         // same facts met there again are not the take the row saw — the
         // pedal records with a clock that does not keep the date
         landedOn(12, "012_1.WAV", a, "op-12", 9000, true);
-        CHECK(r.store.hashOfSighting(card, 12, Sighting { "012_1.WAV", 3000, kStamp, 132300 }) == hashA);
+        CHECK(r.store.hashOfSighting(card, 12, Sighting { "012_1.WAV", 3000, kStamp, 132300, 1 }) == hashA);
         const auto clear = r.store.beginOp(r.session, "op-clear-12", "clear", 9100);
         r.store.recordBodies(clear, { { 12, bodyWith(132300), testkit::syntheticSlotBody("Memory 12") } });
         r.store.keepAudio(clear, 12, 1, "012_1.WAV", a, 9100);
         r.store.finishOp(clear, OpStatus::done, "");
-        CHECK(!r.store.hashOfSighting(card, 12, Sighting { "012_1.WAV", 3000, kStamp, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 12, Sighting { "012_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
         // a write that failed after the row: the slot is where the failure
         // left it, and the row is not its word any more either
         landedOn(13, "013_1.WAV", a, "op-13", 9200, true);
         const auto failed = r.store.beginOp(r.session, "op-failed-13", "trim", 9300);
         r.store.recordBodies(failed, { { 13, bodyWith(132300), bodyWith(88200) } });
         r.store.finishOp(failed, OpStatus::failed, "the card went away");
-        CHECK(!r.store.hashOfSighting(card, 13, Sighting { "013_1.WAV", 3000, kStamp, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 13, Sighting { "013_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
         // what does not unsay it: an operation only about the slot that
         // changed nothing (#144), and another slot's change
         landedOn(14, "014_1.WAV", a, "op-14", 9400, true);
@@ -926,18 +927,18 @@ int main()
         r.store.recordSubject(aboutOnly, 14);
         r.store.finishOp(aboutOnly, OpStatus::done, "already at -18.0 LUFS");
         landedOn(15, "015_1.WAV", b, "op-15", 9600, true);
-        CHECK(r.store.hashOfSighting(card, 14, Sighting { "014_1.WAV", 3000, kStamp, 132300 }) == hashA);
-        // only track 1 is asked: the LUFS column measures track 1's take
+        CHECK(r.store.hashOfSighting(card, 14, Sighting { "014_1.WAV", 3000, kStamp, 132300, 1 }) == hashA);
+        // the sighted track is asked, and no other: a row on track 2 is another file
         const auto second = r.store.beginOp(r.session, "op-16", "push", 9700);
         r.store.recordBodies(second, { { 16, testkit::syntheticSlotBody("Memory 16"), bodyWith(132300) } });
         r.store.recordPresentAudio(second, 16, 2, "016_1.WAV", 3000, hashA, kStamp);
         r.store.finishOp(second, OpStatus::done, "");
-        CHECK(!r.store.hashOfSighting(card, 16, Sighting { "016_1.WAV", 3000, kStamp, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 16, Sighting { "016_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
         // two rows agreeing on every fact and not on the bytes (the pedal's
         // clock again): the newest one speaks
         landedOn(17, "017_1.WAV", a, "op-17a", 9800, true);
         landedOn(17, "017_1.WAV", b, "op-17b", 9900, false);
-        CHECK(r.store.hashOfSighting(card, 17, Sighting { "017_1.WAV", 3000, kStamp, 132300 }) == hashB);
+        CHECK(r.store.hashOfSighting(card, 17, Sighting { "017_1.WAV", 3000, kStamp, 132300, 1 }) == hashB);
         // a write that failed after its take landed: the row is the slot's
         // last word and still says nothing — the operation never finished
         {
@@ -945,7 +946,7 @@ int main()
             r.store.recordLanded(failedPush, 18, 1, "018_1.WAV", a, kStamp);
             r.store.recordBodies(failedPush, { { 18, testkit::syntheticSlotBody("Memory 18"), bodyWith(132300) } });
             r.store.finishOp(failedPush, OpStatus::failed, "the pair write failed");
-            CHECK(!r.store.hashOfSighting(card, 18, Sighting { "018_1.WAV", 3000, kStamp, 132300 }).has_value());
+            CHECK(!r.store.hashOfSighting(card, 18, Sighting { "018_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
         }
         // a first sighting commits slot by slot: its rows speak while it is
         // still running, and after it was interrupted
@@ -953,9 +954,9 @@ int main()
             const auto baseline = r.store.firstSeen(r.session, "op-first", 10100);
             r.store.snapshotSlot(baseline, 19, bodyWith(132300), { { 1, "019_1.WAV", a, kStamp } }, 10100);
             CHECK_EQ(r.store.opStatus(baseline), std::string("pending"));
-            CHECK(r.store.hashOfSighting(card, 19, Sighting { "019_1.WAV", 3000, kStamp, 132300 }) == hashA);
+            CHECK(r.store.hashOfSighting(card, 19, Sighting { "019_1.WAV", 3000, kStamp, 132300, 1 }) == hashA);
             r.store.finishOp(baseline, OpStatus::interrupted, "the card went away");
-            CHECK(r.store.hashOfSighting(card, 19, Sighting { "019_1.WAV", 3000, kStamp, 132300 }) == hashA);
+            CHECK(r.store.hashOfSighting(card, 19, Sighting { "019_1.WAV", 3000, kStamp, 132300, 1 }) == hashA);
         }
 
         // --- what a real read saw (take_sightings) ---
@@ -971,7 +972,7 @@ int main()
         const std::string c = take(3000, 163);
         const std::string hashC = HistoryStore::contentHash(c);
         const std::int64_t op20 = landedOn(20, "020_1.WAV", a, "op-20", 11000, true);
-        const Sighting twenty { "020_1.WAV", 3000, kStamp, 132300 };
+        const Sighting twenty { "020_1.WAV", 3000, kStamp, 132300, 1 };
         const std::string sinceOf20 = "SELECT since_op FROM take_sightings WHERE card = "
                                     + std::to_string(card) + " AND slot = 20";
         CHECK(r.store.hashOfSighting(card, 20, twenty) == hashA);
@@ -982,7 +983,7 @@ int main()
         CHECK_EQ(count(r.store.db(), sinceOf20), op20);
         CHECK(r.store.hashOfSighting(card, 20, twenty) == hashC);
         // the read needs no WavLen of its own: the hash is of the bytes
-        CHECK(r.store.hashOfSighting(card, 20, Sighting { "020_1.WAV", 3000, kStamp, 1 }) == hashC);
+        CHECK(r.store.hashOfSighting(card, 20, Sighting { "020_1.WAV", 3000, kStamp, 1, 1 }) == hashC);
         // read again under the same facts: the newest read is kept, one row
         r.store.recordSighting(card, 20, "020_1.WAV", 3000, kStamp, hashB, r.store.newestOp(), 11200);
         CHECK(r.store.hashOfSighting(card, 20, twenty) == hashB);
@@ -996,12 +997,12 @@ int main()
         CHECK(r.store.hashOfSighting(card, 20, twenty) == hashB);
         // a read of other facts says nothing about these
         r.store.recordSighting(card, 21, "021_1.WAV", 3000, kStamp + 2000, hashC, r.store.newestOp(), 11300);
-        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 3000, kStamp, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 2999, kStamp + 2000, 132300 }).has_value());
-        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_2.WAV", 3000, kStamp + 2000, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 3000, kStamp, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 2999, kStamp + 2000, 132300, 1 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_2.WAV", 3000, kStamp + 2000, 132300, 1 }).has_value());
         // ...and a slot nothing but a read ever saw answers by the read alone,
         // which came after no operation of its own
-        CHECK(r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 3000, kStamp + 2000, 132300 }) == hashC);
+        CHECK(r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 3000, kStamp + 2000, 132300, 1 }) == hashC);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM take_sightings WHERE slot = 21 AND since_op IS NULL"), 1);
         // S10: an operation after the read, its clock set back an hour before
         // the read's: the sequence says after, so the read is history
@@ -1030,12 +1031,12 @@ int main()
         // its operation is older than the read, its photograph is not — the
         // reads of that slot go
         r.store.recordSighting(card, 24, "024_1.WAV", 3000, kStamp, hashC, r.store.newestOp(), 12200);
-        CHECK(r.store.hashOfSighting(card, 24, Sighting { "024_1.WAV", 3000, kStamp, 132300 }) == hashC);
+        CHECK(r.store.hashOfSighting(card, 24, Sighting { "024_1.WAV", 3000, kStamp, 132300, 1 }) == hashC);
         const auto resumed = r.store.firstSeen(r.session, "op-first-again", 12300);
         CHECK(resumed < r.store.newestOp()); // the baseline's sequence is the old one
         r.store.snapshotSlot(resumed, 24, bodyWith(132300), { { 1, "024_1.WAV", b, kStamp } }, 12300);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM take_sightings WHERE slot = 24"), 0);
-        CHECK(r.store.hashOfSighting(card, 24, Sighting { "024_1.WAV", 3000, kStamp, 132300 }) == hashB);
+        CHECK(r.store.hashOfSighting(card, 24, Sighting { "024_1.WAV", 3000, kStamp, 132300, 1 }) == hashB);
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM take_sightings WHERE slot = 20"), 2); // untouched
         // forgetting the slot takes its sightings with it, and only its own
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM take_sightings WHERE card = "
@@ -1045,7 +1046,7 @@ int main()
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM take_sightings WHERE card = "
                                      + std::to_string(card) + " AND slot = 21"),
                  0);
-        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 3000, kStamp + 2000, 132300 }).has_value());
+        CHECK(!r.store.hashOfSighting(card, 21, Sighting { "021_1.WAV", 3000, kStamp + 2000, 132300, 1 }).has_value());
         CHECK_EQ(count(r.store.db(), "SELECT count(*) FROM take_sightings WHERE slot = 20"), 2); // both cards'
 
         // --- what a new row inherits (heldBefore) ---
@@ -1054,13 +1055,13 @@ int main()
             // the hash of the bytes it read, with the file's stamp — not the
             // row's hash under the same frozen-clock facts
             const auto renamed = r.store.beginOp(r.session, "op-held", "rename", 13000);
-            const HistoryStore::Held fromRead = r.store.heldBefore(renamed, 20, "020_1.WAV", 3000, kStamp);
+            const HistoryStore::Held fromRead = r.store.heldBefore(renamed, 20, 1, "020_1.WAV", 3000, kStamp);
             CHECK(fromRead.hash == hashC && fromRead.modifiedMs == kStamp);
             // another stamp: another file — no hash, the file's own stamp
-            const HistoryStore::Held moved = r.store.heldBefore(renamed, 20, "020_1.WAV", 3000, kStamp + 2000);
+            const HistoryStore::Held moved = r.store.heldBefore(renamed, 20, 1, "020_1.WAV", 3000, kStamp + 2000);
             CHECK(!moved.hash.has_value() && moved.modifiedMs == kStamp + 2000);
             // nothing on record: no hash, the file's stamp
-            const HistoryStore::Held none = r.store.heldBefore(renamed, 22, "022_1.WAV", 3000, kStamp);
+            const HistoryStore::Held none = r.store.heldBefore(renamed, 22, 1, "022_1.WAV", 3000, kStamp);
             CHECK(!none.hash.has_value() && none.modifiedMs == kStamp);
             // and the row written so, the newest word, names the read's bytes
             r.store.recordPresentAudio(renamed, 20, 1, "020_1.WAV", 3000, fromRead.hash, fromRead.modifiedMs);
@@ -1069,20 +1070,20 @@ int main()
             // an operation on the slot after the read: the row's word again
             landedOn(20, "020_1.WAV", a, "op-20-last", 13100, true);
             const auto next = r.store.beginOp(r.session, "op-held-2", "rename", 13200);
-            const HistoryStore::Held fromRow = r.store.heldBefore(next, 20, "020_1.WAV", 3000, kStamp);
+            const HistoryStore::Held fromRow = r.store.heldBefore(next, 20, 1, "020_1.WAV", 3000, kStamp);
             CHECK(fromRow.hash == hashA && fromRow.modifiedMs == kStamp);
             // a stampless row (older than version 9) vouches by name and size,
             // and the hash goes on without a stamp — whatever the file's is
             r.store.db().exec("UPDATE slot_audio SET modified = NULL WHERE slot = 20");
-            const HistoryStore::Held vouched = r.store.heldBefore(next, 20, "020_1.WAV", 3000, kStamp + 4000);
+            const HistoryStore::Held vouched = r.store.heldBefore(next, 20, 1, "020_1.WAV", 3000, kStamp + 4000);
             CHECK(vouched.hash == hashA && !vouched.modifiedMs.has_value());
-            const HistoryStore::Held otherSize = r.store.heldBefore(next, 20, "020_1.WAV", 2999, kStamp + 4000);
+            const HistoryStore::Held otherSize = r.store.heldBefore(next, 20, 1, "020_1.WAV", 2999, kStamp + 4000);
             CHECK(!otherSize.hash.has_value() && otherSize.modifiedMs == kStamp + 4000);
-            CHECK(r.store.hashHeldBefore(next, 20, "020_1.WAV", 3000, kStamp + 4000) == hashA);
+            CHECK(r.store.hashHeldBefore(next, 20, 1, "020_1.WAV", 3000, kStamp + 4000) == hashA);
             // and a row written that way never tells a connect which file it is
             r.store.recordPresentAudio(next, 20, 1, "020_1.WAV", 3000, vouched.hash, vouched.modifiedMs);
             r.store.finishOp(next, OpStatus::done, "");
-            CHECK(!r.store.hashOfSighting(card, 20, Sighting { "020_1.WAV", 3000, kStamp + 4000, 132300 }).has_value());
+            CHECK(!r.store.hashOfSighting(card, 20, Sighting { "020_1.WAV", 3000, kStamp + 4000, 132300, 1 }).has_value());
             CHECK(!r.store.hashOfSighting(card, 20, twenty).has_value());
         }
 
@@ -1100,11 +1101,11 @@ int main()
         };
         const auto before = everything();
         for (int slot = 1; slot <= 24; ++slot)
-            (void) r.store.hashOfSighting(card, slot, Sighting { "005_1.WAV", 3000, kStamp, 132300 });
+            (void) r.store.hashOfSighting(card, slot, Sighting { "005_1.WAV", 3000, kStamp, 132300, 1 });
         (void) r.store.hashOfSighting(card, 20, twenty);
-        (void) r.store.heldBefore(1, 20, "020_1.WAV", 3000, kStamp);
+        (void) r.store.heldBefore(1, 20, 1, "020_1.WAV", 3000, kStamp);
         (void) r.store.newestOp();
-        (void) r.store.hashOfSighting(card, 17, Sighting { "017_1.WAV", 3000, kStamp, 132300 });
+        (void) r.store.hashOfSighting(card, 17, Sighting { "017_1.WAV", 3000, kStamp, 132300, 1 });
         (void) r.store.cardFor("test-RC-5");
         (void) r.store.cardFor("never-met");
         CHECK(everything() == before);

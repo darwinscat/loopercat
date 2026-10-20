@@ -558,12 +558,14 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     // story is over, which is exactly what deviceLost means.
                     // The same pedal Connect chose walks out (issue #98); a
                     // volume that was mounted by hand has no chosen pedal,
-                    // and then the first RC-5 on the bus is all there is.
+                    // and then the first pedal of the card's model on the
+                    // bus is all there is.
                     const juce::String exitError = connectTarget
                         ? pedallink::requestStorageMode(false, *connectTarget)
-                        : pedallink::requestStorageMode(false);
+                        : pedallink::requestStorageModeOfFamily(false, ejectFamily);
                     trace("disconnect: exit-storage frame \xe2\x86\x92 "
-                          + (connectTarget ? pedalTag(*connectTarget) : juce::String("the first pedal on the bus"))
+                          + (connectTarget ? pedalTag(*connectTarget)
+                                           : "the first " + utf8(ejectFamily) + " on the bus")
                           + ": " + (exitError.isEmpty() ? juce::String("sent") : "NOT sent (" + exitError + ")"));
                     connectTarget.reset();
                     if (exitError.isNotEmpty()) {
@@ -1045,6 +1047,7 @@ void MainComponent::beginDisconnect()
     // completion then walks the pedal out of STORAGE.
     engine.stop();
     player.clear();
+    ejectFamily = snapshot.family;
     worker.requestEject();
 }
 
@@ -1081,10 +1084,12 @@ void MainComponent::startConnectAttempt()
 // honest give-up banner.
 void MainComponent::sendEnterStorage()
 {
+    // Connect chooses its pedal before it sends (beginConnect): a frame with
+    // nobody chosen would go to whichever pedal the OS lists first.
     lastConnectSendError = connectTarget ? pedallink::requestStorageMode(true, *connectTarget)
-                                         : pedallink::requestStorageMode(true);
+                                         : juce::String("no pedal was chosen to connect to");
     trace("connect: enter-storage frame \xe2\x86\x92 "
-          + (connectTarget ? pedalTag(*connectTarget) : juce::String("the first pedal on the bus")) + ": "
+          + (connectTarget ? pedalTag(*connectTarget) : juce::String("nobody")) + ": "
           + (lastConnectSendError.isEmpty() ? juce::String("sent") : "NOT sent (" + lastConnectSendError + ")"));
 }
 
@@ -1153,6 +1158,7 @@ bool MainComponent::beginQuitDisconnect(std::function<void()> done)
         // completion walks the pedal out of STORAGE and finishes the gate.
         engine.stop();
         player.clear();
+        ejectFamily = snapshot.family;
         worker.requestEject();
         break;
     case QuitGate::Plan::joinEject:
@@ -1383,23 +1389,13 @@ void MainComponent::restoreFromHistory(std::int64_t op)
         "restore", options,
         { "Restore slot " + juce::String(slot) + " to " + found->line.action, slot,
           [rec = recorder, op, slot, options](const volume::fs::path& volumePath) {
-              commands::SlotState state;
-              for (const auto& entry : rec->store().slotTimeline(slot)) {
-                  if (entry.op != op)
-                      continue;
-                  if (!entry.afterBody)
-                      throw Error("that row recorded no state to go back to");
-                  state.body = *entry.afterBody;
-                  if (entry.takeHash) {
-                      const auto bytes = rec->store().takeBytes(*entry.takeHash);
-                      if (!bytes)
-                          throw Error("the take of that state is no longer kept");
-                      state.take = commands::Take { entry.takeName, *bytes };
-                  }
-              }
-              if (state.body.empty())
+              std::optional<commands::SlotState> state;
+              for (const auto& entry : rec->store().slotTimeline(slot))
+                  if (entry.op == op)
+                      state = history::recordedState(rec->store(), entry, slot);
+              if (!state)
                   throw Error("that row is not in this slot's history any more");
-              commands::restore(volumePath, slot, state, options);
+              commands::restore(volumePath, slot, *state, options);
           } }));
 }
 
@@ -1752,10 +1748,18 @@ void MainComponent::updateStatusText()
                 break;
             }
     juce::String text = volumeDisplayName() + juce::String::fromUTF8("  \xe2\x80\x94  ");
-    // Another model's card is read and never written; the status says which
-    // model, by the card's own name, and that it is read-only.
-    if (!CardPermissions::of(snapshot.family).anyWrite())
-        text << utf8(snapshot.family) << juce::String::fromUTF8(" card, read-only  \xc2\xb7  ");
+    // A card of a model this app opens only in part: the status says which
+    // model, by the card's own name, and what it does there — or that it
+    // only reads it.
+    if (const profile::DeviceProfile* model = profile::findFamily(snapshot.family);
+        model != nullptr && model->operations != profile::kEveryOperation) {
+        text << utf8(snapshot.family);
+        if (model->allowsWrites())
+            text << " card: " << utf8(profile::openOperations(*model)) << " only";
+        else
+            text << " card, read-only";
+        text << juce::String::fromUTF8("  \xc2\xb7  ");
+    }
     text << juce::String(loaded) << " of " << juce::String(snapshot.slots.size())
          << " slots hold a loop";
     if (snapshot.freeBytes > 0)
@@ -2027,35 +2031,26 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     if (found == nullptr)
         return;
     const SlotRow& row = *found;
-    const bool occupied = row.info.hasAudio;
+    // A take on any track: the second track alone is a recorded memory too.
+    const bool occupied = catalog::holdsAudio(row.info);
     const juce::String name = trimmedName(row);
-
-    // A card of another model is read, never written (DeviceProfile.hpp):
-    // the menu offers nothing that would change it, and says so. Pull stays
-    // closed too until it learns tracks — a two-track memory pulled as one
-    // folder would be half a memory.
-    if (!CardPermissions::of(snapshot.family).anyWrite()) {
-        juce::PopupMenu readOnly;
-        readOnly.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), false);
-        readOnly.addSeparator();
-        readOnly.addItem(12, juce::String(CardPermissions::writesOnlyTo()), false);
-        readOnly.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(
-                                   { screenPosition.x, screenPosition.y, 1, 1 }),
-                               [](int) {});
-        return;
-    }
+    // Each item follows the operation it runs (DeviceProfile.hpp): on a card
+    // of a model this app opens only in part, a closed one is shown greyed,
+    // and the menu ends with the one sentence that says what is open.
+    const CardPermissions can = CardPermissions::of(snapshot.family);
 
     // Operations only: the things done TO a slot. Its settings live in the
     // panel now (and the two lamp columns still flip on click), so this menu
     // stopped being a second copy of them.
     juce::PopupMenu menu;
-    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace audio\xe2\x80\xa6" : "Push audio here\xe2\x80\xa6"));
-    menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), occupied);
+    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace audio\xe2\x80\xa6" : "Push audio here\xe2\x80\xa6"),
+                 can.push);
+    menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), can.pull && occupied);
     juce::PopupMenu downmix;
     downmix.addItem(6, juce::String::fromUTF8("Both outputs\xe2\x80\xa6"));
     downmix.addItem(7, juce::String::fromUTF8("OUTPUT A only\xe2\x80\xa6"));
     downmix.addItem(8, juce::String::fromUTF8("OUTPUT B only\xe2\x80\xa6"));
-    menu.addSubMenu(juce::String::fromUTF8("Downmix to mono"), downmix, occupied);
+    menu.addSubMenu(juce::String::fromUTF8("Downmix to mono"), downmix, can.downmix && occupied);
     // The label names the target so the choice is informed before the dialog:
     // the number comes from Settings -> Import, shared with normalize-on-upload.
     // With no usable target the item stays, unnamed: choosing it says why.
@@ -2069,15 +2064,21 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
                      ? "Normalize to " + SettingsDialog::formatLufs(*normalizeTarget)
                            + juce::String::fromUTF8(" LUFS\xe2\x80\xa6")
                      : juce::String::fromUTF8("Normalize\xe2\x80\xa6"),
-                 occupied && !readPending);
+                 can.normalize && occupied && !readPending);
     // The read-only counterpart (issue #61), and the way to stop a running
-    // background check from wherever the player happens to right-click.
+    // background check from wherever the player happens to right-click. The
+    // meter reads one track: a memory with more has no one number, and
+    // track 1's would pass for the mix's.
     if (checkId != 0)
         menu.addItem(11, "Stop loudness check");
-    else
+    else if (row.info.tracks.size() <= 1)
         menu.addItem(10, "Check loudness", occupied);
     menu.addSeparator();
-    clearSlotAction::addToMenu(menu, occupied);
+    clearSlotAction::addToMenu(menu, can.clear && occupied);
+    if (!can.closed.empty()) {
+        menu.addSeparator();
+        menu.addItem(12, juce::String(can.closed), false);
+    }
 
     // Nothing a user relies on may simply vanish: the first time this menu
     // opens without its settings, it says where they went.
@@ -2771,9 +2772,13 @@ void MainComponent::inferLoudnessFromHistory()
     if (pedalBusy || !card || snapshot.state != lifecycle::State::connected || !snapshot.error.empty()
         || !table.loudnessColumnVisible())
         return;
-    // A take, an empty cell, and not the very file a read failed on.
+    // A take, an empty cell, and not the very file a read failed on — on a
+    // memory of one track: the history's readings are of the first track's
+    // bytes (HistoryStore::kSightedTrack), and on a memory with more that
+    // number would pass for the mix's.
     const auto blank = [this](const SlotRow& row) {
-        return row.take && row.info.hasAudio && table.loudnessFor(row.info.slot) == nullptr
+        return row.take && row.info.hasAudio && row.info.tracks.size() <= 1
+            && table.loudnessFor(row.info.slot) == nullptr
             && !(unreadableTakes.contains(row.info.slot) && unreadableTakes.at(row.info.slot) == *row.take);
     };
     const int loaded = player.currentSlot();
@@ -2793,8 +2798,10 @@ void MainComponent::inferLoudnessFromHistory()
                 enqueueLoudnessRead(loaded, currentTargetLufs(), 0);
             continue;
         }
+        // The scan's take is the first track's, and so are the frames.
         sightings.push_back({ row.info.slot,
-                              { row.take->name, row.take->size, row.take->modifiedMs, row.info.frames } });
+                              { row.take->name, row.take->size, row.take->modifiedMs, row.info.frames,
+                                commands::kFirstTrack } });
     }
     if (sightings.empty())
         return;
@@ -2953,12 +2960,13 @@ void MainComponent::showSlotsMenu(std::vector<int> slots, juce::Point<int> scree
 {
     if (pedalBusy)
         return;
-    // A card this app only reads: the selection menu has nothing to offer
-    // but the reason (the loudness check reads, but its answer is a
+    // A card that keeps normalize closed: the selection menu has nothing to
+    // offer but the reason (the loudness check reads, but its answer is a
     // normalize this card cannot take).
-    if (!CardPermissions::of(snapshot.family).normalize) {
+    if (const CardPermissions can = CardPermissions::of(snapshot.family); !can.normalize) {
         juce::PopupMenu readOnly;
-        readOnly.addItem(12, juce::String(CardPermissions::writesOnlyTo()), false);
+        readOnly.addItem(12, juce::String(can.closed.empty() ? CardPermissions::writesOnlyTo() : can.closed),
+                         false);
         readOnly.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(
                                    { screenPosition.x, screenPosition.y, 1, 1 }),
                                [](int) {});
@@ -3045,7 +3053,7 @@ void MainComponent::pullSlot(int slot)
 void MainComponent::clearSlot(int slot)
 {
     const auto* row = slotRowFor(slot);
-    clearSlotAction::request(slot, row != nullptr && row->info.hasAudio, recorder,
+    clearSlotAction::request(slot, row != nullptr && catalog::holdsAudio(row->info), recorder,
         [safe = juce::Component::SafePointer<MainComponent>(this), slot](PedalWorker::Job job) {
             if (safe == nullptr)
                 return;
@@ -3323,9 +3331,15 @@ void MainComponent::feedHistoryWindow()
                                      entry.slot = take.slot;
                                      break;
                                  }
+                             // The name of the very take Play sounds: on a
+                             // two-track memory the slot holds two.
                              for (const auto& touched : timeline[i].slots)
                                  if (touched.slot == entry.slot)
-                                     entry.takeName = touched.facts.takeName;
+                                     for (const auto& take : touched.facts.takes)
+                                         if (take.hash && *take.hash == entry.takeHash) {
+                                             entry.takeName = take.name;
+                                             break;
+                                         }
                              entry.action = juce::String(row.action);
                              entry.slots = row.touchedSlots();
                              entry.isSnapshot = row.kind == "snapshot";

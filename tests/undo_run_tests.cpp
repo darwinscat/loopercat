@@ -419,13 +419,13 @@ int main()
         });
         b.op("trim", [&](const commands::WriteOptions& o) { commands::trim(b.volume, 5, 0, 44100 * 2, { o }); });
         const auto trimRow = newest(b.rec->store());
-        CHECK(trimRow.slots.size() == 1 && trimRow.slots[0].archived.has_value());
+        CHECK(trimRow.slots.size() == 1 && trimRow.slots[0].archived.size() == 1u);
         b.op("push", [&](const commands::WriteOptions& o) {
             commands::push(b.volume, sourceWav(b.tmp.path, "b.wav", 44100 * 3), 5,
                            { .force = true, .write = o });
         });
         HistoryStore& store = b.rec->store();
-        store.releaseBlobs({ trimRow.slots[0].archived->hash }, store.offeredTargets(), tick());
+        store.releaseBlobs({ *trimRow.slots[0].archived.front().hash }, store.offeredTargets(), tick());
         CHECK_EQ(b.press(false), std::string()); // the replace: its 'before' is the trimmed take, kept
         const CardState now = cardState(b.volume);
         const std::string gone = b.press(false);

@@ -268,6 +268,7 @@ loopercat_core_test(quit_tests)
 loopercat_core_test(rc0_tests)
 # The RC family as a table, and the guard that asks it (DeviceProfile.hpp).
 loopercat_core_test(device_profile_tests)
+loopercat_core_test(card_permissions_tests)
 # The same model against a whole real card, byte for byte (fixtures/rc5-card.RC0).
 loopercat_core_test(rc5_card_tests)
 # The pedal's settings file, against a real one (fixtures/rc5-system.RC0).
@@ -823,6 +824,48 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
+
+# What the history writes for an RC-5, row for row (the multi-track history
+# must not move a byte of it): one scripted session through the recorder,
+# dumped and compared with tests/golden/rc5-history-rows.txt.
+juce_add_console_app(history_golden_tests PRODUCT_NAME "history_golden_tests")
+target_sources(history_golden_tests PRIVATE tests/history_golden_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_golden_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json"
+    LOOPERCAT_HISTORY_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/rc5-history-rows.txt")
+target_link_libraries(history_golden_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_golden_tests COMMAND history_golden_tests)
+
+# The history of a two-track card: the first sighting keeps every track, a
+# take is recorded with its track, and one track's file is never another's.
+juce_add_console_app(history_tracks_tests PRODUCT_NAME "history_tracks_tests")
+target_sources(history_tracks_tests PRIVATE tests/history_tracks_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_tracks_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_tracks_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_tracks_tests COMMAND history_tracks_tests)
 
 # The single-slot Normalize around its plan (#142): the target typed in
 # Settings, the read-only first step, the guard ahead of the write, one step

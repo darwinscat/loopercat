@@ -120,43 +120,35 @@ namespace detail {
 
 } // namespace detail
 
-// The RC-5 OUTPUT endpoints on the bus right now — where frames are sent.
-// MESSAGE THREAD or a worker; blocks for the retry moment when the bus looks empty.
-inline std::vector<juce::MidiDeviceInfo> findPedals()
-{
-    return detail::enumerateTwice([] { return juce::MidiOutput::getAvailableDevices(); }, pedalsAmong);
-}
-
-// The RC-5 INPUT endpoints — where the pedal's answers arrive. An input's
-// identifier is not its output's (they are different endpoints of one
-// device), and nothing in the OS pairs them; the storage query below opens
-// every input of the pedal's family and lets the answer tell.
-inline std::vector<juce::MidiDeviceInfo> findPedalInputs()
-{
-    return detail::enumerateTwice([] { return juce::MidiInput::getAvailableDevices(); }, pedalsAmong);
-}
-
-// Every profiled RC OUTPUT endpoint on the bus, with its profile.
+// Every profiled RC OUTPUT endpoint on the bus, with its profile — where
+// frames are sent. MESSAGE THREAD or a worker; blocks for the retry moment
+// when the bus looks empty.
 inline std::vector<Pedal> findFamily()
 {
     return detail::enumerateTwice([] { return juce::MidiOutput::getAvailableDevices(); }, familyAmong);
 }
 
-// Every profiled RC INPUT endpoint on the bus, with its profile.
+// Every profiled RC INPUT endpoint on the bus, with its profile — where the
+// pedals' answers arrive. An input's identifier is not its output's (they are
+// different endpoints of one device), and nothing in the OS pairs them; the
+// storage query below opens every input of the pedal's family and lets the
+// answer tell.
 inline std::vector<Pedal> findFamilyInputs()
 {
     return detail::enumerateTwice([] { return juce::MidiInput::getAvailableDevices(); }, familyAmong);
 }
 
-// The first RC-5, for callers that have not learned to choose. With two
-// RC-5s this is whichever the OS listed first — on 2026-09-24 the new pedal,
-// not the main one — which is why it is named for what it is. MESSAGE THREAD.
-inline std::optional<juce::MidiDeviceInfo> findPedal()
+// The first pedal of one model among `pedals`, for a caller that knows the
+// model and not the pedal: a card mounted by hand, a probe. With two of that
+// model it is whichever the OS listed first — on 2026-09-24 the new RC-5,
+// not the main one — so a caller that can choose, chooses (Connect does).
+// Pure over the list.
+inline std::optional<Pedal> firstOfFamily(const std::vector<Pedal>& pedals, std::string_view family)
 {
-    const auto pedals = findPedals();
-    if (pedals.empty())
-        return std::nullopt;
-    return pedals.front();
+    for (const Pedal& pedal : pedals)
+        if (pedal.family() == family)
+            return pedal;
+    return std::nullopt;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,8 +176,18 @@ inline juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& e
     }
 }
 
-// The same, to the first RC-5 on the bus (findPedal()).
-juce::String requestStorageMode(bool enter);
+// The same, to the first pedal of `family` on the bus (firstOfFamily): the
+// model is the card's, and a frame for the RC-5 would leave an RC-500 in
+// STORAGE — or walk another pedal out of it. MESSAGE THREAD.
+inline juce::String requestStorageModeOfFamily(bool enter, std::string_view family)
+{
+    if (family.empty())
+        return "no card model to choose a pedal by";
+    const auto pedal = firstOfFamily(findFamily(), family);
+    if (!pedal)
+        return "no " + juce::String(std::string(family)) + " MIDI device on the bus";
+    return requestStorageMode(enter, *pedal);
+}
 
 //==============================================================================
 // Asking the pedal why (issue #85). Before the first enter-storage frame the

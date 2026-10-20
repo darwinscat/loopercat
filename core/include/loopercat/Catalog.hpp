@@ -25,6 +25,7 @@
 #include "usecases/PlayStop.hpp"
 #include "usecases/Rhythm.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -84,6 +85,15 @@ struct SlotInfo {
 
     bool operator==(const SlotInfo&) const = default;
 };
+
+// Whether a memory holds a take on any of its tracks — the second track
+// alone is a recorded memory too (recording it first is a thing a player
+// does), where the flat fields say only what the first holds.
+inline bool holdsAudio(const SlotInfo& info)
+{
+    return std::any_of(info.tracks.begin(), info.tracks.end(),
+                       [](const TrackInfo& track) { return track.hasAudio; });
+}
 
 // One track's facts, read from its own section (rc0::sectionField). A memory
 // that lacks a section its model promises is refused by name, not read as

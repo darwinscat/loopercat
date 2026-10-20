@@ -20,6 +20,27 @@ namespace loopercat::history
 namespace
 {
 
+// The rows of a (track, name, hash, kept count) query ordered by track and
+// name, one take per track: a track folder holds one take, and where it held
+// two files the first by name speaks for it.
+std::vector<HistoryStore::SlotTake> takesByTrack(sqlite::Statement& rows)
+{
+    std::vector<HistoryStore::SlotTake> out;
+    while (rows.step()) {
+        const int track = static_cast<int>(rows.integer(0));
+        if (!out.empty() && out.back().track == track)
+            continue;
+        HistoryStore::SlotTake take;
+        take.track = track;
+        take.name = rows.text(1);
+        if (!rows.isNull(2))
+            take.hash = rows.blob(2);
+        take.kept = take.hash.has_value() && rows.integer(3) > 0;
+        out.push_back(std::move(take));
+    }
+    return out;
+}
+
 // Every storage property the store's promises rest on, read back rather than
 // assumed: a pragma that silently did not take is how a file meant to return
 // space never can, or a foreign key meant to hold does not.
@@ -416,16 +437,17 @@ std::vector<int> HistoryStore::touchedSlots(std::int64_t op)
     return slots;
 }
 
-bool HistoryStore::hasAfterAudio(std::int64_t op, int slot)
+bool HistoryStore::hasAfterAudio(std::int64_t op, int slot, int track)
 {
     sqlite::Statement read(db_, "SELECT 1 FROM slot_audio WHERE op = ?1 AND slot = ?2 "
-                                "AND side = 'after' LIMIT 1");
-    read.bind(1, op).bind(2, slot);
+                                "AND track = ?3 AND side = 'after' LIMIT 1");
+    read.bind(1, op).bind(2, slot).bind(3, track);
     return read.step();
 }
 
-HistoryStore::Held HistoryStore::heldBefore(std::int64_t op, int slot, const std::string& name,
-                                            std::int64_t size, std::int64_t modifiedMs)
+HistoryStore::Held HistoryStore::heldBefore(std::int64_t op, int slot, int track,
+                                            const std::string& name, std::int64_t size,
+                                            std::int64_t modifiedMs)
 {
     // The newest row for this file name, whatever it says: a row with no
     // hash is the slot's last word about the file, and an older row with
@@ -443,15 +465,17 @@ HistoryStore::Held HistoryStore::heldBefore(std::int64_t op, int slot, const std
                                    "AND o2.seq > coalesce(t.since_op, 0) AND o2.seq IN "
                                    "(SELECT op FROM slot_changes WHERE slot = ?2 UNION SELECT op FROM slot_audio WHERE slot = ?2))");
     sighted.bind(1, op).bind(2, slot).bindText(3, name).bind(4, size).bind(5, modifiedMs);
-    if (sighted.step())
+    // A sighting is a read of the first track's file (recordSighting): on
+    // another track the same name, size and stamp may be another file.
+    if (track == kSightedTrack && sighted.step())
         return { sighted.blob(0), modifiedMs };
     sqlite::Statement read(db_, "SELECT hash, size, modified FROM slot_audio "
-                                "WHERE slot = ?2 AND side = 'after' AND name = ?3 AND op < ?1 "
+                                "WHERE slot = ?2 AND side = 'after' AND track = ?4 AND name = ?3 AND op < ?1 "
                                 "AND op IN (SELECT o.seq FROM ops o JOIN sessions s ON s.id = o.session "
                                 "WHERE s.card = (SELECT s2.card FROM ops o2 JOIN sessions s2 "
                                 "ON s2.id = o2.session WHERE o2.seq = ?1)) "
                                 "ORDER BY op DESC LIMIT 1");
-    read.bind(1, op).bind(2, slot).bindText(3, name);
+    read.bind(1, op).bind(2, slot).bindText(3, name).bind(4, track);
     if (!read.step())
         return { std::nullopt, modifiedMs };
     if (read.isNull(0))
@@ -475,11 +499,11 @@ HistoryStore::Held HistoryStore::heldBefore(std::int64_t op, int slot, const std
     return { read.blob(0), modifiedMs };
 }
 
-std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot,
+std::optional<std::string> HistoryStore::hashHeldBefore(std::int64_t op, int slot, int track,
                                                         const std::string& name, std::int64_t size,
                                                         std::int64_t modifiedMs)
 {
-    return heldBefore(op, slot, name, size, modifiedMs).hash;
+    return heldBefore(op, slot, track, name, size, modifiedMs).hash;
 }
 
 std::optional<std::int64_t> HistoryStore::cardFor(const std::string& markerId)
@@ -525,7 +549,9 @@ void HistoryStore::recordSighting(std::int64_t card, int slot, const std::string
 std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int slot,
                                                         const TakeSighting& seen)
 {
-    constexpr int kFirstTrack = 1; // the take the LUFS column measures (SlotLoudness.h)
+    if (seen.track < 1)
+        throw Error("a sighting names track " + std::to_string(seen.track)
+                    + "; a memory's tracks count from 1");
     // The slot's last operation on this card: the newest that recorded
     // anything about it, a body or a take, either side. A subject alone
     // (#144: an operation about the slot that changed nothing) is not one.
@@ -550,7 +576,8 @@ std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int s
         sqlite::Statement read(db_, "SELECT hash, since_op FROM take_sightings WHERE card = ?1 AND slot = ?2 "
                                     "AND name = ?3 AND size = ?4 AND modified = ?5");
         read.bind(1, card).bind(2, slot).bindText(3, seen.name).bind(4, seen.size).bind(5, seen.modifiedMs);
-        if (read.step()) {
+        // Filed for the first track's file only (recordSighting).
+        if (seen.track == kSightedTrack && read.step()) {
             const bool nothingSince = read.isNull(1) ? !last : (!last || *last <= read.integer(1));
             if (nothingSince)
                 return read.blob(0);
@@ -563,7 +590,7 @@ std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int s
                                "JOIN ops o ON o.seq = a.op JOIN sessions s ON s.id = o.session "
                                "WHERE s.card = ?1 AND a.slot = ?2 AND a.side = 'after' "
                                "AND a.track = ?3 AND a.name = ?4 ORDER BY a.op DESC LIMIT 1");
-    row.bind(1, card).bind(2, slot).bind(3, kFirstTrack).bindText(4, seen.name);
+    row.bind(1, card).bind(2, slot).bind(3, seen.track).bindText(4, seen.name);
     if (!row.step())
         return std::nullopt;
     const std::int64_t op = row.integer(0);
@@ -605,7 +632,7 @@ std::optional<std::string> HistoryStore::hashOfSighting(std::int64_t card, int s
     body.bind(1, card).bind(2, slot).bind(3, op);
     if (!body.step())
         return std::nullopt;
-    if (rc0::sectionField(body.blob(0), rc0::trackSectionName(kFirstTrack), "WavLen") != seen.frames)
+    if (rc0::sectionField(body.blob(0), rc0::trackSectionName(seen.track), "WavLen") != seen.frames)
         return std::nullopt;
     return hash;
 }
@@ -667,19 +694,17 @@ void HistoryStore::fillSlotFacts(TimelineEntry& row, int slot)
     totals.step();
     row.takeCount = totals.integer(0);
     row.takeBytes = totals.integer(1);
-    // Offer the state's take, or the one kept before the slot was emptied.
-    sqlite::Statement take(db_, "SELECT name, hash, "
-                                "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash), side "
-                                "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
-                                "ORDER BY CASE side WHEN 'after' THEN 0 ELSE 1 END LIMIT 1");
-    take.bind(1, row.op).bind(2, slot);
-    if (take.step()) {
-        row.takeName = take.text(0);
-        if (!take.isNull(1))
-            row.takeHash = take.blob(1);
-        row.takeKept = row.takeHash && take.integer(2) > 0;
-        row.takeIsAfter = take.text(3) == "after";
-    }
+    // Offer the state's takes, or the ones kept before the slot was emptied.
+    sqlite::Statement after(db_, "SELECT 1 FROM slot_audio WHERE op = ?1 AND slot = ?2 "
+                                 "AND side = 'after' LIMIT 1");
+    after.bind(1, row.op).bind(2, slot);
+    row.takeIsAfter = after.step();
+    sqlite::Statement takes(db_, "SELECT track, name, hash, "
+                                 "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
+                                 "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 AND a.side = ?3 "
+                                 "ORDER BY a.track, a.name");
+    takes.bind(1, row.op).bind(2, slot).bindText(3, row.takeIsAfter ? "after" : "before");
+    row.takes = takesByTrack(takes);
     if (row.kind == "swap") {
         sqlite::Statement other(db_, "SELECT slot FROM slot_changes WHERE op = ?1 "
                                      "AND slot <> ?2 LIMIT 1");
@@ -1093,10 +1118,11 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
 
     sqlite::Statement bodies(db_, "SELECT before_body, after_body FROM slot_changes "
                                   "WHERE op = ?1 AND slot = ?2");
-    sqlite::Statement archived(db_, "SELECT name, hash, "
+    sqlite::Statement archived(db_, "SELECT track, name, hash, "
                                     "  (SELECT count(*) FROM blobs b WHERE b.hash = a.hash) "
                                     "FROM slot_audio a WHERE a.op = ?1 AND a.slot = ?2 "
-                                    "AND a.side = 'before' AND a.hash IS NOT NULL LIMIT 1");
+                                    "AND a.side = 'before' AND a.hash IS NOT NULL "
+                                    "ORDER BY a.track, a.name");
     for (CardEntry& entry : entries) {
         for (const int slot : touchedSlots(entry.op)) {
             CardEntry::Slot touched;
@@ -1118,8 +1144,7 @@ std::vector<HistoryStore::CardEntry> HistoryStore::cardTimeline()
             bodies.reset();
             fillSlotFacts(facts, slot);
             archived.bind(1, entry.op).bind(2, slot);
-            if (archived.step())
-                touched.archived = TakeRef { archived.text(0), archived.blob(1), archived.integer(2) > 0 };
+            touched.archived = takesByTrack(archived);
             archived.reset();
             entry.slots.push_back(std::move(touched));
         }

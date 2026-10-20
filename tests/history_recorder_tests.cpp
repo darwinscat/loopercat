@@ -464,7 +464,7 @@ int main()
         {
             auto rec = recorderAt(tmp.path / "history");
             rec->begin("op-cut", "clear", volume);
-            rec->keepAudio("op-cut", 5, "005_1.WAV", take);
+            rec->keepAudio("op-cut", 5, 1, "005_1.WAV", take);
             // the app dies here: no finish
         }
         HistoryStore reopened(tmp.path / "history");

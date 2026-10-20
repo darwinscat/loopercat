@@ -26,6 +26,7 @@
 #include "Volume.hpp"
 #include "Wav.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -218,8 +219,16 @@ inline std::string readSystem(const fs::path& volume)
 // BEFORE the file on the card changes, with the whole take, and the card
 // changes only after it returns: an archive that throws aborts the command
 // with the take still in its slot. What "kept" means — a folder, a database —
-// is the caller's business; the order is the core's guarantee.
-using Archive = std::function<void(int slot, const std::string& fileName, std::string_view bytes)>;
+// is the caller's business; the order is the core's guarantee. The track is
+// the take's own: a memory of the two-track model holds a take per track, and
+// the two can carry the same file name.
+using Archive = std::function<void(int slot, int track, const std::string& fileName,
+                                   std::string_view bytes)>;
+
+// The track push, trim, downmix and normalize work on: the RC-5's one track.
+// They are closed on every model with more (DeviceProfile.hpp), so for them
+// a memory's take is the first track's.
+inline constexpr int kFirstTrack = 1;
 
 // What a write does to one slot: its body as the card holds it, and the body
 // the write puts in its place. Bodies are the <mem> blocks, byte for byte.
@@ -245,9 +254,10 @@ struct Journal {
     // Required before a memory pair write. The changes are empty when it only
     // restamps the pair — downmix and normalize change audio alone.
     std::function<void(const std::vector<SlotChange>&)> bodiesChanging;
-    // After a take has landed on the card, with its bytes: the post-state's
-    // audio, so the history never has to read it back over USB.
-    std::function<void(int slot, const std::string& fileName, std::string_view bytes)> audioWritten;
+    // After a take has landed on the card, with its bytes and its track: the
+    // post-state's audio, so the history never has to read it back over USB.
+    std::function<void(int slot, int track, const std::string& fileName, std::string_view bytes)>
+        audioWritten;
     // Optional. What a take measured, with the very bytes measured, from a
     // command that meters on its way (normalize): a reading is a fact about
     // those bytes, and the history files it under their hash (#140) — so it
@@ -255,7 +265,7 @@ struct Journal {
     // rewrite, and it is reported whether or not a write follows. Only a
     // measurement is reported: bytes that are not audio are refused by the
     // command instead, and the bytes a rewrite lands get no derived number.
-    std::function<void(int slot, const std::string& fileName, std::string_view bytes,
+    std::function<void(int slot, int track, const std::string& fileName, std::string_view bytes,
                        const wav::LoudnessReading& reading)>
         loudnessMeasured;
     // Just before the settings pair is written, with every section this edit
@@ -284,7 +294,7 @@ inline void requireMemoryJournal(const WriteOptions& options)
 
 // The one entry point every command uses, so the refusal reads the same
 // wherever a take is about to go.
-inline void archiveTake(const WriteOptions& options, const char* command, int slot,
+inline void archiveTake(const WriteOptions& options, const char* command, int slot, int track,
                         const std::string& fileName, std::string_view bytes)
 {
     if (!options.archive)
@@ -293,7 +303,7 @@ inline void archiveTake(const WriteOptions& options, const char* command, int sl
     requireMemoryJournal(options);
     if (options.journal.slotsChanging)
         options.journal.slotsChanging({ slot });
-    options.archive(slot, fileName, bytes);
+    options.archive(slot, track, fileName, bytes);
 }
 
 struct WriteResult {
@@ -429,7 +439,9 @@ inline WriteResult writeSystemPair(const fs::path& volume, std::string_view text
                                    const WriteOptions& options)
 {
     sysfile::assertSystemFile(text);
-    profile::requireWrites(rc0::profileOf(text));
+    // The settings pair has one writer, the controls (and their undo): on a
+    // model with those closed it is not written, whatever else is open.
+    profile::require(rc0::profileOf(text), profile::Operation::setControls);
     // Described before anything is written, exactly as a memory write is: a
     // change the history could not describe does not happen, and the card is
     // left as it was. The document on the card is the "before".
@@ -731,7 +743,7 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
                         dir / (options.landedName ? fs::path(*options.landedName) : wavPath.filename()),
                         false, noteLengthReplaced, slotParams, {}, std::nullopt };
     for (const auto& old : existing) {
-        archiveTake(options.write, "push", slot, old, readFileBytes(dir / old));
+        archiveTake(options.write, "push", slot, kFirstTrack, old, readFileBytes(dir / old));
         result.archived.push_back(old);
         if (!fs::remove(dir / old, ec) || ec)
             throw Error("cannot remove " + (dir / old).string());
@@ -739,7 +751,8 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     const std::string_view landed(reinterpret_cast<const char*>(wavBytes.data()), wavBytes.size());
     writeFileBytes(result.dest, landed);
     if (options.write.journal.audioWritten)
-        options.write.journal.audioWritten(slot, result.dest.filename().string(), landed);
+        options.write.journal.audioWritten(slot, kFirstTrack, result.dest.filename().string(),
+                                           landed);
 
     if (!options.writeConfig) {
         // Best-effort sweep; survivors keep the volume boot-risky, and
@@ -831,10 +844,21 @@ inline std::vector<PullJob> pull(const fs::path& volume, const std::vector<int>&
     std::map<std::string, int> seen;
     for (const auto& job : jobs)
         ++seen[job.base];
+    // A name that collides is disambiguated by its slot, and then so are the
+    // other takes of that memory: the two tracks of one memory land under one
+    // stem, side by side, never one prefixed and one not.
+    std::vector<int> prefixed;
+    for (const auto& job : jobs)
+        if (seen[job.base] > 1)
+            prefixed.push_back(job.slot);
     for (auto& job : jobs) {
-        if (seen[job.base] > 1) {
+        if (std::find(prefixed.begin(), prefixed.end(), job.slot) != prefixed.end()) {
+            // The slot, and on a model with tracks the track: the two takes of
+            // one memory may carry one file name (a vendor upload into both),
+            // and the second must not land on the first.
             const std::string n = std::to_string(job.slot);
-            job.base = (n.size() < 2 ? "0" + n : n) + " - " + job.onPedal;
+            job.base = wav::trackFileName((n.size() < 2 ? "0" + n : n) + " - " + job.onPedal,
+                                          job.track, family.trackCount);
         }
         job.destFile = options.dest / job.base;
     }
@@ -920,12 +944,12 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
     TrimResult result { files.front(), info.frames,
                         { static_cast<int>(bars), static_cast<int>(tempoTenths) }, {},
                         noteLengthReplaced };
-    archiveTake(options.write, "trim", slot, files.front(), raw);
+    archiveTake(options.write, "trim", slot, kFirstTrack, files.front(), raw);
 
     const std::string_view landed(reinterpret_cast<const char*>(slice.data()), slice.size());
     writeFileBytes(source, landed);
     if (options.write.journal.audioWritten)
-        options.write.journal.audioWritten(slot, files.front(), landed);
+        options.write.journal.audioWritten(slot, kFirstTrack, files.front(), landed);
 
     result.written = writeMemoryPair(volume, newDocument, options.write);
     return result;
@@ -990,12 +1014,12 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
     // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
     DownmixResult result { files.front(), info.frames, {} };
-    archiveTake(options.write, "downmix", slot, files.front(), raw);
+    archiveTake(options.write, "downmix", slot, kFirstTrack, files.front(), raw);
 
     const std::string_view landed(reinterpret_cast<const char*>(folded.data()), folded.size());
     writeFileBytes(source, landed);
     if (options.write.journal.audioWritten)
-        options.write.journal.audioWritten(slot, files.front(), landed);
+        options.write.journal.audioWritten(slot, kFirstTrack, files.front(), landed);
 
     result.written = writeMemoryPair(volume, memoryText, options.write);
     return result;
@@ -1105,7 +1129,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     // this command then does with it — writes a gain, finds nothing to do,
     // or refuses below because nothing can be done for silence.
     if (options.write.journal.loudnessMeasured)
-        options.write.journal.loudnessMeasured(slot, files.front(), raw, reading);
+        options.write.journal.loudnessMeasured(slot, kFirstTrack, files.front(), raw, reading);
     if (!reading.integratedLufs.has_value())
         throw Error(normalizeUnmeasurableRefusal(slot));
 
@@ -1134,14 +1158,14 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
     // All checks passed — the writes begin. The archive first: the original
     // must be safe before anything replaces it.
     result.archivedOriginal = files.front();
-    archiveTake(options.write, "normalize", slot, files.front(), raw);
+    archiveTake(options.write, "normalize", slot, kFirstTrack, files.front(), raw);
     report(0.78);
 
     const std::string_view landed(reinterpret_cast<const char*>(rewritten.data()),
                                   rewritten.size());
     writeFileBytes(source, landed, segment(0.78, 0.96));
     if (options.write.journal.audioWritten)
-        options.write.journal.audioWritten(slot, files.front(), landed);
+        options.write.journal.audioWritten(slot, kFirstTrack, files.front(), landed);
 
     result.applied = true;
     result.gainDb = gainDb;
@@ -1158,12 +1182,36 @@ struct ClearOptions {
 };
 
 struct ClearResult {
-    std::vector<std::string> archived; // file names handed to the archive
+    std::vector<std::string> archived; // file names handed to the archive, track by track
     WriteResult written;
 };
 
+// A file one of a memory's tracks holds, where the card keeps it.
+struct TrackFile {
+    int track;
+    std::string name;
+    fs::path path;
+};
+
+// Every file a memory holds, track by track: the RC-5's one folder, the
+// two-track model's two. What clear and restore hand to the archive before
+// the slot loses it — a track they did not look in would lose its take with
+// no copy kept.
+inline std::vector<TrackFile> slotFiles(const fs::path& volume,
+                                        const profile::DeviceProfile& family, int slot)
+{
+    std::vector<TrackFile> files;
+    for (int track = 1; track <= family.trackCount; ++track) {
+        const fs::path dir = volume::trackDir(volume, family, slot, track);
+        for (std::string& name : volume::listTrackWavs(volume, family, slot, track))
+            files.push_back({ track, name, dir / name });
+    }
+    return files;
+}
+
 // Clear slots back to factory state (what MEMORY CLEAR on the device does).
-// Every take goes to the archive before it is removed from the card.
+// Every take, on every track the model has, goes to the archive before it is
+// removed from the card.
 inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
                          const ClearOptions& options)
 {
@@ -1174,7 +1222,7 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
     struct Plan {
         int slot;
         std::string body;
-        std::vector<std::string> files;
+        std::vector<TrackFile> files;
     };
     std::vector<Plan> plans;
     const profile::DeviceProfile& family = rc0::profileOf(text);
@@ -1187,25 +1235,24 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
             if (!existing.empty())
                 body = rc0::setName(body, existing);
         }
-        plans.push_back({ slot, std::move(body), volume::listSlotWavs(volume, slot) });
+        plans.push_back({ slot, std::move(body), slotFiles(volume, family, slot) });
     }
 
     requireMemoryJournal(options.write);
     ClearResult result;
     for (const auto& plan : plans) {
         for (const auto& file : plan.files) {
-            const fs::path src = volume::wavDir(volume, plan.slot) / file;
-            archiveTake(options.write, "clear", plan.slot, file, readFileBytes(src));
-            result.archived.push_back(file);
+            archiveTake(options.write, "clear", plan.slot, file.track, file.name,
+                        readFileBytes(file.path));
+            result.archived.push_back(file.name);
         }
     }
     // Every selected take is safe before any selected slot loses a file.
     for (const auto& plan : plans) {
         for (const auto& file : plan.files) {
-            const fs::path src = volume::wavDir(volume, plan.slot) / file;
             std::error_code ec;
-            if (!fs::remove(src, ec) || ec)
-                throw Error("cannot remove " + src.string());
+            if (!fs::remove(file.path, ec) || ec)
+                throw Error("cannot remove " + file.path.string());
         }
         text = rc0::replaceSlotBody(text, plan.slot, plan.body);
     }
@@ -1215,27 +1262,61 @@ inline ClearResult clear(const fs::path& volume, const std::vector<int>& slots,
 
 // --- restore ---
 
-// The take a slot's folder holds: its on-card file name and the whole file.
-// The name is whatever the pedal or a push left there ("005_1.WAV",
-// "My Song.wav"); a restored take goes back under that same name.
+// The take a track's folder holds: the track, its on-card file name and the
+// whole file. The name is whatever the pedal or a push left there
+// ("005_1.WAV", "My Song.wav"); a restored take goes back under that same
+// name, into that same track.
 struct Take {
+    int track = 0;
     std::string fileName;
     std::string bytes;
 };
 
-// A slot's state as ONE unit: the <mem> body byte for byte, and the take
-// that sat in the slot with it — none for a slot that held no audio. This is
-// the pair the history keeps on each side of an operation, and the pair the
-// pedal needs to agree with itself: the body's WavLen counts the frames of
-// the file next to it.
+// A slot's state as ONE unit: the <mem> body byte for byte, and the takes
+// that sat in the slot with it — at most one per track, none for a slot that
+// held no audio. This is what the history keeps on each side of an
+// operation, and what the pedal needs to agree with itself: each track
+// section's WavLen counts the frames of the file in that track's folder. A
+// track no take names held nothing.
 struct SlotState {
     std::string body;
-    std::optional<Take> take;
+    std::vector<Take> takes; // ascending by track wherever the app builds one
 };
 
+// The take a state holds on one track, or none.
+inline const Take* takeOnTrack(const SlotState& state, int track)
+{
+    for (const Take& take : state.takes)
+        if (take.track == track)
+            return &take;
+    return nullptr;
+}
+
+// The takes one state can carry on a model: each on a track the model has,
+// and no track twice — a track's folder holds the one take its section
+// describes, and a second would leave it to the pedal to pick. Refused by
+// name, so a state built wrong anywhere in the app is caught before it
+// reaches a card.
+inline void requireTakesFit(const profile::DeviceProfile& family, const std::vector<Take>& takes,
+                            const std::string& where)
+{
+    std::vector<int> seen;
+    for (const Take& take : takes) {
+        if (take.track < 1 || take.track > family.trackCount)
+            throw Error(where + ": a take on track " + std::to_string(take.track) + ", but an \""
+                        + std::string(family.familyName) + "\" memory holds "
+                        + (family.trackCount == 1 ? std::string("one track")
+                                                  : std::to_string(family.trackCount) + " tracks"));
+        if (std::find(seen.begin(), seen.end(), take.track) != seen.end())
+            throw Error(where + ": two takes on track " + std::to_string(take.track)
+                        + " \xe2\x80\x94 a track holds one take");
+        seen.push_back(take.track);
+    }
+}
+
 struct RestoreResult {
-    std::vector<std::string> archived; // the takes the slot held, by file name — kept first
-    std::int64_t frames;               // frames the slot now holds; 0 without a take
+    std::vector<std::string> archived;  // the takes the slot held, by file name, track by track — kept first
+    std::vector<std::int64_t> frames;   // per track of the model, track 1 first; 0 for a track left empty
     WriteResult written;
 };
 
@@ -1253,40 +1334,42 @@ inline bool isTakeFileName(std::string_view name)
 // Put a recorded slot state back (issue #50). The body is spliced into the
 // LIVE memory document through slotBody/replaceSlotBody — the other 98 slots
 // belong to the present, an old document is never written wholesale — and
-// the take goes back into the slot's folder under its own name, byte for
-// byte.
+// each take goes back into its own track's folder under its own name, byte
+// for byte. A track the state names no take for ends empty.
 //
 // This is not push. push derives Tempo, RecTmp, MeasLen and Measure from the
 // frame count, which is right for an import and wrong here: the state
 // carries the tempo the player had, and a restore that recomputed it would
 // undo the Set tempo they did. Nothing in the body is recomputed and nothing
-// in the take is canonicalized: what was recorded is what goes back.
+// in a take is canonicalized: what was recorded is what goes back.
 //
-// The body and the take are restored TOGETHER or not at all. A body restored
+// The body and the takes are restored TOGETHER or not at all. A body restored
 // beside somebody else's audio is how a slot ends up unplayable, and it is
 // the natural result of "restore the settings" and "restore the take" being
 // two buttons — so there is one primitive, and it refuses a state that
-// disagrees with itself. The body's audio fields must describe the take that
-// will sit in the slot: WavStat=1 and WavLen equal to its frames with a take,
-// WavStat=0 and WavLen=0 without one. WavStat is what the pedal — and
-// doctor — read as "this slot holds a take", push sets it together with the
-// audio, and a body that claims a take beside an empty folder is exactly the
-// slot doctor reports. The take itself must be in the pedal's own format —
-// float32, stereo, 44.1 kHz, the gate push uses: no state recorded from a
-// card fails it (the pedal records and indexes nothing else), and what the
-// app puts on a card is the pedal's format and nothing else (issue #44). A
-// state that arrives from elsewhere is refused here rather than discarded by
-// the pedal at its next boot.
+// disagrees with itself. Every track section of the body must describe the
+// take that will sit in that track: WavStat=1 and WavLen equal to its frames
+// with a take, WavStat=0 and WavLen=0 without one. WavStat is what the pedal
+// — and doctor — read as "this track holds a take", push sets it together
+// with the audio, and a body that claims a take beside an empty folder is
+// exactly the slot doctor reports. A body with fewer track sections than the
+// card's model, or more, is not one of its memories and is refused. Each take
+// must be in the pedal's own format — float32, stereo, 44.1 kHz, the gate
+// push uses: no state recorded from a card fails it (the pedal records and
+// indexes nothing else), and what the app puts on a card is the pedal's
+// format and nothing else (issue #44). A state that arrives from elsewhere is
+// refused here rather than discarded by the pedal at its next boot.
 //
 // Discipline as everywhere: everything validates before the first write; the
-// takes the slot holds go to the archive before they leave the card; the
-// journal hears the body change from the pair write. A restore is an
-// operation like any other, so it can be undone in turn. It is not refused
-// for changing nothing — the caller holds both states and decides that.
+// takes the slot holds, on every track, go to the archive before they leave
+// the card; the journal hears the body change from the pair write. A restore
+// is an operation like any other, so it can be undone in turn. It is not
+// refused for changing nothing — the caller holds both states and decides
+// that.
 inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& state,
                              const WriteOptions& options)
 {
-    const fs::path dir = volume::wavDir(volume, slot); // validates the slot range
+    volume::slotDirName(slot); // the slot range first, before the card is read
     const std::string where = "restore of slot " + std::to_string(slot);
     if (state.body.empty())
         throw Error(where + " needs a slot body");
@@ -1296,60 +1379,91 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
         || state.body.find("</mem>") != std::string::npos)
         throw Error(where + ": the body is not the content of one <mem> block");
 
-    // The frames the slot will hold, counted from the take that will sit there.
-    std::int64_t frames = 0;
-    if (state.take) {
-        if (!isTakeFileName(state.take->fileName))
-            throw Error(where + ": \"" + state.take->fileName
-                        + "\" is not a file name a take can carry");
-        const wav::BytesView takeView(
-            reinterpret_cast<const unsigned char*>(state.take->bytes.data()),
-            state.take->bytes.size());
-        // The shape first (the frames come from it), then the pedal's format.
-        frames = wav::assertUploadable(wav::readWavInfo(takeView)).frames;
-    }
-    // Each field exactly once in the section that owns it, or the body is not one.
-    const long long wavStat = rc0::sectionField(state.body, rc0::kSectionTrack1, "WavStat");
-    const long long wavLen = rc0::sectionField(state.body, rc0::kSectionTrack1, "WavLen");
-    const long long wavStatForTake = state.take ? rc0::kWavStatIndexed : rc0::kWavStatNone;
-    if (wavStat != wavStatForTake || wavLen != frames) {
-        const std::string held = state.take
-            ? "its take \"" + state.take->fileName + "\" holds " + std::to_string(frames) + " frames"
-            : "it carries no take";
-        throw Error(where + " refused: the body says WavStat=" + std::to_string(wavStat)
-                    + ", WavLen=" + std::to_string(wavLen) + " but " + held
-                    + " — a body and a take that disagree would leave the slot unplayable, and"
-                      " they are only restored together");
+    // The frames each take holds: the shape first (the frames come from it),
+    // then the pedal's format.
+    std::vector<std::int64_t> takeFrames;
+    for (const Take& take : state.takes) {
+        if (!isTakeFileName(take.fileName))
+            throw Error(where + ": \"" + take.fileName + "\" is not a file name a take can carry");
+        const wav::BytesView takeView(reinterpret_cast<const unsigned char*>(take.bytes.data()),
+                                      take.bytes.size());
+        takeFrames.push_back(wav::assertUploadable(wav::readWavInfo(takeView)).frames);
     }
 
     const std::string memoryText = readMemoryFor(volume, profile::Operation::restore);
+    const profile::DeviceProfile& family = rc0::profileOf(memoryText);
+    requireTakesFit(family, state.takes, where);
+    const std::string name(family.familyName);
+    if (state.body.find(rc0::trackSectionOpen(family.trackCount + 1)) != std::string::npos)
+        throw Error(where + ": the body carries a " + rc0::trackSectionOpen(family.trackCount + 1)
+                    + " section \xe2\x80\x94 more tracks than an \"" + name + "\" memory holds");
+    RestoreResult result { {}, {}, {} };
+    for (int track = 1; track <= family.trackCount; ++track) {
+        const std::string section = rc0::trackSectionName(track);
+        if (state.body.find(rc0::trackSectionOpen(track)) == std::string::npos)
+            throw Error(where + ": the body carries no " + rc0::trackSectionOpen(track)
+                        + " section \xe2\x80\x94 an \"" + name + "\" memory holds "
+                        + std::to_string(family.trackCount)
+                        + (family.trackCount == 1 ? " track" : " tracks"));
+        const Take* take = takeOnTrack(state, track);
+        const std::int64_t frames = take == nullptr
+            ? 0
+            : takeFrames[static_cast<std::size_t>(take - state.takes.data())];
+        // Each field exactly once in the section that owns it, or the body is not one.
+        const long long wavStat = rc0::sectionField(state.body, section, "WavStat");
+        const long long wavLen = rc0::sectionField(state.body, section, "WavLen");
+        const long long wavStatForTake = take ? rc0::kWavStatIndexed : rc0::kWavStatNone;
+        if (wavStat != wavStatForTake || wavLen != frames) {
+            // A one-track memory's refusal reads as it always has; with more
+            // tracks the sentence names the track it is about.
+            const std::string onTrack =
+                family.trackCount == 1 ? std::string() : " on track " + std::to_string(track);
+            const std::string held = take
+                ? "its take \"" + take->fileName + "\"" + onTrack + " holds "
+                    + std::to_string(frames) + " frames"
+                : "it carries no take" + onTrack;
+            throw Error(where + " refused: the body says " + (family.trackCount == 1 ? "" : section + " ")
+                        + "WavStat=" + std::to_string(wavStat) + ", WavLen=" + std::to_string(wavLen)
+                        + " but " + held
+                        + " \xe2\x80\x94 a body and a take that disagree would leave the slot"
+                          " unplayable, and they are only restored together");
+        }
+        result.frames.push_back(frames);
+    }
+
     const std::string newDocument = rc0::replaceSlotBody(memoryText, slot, state.body);
 
-    const std::vector<std::string> existing = volume::listSlotWavs(volume, slot);
+    const std::vector<TrackFile> existing = slotFiles(volume, family, slot);
     if (!existing.empty() && !options.archive)
-        throw Error(where + " needs an archive — the take it replaces is kept first, it is never"
-                            " deleted outright");
+        throw Error(where + " needs an archive \xe2\x80\x94 the take it replaces is kept first, it"
+                            " is never deleted outright");
 
     // All checks passed — the writes begin. The archive first: whatever the
-    // slot holds is handed over whole, and leaves the card only after that.
+    // slot holds, on every track, is handed over whole, and leaves the card
+    // only after that — every track's take is kept before any track loses
+    // one, so an archive that refuses the second track leaves both on the card.
     requireMemoryJournal(options);
     if (options.journal.slotsChanging)
         options.journal.slotsChanging({ slot });
-    RestoreResult result { {}, frames, {} };
-    std::error_code ec;
-    for (const auto& old : existing) {
-        archiveTake(options, "restore", slot, old, readFileBytes(dir / old));
-        result.archived.push_back(old);
-        if (!fs::remove(dir / old, ec) || ec)
-            throw Error("cannot remove " + (dir / old).string());
+    for (const TrackFile& old : existing) {
+        archiveTake(options, "restore", slot, old.track, old.name, readFileBytes(old.path));
+        result.archived.push_back(old.name);
     }
-    if (state.take) {
+    std::error_code ec;
+    for (const TrackFile& old : existing)
+        if (!fs::remove(old.path, ec) || ec)
+            throw Error("cannot remove " + old.path.string());
+    for (int track = 1; track <= family.trackCount; ++track) {
+        const Take* take = takeOnTrack(state, track);
+        if (take == nullptr)
+            continue;
+        const fs::path dir = volume::trackDir(volume, family, slot, track);
         fs::create_directories(dir, ec);
         if (ec)
             throw Error("cannot create " + dir.string());
-        writeFileBytes(dir / state.take->fileName, state.take->bytes);
+        writeFileBytes(dir / take->fileName, take->bytes);
         if (options.journal.audioWritten)
-            options.journal.audioWritten(slot, state.take->fileName, state.take->bytes);
+            options.journal.audioWritten(slot, track, take->fileName, take->bytes);
     }
     result.written = writeMemoryPair(volume, newDocument, options);
     return result;
