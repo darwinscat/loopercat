@@ -225,7 +225,7 @@ namespace detail {
         std::error_code ec;
         if (!fs::is_directory(volume, ec))
             throw Error("no volume at " + volume.string()
-                        + " \xe2\x80\x94 is the pedal in storage mode and mounted?");
+                        + " - is the pedal in storage mode and mounted?");
     }
 
     inline void refuseSymlink(const fs::path& file)
@@ -276,7 +276,7 @@ namespace detail {
             throw Error("cannot read " + file.string() + ": " + ec.message());
         if (size > kMaxFileBytes)
             throw Error(file.string() + " is " + std::to_string(size)
-                        + " bytes \xe2\x80\x94 too large to be a card marker");
+                        + " bytes - too large to be a card marker");
         std::ifstream in(file, std::ios::binary);
         if (!in)
             throw Error("cannot read " + file.string());
@@ -611,7 +611,7 @@ inline Written rename(const fs::path& volume, std::string_view newName)
     detail::requireVolume(volume);
     const auto bytes = detail::readIfPresent(markerPath(volume));
     if (!bytes)
-        throw Error("this card has no marker yet \xe2\x80\x94 nothing to rename");
+        throw Error("this card has no marker yet - nothing to rename");
     toml::Table doc = detail::parse(*bytes);
     (void) detail::cardOf(doc);
     auto& table = std::get<toml::Table>(doc.find(kTableKey)->data);

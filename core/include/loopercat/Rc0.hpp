@@ -281,12 +281,12 @@ inline const profile::DeviceProfile& assertMemoryFile(std::string_view text)
     const std::string name(family.familyName);
     const int tracks = family.trackCount;
     if (document.find(trackSectionOpen(tracks)) == std::string::npos)
-        throw Error("this card carries no " + trackSectionOpen(tracks) + " section \xe2\x80\x94 an"
+        throw Error("this card carries no " + trackSectionOpen(tracks) + " section - an"
                     " \"" + name + "\" memory holds " + std::to_string(tracks)
                     + (tracks == 1 ? " track" : " tracks") + ", each in a section of its own");
     if (document.find(trackSectionOpen(tracks + 1)) != std::string::npos)
         throw Error("this card carries " + trackSectionOpen(tracks + 1)
-                    + " sections \xe2\x80\x94 a memory with more tracks than an \"" + name
+                    + " sections - a memory with more tracks than an \"" + name
                     + "\" has; " + profile::onlySpeaks());
     return family;
 }
@@ -523,7 +523,7 @@ inline std::string factorySlotBody(const profile::DeviceProfile& family, int slo
                     + std::to_string(slot));
     if (!family.hasFactoryBody())
         throw Error("the factory memory of the \"" + std::string(family.familyName)
-                    + "\" model is not on record \xe2\x80\x94 nothing can be cleared to it");
+                    + "\" model is not on record - nothing can be cleared to it");
     return "\n" + detail::nameBlock(defaultSlotName(slot)) + std::string(family.factorySections);
 }
 

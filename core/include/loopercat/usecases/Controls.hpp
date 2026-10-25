@@ -355,7 +355,7 @@ namespace detail {
         // may read is still not one whose controls it knows.
         if (&family != &profile::kRc5)
             throw Error("the controls of the \"" + std::string(family.familyName)
-                        + "\" model are not on record \xe2\x80\x94 " + profile::onlySpeaks());
+                        + "\" model are not on record - " + profile::onlySpeaks());
         return family;
     }
 

@@ -170,6 +170,11 @@ public:
         // normalize that found its slot at target (#144). The row says what
         // was tried, not what the slot holds: it is never the slot's state.
         bool subjectOnly = false;
+        // For a restore: the operation it went back to, and when that one
+        // happened. Absent for a restore older than store version 11, and
+        // once the row it named is forgotten.
+        std::optional<std::int64_t> restores;
+        std::optional<std::int64_t> restoredAt;
     };
 
     // Selected card only; no selection returns no rows. Ordered by time, then
@@ -297,6 +302,11 @@ public:
     // An 'undo' or 'redo' row names the operation it reverts.
     void setReverts(std::int64_t op, std::int64_t target);
 
+    // A 'restore' row names the operation it goes back to, on the same card.
+    // Refused: a row that is not a restore, a target that is the row itself,
+    // and a target the store does not hold for that card.
+    void setRestores(std::int64_t op, std::int64_t target);
+
     // --- what the history costs, and giving space back (Retention.h) ---
 
     // What the file holds, read from the file. The store reports; the policy
@@ -405,6 +415,8 @@ public:
         bool pinned = false;
         std::int64_t session = 0;            // the connection it happened in
         std::optional<std::int64_t> reverts; // for an 'undo' or 'redo' row: the operation it reverts
+        std::optional<std::int64_t> restores; // for a 'restore' row: the operation it went back to
+        std::optional<std::int64_t> restoredAt; // and when that operation happened
         struct Slot {
             int slot = 0;
             bool newest = false;

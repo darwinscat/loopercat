@@ -59,8 +59,8 @@ int run()
     CHECK_EQ(uploadmark::landedName("song.", "-pedal", Audio::rebuilt), std::string("song-pedal.wav"));
 
     // --- a UTF-8 name survives byte for byte ---
-    CHECK_EQ(uploadmark::landedName("caf\xc3\xa9 take.mp3", "\xe2\x80\x93pedal", Audio::rebuilt),
-             std::string("caf\xc3\xa9 take\xe2\x80\x93pedal.wav"));
+    CHECK_EQ(uploadmark::landedName("caf\xc3\xa9 take.mp3", "\xe2\x80\x93pedal", Audio::rebuilt),  // utf8-data: a file name's bytes
+             std::string("caf\xc3\xa9 take\xe2\x80\x93pedal.wav"));  // utf8-data: a file name's bytes
 
     // --- a suffix a FAT name cannot hold is refused, with the character named ---
     for (const char c : std::string("/\\:*?\"<>|")) {
@@ -80,7 +80,7 @@ int run()
     uploadmark::assertSuffix("");
     uploadmark::assertSuffix(" (pedal)");
     uploadmark::assertSuffix("-v1.2");
-    uploadmark::assertSuffix("\xe2\x80\x93pedal");
+    uploadmark::assertSuffix("\xe2\x80\x93pedal");  // utf8-data: a file name's bytes
     uploadmark::assertSuffix("_PEDAL_");
     ++testkit::checksRun; // the five lines above threw nothing
 
@@ -130,19 +130,19 @@ int run()
         // units, not bytes: 100 "é" are 200 bytes and 100 units
         std::string accented;
         for (int i = 0; i < 100; ++i)
-            accented += "\xc3\xa9";
+            accented += "\xc3\xa9";  // utf8-data: a file name's bytes
         const std::string landed = uploadmark::landedName(accented + ".mp3", "-pedal", Audio::rebuilt);
         CHECK_EQ(landed.size(), std::size_t { 210 });
         // the limit is in units: a name of 238 units may be 239 bytes...
         const std::string stem233(233, 's');
-        CHECK_EQ(uploadmark::landedName(stem233 + ".mp3", "\xc3\xa9", Audio::rebuilt).size(),
+        CHECK_EQ(uploadmark::landedName(stem233 + ".mp3", "\xc3\xa9", Audio::rebuilt).size(),  // utf8-data: a file name's bytes
                  std::size_t { 239 }); // 233 + 1 unit + 4 = 238 units in 239 bytes: allowed
         // ...or 240 bytes, when the extra character is a surrogate pair (2 units)
         const std::string stem232(232, 's');
-        CHECK_EQ(uploadmark::landedName(stem232 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt).size(),
+        CHECK_EQ(uploadmark::landedName(stem232 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt).size(),  // utf8-data: a file name's bytes
                  std::size_t { 240 }); // 232 + 2 units (4 bytes) + 4 = 238 units in 240 bytes: allowed
         // and the pair on a stem one longer is the 239th unit
-        CHECK_THROWS(uploadmark::landedName(stem233 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt),
+        CHECK_THROWS(uploadmark::landedName(stem233 + ".mp3", "\xf0\x9f\x98\x80", Audio::rebuilt),  // utf8-data: a file name's bytes
                      "at most 238");
     }
 

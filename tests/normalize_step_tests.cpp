@@ -203,7 +203,7 @@ int main()
         // number off the front of anything, and a hand-edited "-18,5" meant
         // -18.5, not -18 (integration review of 0.9.6).
         for (const char* text : { "-18,5", "-18 LUFS", "-18abc", "--18", "- 18", "-", ".", "-.",
-                                  "-18.5.0", "-1e1", "-0x12", "\xe2\x88\x92" "18" /* U+2212 minus */ })
+                                  "-18.5.0", "-1e1", "-0x12", "\xe2\x88\x92" "18" /* utf8-data: a U+2212 minus */ })
             CHECK(!parsed(text).has_value());
         CHECK(parsed("-18.").has_value() && closeTo(*parsed("-18."), -18.0, 1.0e-12)); // a point with nothing after
         CHECK(parsed("-9.75").has_value() && closeTo(*parsed("-9.75"), -9.75, 1.0e-12));
@@ -301,7 +301,7 @@ int main()
                         normalizes(rec, "op-6", 6), closes(rec, "op-6")),
                  normalizestep::changedSinceMeasured(6));
         CHECK_EQ(normalizestep::changedSinceMeasured(6),
-                 std::string("slot 6 changed since it was measured — Normalize again"));
+                 std::string("slot 6 changed since it was measured - Normalize again"));
         CHECK_EQ(opsNow(), opsMid);
         CHECK_EQ(blobsNow(), blobsMid);
         CHECK(commands::readFileBytes(take6) == replaced);

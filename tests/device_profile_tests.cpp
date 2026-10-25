@@ -158,7 +158,7 @@ int main()
         "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {}, profile::kNoOperation
     };
     CHECK_THROWS(profile::require(closed, profile::Operation::read),
-                 "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5");
+                 "this is an \"RC-500\" card, not an RC-5 - LooperCat only speaks RC-5");
     profile::require(profile::kRc500, profile::Operation::read); // open: no throw
     for (const auto op : kEveryOp) {
         if (op == profile::Operation::read)

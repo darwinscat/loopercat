@@ -3,10 +3,14 @@
 
 #pragma once
 
+#include <loopercat/Error.hpp>
 #include <loopercat/Rc0.hpp>
 #include <loopercat/usecases/CountIn.hpp>
 
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <ctime>
 #include <optional>
 #include <string>
 #include <utility>
@@ -59,6 +63,10 @@ struct Facts {
     // finished — a failed operation's note is its error.
     std::string status;
     std::string note;
+    // When the operation happened, and — for a restore — when the operation
+    // it went back to did: both wall-clock milliseconds, as the store keeps them.
+    std::int64_t at = 0;
+    std::optional<std::int64_t> restoredAt;
 };
 
 struct Line {
@@ -80,6 +88,42 @@ inline std::string minutes(std::int64_t frames)
 inline std::string bpm(long long tenths)
 {
     return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " BPM";
+}
+
+// A moment as a row's clock reads it on this computer: "17:52" on the same
+// day as `reference`, "11 Oct 17:52" on any other — the forms the History
+// tab's own column uses, so a row that names another row's time names it the
+// way that row shows it. The month is named here, not by strftime's %b:
+// the process locale must not turn a row's words into another alphabet.
+inline std::string clockWords(std::int64_t atMs, std::int64_t referenceMs)
+{
+    static constexpr const char* kMonths[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const auto local = [](std::int64_t ms) {
+        // The second the millisecond falls in: before the epoch too, where
+        // division alone would round toward it.
+        const std::int64_t whole = ms / 1000 - (ms % 1000 < 0 ? 1 : 0);
+        const std::time_t seconds = static_cast<std::time_t>(whole);
+        std::tm out {};
+#if defined(_WIN32)
+        if (localtime_s(&out, &seconds) != 0)
+#else
+        if (localtime_r(&seconds, &out) == nullptr)
+#endif
+            throw Error("the clock cannot read the moment " + std::to_string(ms));
+        return out;
+    };
+    const std::tm at = local(atMs);
+    const std::tm reference = local(referenceMs);
+    const bool sameDay = at.tm_year == reference.tm_year && at.tm_yday == reference.tm_yday;
+    char text[32];
+    const int length = sameDay
+        ? std::snprintf(text, sizeof text, "%02d:%02d", at.tm_hour, at.tm_min)
+        : std::snprintf(text, sizeof text, "%02d %s %02d:%02d", at.tm_mday, kMonths[at.tm_mon],
+                        at.tm_hour, at.tm_min);
+    if (length <= 0 || static_cast<std::size_t>(length) >= sizeof text)
+        throw Error("the clock cannot write the moment " + std::to_string(atMs));
+    return std::string(text, static_cast<std::size_t>(length));
 }
 
 // Every number comes from the section that owns it, as catalog::readSlot
@@ -142,10 +186,11 @@ inline Line tell(const Facts& facts)
         line.action = "Cleared slot history";
         line.detail = facts.note;
     } else if (facts.kind == "snapshot") {
-        line.action = "Card first seen";
+        // The take the slot held when the app first met the card: what it was
+        // before LooperCat touched it. The sighting's own note is about the
+        // card - where it was cut off - and is the card's row's to say.
+        line.action = "Original";
         line.detail = facts.takeName;
-        if (!facts.note.empty())
-            line.detail += (line.detail.empty() ? "" : "; ") + facts.note;
     } else if (facts.kind == "push") {
         line.action = "Pushed";
         line.detail = facts.takeName;
@@ -197,8 +242,20 @@ inline Line tell(const Facts& facts)
     } else if (facts.kind == "clear") {
         line.action = "Cleared";
     } else if (facts.kind == "restore") {
+        // What came back, said the way Pushed says what went in — the take,
+        // its length, the tempo it plays at — and which row it came from, by
+        // that row's clock: the same day reads as the time alone, another
+        // day with its date. A restore older than the store's record of its
+        // row, or whose row was forgotten, says what came back and no more.
         line.action = "Restored";
-        line.detail = facts.note;
+        if (facts.afterBody)
+            line.detail = facts.takeName.empty()
+                ? std::string("empty slot")
+                : facts.takeName + " - " + minutes(track(*facts.afterBody, "WavLen")) + " - "
+                    + bpm(tempoTenths(*facts.afterBody));
+        if (facts.restoredAt)
+            line.detail += (line.detail.empty() ? "" : " - ") + std::string("back to ")
+                + clockWords(*facts.restoredAt, facts.at);
     } else if (facts.kind == "undo" || facts.kind == "redo") {
         // The row's note names what was undone ("trim"); its own bodies say
         // where the slot went back to — the length, when it has one.
@@ -209,6 +266,14 @@ inline Line tell(const Facts& facts)
             (void) was;
             line.detail = "back to " + (now > 0 ? minutes(now) : std::string("empty"));
         }
+    } else if (facts.kind == "rhythm") {
+        // The slot's drums and the pedal's Start & Stop, by the names the
+        // app gives them — the rows outlive the tabs that set them.
+        line.action = "Rhythm";
+        line.detail = facts.note;
+    } else if (facts.kind == "playstop") {
+        line.action = "Start & Stop";
+        line.detail = facts.note;
     } else if (facts.kind == "downmix") {
         line.action = "Folded to mono";
         line.detail = facts.note;

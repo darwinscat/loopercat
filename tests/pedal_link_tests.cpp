@@ -16,6 +16,14 @@
 
 using namespace loopercat;
 
+// The sender is the platform's (PedalLinkJuce.cpp, PedalLinkLinux.cpp) and is
+// not linked here: an endpoint the app has no profile for must never reach it.
+juce::String loopercat::pedallink::requestStorageMode(bool, const Pedal&)
+{
+    testkit::fail("an endpoint without a profile reached the sender", __FILE__, __LINE__);
+    return {};
+}
+
 int main()
 {
     // The bus as CoreMIDI enumerated it (names and uniqueIDs verbatim).
@@ -89,6 +97,16 @@ int main()
     CHECK_EQ(std::string(pedallink::pedalOf(juce::MidiDeviceInfo("BOSS_RC-500", "904629978")).family()), "RC-500");
     CHECK_THROWS(pedallink::pedalOf(juce::MidiDeviceInfo("BOSS_RC-600", "7")), "not an RC model this app has a profile for");
     CHECK_THROWS(pedallink::pedalOf(juce::MidiDeviceInfo("Quad Cortex", "9")), "not an RC model");
+
+    // --- a refusal names the endpoint as the OS named it: its UTF-8 comes
+    // back as the same characters, not as Latin-1 (0.9.6 previews) ---
+    {
+        const juce::String name = juce::String::fromUTF8("Clavier \xe2\x80\x9c\xc3\xa9t\xc3\xa9\xe2\x80\x9d");
+        const juce::String said = pedallink::requestStorageMode(true, juce::MidiDeviceInfo(name, "id-7"));
+        CHECK(said.contains(name + " (id-7)"));
+        CHECK(said.toStdString().find(name.toStdString()) != std::string::npos);
+        CHECK(!said.contains(juce::String::fromUTF8("\xc3\xa2"))); // no "a-circumflex": the first byte of a dash or a quote read as Latin-1
+    }
 
     return testkit::summary("pedal_link");
 }

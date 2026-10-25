@@ -11,12 +11,29 @@ namespace loopercat
 namespace
 {
 constexpr int kRowHeight = 26;
-constexpr int kBarHeight = 40;
 constexpr int kGutter = 12;
 const juce::Colour kInk { 0xff8a8a99 };      // the quiet half of a row
 const juce::Colour kPaper { 0xffe8e8f0 };    // what the row is about
 const juce::Colour kSelected { 0xff26263a };
 const juce::Colour kWarning { 0xffd9a441 };  // failed, interrupted — the window's colour
+
+juce::String words(historymenu::Entry entry)
+{
+    switch (entry) {
+        case historymenu::Entry::restore: return "Restore this state";
+        case historymenu::Entry::exportTake: return juce::String::fromUTF8("Export take\xe2\x80\xa6");
+        case historymenu::Entry::separator: return {};
+        case historymenu::Entry::clearHistory:
+            return juce::String::fromUTF8("Clear history of this slot\xe2\x80\xa6");
+    }
+    return {};
+}
+
+// A PopupMenu item id is never 0 — 0 is "dismissed".
+int itemId(historymenu::Entry entry)
+{
+    return static_cast<int>(entry) + 1;
+}
 } // namespace
 
 HistoryPane::HistoryPane()
@@ -30,22 +47,6 @@ HistoryPane::HistoryPane()
     empty_.setColour(juce::Label::textColourId, kInk);
     empty_.setText("Nothing has happened to this slot yet.", juce::dontSendNotification);
     addChildComponent(empty_);
-
-    for (juce::TextButton* button : { &play_, &restore_, &forget_ }) {
-        button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff17171d));
-        button->setColour(juce::TextButton::textColourOffId, kPaper);
-        addAndMakeVisible(*button);
-    }
-    play_.onClick = [this] {
-        if (const Row* row = selected(); row != nullptr && onPlay)
-            onPlay(row->op);
-    };
-    restore_.onClick = [this] {
-        if (const Row* row = selected(); row != nullptr && onRestore)
-            onRestore(row->op);
-    };
-    forget_.onClick = [this] { clearHistory(); };
-    updateOffers();
 }
 
 void HistoryPane::setRows(std::vector<Row> rows, int slot)
@@ -68,7 +69,6 @@ void HistoryPane::setRows(std::vector<Row> rows, int slot)
     list_.selectRow(row, juce::dontSendNotification);
     if (!rows_.empty())
         list_.scrollToEnsureRowIsOnscreen(static_cast<int>(rows_.size()) - 1);
-    updateOffers();
     repaint();
 }
 
@@ -80,7 +80,6 @@ void HistoryPane::clear()
 void HistoryPane::setBusy(bool busy)
 {
     busy_ = busy;
-    updateOffers();
 }
 
 const HistoryPane::Row* HistoryPane::selected() const
@@ -90,29 +89,91 @@ const HistoryPane::Row* HistoryPane::selected() const
                                                             : nullptr;
 }
 
-void HistoryPane::updateOffers()
+const HistoryPane::Row* HistoryPane::rowFor(std::int64_t op) const
 {
-    forget_.setEnabled(!busy_ && slot_ > 0 && !rows_.empty());
-    const Row* row = selected();
-    play_.setEnabled(!busy_ && row != nullptr && row->playable);
-    restore_.setEnabled(!busy_ && row != nullptr && row->restorable);
+    for (const Row& row : rows_)
+        if (row.op == op)
+            return &row;
+    return nullptr;
 }
 
-void HistoryPane::clearHistory()
+std::vector<HistoryPane::MenuLine> HistoryPane::menuFor(std::int64_t op) const
 {
-    if (forget_.isEnabled() && onClearHistory) onClearHistory(slot_);
+    std::vector<MenuLine> lines;
+    if (const Row* row = rowFor(op))
+        for (const historymenu::Item& item : historymenu::forRow({ row->restorable, row->takeKept }, busy_))
+            lines.push_back({ item.entry, words(item.entry), item.enabled });
+    return lines;
 }
 
-void HistoryPane::selectedRowsChanged(int)
+void HistoryPane::choose(int slot, std::int64_t op, historymenu::Entry entry)
 {
-    updateOffers();
+    if (slot != slot_)
+        return; // the menu was about a slot the pane no longer shows
+    bool enabled = false;
+    for (const MenuLine& line : menuFor(op))
+        if (line.entry == entry)
+            enabled = line.enabled;
+    if (!enabled)
+        return;
+    switch (entry) {
+        case historymenu::Entry::restore:
+            if (onRestore) onRestore(slot, op);
+            break;
+        case historymenu::Entry::exportTake:
+            if (onExportTake) onExportTake(slot, op);
+            break;
+        case historymenu::Entry::clearHistory:
+            if (onClearHistory) onClearHistory(slot_);
+            break;
+        case historymenu::Entry::separator:
+            break; // never enabled
+    }
 }
 
-void HistoryPane::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
+// The menu belongs to the row, not to the selection: it remembers the slot
+// and the operation, so rows read again, or another slot selected, while it
+// is open cannot turn the choice onto another row.
+void HistoryPane::showMenu(int row, juce::Rectangle<int> screenArea)
 {
-    if (row >= 0 && row < static_cast<int>(rows_.size()) && rows_[static_cast<std::size_t>(row)].playable
-        && !busy_ && onPlay)
-        onPlay(rows_[static_cast<std::size_t>(row)].op);
+    if (row < 0 || row >= static_cast<int>(rows_.size()))
+        return;
+    const std::int64_t op = rows_[static_cast<std::size_t>(row)].op;
+    const int slot = slot_;
+    juce::PopupMenu menu;
+    for (const MenuLine& line : menuFor(op)) {
+        if (line.entry == historymenu::Entry::separator)
+            menu.addSeparator();
+        else
+            menu.addItem(itemId(line.entry), line.text, line.enabled);
+    }
+    juce::Component::SafePointer<HistoryPane> safe(this);
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(screenArea),
+                       [safe, slot, op](int id) {
+                           if (safe == nullptr)
+                               return;
+                           for (const historymenu::Entry entry :
+                                { historymenu::Entry::restore, historymenu::Entry::exportTake,
+                                  historymenu::Entry::clearHistory })
+                               if (itemId(entry) == id)
+                                   safe->choose(slot, op, entry);
+                       });
+}
+
+// Either button: the list has already selected the row by the time it says
+// it was clicked (a right-click and a Ctrl-click select too), so the menu
+// opens over a row that is visibly the one it is about.
+void HistoryPane::listBoxItemClicked(int row, const juce::MouseEvent& event)
+{
+    showMenu(row, { event.getScreenX(), event.getScreenY(), 1, 1 });
+}
+
+// The keyboard's way to the same menu: Return on the selected row, opened
+// against the row itself.
+void HistoryPane::returnKeyPressed(int lastRowSelected)
+{
+    const juce::Rectangle<int> area = list_.getRowPosition(lastRowSelected, true);
+    showMenu(lastRowSelected, list_.localAreaToGlobal(area));
 }
 
 void HistoryPane::paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height,
@@ -160,22 +221,10 @@ void HistoryPane::paintListBoxItem(int rowNumber, juce::Graphics& g, int width, 
     }
 }
 
-void HistoryPane::paint(juce::Graphics& g)
-{
-    g.setColour(juce::Colour(0xff1f1f28));
-    g.fillRect(getLocalBounds().removeFromBottom(kBarHeight).removeFromTop(1));
-}
-
 void HistoryPane::resized()
 {
-    juce::Rectangle<int> area = getLocalBounds();
-    juce::Rectangle<int> bar = area.removeFromBottom(kBarHeight).reduced(kGutter, 6);
-    forget_.setBounds(bar.removeFromLeft(225));
-    restore_.setBounds(bar.removeFromRight(150));
-    bar.removeFromRight(8);
-    play_.setBounds(bar.removeFromRight(90));
-    list_.setBounds(area);
-    empty_.setBounds(area);
+    list_.setBounds(getLocalBounds());
+    empty_.setBounds(getLocalBounds());
 }
 
 } // namespace loopercat

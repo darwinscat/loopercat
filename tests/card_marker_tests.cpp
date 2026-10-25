@@ -145,7 +145,7 @@ int main()
         CHECK_EQ(felitronics::toml::write(std::get<felitronics::toml::Table>(parsed)), kKittyFile);
         // Escapes are decoded before the name's byte limit and control rule.
         put(marker::markerPath(tmp.path), replace(kKittyFile, "RC-5 Kitty", "caf\\u00e9 \\U0001F431"));
-        CHECK_EQ(marker::read(tmp.path)->name, std::string("caf\xc3\xa9 \xf0\x9f\x90\xb1"));
+        CHECK_EQ(marker::read(tmp.path)->name, std::string("caf\xc3\xa9 \xf0\x9f\x90\xb1"));  // utf8-data: a card name's bytes
         // The courtesy writer field is optional, as before.
         put(marker::markerPath(tmp.path), replace(kKittyFile, "by = \"LooperCat\"\n", ""));
         CHECK_EQ(marker::read(tmp.path)->model, "RC-5");
@@ -224,7 +224,7 @@ int main()
     }
     // Both sides of every control boundary, through parsing and public writes.
     for (const auto& name : { std::string("\x1f"), std::string("\x7f"),
-                              std::string("\xc2\x80"), std::string("\xc2\x9f") }) {
+                              std::string("\xc2\x80"), std::string("\xc2\x9f") }) {  // utf8-data: control characters past ASCII
         TempDir tmp;
         makeCard(tmp.path);
         CHECK_THROWS(marker::mint(tmp.path, name), "control characters");
@@ -232,7 +232,7 @@ int main()
         CHECK_THROWS(marker::rename(tmp.path, name), "control characters");
         CHECK_EQ(slurp(marker::markerPath(tmp.path)), kKittyFile);
     }
-    for (const auto& name : { std::string(" "), std::string("~"), std::string("\xc2\xa0") }) {
+    for (const auto& name : { std::string(" "), std::string("~"), std::string("\xc2\xa0") }) {  // utf8-data: a no-break space
         TempDir tmp;
         makeCard(tmp.path);
         CHECK_EQ(marker::mint(tmp.path, name).card.name, name);
@@ -368,10 +368,10 @@ int main()
         CHECK_THROWS(marker::mint(tmp.path, std::string(65, 'a')), "at most 64 bytes");
         CHECK_THROWS(marker::mint(tmp.path, "a\nb"), "control characters");
         CHECK_THROWS(marker::mint(tmp.path, "a\x7f"), "control characters");
-        CHECK_THROWS(marker::mint(tmp.path, "\xff"), "valid UTF-8");
-        CHECK_THROWS(marker::mint(tmp.path, "\xc0\xaf"), "valid UTF-8");         // overlong '/'
-        CHECK_THROWS(marker::mint(tmp.path, "\xed\xa0\x80"), "valid UTF-8");     // a surrogate
-        CHECK_THROWS(marker::mint(tmp.path, "\xf0\x9f\x90"), "valid UTF-8");     // cut short
+        CHECK_THROWS(marker::mint(tmp.path, "\xff"), "valid UTF-8");  // utf8-data: bytes that are not UTF-8
+        CHECK_THROWS(marker::mint(tmp.path, "\xc0\xaf"), "valid UTF-8");         // overlong '/'; utf8-data: bytes that are not UTF-8
+        CHECK_THROWS(marker::mint(tmp.path, "\xed\xa0\x80"), "valid UTF-8");     // a surrogate; utf8-data: bytes that are not UTF-8
+        CHECK_THROWS(marker::mint(tmp.path, "\xf0\x9f\x90"), "valid UTF-8");     // cut short; utf8-data: bytes that are not UTF-8
         CHECK(!fs::exists(marker::markerPath(tmp.path)));
         // The name is judged before anything else — a card with no memory
         // files still hears about its empty name first.
@@ -380,12 +380,12 @@ int main()
         // 64 bytes exactly is a name; so are 16 cats (4 bytes each).
         std::string cats;
         for (int i = 0; i < 16; ++i)
-            cats += "\xf0\x9f\x90\xb1";
+            cats += "\xf0\x9f\x90\xb1";  // utf8-data: a four-byte character
         CHECK_EQ(marker::mint(tmp.path, cats).card.name, cats);
         TempDir other;
         makeCard(other.path);
         CHECK_EQ(marker::mint(other.path, std::string(64, 'a')).card.name, std::string(64, 'a'));
-        CHECK_THROWS(marker::rename(other.path, cats + "\xf0\x9f\x90\xb1"), "at most 64 bytes");
+        CHECK_THROWS(marker::rename(other.path, cats + "\xf0\x9f\x90\xb1"), "at most 64 bytes");  // utf8-data: a four-byte character
     }
 
     // --- every write sweeps the root, and only the root and ROLAND ---

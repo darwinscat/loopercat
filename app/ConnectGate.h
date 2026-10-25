@@ -41,7 +41,7 @@ struct Decision {
 // named because the register cannot tell them apart (measured 2026-09-25:
 // 02 while playing AND 02 with an unsaved take, on both RC-5s).
 inline constexpr const char* kBusySentence =
-    "The pedal is playing or holds an unsaved take \xe2\x80\x94 stop it and save (WRITE), "
+    "The pedal is playing or holds an unsaved take - stop it and save (WRITE), "
     "then press Connect.";
 
 // `answer` is what the register said, or nothing when the pedal did not

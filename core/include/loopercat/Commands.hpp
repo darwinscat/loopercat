@@ -289,7 +289,7 @@ inline void archiveTake(const WriteOptions& options, const char* command, int sl
 {
     if (!options.archive)
         throw Error(std::string(command) + " on slot " + std::to_string(slot)
-                    + " needs an archive — a take is never destroyed without one");
+                    + " needs an archive - a take is never destroyed without one");
     requireMemoryJournal(options);
     if (options.journal.slotsChanging)
         options.journal.slotsChanging({ slot });
@@ -320,7 +320,7 @@ inline std::vector<SlotChange> slotChanges(std::string_view current, std::string
         changes.push_back({ slot, std::move(before), std::move(after) });
     }
     if (rc0::splitFile(patched).document != rc0::splitFile(next).document)
-        throw Error("the write changes the memory document outside its slots — the history"
+        throw Error("the write changes the memory document outside its slots - the history"
                     " could not describe it");
     return changes;
 }
@@ -617,7 +617,7 @@ inline void assertLandedName(const std::string& name)
         throw Error("push: the name on the card must be a bare file name, not \"" + name + "\"");
     if (const auto c = fatname::forbiddenCharacter(name))
         throw Error("push: the name on the card cannot contain " + fatname::describeCharacter(*c)
-                    + " — a file name on the card cannot hold it");
+                    + " - a file name on the card cannot hold it");
     constexpr std::string_view kWav = ".wav";
     std::string tail = name.size() >= kWav.size() ? name.substr(name.size() - kWav.size()) : name;
     for (char& c : tail)
@@ -629,7 +629,7 @@ inline void assertLandedName(const std::string& name)
     if (volume::isJunkName(name))
         throw Error("push: \"" + name + "\" is a name the card sweep deletes");
     if (name.front() == '.')
-        throw Error("push: the name on the card cannot start with a dot — \"" + name
+        throw Error("push: the name on the card cannot start with a dot - \"" + name
                     + "\" would be a hidden file");
     if (fatname::isDeviceName(name))
         throw Error("push: \"" + name + "\" is a name Windows reserves for a device");
@@ -713,7 +713,7 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     }
     if (!existing.empty() && !options.write.archive)
         throw Error("replacing slot " + std::to_string(slot)
-                    + " needs an archive — the current audio is kept first, it is never"
+                    + " needs an archive - the current audio is kept first, it is never"
                       " deleted outright");
 
     // All checks passed — the writes begin. The replaced audio's safety net
@@ -882,7 +882,7 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
                        std::int64_t endFrame, const TrimOptions& options)
 {
     if (!options.write.archive)
-        throw Error("trim needs an archive — the original is kept first, it is the undo");
+        throw Error("trim needs an archive - the original is kept first, it is the undo");
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -900,7 +900,7 @@ inline TrimResult trim(const fs::path& volume, int slot, std::int64_t startFrame
     if (tempoTenths < kTempoTenthsMin || tempoTenths > kTempoTenthsMax)
         throw Error("slot " + std::to_string(slot) + " carries tempo "
                     + std::to_string(tempoTenths) + " tenths, outside the pedal's 40.0-300.0 BPM"
-                      " range — not trimming a slot with a broken config");
+                      " range - not trimming a slot with a broken config");
     const long long bars = barsFromTempo(tempoTenths, info.frames);
     // A trim changes the loop's length, so the field becomes a bar count. When
     // the length was a note value, that mode is replaced — the result says so.
@@ -966,7 +966,7 @@ inline DownmixResult downmixToMono(const fs::path& volume, int slot,
                                    const DownmixOptions& options)
 {
     if (!options.write.archive)
-        throw Error("downmix needs an archive — the stereo original is kept first, it is the undo");
+        throw Error("downmix needs an archive - the stereo original is kept first, it is the undo");
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
     if (files.empty())
@@ -1023,7 +1023,7 @@ inline void requireNormalizeTarget(double targetLufs)
 inline std::string normalizeDamagedRefusal(int slot, std::int64_t wildSamples)
 {
     return "slot " + std::to_string(slot) + " contains " + std::to_string(wildSamples)
-         + " impossible sample value(s) — bytes that are not audio. The take looks "
+         + " impossible sample value(s) - bytes that are not audio. The take looks "
            "damaged; re-push it from the original instead of normalizing it";
 }
 
@@ -1071,7 +1071,7 @@ inline NormalizeResult normalize(const fs::path& volume, int slot,
                                  const NormalizeOptions& options)
 {
     if (!options.write.archive)
-        throw Error("normalize needs an archive — the original is kept first, it is the undo");
+        throw Error("normalize needs an archive - the original is kept first, it is the undo");
     requireNormalizeTarget(options.targetLufs);
 
     const std::vector<std::string> files = volume::listSlotWavs(volume, slot);
@@ -1318,7 +1318,7 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
             : "it carries no take";
         throw Error(where + " refused: the body says WavStat=" + std::to_string(wavStat)
                     + ", WavLen=" + std::to_string(wavLen) + " but " + held
-                    + " — a body and a take that disagree would leave the slot unplayable, and"
+                    + " - a body and a take that disagree would leave the slot unplayable, and"
                       " they are only restored together");
     }
 
@@ -1327,7 +1327,7 @@ inline RestoreResult restore(const fs::path& volume, int slot, const SlotState& 
 
     const std::vector<std::string> existing = volume::listSlotWavs(volume, slot);
     if (!existing.empty() && !options.archive)
-        throw Error(where + " needs an archive — the take it replaces is kept first, it is never"
+        throw Error(where + " needs an archive - the take it replaces is kept first, it is never"
                             " deleted outright");
 
     // All checks passed — the writes begin. The archive first: whatever the
@@ -1440,7 +1440,7 @@ inline WriteResult swap(const fs::path& volume, int slotA, int slotB,
         } catch (const Error& undoError) {
             throw Error(std::string(writeError.what())
                         + "; undoing the audio move then failed: " + undoError.what()
-                        + " — inspect the card before continuing");
+                        + " - inspect the card before continuing");
         }
         throw;
     }
@@ -1475,7 +1475,7 @@ inline std::vector<Finding> doctor(const fs::path& volume)
         if (fs::exists(parked, ec))
             findings.push_back({ Level::error,
                                  "interrupted swap: " + parked.string()
-                                     + " holds parked slot audio \xe2\x80\x94 restore it to its "
+                                     + " holds parked slot audio - restore it to its "
                                        "slot before the next write" });
     }
 
@@ -1501,7 +1501,7 @@ inline std::vector<Finding> doctor(const fs::path& volume)
             else
                 findings.push_back({ Level::error,
                                      "MEMORY" + std::to_string(fileNo) + ".RC0 trailer is "
-                                         "malformed \xe2\x80\x94 causes LOOPER DATA READ ERR" });
+                                         "malformed - causes LOOPER DATA READ ERR" });
         } catch (const Error& e) {
             findings.push_back({ Level::error,
                                  "MEMORY" + std::to_string(fileNo) + ".RC0: " + e.what() });
@@ -1518,7 +1518,7 @@ inline std::vector<Finding> doctor(const fs::path& volume)
             findings.push_back({ Level::warn,
                                  "MEMORY write generations " + hexGeneration(generations[1]) + " / "
                                      + hexGeneration(generations[2])
-                                     + " are more than one step apart \xe2\x80\x94 unexpected "
+                                     + " are more than one step apart - unexpected "
                                        "state, copy the card before writing" });
     }
 
@@ -1530,7 +1530,7 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                            + hexGeneration(generations[2]) + ")";
         findings.push_back({ Level::info,
                              "MEMORY1 and MEMORY2 differ" + generationNote
-                                 + " \xe2\x80\x94 normal right after a save on the pedal; "
+                                 + " - normal right after a save on the pedal; "
                                    "a reboot reconciles the pair" });
     }
 
@@ -1573,13 +1573,13 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                     findings.push_back(
                         { Level::info,
                           "slot " + std::to_string(slot.slot) + " has " + files
-                              + " not indexed yet — reboot the pedal to index it" });
+                              + " not indexed yet - reboot the pedal to index it" });
                 else
                     findings.push_back(
                         { Level::warn,
                           "slot " + std::to_string(slot.slot) + " has " + files
                               + ", which the pedal cannot index: it plays 32-bit float only. "
-                                "Re-push it through LooperCat to convert it \xe2\x80\x94 a "
+                                "Re-push it through LooperCat to convert it - a "
                                 "reboot would discard it, not index it" });
             }
         }

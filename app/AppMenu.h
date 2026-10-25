@@ -70,16 +70,17 @@ public:
         juce::PopupMenu menu;
         if (name == "Edit") {
             const auto item = [](int id, const std::function<juce::String()>& text,
-                                 const std::function<bool()>& enabled, const char* keys) {
+                                 const std::function<bool()>& enabled, const juce::String& keys) {
                 juce::PopupMenu::Item entry(text ? text() : juce::String());
                 entry.itemID = id;
                 entry.isEnabled = enabled && enabled();
-                entry.shortcutKeyDescription = juce::String::fromUTF8(keys);
+                entry.shortcutKeyDescription = keys;
                 return entry;
             };
-            menu.addItem(item(kUndo, actions_.undoText, actions_.undoEnabled, "\xe2\x8c\x98Z"));
+            menu.addItem(item(kUndo, actions_.undoText, actions_.undoEnabled,
+                              juce::String::fromUTF8("\xe2\x8c\x98Z")));
             menu.addItem(item(kRedo, actions_.redoText, actions_.redoEnabled,
-                              "\xe2\x87\xa7\xe2\x8c\x98Z"));
+                              juce::String::fromUTF8("\xe2\x87\xa7\xe2\x8c\x98Z")));
         } else if (name == "Window") {
             menu.addItem(kOpenHistory, "History", true);
         } else if (name == "Maintenance") {
