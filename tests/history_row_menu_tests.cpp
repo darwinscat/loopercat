@@ -11,6 +11,7 @@
 // with it busy.
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/HistoryRowMenu.h"
 #include "../app/history/SlotRows.h"
@@ -63,7 +64,7 @@ void checkMenu(const std::vector<Entry>& timeline, std::size_t index, Expect exp
         return;
     const rows::Row& row = made[index];
     for (const bool busy : { false, true }) {
-        const std::vector<Item> menu = historymenu::forRow({ row.restorable, row.playable }, busy);
+        const std::vector<Item> menu = historymenu::forRow({ row.restorable, row.keptByTrack }, busy);
         CHECK_EQ(menu.size(), std::size_t { 4 });
         if (menu.size() != 4)
             continue;
@@ -99,8 +100,8 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = hash;
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = hash;
         pushed.takeIsAfter = true;
         checkMenu({ pushed }, 0, { "the newest push", false, false });
     }
@@ -112,18 +113,18 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = hash;
-        pushed.takeKept = kept;
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = hash;
+        testkit::takeOf(pushed).kept = kept;
         pushed.takeIsAfter = true;
         Entry renamed = op(2, "rename");
         renamed.beforeBody = loaded;
         renamed.afterBody = rc0::setName(loaded, "RENAMED");
         // The recorder writes the take a slot holds after every operation:
         // a rename's state is its body and that same take.
-        renamed.takeName = "take.wav";
-        renamed.takeHash = hash;
-        renamed.takeKept = kept;
+        testkit::takeOf(renamed).name = "take.wav";
+        testkit::takeOf(renamed).hash = hash;
+        testkit::takeOf(renamed).kept = kept;
         renamed.takeIsAfter = true;
         checkMenu({ pushed, renamed }, 0,
                   { kept ? "an older push, take kept" : "an older push, take released", kept, kept });
@@ -131,8 +132,8 @@ int main()
         Entry pushedAgain = op(3, "push");
         pushedAgain.beforeBody = renamed.afterBody;
         pushedAgain.afterBody = loaded;
-        pushedAgain.takeName = "other.wav";
-        pushedAgain.takeHash = std::string(32, '\x22');
+        testkit::takeOf(pushedAgain).name = "other.wav";
+        testkit::takeOf(pushedAgain).hash = std::string(32, '\x22');
         pushedAgain.takeIsAfter = true;
         checkMenu({ pushed, renamed, pushedAgain }, 1,
                   { kept ? "an older rename, take kept" : "an older rename, take released", kept, kept });
@@ -144,16 +145,16 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = hash;
-        pushed.takeKept = true;
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = hash;
+        testkit::takeOf(pushed).kept = true;
         pushed.takeIsAfter = true;
         Entry cleared = op(2, "clear");
         cleared.beforeBody = loaded;
         cleared.afterBody = empty;
-        cleared.takeName = "take.wav";
-        cleared.takeHash = hash;
-        cleared.takeKept = true;
+        testkit::takeOf(cleared).name = "take.wav";
+        testkit::takeOf(cleared).hash = hash;
+        testkit::takeOf(cleared).kept = true;
         cleared.takeIsAfter = false; // the take it archived, not one it left
         checkMenu({ pushed, cleared }, 1, { "the newest clear", false, true });
     }
@@ -194,17 +195,17 @@ int main()
         Entry pushed = op(2, "push");
         pushed.beforeBody = vacant;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = hash;
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = hash;
         pushed.takeIsAfter = true;
 
         // The first sighting met a stray file in a slot whose body says it
         // holds no loop: Export it, yes; put body and file back together, no.
         Entry stray = op(1, "snapshot");
         stray.afterBody = vacant;
-        stray.takeName = "STRAY.WAV";
-        stray.takeHash = std::string(32, '\x46');
-        stray.takeKept = true;
+        testkit::takeOf(stray).name = "STRAY.WAV";
+        testkit::takeOf(stray).hash = std::string(32, '\x46');
+        testkit::takeOf(stray).kept = true;
         stray.takeIsAfter = true;
         stray.takeCount = 1;
         checkMenu({ stray, pushed }, 0, { "an Original row of a stray file in a slot without a loop", false, true });
@@ -216,9 +217,9 @@ int main()
         cutTrim.beforeBody = loaded;
         cutTrim.afterBody = rc0::setSectionField(bodyWith(441000, "TEST_42_HIST"), rc0::kSectionTrack1,
                                                  "WavStat", rc0::kWavStatIndexed);
-        cutTrim.takeName = "take.wav";
-        cutTrim.takeHash = std::string(32, '\x47');
-        cutTrim.takeKept = true;
+        testkit::takeOf(cutTrim).name = "take.wav";
+        testkit::takeOf(cutTrim).hash = std::string(32, '\x47');
+        testkit::takeOf(cutTrim).kept = true;
         cutTrim.takeIsAfter = false;
         checkMenu({ cutTrim, pushed }, 0, { "a trim cut off before its take landed", false, true });
     }
@@ -230,28 +231,92 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = hash;
-        pushed.takeKept = true;
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = hash;
+        testkit::takeOf(pushed).kept = true;
         pushed.takeIsAfter = true;
         Entry cleared = op(2, "clear");
         cleared.beforeBody = loaded;
         cleared.afterBody = empty;
-        cleared.takeName = "take.wav";
-        cleared.takeHash = hash;
-        cleared.takeKept = true;
+        testkit::takeOf(cleared).name = "take.wav";
+        testkit::takeOf(cleared).hash = hash;
+        testkit::takeOf(cleared).kept = true;
         cleared.takeIsAfter = false;
         Entry restored = op(3, "restore");
         restored.beforeBody = empty;
         restored.afterBody = loaded;
-        restored.takeName = "take.wav";
-        restored.takeHash = hash;
-        restored.takeKept = true;
+        testkit::takeOf(restored).name = "take.wav";
+        testkit::takeOf(restored).hash = hash;
+        testkit::takeOf(restored).kept = true;
         restored.takeIsAfter = true;
         restored.restores = 1;
         restored.restoredAt = 1000;
         checkMenu({ pushed, cleared, restored }, 2, { "the newest restore of a kept take", false, true });
         checkMenu({ pushed, cleared, restored }, 1, { "the clear before it", true, true });
+    }
+
+    // --- a memory of two tracks: one export line per track ---
+    //
+    // A take is exported per track. The menu of a two-track memory has two
+    // export lines, track 1 then track 2, in every row, so its shape does not
+    // change under the hand; a track with nothing kept is there and grey.
+    {
+        const std::vector<Item> menu = historymenu::forRow({ true, { true, false } }, false);
+        CHECK_EQ(menu.size(), std::size_t { 5 });
+        if (menu.size() == 5) {
+            CHECK(menu[0].entry == historymenu::Entry::restore && menu[0].enabled && menu[0].track == 0);
+            CHECK(menu[1].entry == historymenu::Entry::exportTake && menu[1].enabled && menu[1].track == 1);
+            CHECK(menu[2].entry == historymenu::Entry::exportTake && !menu[2].enabled && menu[2].track == 2);
+            CHECK(menu[3].entry == historymenu::Entry::separator && !menu[3].enabled);
+            CHECK(menu[4].entry == historymenu::Entry::clearHistory && menu[4].enabled && menu[4].track == 0);
+        }
+        for (const Item& item : historymenu::forRow({ true, { true, true } }, true))
+            CHECK(!item.enabled);
+        // A row that names no track at all is not a row of any memory.
+        CHECK_THROWS(historymenu::forRow({ true, {} }, false), "at least one track");
+
+        // From what the store reads for a two-track first sighting: both
+        // takes kept, the row names each by its track, and offers both.
+        Entry original = op(1, "snapshot");
+        original.afterBody = testkit::syntheticTwoTrackSlotBody("Two", { 1, 4410 }, { 1, 8820 }, 1200, 1);
+        original.takeIsAfter = true;
+        original.takeCount = 2;
+        original.takes = { { 1, "001_1.WAV", std::string(32, '\x01'), true },
+                           { 2, "001_2.WAV", std::string(32, '\x02'), true } };
+        Entry later = op(2, "rename");
+        later.beforeBody = original.afterBody;
+        later.afterBody = original.afterBody;
+        later.takeIsAfter = true;
+        later.takes = original.takes;
+        const auto made = rows::forSlot({ original, later });
+        CHECK_EQ(made.size(), std::size_t { 2 });
+        if (made.size() == 2) {
+            CHECK_EQ(made[0].line.detail, std::string("T1 001_1.WAV, T2 001_2.WAV"));
+            CHECK((made[0].keptByTrack == std::vector<bool> { true, true }));
+            CHECK(made[0].restorable);
+            const std::vector<Item> both = historymenu::forRow({ made[0].restorable, made[0].keptByTrack }, false);
+            CHECK(both.size() == 5 && both[1].enabled && both[2].enabled);
+        }
+        // The second track's bytes released: its line greys, and the state
+        // cannot go back whole.
+        original.takes[1].kept = false;
+        const auto released = rows::forSlot({ original, later });
+        if (released.size() == 2) {
+            CHECK((released[0].keptByTrack == std::vector<bool> { true, false }));
+            CHECK(!released[0].restorable);
+        }
+        // The second track alone: track 1's line is grey, track 2's is not.
+        Entry solo = op(1, "snapshot");
+        solo.afterBody = testkit::syntheticTwoTrackSlotBody("Solo", {}, { 1, 8820 }, 1200, 1);
+        solo.takeIsAfter = true;
+        solo.takeCount = 1;
+        solo.takes = { { 2, "011_2.WAV", std::string(32, '\x03'), true } };
+        const auto alone = rows::forSlot({ solo, later });
+        if (alone.size() == 2) {
+            CHECK_EQ(alone[0].line.detail, std::string("T2 011_2.WAV"));
+            CHECK((alone[0].keptByTrack == std::vector<bool> { false, true }));
+            CHECK(alone[0].restorable);
+        }
     }
 
     return testkit::summary("history_row_menu_tests");

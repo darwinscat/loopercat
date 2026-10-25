@@ -1,0 +1,142 @@
+# what the history records for an RC-5 session; see history_golden_tests.cpp
+op 1 snapshot done reverts=0 note=
+  body slot=1 before=- after=09813c50cd117de4 error=
+  body slot=2 before=- after=38f879007b1c58d5 error=
+  body slot=3 before=- after=bada1d57e73f8c50 error=
+  body slot=4 before=- after=ff0e5818d54755b2 error=
+  body slot=5 before=- after=847570638950f404 error=
+  body slot=6 before=- after=a4830576c76bd5ff error=
+  body slot=7 before=- after=6f722b827686a3d4 error=
+  body slot=8 before=- after=7e0c0e3cbdf09def error=
+  body slot=9 before=- after=2e2f5631c35c5820 error=
+  body slot=10 before=- after=b98c29452a73a1c4 error=
+  body slot=11 before=- after=b926a0ce6c42897d error=
+  body slot=12 before=- after=afc38624ea97424a error=
+  body slot=13 before=- after=bc006abb725f30be error=
+  body slot=14 before=- after=1dc952f72710c425 error=
+  body slot=15 before=- after=4d6002b5a92a9942 error=
+  body slot=16 before=- after=4ba01cd130ac65cd error=
+  body slot=17 before=- after=ffc12e361d1b393b error=
+  body slot=18 before=- after=4351e82df4631147 error=
+  body slot=19 before=- after=ac380b33b00071e9 error=
+  body slot=20 before=- after=f723782c8610fc41 error=
+  body slot=21 before=- after=354afd0371624ee0 error=
+  body slot=22 before=- after=b90557df92ca1568 error=
+  body slot=23 before=- after=89349be281ad5b43 error=
+  body slot=24 before=- after=0bd71569f0701300 error=
+  body slot=25 before=- after=9dc93cffefd43845 error=
+  body slot=26 before=- after=ac7f3a267d277c9f error=
+  body slot=27 before=- after=33a68eca3cde187f error=
+  body slot=28 before=- after=5759bd650922503b error=
+  body slot=29 before=- after=03fc43eaab52f6be error=
+  body slot=30 before=- after=d284f9da98c0e8b4 error=
+  body slot=31 before=- after=ffe1ab22888cfd2d error=
+  body slot=32 before=- after=87af1b4bb4b3e7e0 error=
+  body slot=33 before=- after=da250286c566ddad error=
+  body slot=34 before=- after=c06ddede50cf012c error=
+  body slot=35 before=- after=dcf9346a05246a29 error=
+  body slot=36 before=- after=8e154e3154ba55e6 error=
+  body slot=37 before=- after=361d215cbfcecf8c error=
+  body slot=38 before=- after=0b664176014d0556 error=
+  body slot=39 before=- after=82fddbe85ee8daa4 error=
+  body slot=40 before=- after=671bede6a45bf27f error=
+  body slot=41 before=- after=43e0d7349b0ae4b0 error=
+  body slot=42 before=- after=5ed0e15b5c84c2f8 error=
+  body slot=43 before=- after=42ebbc5de0fca59b error=
+  body slot=44 before=- after=5bbe7f9e96f95617 error=
+  body slot=45 before=- after=f469d6001eb465cb error=
+  body slot=46 before=- after=37435079203d6499 error=
+  body slot=47 before=- after=d9181fd5f0fe920f error=
+  body slot=48 before=- after=7f64a64047ce04cc error=
+  body slot=49 before=- after=8a5e01b159d7f4cf error=
+  body slot=50 before=- after=a5fd6c141c8290ee error=
+  body slot=51 before=- after=f9fde5453ecf578b error=
+  body slot=52 before=- after=29bd24efd93adef5 error=
+  body slot=53 before=- after=201be97e7dcec8fc error=
+  body slot=54 before=- after=a4facf8e3c1fa433 error=
+  body slot=55 before=- after=26e2d4fab968dae9 error=
+  body slot=56 before=- after=53f06a0af5cfd3c2 error=
+  body slot=57 before=- after=f9144b80926edc38 error=
+  body slot=58 before=- after=dabf2d9f92e0156b error=
+  body slot=59 before=- after=b65f107bd1ed33c2 error=
+  body slot=60 before=- after=bd3ba09b2f43f826 error=
+  body slot=61 before=- after=def86bee274b1067 error=
+  body slot=62 before=- after=2bb91f3634ecc36d error=
+  body slot=63 before=- after=eeac8d1db1aef3af error=
+  body slot=64 before=- after=86941ab23a4da023 error=
+  body slot=65 before=- after=8ef4b8a2749ceb8b error=
+  body slot=66 before=- after=a385cf0cac83af05 error=
+  body slot=67 before=- after=17ee12a0857df1eb error=
+  body slot=68 before=- after=b618d7b1b2fc3668 error=
+  body slot=69 before=- after=c8fe9ccce8467dd8 error=
+  body slot=70 before=- after=598eb1ff1e7945a6 error=
+  body slot=71 before=- after=5a109bf15e6cc94d error=
+  body slot=72 before=- after=711122d219b14787 error=
+  body slot=73 before=- after=0ce8c332f54b4d3b error=
+  body slot=74 before=- after=62be32944a148d34 error=
+  body slot=75 before=- after=2f20d52a1cd1983f error=
+  body slot=76 before=- after=76702a32d3edfcd9 error=
+  body slot=77 before=- after=cc05b8bda536fef0 error=
+  body slot=78 before=- after=9bbf9a7ce8d0aa93 error=
+  body slot=79 before=- after=e57d04498a9c863f error=
+  body slot=80 before=- after=b801c4c9befea395 error=
+  body slot=81 before=- after=b8bd8171024d4744 error=
+  body slot=82 before=- after=5fe678421321d622 error=
+  body slot=83 before=- after=31f137772683a4f8 error=
+  body slot=84 before=- after=21f3e1ae68f731ee error=
+  body slot=85 before=- after=f7a56bc89bf28932 error=
+  body slot=86 before=- after=adc5b87a92b2998b error=
+  body slot=87 before=- after=f4e1d7d8d19fb289 error=
+  body slot=88 before=- after=e3488c6cb16f3e06 error=
+  body slot=89 before=- after=72111d0367b63555 error=
+  body slot=90 before=- after=49b75fa0e842aedc error=
+  body slot=91 before=- after=0a601309b712201e error=
+  body slot=92 before=- after=08603111b7d5aeb3 error=
+  body slot=93 before=- after=5ba234ce526aaf6d error=
+  body slot=94 before=- after=4216c3b0b03762dd error=
+  body slot=95 before=- after=df82298044b4eee6 error=
+  body slot=96 before=- after=dd8cecb2a3fd2026 error=
+  body slot=97 before=- after=61b0be88596e9907 error=
+  body slot=98 before=- after=7291422706950c69 error=
+  body slot=99 before=- after=6f93cb38046c4715 error=
+  audio slot=3 after track=1 name=003_1.WAV size=35324 hash=66f2c75fadd45710 stamped
+  audio slot=5 after track=1 name=song.wav size=705644 hash=ebbe2639fed93103 stamped
+  audio slot=9 after track=1 name=009_1.WAV size=176444 hash=81707a8b4c9e59f5 stamped
+op 2 push done reverts=0 note=
+  body slot=11 before=b926a0ce6c42897d after=d7e079ca7a276ea9 error=
+  audio slot=11 after track=1 name=incoming.wav size=1058456 hash=5700d60d82077172 stamped
+op 3 push done reverts=0 note=
+  body slot=3 before=bada1d57e73f8c50 after=074e5d9d39f3f9fb error=
+  audio slot=3 after track=1 name=incoming.wav size=1411256 hash=ec4bfa507818b44a stamped
+  audio slot=3 before track=1 name=003_1.WAV size=35324 hash=66f2c75fadd45710 unstamped
+op 4 rename done reverts=0 note=
+  body slot=5 before=847570638950f404 after=2507fa758a285719 error=
+  audio slot=5 after track=1 name=song.wav size=705644 hash=ebbe2639fed93103 stamped
+op 5 trim done reverts=0 note=
+  body slot=5 before=2507fa758a285719 after=879a61e6f362a57e error=
+  audio slot=5 after track=1 name=song.wav size=352856 hash=38c00f7b2e7a0658 stamped
+  audio slot=5 before track=1 name=song.wav size=705644 hash=ebbe2639fed93103 unstamped
+op 6 downmix done reverts=0 note=
+  audio slot=9 after track=1 name=009_1.WAV size=176456 hash=aa558c5e89d86ce6 stamped
+  audio slot=9 before track=1 name=009_1.WAV size=176444 hash=81707a8b4c9e59f5 unstamped
+op 7 tempo done reverts=0 note=
+  body slot=11 before=d7e079ca7a276ea9 after=c83184afab9778c1 error=
+  audio slot=11 after track=1 name=incoming.wav size=1058456 hash=5700d60d82077172 stamped
+op 8 swap done reverts=0 note=
+  body slot=3 before=074e5d9d39f3f9fb after=c83184afab9778c1 error=
+  body slot=11 before=c83184afab9778c1 after=074e5d9d39f3f9fb error=
+  audio slot=3 after track=1 name=incoming.wav size=1058456 hash=5700d60d82077172 stamped
+  audio slot=11 after track=1 name=incoming.wav size=1411256 hash=ec4bfa507818b44a stamped
+op 9 clear done reverts=0 note=
+  body slot=5 before=879a61e6f362a57e after=29f7b6fb49bef3fd error=
+  audio slot=5 before track=1 name=song.wav size=352856 hash=38c00f7b2e7a0658 unstamped
+op 10 restore done reverts=0 note=
+  body slot=5 before=29f7b6fb49bef3fd after=879a61e6f362a57e error=
+  audio slot=5 after track=1 name=song.wav size=352856 hash=38c00f7b2e7a0658 stamped
+op 11 undo done reverts=10 note=restore
+  body slot=5 before=879a61e6f362a57e after=29f7b6fb49bef3fd error=
+  audio slot=5 before track=1 name=song.wav size=352856 hash=38c00f7b2e7a0658 unstamped
+blob 38c00f7b2e7a0658 size=352856
+blob 66f2c75fadd45710 size=35324
+blob 81707a8b4c9e59f5 size=176444
+blob ebbe2639fed93103 size=705644

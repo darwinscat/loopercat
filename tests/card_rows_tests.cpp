@@ -10,6 +10,7 @@
 // about a slot and changed nothing there (#144): a badge, no offer.
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/history/SlotRows.h"
 
@@ -64,9 +65,9 @@ Card::Slot touched(const Card& card, int slot, bool newest)
 // it beside the body after every operation the app finishes.
 void keptTake(Card::Slot& slot, const std::string& name, char hashByte)
 {
-    slot.facts.takeName = name;
-    slot.facts.takeHash = std::string(32, hashByte);
-    slot.facts.takeKept = true;
+    testkit::takeOf(slot.facts).name = name;
+    testkit::takeOf(slot.facts).hash = std::string(32, hashByte);
+    testkit::takeOf(slot.facts).kept = true;
     slot.facts.takeIsAfter = true;
 }
 
@@ -85,15 +86,15 @@ int main()
         a.facts.beforeBody = loaded;
         a.facts.afterBody = shorter;
         a.facts.swappedWith = 43;
-        a.facts.takeName = "a.wav";
-        a.facts.takeHash = std::string(32, '\x11');
+        testkit::takeOf(a.facts).name = "a.wav";
+        testkit::takeOf(a.facts).hash = std::string(32, '\x11');
         a.facts.takeIsAfter = true;
         Card::Slot b = touched(swap, 43, true);
         b.facts.beforeBody = shorter;
         b.facts.afterBody = loaded;
         b.facts.swappedWith = 12;
-        b.facts.takeName = "b.wav";
-        b.facts.takeHash = std::string(32, '\x22');
+        testkit::takeOf(b.facts).name = "b.wav";
+        testkit::takeOf(b.facts).hash = std::string(32, '\x22');
         b.facts.takeIsAfter = true;
         swap.slots = { a, b };
 
@@ -116,10 +117,10 @@ int main()
         Card::Slot slot = touched(pushed, 12, false);
         slot.facts.beforeBody = empty;
         slot.facts.afterBody = loaded;
-        slot.facts.takeName = "take.wav";
+        testkit::takeOf(slot.facts).name = "take.wav";
         slot.facts.takeIsAfter = true; // the take the operation left in the slot
-        slot.facts.takeHash = std::string(32, '\x11');
-        slot.facts.takeKept = true;
+        testkit::takeOf(slot.facts).hash = std::string(32, '\x11');
+        testkit::takeOf(slot.facts).kept = true;
         pushed.slots = { slot };
 
         const auto made = rows::forCard({ pushed });
@@ -137,10 +138,10 @@ int main()
         Card::Slot slot = touched(pushed, 12, false);
         slot.facts.beforeBody = empty;
         slot.facts.afterBody = loaded;
-        slot.facts.takeName = "take.wav";
+        testkit::takeOf(slot.facts).name = "take.wav";
         slot.facts.takeIsAfter = true; // the take the operation left in the slot
-        slot.facts.takeHash = std::string(32, '\x33');
-        slot.facts.takeKept = false; // released, or never kept
+        testkit::takeOf(slot.facts).hash = std::string(32, '\x33');
+        testkit::takeOf(slot.facts).kept = false; // released, or never kept
         pushed.slots = { slot };
 
         const auto made = rows::forCard({ pushed });
@@ -179,17 +180,17 @@ int main()
         Card::Slot a = touched(two, 1, false);
         a.facts.beforeBody = loaded;
         a.facts.afterBody = shorter;
-        a.facts.takeName = "a.wav";
+        testkit::takeOf(a.facts).name = "a.wav";
         a.facts.takeIsAfter = true; // the take the operation left in the slot
-        a.facts.takeHash = std::string(32, '\x11');
-        a.facts.takeKept = true;
+        testkit::takeOf(a.facts).hash = std::string(32, '\x11');
+        testkit::takeOf(a.facts).kept = true;
         Card::Slot b = touched(two, 2, false);
         b.facts.beforeBody = loaded;
         b.facts.afterBody = shorter;
-        b.facts.takeName = "b.wav";
+        testkit::takeOf(b.facts).name = "b.wav";
         b.facts.takeIsAfter = true; // the take the operation left in the slot
-        b.facts.takeHash = std::string(32, '\x22');
-        b.facts.takeKept = false; // this one's bytes are gone
+        testkit::takeOf(b.facts).hash = std::string(32, '\x22');
+        testkit::takeOf(b.facts).kept = false; // this one's bytes are gone
         two.slots = { a, b };
         const auto made = rows::forCard({ two });
         CHECK(made.front().playable());        // a.wav can be heard
@@ -204,17 +205,17 @@ int main()
         Card::Slot slot = touched(pushed, 12, false);
         slot.facts.beforeBody = empty;
         slot.facts.afterBody = loaded;
-        slot.facts.takeName = "take.wav";
+        testkit::takeOf(slot.facts).name = "take.wav";
         slot.facts.takeIsAfter = true; // the take the operation left in the slot
-        slot.facts.takeHash = std::string(32, '\x11');
-        slot.facts.takeKept = true;
+        testkit::takeOf(slot.facts).hash = std::string(32, '\x11');
+        testkit::takeOf(slot.facts).kept = true;
         Card trimmed = op(2, 2000, "trim");
         Card::Slot later = touched(trimmed, 12, true);
         later.facts.beforeBody = loaded;
         later.facts.afterBody = shorter;
-        later.facts.takeName = "take.wav";
+        testkit::takeOf(later.facts).name = "take.wav";
         later.facts.takeIsAfter = true; // the take the operation left in the slot
-        later.facts.takeHash = std::string(32, '\x22');
+        testkit::takeOf(later.facts).hash = std::string(32, '\x22');
         pushed.slots = { slot };
         trimmed.slots = { later };
 

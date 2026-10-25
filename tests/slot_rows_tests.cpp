@@ -13,6 +13,7 @@
 // was about it and changed nothing there (#144).
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/history/SlotRows.h"
 
@@ -59,9 +60,9 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = std::string(32, '\x11');
-        pushed.takeKept = false; // the bytes are on the card; nothing replaced them yet
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = std::string(32, '\x11');
+        testkit::takeOf(pushed).kept = false; // the bytes are on the card; nothing replaced them yet
         pushed.takeIsAfter = true; // the take the push left in the slot
 
         const auto made = rows::forSlot({ pushed });
@@ -77,15 +78,15 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = std::string(32, '\x11');
-        pushed.takeKept = true;
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = std::string(32, '\x11');
+        testkit::takeOf(pushed).kept = true;
         pushed.takeIsAfter = true;
         Entry trimmed = op(2, "trim");
         trimmed.beforeBody = loaded;
         trimmed.afterBody = bodyWith(441000, "TEST_42_HIST");
-        trimmed.takeName = "take.wav";
-        trimmed.takeHash = std::string(32, '\x22');
+        testkit::takeOf(trimmed).name = "take.wav";
+        testkit::takeOf(trimmed).hash = std::string(32, '\x22');
         trimmed.takeIsAfter = true;
 
         const auto made = rows::forSlot({ pushed, trimmed });
@@ -104,9 +105,10 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = std::string(32, '\x33');
-        pushed.takeKept = false;
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = std::string(32, '\x33');
+        testkit::takeOf(pushed).kept = false;
+        pushed.takeIsAfter = true; // the take the push left: the state's own
         Entry cleared = op(2, "clear");
         cleared.beforeBody = loaded;
         cleared.afterBody = empty;
@@ -130,17 +132,17 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "b.wav";
-        pushed.takeHash = std::string(32, '\x0b');
-        pushed.takeKept = true;
+        testkit::takeOf(pushed).name = "b.wav";
+        testkit::takeOf(pushed).hash = std::string(32, '\x0b');
+        testkit::takeOf(pushed).kept = true;
         pushed.takeIsAfter = true;
         Entry undone = op(2, "undo");
         undone.note = "push";
         undone.beforeBody = loaded;
         undone.afterBody = empty;
-        undone.takeName = "b.wav";
-        undone.takeHash = std::string(32, '\x0b');
-        undone.takeKept = true;
+        testkit::takeOf(undone).name = "b.wav";
+        testkit::takeOf(undone).hash = std::string(32, '\x0b');
+        testkit::takeOf(undone).kept = true;
         undone.takeIsAfter = false; // the archived 'before' side
         const auto made = rows::forSlot({ pushed, undone });
         CHECK_EQ(made.back().line.audio, std::string("take kept")); // not "in the slot now"
@@ -153,18 +155,18 @@ int main()
         Entry cleared = op(3, "clear");
         cleared.beforeBody = loaded;
         cleared.afterBody = empty;
-        cleared.takeName = "b.wav";
-        cleared.takeHash = std::string(32, '\x0b');
-        cleared.takeKept = true;
+        testkit::takeOf(cleared).name = "b.wav";
+        testkit::takeOf(cleared).hash = std::string(32, '\x0b');
+        testkit::takeOf(cleared).kept = true;
         CHECK_EQ(rows::forSlot({ pushed, cleared }).back().line.audio, std::string("take kept"));
-        cleared.takeKept = false;
+        testkit::takeOf(cleared).kept = false;
         CHECK_EQ(rows::forSlot({ pushed, cleared }).back().line.audio, std::string("take no longer kept"));
 
         // a newest normalize — no bodies, a take it left — is still where the slot is
         Entry normalized = op(4, "normalize");
         normalized.note = "normalized -3.2 dB";
-        normalized.takeName = "b.wav";
-        normalized.takeHash = std::string(32, '\x0c');
+        testkit::takeOf(normalized).name = "b.wav";
+        testkit::takeOf(normalized).hash = std::string(32, '\x0c');
         normalized.takeIsAfter = true;
         CHECK_EQ(rows::forSlot({ pushed, normalized }).back().line.audio, std::string("in the slot now"));
         CHECK(!rows::forSlot({ pushed, normalized }).back().playable); // on the card: the Audio tab plays it
@@ -189,8 +191,8 @@ int main()
         Entry pushed = op(1, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = std::string(32, '\x11');
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = std::string(32, '\x11');
         pushed.takeIsAfter = true;
         Entry nothing = op(2, "normalize");
         nothing.note = "already at -18.0 LUFS (measured -18.1), nothing to do";
@@ -218,8 +220,8 @@ int main()
         Entry trimmed = op(3, "trim");
         trimmed.beforeBody = loaded;
         trimmed.afterBody = bodyWith(441000, "TEST_42_HIST");
-        trimmed.takeName = "take.wav";
-        trimmed.takeHash = std::string(32, '\x22');
+        testkit::takeOf(trimmed).name = "take.wav";
+        testkit::takeOf(trimmed).hash = std::string(32, '\x22');
         trimmed.takeIsAfter = true;
         const auto later = rows::forSlot({ pushed, nothing, trimmed });
         CHECK_EQ(later.size(), 3u);
@@ -235,7 +237,7 @@ int main()
         CHECK_THROWS(rows::forSlot({ lying }), "subject");
         Entry lyingTake = op(5, "normalize");
         lyingTake.subjectOnly = true;
-        lyingTake.takeName = "take.wav";
+        testkit::takeOf(lyingTake).name = "take.wav";
         CHECK_THROWS(rows::forSlot({ lyingTake }), "subject");
     }
 
@@ -364,8 +366,8 @@ int main()
         Entry pushed = op(2, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = std::string(32, '\x22');
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = std::string(32, '\x22');
         pushed.takeIsAfter = true;
 
         Entry emptySeen = op(1, "snapshot");
@@ -378,9 +380,9 @@ int main()
 
         Entry held = op(1, "snapshot");
         held.afterBody = loaded;
-        held.takeName = "pedal.wav";
-        held.takeHash = std::string(32, '\x33');
-        held.takeKept = true;
+        testkit::takeOf(held).name = "pedal.wav";
+        testkit::takeOf(held).hash = std::string(32, '\x33');
+        testkit::takeOf(held).kept = true;
         held.takeIsAfter = true;
         held.takeCount = 1;
         const auto afterHeld = rows::forSlot({ held, pushed });
@@ -424,8 +426,8 @@ int main()
         Entry later = op(3, "rename");
         later.beforeBody = cut;
         later.afterBody = indexed(441000, "LATER");
-        later.takeName = "take.wav";
-        later.takeHash = std::string(32, '\x45');
+        testkit::takeOf(later).name = "take.wav";
+        testkit::takeOf(later).hash = std::string(32, '\x45');
         later.takeIsAfter = true;
 
         // A trim cut off after the bodies went down and before the new take
@@ -435,9 +437,9 @@ int main()
         cutTrim.status = "interrupted";
         cutTrim.beforeBody = loop;
         cutTrim.afterBody = cut;
-        cutTrim.takeName = "take.wav";
-        cutTrim.takeHash = std::string(32, '\x44');
-        cutTrim.takeKept = true;
+        testkit::takeOf(cutTrim).name = "take.wav";
+        testkit::takeOf(cutTrim).hash = std::string(32, '\x44');
+        testkit::takeOf(cutTrim).kept = true;
         cutTrim.takeIsAfter = false; // the archived 'before' side
         {
             const auto made = rows::forSlot({ cutTrim, later });
@@ -448,9 +450,9 @@ int main()
         // The same cut-off trim with no take row at all: the body claims a
         // loop of 0:10 and nothing can be put beside it.
         Entry bareTrim = cutTrim;
-        bareTrim.takeName.clear();
-        bareTrim.takeHash.reset();
-        bareTrim.takeKept = false;
+        testkit::firstTake(bareTrim).name.clear();
+        testkit::firstTake(bareTrim).hash.reset();
+        testkit::takeOf(bareTrim).kept = false;
         {
             const auto made = rows::forSlot({ bareTrim, later });
             CHECK(made.size() == 2 && !made[0].restorable);
@@ -460,9 +462,9 @@ int main()
         // row is Original, but body and file cannot go back together.
         Entry stray = op(1, "snapshot");
         stray.afterBody = vacant;
-        stray.takeName = "STRAY.WAV";
-        stray.takeHash = std::string(32, '\x46');
-        stray.takeKept = true;
+        testkit::takeOf(stray).name = "STRAY.WAV";
+        testkit::takeOf(stray).hash = std::string(32, '\x46');
+        testkit::takeOf(stray).kept = true;
         stray.takeIsAfter = true;
         stray.takeCount = 1;
         {
@@ -486,17 +488,17 @@ int main()
         Entry pushed = op(2, "push");
         pushed.beforeBody = empty;
         pushed.afterBody = loaded;
-        pushed.takeName = "take.wav";
-        pushed.takeHash = std::string(32, '\x22');
+        testkit::takeOf(pushed).name = "take.wav";
+        testkit::takeOf(pushed).hash = std::string(32, '\x22');
         pushed.takeIsAfter = true;
 
         Entry photographed = op(1, "snapshot");
         photographed.status = "interrupted";
         photographed.note = "The card disconnected before its first snapshot finished";
         photographed.afterBody = loaded;
-        photographed.takeName = "pedal.wav";
-        photographed.takeHash = std::string(32, '\x33');
-        photographed.takeKept = true;
+        testkit::takeOf(photographed).name = "pedal.wav";
+        testkit::takeOf(photographed).hash = std::string(32, '\x33');
+        testkit::takeOf(photographed).kept = true;
         photographed.takeIsAfter = true;
         photographed.takeCount = 1;
         const auto cutOff = rows::forSlot({ photographed, pushed });

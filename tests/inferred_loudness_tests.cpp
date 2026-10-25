@@ -200,7 +200,7 @@ history::SlotSighting sight(const fs::path& volume, int slot)
     if (!facts)
         throw Error("the entry of slot " + std::to_string(slot) + "'s take gave no facts");
     const catalog::SlotInfo info = catalog::readSlot(commands::readMemory(volume), slot);
-    return { slot, { facts->name, facts->size, facts->modifiedMs, info.frames } };
+    return { slot, { facts->name, facts->size, facts->modifiedMs, info.frames, 1 } }; // the scan's take is track 1's
 }
 
 // A file's stamp set the way the platform reports it back (FileTime.h).

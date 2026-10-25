@@ -172,7 +172,7 @@ int main()
     CHECK(!trimmed.has_value());
     CHECK(!normalized.has_value());
 
-    // --- the two-track model's card: read, never rewritten ---
+    // --- the two-track model's card: trim and normalize stay closed ---
 
     pane.permissions = [] { return CardPermissions::of("RC-500"); };
     load();
@@ -218,7 +218,7 @@ int main()
     load();
     pane.setMarkers(0.2, 0.7);
     CHECK(trim->isVisible());
-    family = "RC-500"; // the card under the loaded loop is now one this app only reads
+    family = "RC-500"; // the card under the loaded loop now keeps trim closed
     trimmed.reset();
     normalized.reset();
     CHECK(trim->isEnabled());

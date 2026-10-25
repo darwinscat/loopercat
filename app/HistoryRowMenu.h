@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <loopercat/Error.hpp>
+
+#include <cstddef>
 #include <vector>
 
 //==============================================================================
@@ -21,7 +24,7 @@ namespace loopercat::historymenu
 
 enum class Entry {
     restore,     // "Restore this state": the row's state, back onto the card
-    exportTake,  // "Export take...": the row's take, written to a file on this computer
+    exportTake,  // "Export take...": a take of the row, written to a file on this computer
     separator,   // what follows is about the slot, not the row
     clearHistory // "Clear history of this slot...": the whole slot, as before
 };
@@ -29,24 +32,35 @@ enum class Entry {
 struct Item {
     Entry entry;
     bool enabled;
+    // The track an export line writes the take of, 1 up; 0 on a line about
+    // no take.
+    int track = 0;
 };
 
 // What the rows layer decided about one row.
 struct RowOffers {
     bool restorable = false; // its state can go back onto the card
-    bool takeKept = false;   // its take's bytes are in the history
+    // One per track of the memory, track 1 first: whether that track's take
+    // is in the history. A memory of one track has one.
+    std::vector<bool> takeKept;
 };
 
-// The same four entries for every row, so the menu never changes shape under
-// the hand; what a row cannot do is there and grey. While the pedal is busy
-// nothing can be chosen: a restore would queue behind the running job, and an
-// export and a clear go through the same worker.
-inline std::vector<Item> forRow(RowOffers row, bool busy)
+// The same entries for every row of a memory, so the menu never changes
+// shape under the hand; what a row cannot do is there and grey. A take is
+// exported per track: a memory of two tracks has two export lines, one per
+// track, and a row with nothing kept on a track greys that track's line.
+// While the pedal is busy nothing can be chosen: a restore would queue behind
+// the running job, and an export and a clear go through the same worker.
+inline std::vector<Item> forRow(const RowOffers& row, bool busy)
 {
-    return { { Entry::restore, !busy && row.restorable },
-             { Entry::exportTake, !busy && row.takeKept },
-             { Entry::separator, false },
-             { Entry::clearHistory, !busy } };
+    if (row.takeKept.empty())
+        throw Error("a History row offers the takes of at least one track");
+    std::vector<Item> items { { Entry::restore, !busy && row.restorable, 0 } };
+    for (std::size_t i = 0; i < row.takeKept.size(); ++i)
+        items.push_back({ Entry::exportTake, !busy && row.takeKept[i], static_cast<int>(i) + 1 });
+    items.push_back({ Entry::separator, false, 0 });
+    items.push_back({ Entry::clearHistory, !busy, 0 });
+    return items;
 }
 
 } // namespace loopercat::historymenu

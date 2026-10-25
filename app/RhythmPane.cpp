@@ -312,15 +312,13 @@ void RhythmPane::setBusy(bool busy)
 
 void RhythmPane::refresh()
 {
-    // What the card may be asked decides what the tab offers: on a card this
-    // app only reads, the switch and every field are lamps, and the footer
-    // says so instead of promising that a change will be heard.
+    // What the card may be asked decides what the tab offers: on a card that
+    // keeps the drums closed, the switch and every field are lamps, and the
+    // footer says so instead of promising that a change will be heard.
     const bool live = hasSlot_ && !busy_ && allowed().rhythm;
     switch_.setEnabled(live);
     controls_.setEnabled(live);
-    footer_.setText(allowed().anyWrite() ? juce::String("Disconnect to hear the changes.")
-                                         : juce::String(CardPermissions::writesOnlyTo()),
-                    juce::dontSendNotification);
+    footer_.setText(juce::String(allowed().footer(allowed().rhythm)), juce::dontSendNotification);
 
     for (auto* child : std::initializer_list<juce::Component*> { &switch_, &cost_, &footer_,
                                                                 &controls_ })

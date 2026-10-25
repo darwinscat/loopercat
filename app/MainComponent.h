@@ -226,7 +226,7 @@ private:
     void updateHistory();                   // ask the worker for the selected slot's timeline
     void applyHistoryRows(std::vector<HistoryPane::Row> rows, int slot);
     void restoreFromHistory(int slot, std::int64_t op); // a recorded state, back onto the card
-    void exportFromHistory(int slot, std::int64_t op);  // a kept take, to a file the player chose
+    void exportFromHistory(int slot, std::int64_t op, int track); // a kept take of one track, to a file the player chose
     void playArchivedTake(int slot, std::string hash, juce::String title); // the window's Play
 
     // The History window's rows as the owner needs them for the buttons: the
@@ -416,6 +416,11 @@ private:
     // to it, and Disconnect walks the same pedal out — never "the first RC-5
     // on the bus", which with two pedals is whichever the OS listed first.
     std::optional<pedallink::Pedal> connectTarget;
+    // The card's model as the eject was asked for: a volume mounted by hand
+    // has no chosen pedal, and its exit frame goes to the first pedal of this
+    // model — read before the eject, since a scan after the unmount reads no
+    // card and so no model.
+    std::string ejectFamily;
     bool connectQueryPending = false; // the register is being read: Connect is under way, no frame yet
     pedalbook::Book pedalBook;          // endpoint -> the card it carried, and its name (settings)
     std::optional<marker::Card> card;   // the mounted card's marker, once read

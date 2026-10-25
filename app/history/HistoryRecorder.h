@@ -60,13 +60,13 @@ public:
     // history is about the history, and a subject would write the slot
     // straight back into what was just forgotten (ForgetSlotJob.h).
     void subject(const std::string& opId, int slot);
-    void keepAudio(const std::string& opId, int slot, const std::string& fileName,
+    void keepAudio(const std::string& opId, int slot, int track, const std::string& fileName,
                    std::string_view bytes);
     void bodies(const std::string& opId, const std::vector<commands::SlotChange>& changes);
     // A take has landed on the card: its row carries the hash of the bytes
     // the core handed over and the modification time the card's directory
     // entry now shows for the file (#141).
-    void landed(const std::string& opId, int slot, const std::string& fileName,
+    void landed(const std::string& opId, int slot, int track, const std::string& fileName,
                 std::string_view bytes);
     // A loudness reading of bytes the worker has in hand, filed under their
     // content hash (#140) — a fact about bytes, not about an operation, so
@@ -91,8 +91,8 @@ public:
     // hash of the bytes read, placed just before the operation's own rows
     // so that anything it then records in the slot makes the read history.
     // Nothing when the entry's size is not the bytes'.
-    void sightedInOperation(const std::string& opId, int slot, const std::string& fileName,
-                            std::int64_t size, const std::string& hash);
+    void sightedInOperation(const std::string& opId, int slot, int track,
+                            const std::string& fileName, std::int64_t size, const std::string& hash);
     // The newest operation the history has begun, by sequence, for a read
     // about to begin to note as its place (#141): absent until the store has
     // opened. Any thread — a read begins on the player's thread too. It
@@ -155,11 +155,14 @@ public:
 
 private:
     // An operation in flight: its row, what kind it is (a swap moves audio
-    // between two slots without writing a byte) and the volume it runs on.
+    // between two slots without writing a byte), the volume it runs on and
+    // the model of the card there — how many track folders a slot has.
+    // Maintenance runs on no volume and has no model.
     struct Operation {
         std::int64_t row = 0;
         std::string kind;
         std::filesystem::path volume;
+        const profile::DeviceProfile* family = nullptr;
     };
 
     // An operation that has begun and not finished; refused by name otherwise.
@@ -181,10 +184,6 @@ private:
     void recordWhatSlotsHold(const Operation& op);
     std::int64_t sessionFor(const std::filesystem::path& volume);
 
-    // The RC-5 has one track per memory; slot_audio.track is there for the
-    // pedals that have more.
-    static constexpr int kTrack = 1;
-
     std::filesystem::path dir_;
     Clock clock_;
     std::optional<HistoryStore> store_;
@@ -192,6 +191,9 @@ private:
     std::optional<std::int64_t> session_;
     std::filesystem::path sessionVolume_;
     std::string sessionMarker_;
+    // The card's model, as its marker names it (the marker takes it from the
+    // card's own root when it is minted): where each track's folder is.
+    const profile::DeviceProfile* sessionFamily_ = nullptr;
     std::optional<Snapshot> snapshot_;
     std::map<std::string, Operation> ops_;
     // newestOp(): -1 until the store has opened. Written on the worker,

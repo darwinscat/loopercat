@@ -274,7 +274,7 @@ int main()
         std::vector<HistoryPane::Row> shown;
         for (const auto& row : rows)
             shown.push_back({ {}, juce::String(row.line.action), juce::String(row.line.detail),
-                juce::String(row.state), juce::String(row.line.audio), row.playable, row.restorable,
+                juce::String(row.state), juce::String(row.line.audio), row.keptByTrack, row.restorable,
                 row.op });
         pane.setRows(std::move(shown), 4);
 
@@ -283,9 +283,10 @@ int main()
         // that left the slot. The export is the history's alone: it needs no
         // card, and the card is the same bytes after it.
         int exports = 0;
-        pane.onExportTake = [&](int slot, std::int64_t op) {
+        pane.onExportTake = [&](int slot, std::int64_t op, int track) {
             ++exports;
             CHECK_EQ(slot, 4);
+            CHECK_EQ(track, 1); // the one track of an RC-5's memory
             CHECK_EQ(op, rows.back().op);
             CHECK_EQ(history::exportName(rows.back().takeName, 4), name);
             const auto cardBefore = fixture.cardBytes();
@@ -306,7 +307,7 @@ int main()
             CHECK_THROWS(gone.work(fs::path()), "no longer kept in the history");
             CHECK(!fs::exists(fixture.root / "exported" / "gone.wav"));
         };
-        pane.choose(4, rows.back().op, historymenu::Entry::exportTake);
+        pane.choose(4, rows.back().op, historymenu::Entry::exportTake, 1);
         CHECK_EQ(exports, 1);
 
         int restores = 0;
@@ -321,7 +322,7 @@ int main()
                 history::restoreOperation(fixture.rec->store(), op, fixture.card, write, 4);
             });
         };
-        pane.choose(4, original.op, historymenu::Entry::restore);
+        pane.choose(4, original.op, historymenu::Entry::restore, 0);
         settle();
         CHECK_EQ(restores, 1);
         if (onPedal)

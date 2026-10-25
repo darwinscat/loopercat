@@ -307,8 +307,11 @@ void SlotTable::cellDoubleClicked(int row, int columnId, const juce::MouseEvent&
         return;
     }
     if (columnId == kLufs) { // double-click the dash (or a stale number) = read this slot
-        if (onLoudnessCellDoubleClicked && slotOfRow(row) > 0
-            && rows_[static_cast<std::size_t>(row)].info.hasAudio)
+        // The meter reads one track: a memory with more has no one number,
+        // and the first track's would pass for the mix's.
+        const SlotRow& r = rows_[static_cast<std::size_t>(row)];
+        if (onLoudnessCellDoubleClicked && slotOfRow(row) > 0 && r.info.hasAudio
+            && r.info.tracks.size() <= 1)
             onLoudnessCellDoubleClicked(slotOfRow(row));
         return;
     }

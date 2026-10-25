@@ -98,6 +98,28 @@ int main()
     CHECK_THROWS(pedallink::pedalOf(juce::MidiDeviceInfo("BOSS_RC-600", "7")), "not an RC model this app has a profile for");
     CHECK_THROWS(pedallink::pedalOf(juce::MidiDeviceInfo("Quad Cortex", "9")), "not an RC model");
 
+    // --- the first of one model: a card mounted by hand has a model, not a pedal ---
+    //
+    // A frame for the card's model goes to a pedal of that model and to no
+    // other: the RC-500's card is never walked out of STORAGE by a frame to an
+    // RC-5, and an RC-5 is never sent away from its looper screen for it.
+    {
+        const auto first500 = pedallink::firstOfFamily(family, "RC-500");
+        CHECK(first500.has_value());
+        if (first500)
+            CHECK_EQ(first500->endpoint.identifier.toStdString(), "904629978");
+        const auto first5 = pedallink::firstOfFamily(family, "RC-5");
+        CHECK(first5.has_value());
+        if (first5)
+            CHECK_EQ(first5->endpoint.identifier.toStdString(), "883557304"); // the OS's order
+        CHECK(!pedallink::firstOfFamily(family, "RC-505").has_value());
+        CHECK(!pedallink::firstOfFamily(family, "").has_value());
+        CHECK(!pedallink::firstOfFamily({}, "RC-5").has_value());
+        // Only RC-5s on the bus: an RC-500 card finds no pedal, not an RC-5.
+        const auto onlyFives = pedallink::familyAmong({ juce::MidiDeviceInfo("BOSS_RC-5", "1") });
+        CHECK(!pedallink::firstOfFamily(onlyFives, "RC-500").has_value());
+    }
+
     // --- a refusal names the endpoint as the OS named it: its UTF-8 comes
     // back as the same characters, not as Latin-1 (0.9.6 previews) ---
     {

@@ -4,6 +4,7 @@
 // Preview stores are refused intact; fresh stores use the supported base.
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/history/HistoryStore.h"
 #include "../app/history/Schema.h"
@@ -406,7 +407,7 @@ int main()
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio"), 1);
         CHECK_EQ(count(db, "SELECT count(*) FROM slot_audio WHERE modified IS NULL"), 1); // the old row: honestly unknown
         CHECK_EQ(migrated.slotTimeline(4).size(), 1u);
-        CHECK(migrated.slotTimeline(4).size() == 1u && migrated.slotTimeline(4).front().takeName == "004_1.WAV");
+        CHECK(migrated.slotTimeline(4).size() == 1u && testkit::firstTake(migrated.slotTimeline(4).front()).name == "004_1.WAV");
         CHECK(!migrated.readingFor(std::string(32, 'h')).has_value());
         // the new column and the new table take rows the way the store writes them
         const auto op = migrated.beginOp(1, "v9-trim", "trim", 3);
