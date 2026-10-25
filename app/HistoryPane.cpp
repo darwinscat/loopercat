@@ -17,11 +17,15 @@ const juce::Colour kPaper { 0xffe8e8f0 };    // what the row is about
 const juce::Colour kSelected { 0xff26263a };
 const juce::Colour kWarning { 0xffd9a441 };  // failed, interrupted — the window's colour
 
-juce::String words(historymenu::Entry entry)
+// A memory of one track exports "the take"; one of more names the track.
+juce::String words(const historymenu::Item& item, std::size_t tracks)
 {
-    switch (entry) {
+    switch (item.entry) {
         case historymenu::Entry::restore: return "Restore this state";
-        case historymenu::Entry::exportTake: return juce::String::fromUTF8("Export take\xe2\x80\xa6");
+        case historymenu::Entry::exportTake:
+            return tracks == 1 ? juce::String::fromUTF8("Export take\xe2\x80\xa6")
+                               : "Export track " + juce::String(item.track)
+                                     + juce::String::fromUTF8(" take\xe2\x80\xa6");
         case historymenu::Entry::separator: return {};
         case historymenu::Entry::clearHistory:
             return juce::String::fromUTF8("Clear history of this slot\xe2\x80\xa6");
@@ -29,10 +33,11 @@ juce::String words(historymenu::Entry entry)
     return {};
 }
 
-// A PopupMenu item id is never 0 — 0 is "dismissed".
-int itemId(historymenu::Entry entry)
+// A PopupMenu item id is never 0 — 0 is "dismissed": the line's place in the
+// menu, from 1.
+int itemId(std::size_t line)
 {
-    return static_cast<int>(entry) + 1;
+    return static_cast<int>(line) + 1;
 }
 } // namespace
 
@@ -102,17 +107,17 @@ std::vector<HistoryPane::MenuLine> HistoryPane::menuFor(std::int64_t op) const
     std::vector<MenuLine> lines;
     if (const Row* row = rowFor(op))
         for (const historymenu::Item& item : historymenu::forRow({ row->restorable, row->takeKept }, busy_))
-            lines.push_back({ item.entry, words(item.entry), item.enabled });
+            lines.push_back({ item.entry, words(item, row->takeKept.size()), item.enabled, item.track });
     return lines;
 }
 
-void HistoryPane::choose(int slot, std::int64_t op, historymenu::Entry entry)
+void HistoryPane::choose(int slot, std::int64_t op, historymenu::Entry entry, int track)
 {
     if (slot != slot_)
         return; // the menu was about a slot the pane no longer shows
     bool enabled = false;
     for (const MenuLine& line : menuFor(op))
-        if (line.entry == entry)
+        if (line.entry == entry && line.track == track)
             enabled = line.enabled;
     if (!enabled)
         return;
@@ -121,7 +126,7 @@ void HistoryPane::choose(int slot, std::int64_t op, historymenu::Entry entry)
             if (onRestore) onRestore(slot, op);
             break;
         case historymenu::Entry::exportTake:
-            if (onExportTake) onExportTake(slot, op);
+            if (onExportTake) onExportTake(slot, op, track);
             break;
         case historymenu::Entry::clearHistory:
             if (onClearHistory) onClearHistory(slot_);
@@ -141,22 +146,21 @@ void HistoryPane::showMenu(int row, juce::Rectangle<int> screenArea)
     const std::int64_t op = rows_[static_cast<std::size_t>(row)].op;
     const int slot = slot_;
     juce::PopupMenu menu;
-    for (const MenuLine& line : menuFor(op)) {
-        if (line.entry == historymenu::Entry::separator)
+    const std::vector<MenuLine> lines = menuFor(op);
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].entry == historymenu::Entry::separator)
             menu.addSeparator();
         else
-            menu.addItem(itemId(line.entry), line.text, line.enabled);
+            menu.addItem(itemId(i), lines[i].text, lines[i].enabled);
     }
     juce::Component::SafePointer<HistoryPane> safe(this);
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(screenArea),
-                       [safe, slot, op](int id) {
+                       [safe, slot, op, lines](int id) {
                            if (safe == nullptr)
                                return;
-                           for (const historymenu::Entry entry :
-                                { historymenu::Entry::restore, historymenu::Entry::exportTake,
-                                  historymenu::Entry::clearHistory })
-                               if (itemId(entry) == id)
-                                   safe->choose(slot, op, entry);
+                           for (std::size_t i = 0; i < lines.size(); ++i)
+                               if (lines[i].entry != historymenu::Entry::separator && itemId(i) == id)
+                                   safe->choose(slot, op, lines[i].entry, lines[i].track);
                        });
 }
 

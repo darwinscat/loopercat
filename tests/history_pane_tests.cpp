@@ -18,7 +18,7 @@ namespace
 
 HistoryPane::Row row(std::int64_t op, bool takeKept, bool restorable)
 {
-    return { "now", "Pushed", "song.wav", "", takeKept ? "take kept" : "", takeKept, restorable, op };
+    return { "now", "Pushed", "song.wav", "", takeKept ? "take kept" : "", { takeKept }, restorable, op };
 }
 
 const HistoryPane::MenuLine* lineOf(const std::vector<HistoryPane::MenuLine>& lines, Entry entry)
@@ -45,7 +45,7 @@ struct Calls {
 void listen(HistoryPane& pane, Calls& calls)
 {
     pane.onRestore = [&calls](int slot, std::int64_t op) { calls.restored.push_back(op); calls.slots.push_back(slot); };
-    pane.onExportTake = [&calls](int slot, std::int64_t op) { calls.exported.push_back(op); calls.slots.push_back(slot); };
+    pane.onExportTake = [&calls](int slot, std::int64_t op, int) { calls.exported.push_back(op); calls.slots.push_back(slot); };
     pane.onClearHistory = [&calls](int slot) { calls.cleared.push_back(slot); };
 }
 
@@ -90,9 +90,9 @@ int main()
             CHECK_EQ(enabled(pane, 3, Entry::exportTake), takeKept);
             CHECK(enabled(pane, 3, Entry::clearHistory));
 
-            pane.choose(4, 3, Entry::restore);
-            pane.choose(4, 3, Entry::exportTake);
-            pane.choose(4, 3, Entry::separator); // a separator is never a choice
+            pane.choose(4, 3, Entry::restore, 0);
+            pane.choose(4, 3, Entry::exportTake, 1);
+            pane.choose(4, 3, Entry::separator, 0); // a separator is never a choice
             CHECK_EQ(calls.restored.size(), std::size_t { restorable ? 1u : 0u });
             CHECK_EQ(calls.exported.size(), std::size_t { takeKept ? 1u : 0u });
             CHECK(calls.restored.empty() || calls.restored.front() == 3);
@@ -101,7 +101,7 @@ int main()
                 CHECK_EQ(slot, 4); // the slot the menu was opened on
             CHECK(calls.cleared.empty());
 
-            pane.choose(4, 3, Entry::clearHistory);
+            pane.choose(4, 3, Entry::clearHistory, 0);
             CHECK(calls.cleared == std::vector<int> { 4 }); // the slot, not the row's operation
         }
 
@@ -116,14 +116,14 @@ int main()
         for (const auto& line : pane.menuFor(1))
             CHECK(!line.enabled);
         for (const Entry entry : { Entry::restore, Entry::exportTake, Entry::clearHistory })
-            pane.choose(4, 1, entry);
+            pane.choose(4, 1, entry, entry == Entry::exportTake ? 1 : 0);
         CHECK(calls.restored.empty() && calls.exported.empty() && calls.cleared.empty());
 
         pane.setBusy(false);
         CHECK(enabled(pane, 1, Entry::restore));
         CHECK(enabled(pane, 1, Entry::exportTake));
         CHECK(enabled(pane, 1, Entry::clearHistory));
-        pane.choose(4, 2, Entry::restore);
+        pane.choose(4, 2, Entry::restore, 0);
         CHECK(calls.restored == std::vector<std::int64_t> { 2 }); // the row the menu was for
     }
 
@@ -136,23 +136,23 @@ int main()
         listen(pane, calls);
         pane.setRows({ row(5, true, true), row(6, true, false) }, 4);
         pane.setRows({ row(5, false, false), row(6, true, false) }, 4); // its take released, a newer row
-        pane.choose(4, 5, Entry::exportTake);
-        pane.choose(4, 5, Entry::restore);
+        pane.choose(4, 5, Entry::exportTake, 1);
+        pane.choose(4, 5, Entry::restore, 0);
         CHECK(calls.exported.empty() && calls.restored.empty());
 
         pane.setRows({ row(6, true, false) }, 4); // row 5 forgotten
         for (const Entry entry : { Entry::restore, Entry::exportTake, Entry::clearHistory })
-            pane.choose(4, 5, entry);
+            pane.choose(4, 5, entry, entry == Entry::exportTake ? 1 : 0);
         CHECK(calls.cleared.empty());
 
         pane.setRows({ row(6, true, false) }, 9); // another slot selected, and its row's menu opened
-        pane.choose(9, 6, Entry::clearHistory);
+        pane.choose(9, 6, Entry::clearHistory, 0);
         CHECK(calls.cleared == std::vector<int> { 9 });
 
         pane.clear(); // no slot at all: nothing to offer, nothing to clear
         CHECK(pane.menuFor(6).empty());
-        pane.choose(9, 6, Entry::clearHistory);
-        pane.choose(0, 6, Entry::clearHistory);
+        pane.choose(9, 6, Entry::clearHistory, 0);
+        pane.choose(0, 6, Entry::clearHistory, 0);
         CHECK_EQ(calls.cleared.size(), std::size_t { 1 });
     }
 
@@ -172,11 +172,11 @@ int main()
         pane.setRows({ row(6, false, true) }, 4); // the swap of slots 4 and 9, as slot 4 shows it
         // the menu opens here, on slot 4's row of operation 6, then...
         pane.setRows({ row(6, false, true) }, 9); // ...slot 9 is selected: the same operation, its other row
-        pane.choose(4, 6, Entry::clearHistory);
-        pane.choose(4, 6, Entry::restore);
+        pane.choose(4, 6, Entry::clearHistory, 0);
+        pane.choose(4, 6, Entry::restore, 0);
         CHECK(calls.cleared.empty());
         CHECK(calls.restored.empty());
-        pane.choose(9, 6, Entry::restore); // slot 9's own menu does act, and says so
+        pane.choose(9, 6, Entry::restore, 0); // slot 9's own menu does act, and says so
         CHECK(calls.restored == std::vector<std::int64_t> { 6 });
         CHECK(calls.slots == std::vector<int> { 9 });
     }
@@ -189,7 +189,7 @@ int main()
         listen(pane, calls);
         pane.setRows({ row(5, true, true) }, 4);
         pane.setRows({ row(2, false, false), row(5, true, true) }, 4);
-        pane.choose(4, 5, Entry::exportTake);
+        pane.choose(4, 5, Entry::exportTake, 1);
         CHECK(calls.exported == std::vector<std::int64_t> { 5 });
     }
 
@@ -198,7 +198,39 @@ int main()
         HistoryPane pane;
         pane.setRows({ row(1, true, true) }, 4);
         for (const Entry entry : { Entry::restore, Entry::exportTake, Entry::clearHistory })
-            pane.choose(4, 1, entry);
+            pane.choose(4, 1, entry, entry == Entry::exportTake ? 1 : 0);
+    }
+
+    // --- a memory of two tracks: an export line per track, and the track chosen ---
+    {
+        HistoryPane pane;
+        Calls calls;
+        listen(pane, calls);
+        std::vector<int> tracks;
+        pane.onExportTake = [&calls, &tracks](int slot, std::int64_t op, int track) {
+            calls.exported.push_back(op);
+            calls.slots.push_back(slot);
+            tracks.push_back(track);
+        };
+        pane.setRows({ { "now", "Original", "T1 001_1.WAV, T2 001_2.WAV", "", "take kept", { true, false }, true, 7 } }, 1);
+        const auto lines = pane.menuFor(7);
+        CHECK_EQ(lines.size(), std::size_t { 5 });
+        if (lines.size() == 5) {
+            CHECK(lines[1].text == juce::String::fromUTF8("Export track 1 take\xe2\x80\xa6") && lines[1].enabled);
+            CHECK(lines[2].text == juce::String::fromUTF8("Export track 2 take\xe2\x80\xa6") && !lines[2].enabled);
+            CHECK(lines[1].track == 1 && lines[2].track == 2);
+        }
+        pane.choose(1, 7, Entry::exportTake, 2); // nothing kept on track 2: no export
+        pane.choose(1, 7, Entry::exportTake, 0); // an export of no track is no line
+        pane.choose(1, 7, Entry::exportTake, 3); // nor of a track the memory has not
+        CHECK(calls.exported.empty());
+        pane.choose(1, 7, Entry::exportTake, 1);
+        CHECK((tracks == std::vector<int> { 1 }));
+        CHECK((calls.exported == std::vector<std::int64_t> { 7 }));
+        // A memory of one track keeps its one line and its old words.
+        pane.setRows({ row(8, true, true) }, 1);
+        const auto one = pane.menuFor(8);
+        CHECK(one.size() == 4 && one[1].text == juce::String::fromUTF8("Export take\xe2\x80\xa6") && one[1].track == 1);
     }
 
     return testkit::summary("history_pane_tests");

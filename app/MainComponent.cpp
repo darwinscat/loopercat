@@ -774,7 +774,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(history);
     history.onClearHistory = [this](int slot) { clearSlotHistory(slot); };
     history.onRestore = [this](int slot, std::int64_t op) { restoreFromHistory(slot, op); };
-    history.onExportTake = [this](int slot, std::int64_t op) { exportFromHistory(slot, op); };
+    history.onExportTake = [this](int slot, std::int64_t op, int track) { exportFromHistory(slot, op, track); };
     // The History window (#73): the view knows nothing of the store; its
     // four callbacks come back here, and every one of them ends in a re-read.
     historyView.onPlay = [this](std::int64_t op) { playFromWindow(op); };
@@ -1259,7 +1259,7 @@ void MainComponent::updateHistory()
                          for (const auto& row : entries)
                              rows.push_back({ utf8(history::story::clockWords(row.at, now)),
                                               utf8(row.line.action), utf8(row.line.detail), utf8(row.state),
-                                              utf8(row.line.audio), row.playable, row.restorable, row.op });
+                                              utf8(row.line.audio), row.keptByTrack, row.restorable, row.op });
                          juce::MessageManager::callAsync(
                              [safe, rows, loaded = std::move(entries), slot, alive, loadedCard = rec->store().selectedCard()]() mutable {
                                  if (*alive && safe != nullptr && safe->selectedSlot == slot) {
@@ -1365,15 +1365,23 @@ void MainComponent::playArchivedTake(int slot, std::string hash, juce::String ti
 // dialog proposes the take's own name and has asked about a file already
 // there; the write is the history's bytes and nothing else — the pedal is
 // neither read nor written, so the job needs no card.
-void MainComponent::exportFromHistory(int slot, std::int64_t op)
+void MainComponent::exportFromHistory(int slot, std::int64_t op, int track)
 {
     if (slot != selectedSlot)
         return; // the player moved on while the menu was open
     const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
                                     [op](const history::rows::Row& row) { return row.op == op; });
-    if (found == historyEntries.end() || found->takeHash.empty())
-        return; // the pane offers Export only for a row whose take is kept
-    const juce::String name = utf8(history::exportName(found->takeName, slot));
+    if (found == historyEntries.end())
+        return;
+    // The take of the chosen track; the pane offers Export only for one kept.
+    const auto take = std::find_if(found->takes.begin(), found->takes.end(),
+                                   [track](const auto& t) { return t.track == track; });
+    if (take == found->takes.end() || !take->kept || !take->hash)
+        return;
+    // On a memory of more than one track the file says which track it is,
+    // as a pulled one does (wav::trackFileName); one track keeps its name.
+    const juce::String name = utf8(wav::trackFileName(history::exportName(take->name, slot), track,
+                                                      static_cast<int>(found->keptByTrack.size())));
     fileChooser = std::make_unique<juce::FileChooser>(
         "Export take", juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile(name),
         "*.wav");
@@ -1381,7 +1389,7 @@ void MainComponent::exportFromHistory(int slot, std::int64_t op)
     fileChooser->launchAsync(
         juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
             | juce::FileBrowserComponent::warnAboutOverwriting,
-        [safe, hash = found->takeHash](const juce::FileChooser& chooser) {
+        [safe, hash = *take->hash](const juce::FileChooser& chooser) {
             const juce::File file = chooser.getResult();
             if (safe == nullptr || file == juce::File())
                 return; // dismissed

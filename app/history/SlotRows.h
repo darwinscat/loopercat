@@ -42,7 +42,44 @@ struct Row {
     bool restorable = false; // its state can be put back onto the card, every track's take with it
     std::string takeHash;    // the bytes Play would sound, empty when there are none
     std::string takeName;    // their name on the card, beside the hash: what Export proposes
+    // The takes the row names, one per track, by track — the state's, or the
+    // ones it archived (HistoryStore::TimelineEntry::takes) — and, one per
+    // track of the memory, whether that track's take is kept: what Export
+    // can write, track by track.
+    std::vector<HistoryStore::SlotTake> takes;
+    std::vector<bool> keptByTrack;
 };
+
+// How many tracks the memory a row is about has: the track sections of the
+// body it recorded, either side, or — for a row with no body, a normalize —
+// as many as its takes reach, one at least.
+inline int tracksOf(const HistoryStore::TimelineEntry& entry)
+{
+    if (entry.afterBody)
+        return trackSectionsIn(*entry.afterBody);
+    if (entry.beforeBody)
+        return trackSectionsIn(*entry.beforeBody);
+    int tracks = 1;
+    for (const HistoryStore::SlotTake& take : entry.takes)
+        tracks = std::max(tracks, take.track);
+    return tracks;
+}
+
+// The takes a row names, in its sentence: the one take of a one-track memory
+// by its name, as always; on a memory with more, each named by its track the
+// way the table's WAV column names them ("T1 001_1.WAV, T2 001_2.WAV").
+inline std::string takeWords(const std::vector<HistoryStore::SlotTake>& takes, int tracks)
+{
+    if (takes.empty())
+        return {};
+    if (tracks <= 1)
+        return takes.front().name;
+    std::string out;
+    for (const HistoryStore::SlotTake& take : takes)
+        out += (out.empty() ? "" : ", ") + std::string("T") + std::to_string(take.track) + " "
+             + take.name;
+    return out;
+}
 
 // The words for an operation's outcome or origin, shared by the slot's rows
 // and the card's so the two views never disagree about what did not happen.
@@ -115,6 +152,7 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                                      [](const HistoryStore::SlotTake& t) { return t.kept; });
     const auto firstKept = std::find_if(entry.takes.begin(), entry.takes.end(),
                                         [](const HistoryStore::SlotTake& t) { return t.kept; });
+    const int tracks = tracksOf(entry);
     // A row that only names the slot recorded nothing here; one that says so
     // and carries a state or a take is not the store's — refused, not read.
     if (entry.subjectOnly && (entry.beforeBody || entry.afterBody || hasTake))
@@ -146,7 +184,7 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
                              .beforeBody = entry.beforeBody,
                              .afterBody = entry.afterBody,
                              .swappedWith = entry.swappedWith,
-                             .takeName = hasTake ? entry.takes.front().name : std::string(),
+                             .takeName = takeWords(entry.takes, tracks),
                              .take = take,
                              .status = status,
                              .note = entry.note,
@@ -168,6 +206,11 @@ inline Row one(const HistoryStore::TimelineEntry& entry, bool newest)
         row.takeHash = *firstKept->hash;
         row.takeName = firstKept->name;
     }
+    row.takes = entry.takes;
+    row.keptByTrack.assign(static_cast<std::size_t>(std::max(tracks, 1)), false);
+    for (const HistoryStore::SlotTake& held : entry.takes)
+        if (held.kept && held.track >= 1 && held.track <= static_cast<int>(row.keptByTrack.size()))
+            row.keptByTrack[static_cast<std::size_t>(held.track - 1)] = true;
     return row;
 }
 

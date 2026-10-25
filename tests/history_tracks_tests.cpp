@@ -625,5 +625,40 @@ int main()
         CHECK_THROWS(history::undo::stateFor(store, unknown, volume), "no longer kept");
     }
 
+    // --- the History tab's rows, from the store, for a two-track memory ---
+    {
+        TempDir tmp;
+        const fs::path volume = testkit::makeTwoTrackCard(
+            tmp.path, { { 1, 1, "001_1.WAV", 4410, 1 }, { 1, 2, "001_2.WAV", 8820, 2 } });
+        const auto rec = std::make_shared<HistoryRecorder>(tmp.path / "history", tick);
+        const auto snapshot = rec->firstSeen(volume);
+        if (snapshot)
+            for (int slot = 1; slot <= 99; ++slot)
+                rec->snapshotStep(*snapshot, slot);
+        std::string error;
+        try {
+            rec->begin("rename-1", "rename", volume);
+            commands::rename(volume, 1, "Both", history::withHistory(rec, { .opId = "rename-1" }));
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        rec->finish("rename-1", error);
+        CHECK_EQ(error, std::string());
+        const auto rows = history::rows::forSlot(rec->store().slotTimeline(1));
+        CHECK_EQ(rows.size(), 2u);
+        if (rows.size() == 2u) {
+            // The Original names both takes by track, offers both for export,
+            // and goes back whole.
+            CHECK_EQ(rows[0].line.detail, std::string("T1 001_1.WAV, T2 001_2.WAV"));
+            CHECK((rows[0].keptByTrack == std::vector<bool> { true, true }));
+            CHECK(rows[0].restorable);
+            CHECK_EQ(rows[0].takes.size(), 2u);
+            // The rename's state is where the slot is: its takes are on the
+            // card, not yet a copy the history keeps apart from them.
+            CHECK(!rows[1].restorable);
+            CHECK_EQ(rows[1].keptByTrack.size(), 2u);
+        }
+    }
+
     return testkit::summary("history_tracks_tests");
 }

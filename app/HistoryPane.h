@@ -36,7 +36,9 @@ public:
         juce::String detail; // "4:36 -> 0:39"
         juce::String state;  // "failed", "interrupted", "recorded on the pedal", or empty
         juce::String audio;  // "take kept"
-        bool takeKept = false;   // its take's bytes are in the store: it can be exported
+        // One per track of the memory, track 1 first: that track's take is in
+        // the store, and can be exported.
+        std::vector<bool> takeKept;
         bool restorable = false; // its state can go back onto the card
         std::int64_t op = 0;
     };
@@ -52,7 +54,7 @@ public:
     // Each says the slot the menu was opened on, beside the row's operation:
     // a swap is a row of both its slots, so the operation alone is not enough.
     std::function<void(int slot, std::int64_t op)> onRestore;
-    std::function<void(int slot, std::int64_t op)> onExportTake;
+    std::function<void(int slot, std::int64_t op, int track)> onExportTake;
     std::function<void(int slot)> onClearHistory; // the slot, not the row
 
     // The menu the row of operation `op` offers, as it is drawn: what each
@@ -62,6 +64,7 @@ public:
         historymenu::Entry entry;
         juce::String text;
         bool enabled;
+        int track; // the take an export line writes, 1 up; 0 on a line about no take
     };
     std::vector<MenuLine> menuFor(std::int64_t op) const;
 
@@ -70,7 +73,8 @@ public:
     // of the choice: the menu may have been open while the pedal became busy,
     // the rows were read again, or another slot was selected, and a choice
     // made on a stale menu does nothing.
-    void choose(int slot, std::int64_t op, historymenu::Entry entry);
+    // An export names its track (1 up); every other line names 0.
+    void choose(int slot, std::int64_t op, historymenu::Entry entry, int track);
 
     void resized() override;
 

@@ -64,7 +64,7 @@ void checkMenu(const std::vector<Entry>& timeline, std::size_t index, Expect exp
         return;
     const rows::Row& row = made[index];
     for (const bool busy : { false, true }) {
-        const std::vector<Item> menu = historymenu::forRow({ row.restorable, row.playable }, busy);
+        const std::vector<Item> menu = historymenu::forRow({ row.restorable, row.keptByTrack }, busy);
         CHECK_EQ(menu.size(), std::size_t { 4 });
         if (menu.size() != 4)
             continue;
@@ -253,6 +253,70 @@ int main()
         restored.restoredAt = 1000;
         checkMenu({ pushed, cleared, restored }, 2, { "the newest restore of a kept take", false, true });
         checkMenu({ pushed, cleared, restored }, 1, { "the clear before it", true, true });
+    }
+
+    // --- a memory of two tracks: one export line per track ---
+    //
+    // A take is exported per track. The menu of a two-track memory has two
+    // export lines, track 1 then track 2, in every row, so its shape does not
+    // change under the hand; a track with nothing kept is there and grey.
+    {
+        const std::vector<Item> menu = historymenu::forRow({ true, { true, false } }, false);
+        CHECK_EQ(menu.size(), std::size_t { 5 });
+        if (menu.size() == 5) {
+            CHECK(menu[0].entry == historymenu::Entry::restore && menu[0].enabled && menu[0].track == 0);
+            CHECK(menu[1].entry == historymenu::Entry::exportTake && menu[1].enabled && menu[1].track == 1);
+            CHECK(menu[2].entry == historymenu::Entry::exportTake && !menu[2].enabled && menu[2].track == 2);
+            CHECK(menu[3].entry == historymenu::Entry::separator && !menu[3].enabled);
+            CHECK(menu[4].entry == historymenu::Entry::clearHistory && menu[4].enabled && menu[4].track == 0);
+        }
+        for (const Item& item : historymenu::forRow({ true, { true, true } }, true))
+            CHECK(!item.enabled);
+        // A row that names no track at all is not a row of any memory.
+        CHECK_THROWS(historymenu::forRow({ true, {} }, false), "at least one track");
+
+        // From what the store reads for a two-track first sighting: both
+        // takes kept, the row names each by its track, and offers both.
+        Entry original = op(1, "snapshot");
+        original.afterBody = testkit::syntheticTwoTrackSlotBody("Two", { 1, 4410 }, { 1, 8820 }, 1200, 1);
+        original.takeIsAfter = true;
+        original.takeCount = 2;
+        original.takes = { { 1, "001_1.WAV", std::string(32, '\x01'), true },
+                           { 2, "001_2.WAV", std::string(32, '\x02'), true } };
+        Entry later = op(2, "rename");
+        later.beforeBody = original.afterBody;
+        later.afterBody = original.afterBody;
+        later.takeIsAfter = true;
+        later.takes = original.takes;
+        const auto made = rows::forSlot({ original, later });
+        CHECK_EQ(made.size(), std::size_t { 2 });
+        if (made.size() == 2) {
+            CHECK_EQ(made[0].line.detail, std::string("T1 001_1.WAV, T2 001_2.WAV"));
+            CHECK((made[0].keptByTrack == std::vector<bool> { true, true }));
+            CHECK(made[0].restorable);
+            const std::vector<Item> both = historymenu::forRow({ made[0].restorable, made[0].keptByTrack }, false);
+            CHECK(both.size() == 5 && both[1].enabled && both[2].enabled);
+        }
+        // The second track's bytes released: its line greys, and the state
+        // cannot go back whole.
+        original.takes[1].kept = false;
+        const auto released = rows::forSlot({ original, later });
+        if (released.size() == 2) {
+            CHECK((released[0].keptByTrack == std::vector<bool> { true, false }));
+            CHECK(!released[0].restorable);
+        }
+        // The second track alone: track 1's line is grey, track 2's is not.
+        Entry solo = op(1, "snapshot");
+        solo.afterBody = testkit::syntheticTwoTrackSlotBody("Solo", {}, { 1, 8820 }, 1200, 1);
+        solo.takeIsAfter = true;
+        solo.takeCount = 1;
+        solo.takes = { { 2, "011_2.WAV", std::string(32, '\x03'), true } };
+        const auto alone = rows::forSlot({ solo, later });
+        if (alone.size() == 2) {
+            CHECK_EQ(alone[0].line.detail, std::string("T2 011_2.WAV"));
+            CHECK((alone[0].keptByTrack == std::vector<bool> { false, true }));
+            CHECK(alone[0].restorable);
+        }
     }
 
     return testkit::summary("history_row_menu_tests");
