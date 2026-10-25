@@ -163,7 +163,7 @@ int main()
         "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, {}, profile::kNoOperation
     };
     CHECK_THROWS(profile::require(closed, profile::Operation::read),
-                 "this is an \"RC-500\" card, not an RC-5 \xe2\x80\x94 LooperCat only speaks RC-5");
+                 "this is an \"RC-500\" card, not an RC-5 - LooperCat only speaks RC-5");
     for (const auto op : { profile::Operation::read, profile::Operation::pull, profile::Operation::rename,
                            profile::Operation::clear, profile::Operation::restore })
         profile::require(profile::kRc500, op); // open: no throw
@@ -176,7 +176,7 @@ int main()
                            profile::Operation::setControls, profile::Operation::setRhythm,
                            profile::Operation::setPlayStop })
         CHECK_THROWS(profile::require(profile::kRc500, op),
-                     std::string(profile::operationName(op)) + " refused on an \"RC-500\" card \xe2\x80\x94"
+                     std::string(profile::operationName(op)) + " refused on an \"RC-500\" card -"
                          " on this model LooperCat does rename, pull, clear and restore only");
     // With nothing open, a mutation still says what the app speaks.
     CHECK_THROWS(profile::require(closed, profile::Operation::push), "LooperCat only speaks RC-5");

@@ -8,6 +8,7 @@
 
 #include "history/WriteOptionsFactory.h"
 #include "history/HistoryRecorder.h"
+#include "history/ExportTakeJob.h"
 #include "history/ForgetSlotJob.h"
 #include "ClearSlotHistoryAction.h"
 #include "history/SlotLoudness.h"
@@ -502,8 +503,9 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                 return;
             // The pedal surrendered the medium — the attempt stops resending;
             // the mount + scan pipeline reports its own failures from here.
-            trace(connectAttempt.active() ? "connect: a disk appeared \xe2\x80\x94 the pedal heard us"
-                                          : "connect: a disk appeared with no attempt running (storage mode by hand?)");
+            trace(connectAttempt.active()
+                      ? juce::String::fromUTF8("connect: a disk appeared \xe2\x80\x94 the pedal heard us")
+                      : juce::String("connect: a disk appeared with no attempt running (storage mode by hand?)"));
             connectAttempt.diskAppeared();
             worker.pokeRescan();
         });
@@ -563,7 +565,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                     const juce::String exitError = connectTarget
                         ? pedallink::requestStorageMode(false, *connectTarget)
                         : pedallink::requestStorageModeOfFamily(false, ejectFamily);
-                    trace("disconnect: exit-storage frame \xe2\x86\x92 "
+                    trace(juce::String::fromUTF8("disconnect: exit-storage frame \xe2\x86\x92 ")
                           + (connectTarget ? pedalTag(*connectTarget)
                                            : "the first " + utf8(ejectFamily) + " on the bus")
                           + ": " + (exitError.isEmpty() ? juce::String("sent") : "NOT sent (" + exitError + ")"));
@@ -771,8 +773,8 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     addChildComponent(rhythmPane);
     addChildComponent(history);
     history.onClearHistory = [this](int slot) { clearSlotHistory(slot); };
-    history.onPlay = [this](std::int64_t op) { playFromHistory(op); };
-    history.onRestore = [this](std::int64_t op) { restoreFromHistory(op); };
+    history.onRestore = [this](int slot, std::int64_t op) { restoreFromHistory(slot, op); };
+    history.onExportTake = [this](int slot, std::int64_t op) { exportFromHistory(slot, op); };
     // The History window (#73): the view knows nothing of the store; its
     // four callbacks come back here, and every one of them ends in a re-read.
     historyView.onPlay = [this](std::int64_t op) { playFromWindow(op); };
@@ -939,8 +941,8 @@ void MainComponent::beginConnect()
                             }
                             const auto index = static_cast<std::size_t>(chosen) - 1;
                             safe->connectTarget = pedals[index];
-                            safe->trace("connect: chose \xe2\x80\x9c" + utf8(labels[index]) + "\xe2\x80\x9d = "
-                                        + pedalTag(pedals[index]));
+                            safe->trace(juce::String::fromUTF8("connect: chose \xe2\x80\x9c") + utf8(labels[index])
+                                        + juce::String::fromUTF8("\xe2\x80\x9d = ") + pedalTag(pedals[index]));
                             safe->askPedalBeforeConnect(*safe->connectTarget);
                         });
 }
@@ -1019,13 +1021,13 @@ void MainComponent::gateConnect(std::optional<storage::State> answer)
     switch (decision.verdict) {
     case connectgate::Verdict::refuse:
         // Nothing is sent, nothing is retried: the sentence says what to do.
-        trace("connect: refused, nothing sent \xe2\x80\x94 " + utf8(decision.reason));
+        trace(juce::String::fromUTF8("connect: refused, nothing sent \xe2\x80\x94 ") + utf8(decision.reason));
         connectTarget.reset();
         banners.showError(banners::Source::connection, utf8(decision.reason));
         break;
     case connectgate::Verdict::alreadyInStorage:
         // The pedal is offering its medium already: no frame, just look for it.
-        trace("connect: already in storage mode, no frame \xe2\x80\x94 looking for the card");
+        trace(juce::String::fromUTF8("connect: already in storage mode, no frame \xe2\x80\x94 looking for the card"));
         toast.show(juce::String::fromUTF8(
             "The pedal is in storage mode already \xe2\x80\x94 looking for its card\xe2\x80\xa6"));
         worker.pokeRescan();
@@ -1088,7 +1090,7 @@ void MainComponent::sendEnterStorage()
     // nobody chosen would go to whichever pedal the OS lists first.
     lastConnectSendError = connectTarget ? pedallink::requestStorageMode(true, *connectTarget)
                                          : juce::String("no pedal was chosen to connect to");
-    trace("connect: enter-storage frame \xe2\x86\x92 "
+    trace(juce::String::fromUTF8("connect: enter-storage frame \xe2\x86\x92 ")
           + (connectTarget ? pedalTag(*connectTarget) : juce::String("nobody")) + ": "
           + (lastConnectSendError.isEmpty() ? juce::String("sent") : "NOT sent (" + lastConnectSendError + ")"));
 }
@@ -1104,7 +1106,7 @@ void MainComponent::tickConnectAttempt()
         sendEnterStorage();
         return;
     case connect::Action::giveUp:
-        trace("connect: gave up \xe2\x80\x94 no disk appeared after the resend budget"
+        trace(juce::String::fromUTF8("connect: gave up \xe2\x80\x94 no disk appeared after the resend budget")
               + (lastConnectSendError.isEmpty() ? juce::String() : "; last send error: " + lastConnectSendError));
         banners.showError(
             banners::Source::connection,
@@ -1250,14 +1252,14 @@ void MainComponent::updateHistory()
                      [rec = recorder, slot, safe, alive = uiAlive](const volume::fs::path&) {
                          std::vector<HistoryPane::Row> rows;
                          auto entries = history::rows::forSlot(rec->store().slotTimeline(slot));
-                         for (const auto& row : entries) {
-                             const juce::Time when(row.at);
-                             const bool today = when.getDayOfYear()
-                                 == juce::Time::getCurrentTime().getDayOfYear();
-                             rows.push_back({ when.formatted(today ? "%H:%M" : "%d %b %H:%M"),
-                                              row.line.action, row.line.detail, row.state,
-                                              row.line.audio, row.playable, row.restorable, row.op });
-                         }
+                         // One clock for the column and for a Restored row's
+                         // "back to": the time a row names is the time that
+                         // row shows.
+                         const auto now = static_cast<std::int64_t>(juce::Time::currentTimeMillis());
+                         for (const auto& row : entries)
+                             rows.push_back({ utf8(history::story::clockWords(row.at, now)),
+                                              utf8(row.line.action), utf8(row.line.detail), utf8(row.state),
+                                              utf8(row.line.audio), row.playable, row.restorable, row.op });
                          juce::MessageManager::callAsync(
                              [safe, rows, loaded = std::move(entries), slot, alive, loadedCard = rec->store().selectedCard()]() mutable {
                                  if (*alive && safe != nullptr && safe->selectedSlot == slot) {
@@ -1330,21 +1332,8 @@ void MainComponent::clearSlotHistory(int slot)
 
 // Listening to a take the store kept: the bytes become a file on this
 // computer and the player opens it. Nothing is read from the pedal, so this
-// works while the pedal is busy — "which take was the good one" is the whole
-// reason the takes are kept.
-void MainComponent::playFromHistory(std::int64_t op)
-{
-    const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
-                                    [op](const history::rows::Row& row) { return row.op == op; });
-    if (found == historyEntries.end() || found->takeHash.empty())
-        return;
-    // The slot tab's own timeline, so the take is the selected slot's: the
-    // tab strip names it, and the title says only which take (#145).
-    playArchivedTake(selectedSlot, found->takeHash,
-                     juce::String(found->line.action)
-                         + juce::String::fromUTF8(" \xc2\xb7 from the history"));
-}
-
+// works while the pedal is busy. Only the History window offers it now; the
+// tab's rows export a take instead.
 void MainComponent::playArchivedTake(int slot, std::string hash, juce::String title)
 {
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -1372,17 +1361,46 @@ void MainComponent::playArchivedTake(int slot, std::string hash, juce::String ti
                      nullptr, 0, true, true, false });
 }
 
+// "Export take...": the row's take, written where the player chose. The
+// dialog proposes the take's own name and has asked about a file already
+// there; the write is the history's bytes and nothing else — the pedal is
+// neither read nor written, so the job needs no card.
+void MainComponent::exportFromHistory(int slot, std::int64_t op)
+{
+    if (slot != selectedSlot)
+        return; // the player moved on while the menu was open
+    const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
+                                    [op](const history::rows::Row& row) { return row.op == op; });
+    if (found == historyEntries.end() || found->takeHash.empty())
+        return; // the pane offers Export only for a row whose take is kept
+    const juce::String name = utf8(history::exportName(found->takeName, slot));
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Export take", juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile(name),
+        "*.wav");
+    juce::Component::SafePointer<MainComponent> safe(this);
+    fileChooser->launchAsync(
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+            | juce::FileBrowserComponent::warnAboutOverwriting,
+        [safe, hash = found->takeHash](const juce::FileChooser& chooser) {
+            const juce::File file = chooser.getResult();
+            if (safe == nullptr || file == juce::File())
+                return; // dismissed
+            safe->worker.enqueue(history::exportTakeJob(safe->recorder, hash, fsPath(file)));
+        });
+}
+
 // Putting a recorded state back: the slot's body and its take, as one unit,
 // through the core primitive — never through push, which would recompute the
 // tempo the state carries. It is an operation like any other, so it is
 // recorded, and can be undone in turn.
-void MainComponent::restoreFromHistory(std::int64_t op)
+void MainComponent::restoreFromHistory(int slot, std::int64_t op)
 {
+    if (slot != selectedSlot)
+        return; // the player moved on while the menu was open
     const auto found = std::find_if(historyEntries.begin(), historyEntries.end(),
                                     [op](const history::rows::Row& row) { return row.op == op; });
     if (found == historyEntries.end() || !found->restorable)
         return;
-    const int slot = selectedSlot;
     const auto options = makeWriteOptions();
     releasePlayerIfHolding(slot, slot); // the restore rewrites the slot's audio (issue #26)
     worker.enqueue(recorded(
@@ -1395,6 +1413,7 @@ void MainComponent::restoreFromHistory(std::int64_t op)
                       state = history::recordedState(rec->store(), entry, slot);
               if (!state)
                   throw Error("that row is not in this slot's history any more");
+              rec->restores(options.opId, op); // named before the card is touched
               commands::restore(volumePath, slot, *state, options);
           } }));
 }
@@ -1604,7 +1623,8 @@ void MainComponent::renamePedal()
         auto* self = safe.getComponent();
         const std::string cardId = self->card->id;
         juce::Component::SafePointer<MainComponent> again(self);
-        self->worker.enqueue({ "Rename the pedal to \xe2\x80\x9c" + utf8(newName) + "\xe2\x80\x9d",
+        self->worker.enqueue({ juce::String::fromUTF8("Rename the pedal to \xe2\x80\x9c") + utf8(newName)
+                                   + juce::String::fromUTF8("\xe2\x80\x9d"),
                                0,
                                [newName, again, rec = self->recorder, alive = self->uiAlive](const volume::fs::path& volumePath) {
                                    const marker::Written written = marker::rename(volumePath, newName);
@@ -1637,7 +1657,7 @@ void MainComponent::runCleanJunk()
                          // every write to it (DeviceProfile.hpp), in its words.
                          if (!CardPermissions::of(family).anyWrite())
                              throw Error("clean junk refused on an \"" + family
-                                         + "\" card \xe2\x80\x94 " + profile::onlySpeaks());
+                                         + "\" card - " + profile::onlySpeaks());
                          // Mutations treat a sweep survivor as a warning; this
                          // action's one job IS the sweep, so a survivor is the
                          // job failing and says so.
@@ -1735,7 +1755,7 @@ void MainComponent::updateStatusText()
     // A memory holds a loop when any of its tracks does — on the RC-5 that
     // is its one track, as ever.
     if (firstSeenRun && !firstSeenRun->cancelled && !firstSeenSettled) {
-        status.setText("Saving card first seen: " + juce::String(firstSeenCount) + " of 99 slots",
+        status.setText("Saving the original: " + juce::String(firstSeenCount) + " of 99 slots",
                        juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, kStatusText);
         return;
@@ -2043,7 +2063,9 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     // panel now (and the two lamp columns still flip on click), so this menu
     // stopped being a second copy of them.
     juce::PopupMenu menu;
-    menu.addItem(3, juce::String::fromUTF8(occupied ? "Replace audio\xe2\x80\xa6" : "Push audio here\xe2\x80\xa6"),
+    menu.addItem(3,
+                 occupied ? juce::String::fromUTF8("Replace audio\xe2\x80\xa6")
+                          : juce::String::fromUTF8("Push audio here\xe2\x80\xa6"),
                  can.push);
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), can.pull && occupied);
     juce::PopupMenu downmix;
@@ -3452,6 +3474,7 @@ void MainComponent::restoreFromWindow(std::int64_t op, std::optional<int> snapsh
     worker.enqueue(recorded("restore", options,
                             { "Restore " + where + " to " + entry->action, slots.size() == 1 ? slots[0] : 0,
                               [rec = recorder, op, options, snapshotSlot](const volume::fs::path& volumePath) {
+                                  rec->restores(options.opId, op); // named before the card is touched
                                   history::restoreOperation(rec->store(), op, volumePath, options, snapshotSlot);
                               } },
                             slots)); // about every slot it puts back, however many the job names

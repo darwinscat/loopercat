@@ -82,10 +82,10 @@ int main()
 
     // --- bytes outside ASCII neither match nor crash the scan ---
 
-    CHECK(isRc5("\xe2\x99\xaa RC-5"));    // a note sign before the name
-    CHECK(isRc5("\xffRC-5"));             // a lone high byte right against it
-    CHECK(isRc5("RC-5\xe2\x84\xa2"));     // a trademark sign after it
-    CHECK(!isRc5("RC-50\xe2\x84\xa2"));
+    CHECK(isRc5("\xe2\x99\xaa RC-5"));    // a note sign before the name; utf8-data: a port name's bytes
+    CHECK(isRc5("\xffRC-5"));             // a lone high byte right against it; utf8-data: a port name's bytes
+    CHECK(isRc5("RC-5\xe2\x84\xa2"));     // a trademark sign after it; utf8-data: a port name's bytes
+    CHECK(!isRc5("RC-50\xe2\x84\xa2"));  // utf8-data: a port name's bytes
 
     // --- both pedals on the bus: whichever the OS lists first, the RC-5 is
     // the one Connect talks to ---

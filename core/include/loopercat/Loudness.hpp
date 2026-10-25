@@ -176,7 +176,7 @@ public:
         if (loudness_.droppedBlocks() != 0)
             throw Error("internal: the loudness meter dropped "
                         + std::to_string(loudness_.droppedBlocks())
-                        + " gating block(s) past its capacity — the adapter's capacity guard "
+                        + " gating block(s) past its capacity - the adapter's capacity guard "
                           "let a program through");
         const double lufs = loudness_.integratedLufs();
         if (lufs <= kAbsoluteGateLufs)
@@ -241,7 +241,7 @@ inline double normalizeGainDb(double measuredLufs, double targetLufs, double pea
         return gain;
     if (!std::isfinite(peakDb))
         throw Error("normalize boost needs a finite peak level; a measurable track "
-                    "cannot be silent — measure and peak must come from the same pass");
+                    "cannot be silent - measure and peak must come from the same pass");
     const double headroom = ceilingDb - peakDb;
     return std::min(gain, std::max(headroom, 0.0));
 }

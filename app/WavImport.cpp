@@ -159,7 +159,7 @@ juce::Result prepare(const juce::File& source, const juce::File& importTmp, Prep
     if (channels < 1 || channels > 2)
         return juce::Result::fail(source.getFileName() + " has "
                                   + juce::String(channels)
-                                  + " channels — only mono and stereo can go to the pedal");
+                                  + juce::String::fromUTF8(" channels \xe2\x80\x94 only mono and stereo can go to the pedal"));
     const SourceFormat sourceFormat = factsOf(*reader);
 
     // Pass 1 of the opt-in normalization (issue #53): measure, decide, and —

@@ -368,5 +368,19 @@ int main()
         CHECK(!fs::exists(gone));
     }
 
+    // --- the name the save dialog proposes: the take's own, a WAV once ---
+    {
+        CHECK_EQ(history::exportName("i-am-projection.wav", 4), std::string("i-am-projection.wav"));
+        CHECK_EQ(history::exportName("RC5_0001.WAV", 4), std::string("RC5_0001.WAV")); // the pedal's case kept
+        CHECK_EQ(history::exportName("take.Wav", 4), std::string("take.Wav"));
+        CHECK_EQ(history::exportName("i-am-projection", 4), std::string("i-am-projection.wav"));
+        CHECK_EQ(history::exportName("song.mp3", 4), std::string("song.mp3.wav"));
+        CHECK_EQ(history::exportName("wav", 4), std::string("wav.wav"));     // an ending, not a dot
+        CHECK_EQ(history::exportName("songwav", 4), std::string("songwav.wav"));
+        CHECK_EQ(history::exportName("a.wav.part", 4), std::string("a.wav.part.wav"));
+        CHECK_EQ(history::exportName("", 4), std::string("slot 4 take.wav"));
+        CHECK_EQ(history::exportName("", 99), std::string("slot 99 take.wav"));
+    }
+
     return testkit::summary("card_timeline_tests");
 }

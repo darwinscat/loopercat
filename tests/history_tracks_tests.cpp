@@ -506,7 +506,7 @@ int main()
         renamed.facts.afterBody = twoTrack(4410, 8820);
         const auto r = history::undo::plan({ cardOf("rename", renamed) }, 7);
         CHECK(r.steps.size() == 1u && r.steps.front().keepsAudio());
-        CHECK(history::undo::trackSectionsIn(twoTrack(0, 0)) == 2);
+        CHECK(history::trackSectionsIn(twoTrack(0, 0)) == 2);
         CHECK(history::undo::bodyHoldsTake(twoTrack(0, 8820), 2) && !history::undo::bodyHoldsTake(twoTrack(0, 8820), 1));
     }
 

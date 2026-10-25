@@ -4,6 +4,7 @@
 #pragma once
 
 #include "HistoryStore.h"
+#include "RecordedState.h"
 
 #include <loopercat/Rc0.hpp>
 
@@ -171,16 +172,6 @@ inline bool bodyHoldsTake(const std::string& body, int track)
         || rc0::sectionField(body, section, "WavLen") != 0;
 }
 
-// The tracks a memory body describes: TRACK1, TRACK2, ... as far as they go.
-// The plan reads the model off the body it would put back; the run checks it
-// against the card (UndoRun.h).
-inline int trackSectionsIn(const std::string& body)
-{
-    int tracks = 0;
-    while (body.find(rc0::trackSectionOpen(tracks + 1)) != std::string::npos)
-        ++tracks;
-    return tracks;
-}
 
 inline Plan plan(const std::vector<HistoryStore::CardEntry>& timeline, std::int64_t target)
 {

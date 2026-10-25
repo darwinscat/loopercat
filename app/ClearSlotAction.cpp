@@ -18,7 +18,7 @@ void showClearSlotConfirmation(int slot, std::function<void(int)> decided)
     auto* dialog = new juce::AlertWindow(
         "Clear slot " + juce::String(slot) + "?",
         juce::String::fromUTF8(
-            "Its history is kept — you can restore it from the History tab."),
+            "Its history is kept \xe2\x80\x94 you can restore it from the History tab."),
         juce::MessageBoxIconType::WarningIcon);
     // Every destructive dialog answers the same way: Cancel is the default, on
     // Return and on Escape, and it is the button the keyboard starts on. One

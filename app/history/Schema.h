@@ -83,6 +83,11 @@
 //                is ever issued twice: forgetting a slot's history can drop
 //                the newest operations whole, and a sequence taken from
 //                max(seq) would hand their numbers out again (#141).
+//   ops.restores the operation a restore went back to: its row then says what
+//                came back and from when. A column, not words in the note,
+//                so the row it names is a row the store can find; NULL for
+//                every other kind, for a restore older than version 11, and
+//                once the row it named is forgotten.
 //
 // A rollback journal (DELETE), not WAL, and one file rather than two. A row
 // and the bytes it names must land together or not at all; inside one file
@@ -106,7 +111,7 @@
 namespace loopercat::history::schema
 {
 
-inline constexpr std::int64_t kVersion = 10;
+inline constexpr std::int64_t kVersion = 11;
 
 // Version 5 is the first supported store. Future steps append to this array;
 // kSteps[N] creates version kBaseVersion + N in the same transaction.
@@ -275,6 +280,11 @@ CREATE TRIGGER op_sequence_moves AFTER INSERT ON ops
 BEGIN
     UPDATE op_sequence SET last = max(last, NEW.seq) WHERE one = 1;
 END;
+)sql",
+R"sql(
+-- The operation a restore went back to (0.9.6): what the Restored row says
+-- came back, and from when. NULL on every row older than this version.
+ALTER TABLE ops ADD COLUMN restores INTEGER REFERENCES ops(seq);
 )sql",
 };
 

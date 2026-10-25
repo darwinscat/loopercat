@@ -4,6 +4,7 @@
 #pragma once
 
 #include "PedalPortName.h"
+#include "Strings.h"
 
 #include <loopercat/DeviceProfile.hpp>
 #include <loopercat/StorageRegister.hpp>
@@ -172,7 +173,7 @@ inline juce::String requestStorageMode(bool enter, const juce::MidiDeviceInfo& e
     try {
         return requestStorageMode(enter, pedalOf(endpoint));
     } catch (const Error& e) {
-        return e.what();
+        return utf8(e.what()); // the endpoint's name is the OS's UTF-8, inside the error
     }
 }
 

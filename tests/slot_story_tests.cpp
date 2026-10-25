@@ -17,6 +17,12 @@
 
 #include "../app/history/SlotStory.h"
 
+#include <clocale>
+#include <cstdint>
+#include <cstdlib>
+#include <ctime>
+#include <limits>
+#include <optional>
 #include <string>
 
 using namespace loopercat;
@@ -36,6 +42,25 @@ std::string bodyWith(long long wavLen, long long tempo, const std::string& name,
 
 constexpr long long kFrames4m36 = 12193650; // 276.5 s, the pushed loop
 constexpr long long kFrames0m39 = 1719900;  // 39.0 s, what the trim left
+
+// A wall-clock moment on this computer, in the store's milliseconds: the
+// clock a player reads, built from its own fields rather than from the
+// function under test.
+std::int64_t localMs(int year, int month, int day, int hour, int minute, int second = 0)
+{
+    std::tm fields {};
+    fields.tm_year = year - 1900;
+    fields.tm_mon = month - 1;
+    fields.tm_mday = day;
+    fields.tm_hour = hour;
+    fields.tm_min = minute;
+    fields.tm_sec = second;
+    fields.tm_isdst = -1;
+    const std::time_t seconds = std::mktime(&fields);
+    if (seconds == static_cast<std::time_t>(-1))
+        throw Error("no such local moment");
+    return static_cast<std::int64_t>(seconds) * 1000;
+}
 
 } // namespace
 
@@ -145,6 +170,21 @@ int main()
                                                .afterBody = trimmed,
                                                .take = story::Take::lost });
         CHECK_EQ(line.audio, std::string("take no longer kept"));
+    }
+
+    // --- the app's own names for a slot's drums and its Start & Stop, never
+    // the kinds the store files them under ---
+    {
+        const story::Line rhythm = story::tell({ .kind = "rhythm", .beforeBody = pushed,
+                                                 .afterBody = pushed, .status = "done" });
+        CHECK_EQ(rhythm.action, std::string("Rhythm"));
+        const story::Line playStop = story::tell({ .kind = "playstop", .beforeBody = pushed,
+                                                   .afterBody = pushed, .status = "done" });
+        CHECK_EQ(playStop.action, std::string("Start & Stop"));
+        for (const story::Line& line : { rhythm, playStop }) {
+            CHECK(line.action.find("rhythm") == std::string::npos);
+            CHECK(line.action.find("playstop") == std::string::npos);
+        }
     }
 
     // --- a row this build has no words for says its own name ---
@@ -266,24 +306,24 @@ int main()
         const auto converted = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                              .takeName = "song-pedal.wav", .take = story::Take::onCard,
                                              .status = "done",
-                                             .note = "48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo" });
+                                             .note = "48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo" });  // utf8-data: a job's note as the importer writes it
         CHECK_EQ(converted.detail,
-                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo"));
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 48000 Hz, 24-bit, mono \xe2\x86\x92 44100 Hz, 32-bit float, stereo"));  // utf8-data: the same note, passed through
         CHECK_EQ(converted.audio, std::string("in the slot now"));
 
         const auto both = story::tell({ .kind = "push", .beforeBody = trimmed, .afterBody = pushed,
                                         .takeName = "song-pedal.wav", .take = story::Take::onCard,
                                         .status = "done",
-                                        .note = "24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB; "
+                                        .note = "24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB; "  // utf8-data: a job's note as the importer writes it
                                             + std::string(story::kNoteLengthReplaced) });
         CHECK_EQ(both.detail,
-                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB"
+                 std::string("song-pedal.wav - 4:36 - 111.1 BPM - 24-bit \xe2\x86\x92 32-bit float; normalized +3.0 dB"  // utf8-data: the same note, passed through
                              " - note length replaced by bars"));
 
         // no bodies (a row an older store kept): the name and the sentence
         const auto bare = story::tell({ .kind = "push", .takeName = "song.wav", .take = story::Take::kept,
-                                        .status = "done", .note = "MP3 \xe2\x86\x92 32-bit float" });
-        CHECK_EQ(bare.detail, std::string("song.wav - MP3 \xe2\x86\x92 32-bit float"));
+                                        .status = "done", .note = "MP3 \xe2\x86\x92 32-bit float" });  // utf8-data: a job's note as the importer writes it
+        CHECK_EQ(bare.detail, std::string("song.wav - MP3 \xe2\x86\x92 32-bit float"));  // utf8-data: the same note, passed through
 
         // a note that is only the fact adds nothing twice
         const auto onlyFact = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
@@ -303,10 +343,10 @@ int main()
         CHECK_EQ(failedBodies.detail, std::string("take.wav - 4:36 - 111.1 BPM"));
         // an interrupted one, and a row an older build wrote with no status: the same
         const auto interrupted = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
-                                               .status = "interrupted", .note = "24-bit \xe2\x86\x92 32-bit float" });
+                                               .status = "interrupted", .note = "24-bit \xe2\x86\x92 32-bit float" });  // utf8-data: a job's note as the importer writes it
         CHECK_EQ(interrupted.detail, std::string("take.wav"));
         const auto unknown = story::tell({ .kind = "push", .takeName = "take.wav", .take = story::Take::onCard,
-                                           .note = "24-bit \xe2\x86\x92 32-bit float" });
+                                           .note = "24-bit \xe2\x86\x92 32-bit float" });  // utf8-data: a job's note as the importer writes it
         CHECK_EQ(unknown.detail, std::string("take.wav"));
 
         // the helper itself: the fact is dropped wherever it sits, the rest keeps its order
@@ -315,6 +355,144 @@ int main()
         CHECK_EQ(story::sentencesBesides("b", "b"), std::string(""));
         CHECK_EQ(story::sentencesBesides("", "b"), std::string(""));
         CHECK_EQ(story::sentencesBesides("a;b", "b"), std::string("a;b")); // not the join
+    }
+
+    // --- the card as first seen: the Original, named by the take it held ---
+    {
+        const story::Line line = story::tell({ .kind = "snapshot", .afterBody = pushed,
+                                               .takeName = "deep-space.wav", .take = story::Take::kept,
+                                               .status = "done" });
+        CHECK_EQ(line.action, std::string("Original"));
+        CHECK_EQ(line.detail, std::string("deep-space.wav"));
+        CHECK_EQ(line.audio, std::string("take kept"));
+    }
+
+    // --- a row's clock: the time alone on the reference's own day, the date
+    // with it on any other — the History tab's two forms ---
+    {
+        const std::int64_t at = localMs(2026, 10, 11, 17, 52);
+        CHECK_EQ(story::clockWords(at, at), std::string("17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 11, 23, 59, 59)), std::string("17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 11, 0, 0)), std::string("17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 12, 0, 0)), std::string("11 Oct 17:52"));
+        CHECK_EQ(story::clockWords(at, localMs(2026, 10, 10, 23, 59)), std::string("11 Oct 17:52"));
+        // the minute is cut, never rounded up — 17:52:59 is still 17:52
+        CHECK_EQ(story::clockWords(at + 59'999, at), std::string("17:52"));
+        CHECK_EQ(story::clockWords(localMs(2026, 10, 11, 0, 0), at), std::string("00:00"));
+        // the same day of another year is another day
+        CHECK_EQ(story::clockWords(localMs(2025, 1, 5, 9, 7), localMs(2026, 1, 5, 9, 7)),
+                 std::string("05 Jan 09:07"));
+    }
+
+    // --- a restore says what came back and which row it came from ---
+    {
+        const std::int64_t restoredAt = localMs(2026, 10, 11, 17, 52);
+        const std::int64_t sameDay = localMs(2026, 10, 11, 18, 3);
+        const std::int64_t nextDay = localMs(2026, 10, 12, 9, 30);
+        const auto restore = [&](std::optional<std::string> after, std::string takeName,
+                                 std::int64_t at, std::optional<std::int64_t> to) {
+            return story::tell({ .kind = "restore",
+                                 .beforeBody = bodyWith(kFrames4m36, 1111, "Memory42"),
+                                 .afterBody = std::move(after),
+                                 .takeName = std::move(takeName),
+                                 .take = story::Take::onCard,
+                                 .status = "done",
+                                 .at = at,
+                                 .restoredAt = to });
+        };
+        const auto line = restore(trimmed, "i-am-projection.wav", sameDay, restoredAt);
+        CHECK_EQ(line.action, std::string("Restored"));
+        CHECK_EQ(line.detail, std::string("i-am-projection.wav - 0:39 - 113.0 BPM - back to 17:52"));
+        CHECK_EQ(restore(trimmed, "i-am-projection.wav", nextDay, restoredAt).detail,
+                 std::string("i-am-projection.wav - 0:39 - 113.0 BPM - back to 11 Oct 17:52"));
+        // back to a state that held no take
+        CHECK_EQ(restore(bodyWith(0, 1200, "Memory42"), "", sameDay, restoredAt).detail,
+                 std::string("empty slot - back to 17:52"));
+        // a restore recorded before the store kept its row, or whose row was
+        // forgotten: what came back, and no invented time
+        CHECK_EQ(restore(trimmed, "i-am-projection.wav", sameDay, std::nullopt).detail,
+                 std::string("i-am-projection.wav - 0:39 - 113.0 BPM"));
+        // no state recorded (cut off before the card was written): where it was going
+        CHECK_EQ(restore(std::nullopt, "", sameDay, restoredAt).detail, std::string("back to 17:52"));
+        // the job writes no note; one that is there says nothing more about the row
+        const auto noted = story::tell({ .kind = "restore", .beforeBody = pushed, .afterBody = trimmed,
+                                         .takeName = "a.wav", .take = story::Take::onCard,
+                                         .status = "done", .note = "stray words",
+                                         .at = sameDay, .restoredAt = restoredAt });
+        CHECK_EQ(noted.detail, std::string("a.wav - 0:39 - 113.0 BPM - back to 17:52"));
+    }
+
+    // --- ATTACK (review of feat/history-row-menu): the clock at its edges, in
+    // a zone that keeps daylight time (Europe/Berlin), set for this block
+    // alone. A moment is a millisecond count; its minute is the local clock's
+    // minute, before the epoch as after it. ---
+#if !defined(_WIN32)
+    {
+        const char* hadZone = std::getenv("TZ");
+        const std::optional<std::string> oldZone =
+            hadZone != nullptr ? std::optional<std::string>(hadZone) : std::nullopt;
+        setenv("TZ", "Europe/Berlin", 1);
+        tzset();
+        // midnight, and the last millisecond before it
+        CHECK_EQ(story::clockWords(localMs(2026, 10, 11, 0, 0), localMs(2026, 10, 11, 12, 0)), std::string("00:00"));
+        CHECK_EQ(story::clockWords(localMs(2026, 10, 12, 0, 0) - 1, localMs(2026, 10, 12, 0, 0)),
+                 std::string("11 Oct 23:59"));
+        // the year's edge
+        CHECK_EQ(story::clockWords(localMs(2025, 12, 31, 23, 59), localMs(2026, 1, 1, 0, 0)),
+                 std::string("31 Dec 23:59"));
+        CHECK_EQ(story::clockWords(localMs(2026, 1, 1, 0, 0), localMs(2025, 12, 31, 23, 59)),
+                 std::string("01 Jan 00:00"));
+        // the day the clocks go forward (2026-03-29, 02:00 becomes 03:00)
+        CHECK_EQ(story::clockWords(localMs(2026, 3, 29, 1, 59), localMs(2026, 3, 29, 3, 1)), std::string("01:59"));
+        CHECK_EQ(story::clockWords(localMs(2026, 3, 29, 3, 0), localMs(2026, 3, 28, 23, 0)),
+                 std::string("29 Mar 03:00"));
+        CHECK_EQ(story::clockWords(localMs(2026, 3, 29, 1, 59) + 60'000, localMs(2026, 3, 29, 1, 59)),
+                 std::string("03:00")); // the minute after 01:59 is 03:00
+        // the day they go back (2026-10-25): 02:30 happens twice, and both are 02:30
+        const std::int64_t fallBack = localMs(2026, 10, 25, 1, 30); // 01:30 CEST, before the repeated hour
+        CHECK_EQ(story::clockWords(fallBack + 3'600'000, fallBack), std::string("02:30"));
+        CHECK_EQ(story::clockWords(fallBack + 7'200'000, fallBack), std::string("02:30"));
+        CHECK_EQ(story::clockWords(fallBack + 7'200'000, localMs(2026, 10, 26, 9, 0)), std::string("25 Oct 02:30"));
+        // the epoch is 1970-01-01 01:00 in Berlin; the millisecond before it is 00:59
+        CHECK_EQ(story::clockWords(0, 0), std::string("01:00"));
+        CHECK_EQ(story::clockWords(-1000, 0), std::string("00:59"));
+        CHECK_EQ(story::clockWords(-1, 0), std::string("00:59"));
+        CHECK_EQ(story::clockWords(-1, -1), std::string("00:59"));
+        // the ends of the count: refused or read, never a crash
+        for (const std::int64_t edge : { std::numeric_limits<std::int64_t>::max(), std::numeric_limits<std::int64_t>::min() }) {
+            try {
+                const std::string words = story::clockWords(edge, 0);
+                CHECK(!words.empty());
+            } catch (const Error&) {
+                CHECK(true);
+            }
+        }
+        if (oldZone)
+            setenv("TZ", oldZone->c_str(), 1);
+        else
+            unsetenv("TZ");
+        tzset();
+    }
+#endif
+
+    // --- ATTACK (review): the month's name is strftime's, which answers in
+    // the process locale. A row's words are built in a JUCE-free header and
+    // are meant to be ASCII (the lint's rule); under a locale with another
+    // alphabet they are not, and the column and the row would both change
+    // alphabet with the locale. ---
+    {
+        const char* was = std::setlocale(LC_TIME, nullptr);
+        const std::string before = was != nullptr ? was : "C";
+        if (std::setlocale(LC_TIME, "ru_RU.UTF-8") != nullptr) {
+            const std::string words =
+                story::clockWords(localMs(2026, 10, 11, 17, 52), localMs(2026, 10, 12, 0, 0));
+            std::setlocale(LC_TIME, before.c_str());
+            bool ascii = true;
+            for (const char c : words)
+                ascii = ascii && static_cast<unsigned char>(c) < 0x80;
+            CHECK(ascii);
+            CHECK_EQ(words, std::string("11 Oct 17:52"));
+        }
     }
 
     return testkit::summary("slot_story_tests");

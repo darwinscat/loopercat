@@ -4,11 +4,10 @@
 #include "support.hpp"
 
 #include "../app/ClearSlotAction.h"
-#include "../app/AudioEngine.h"
 #include "../app/HistoryPane.h"
 #include "../app/history/CardRestore.h"
 #include "../app/history/HistoryRecorder.h"
-#include "../app/history/TakeAudition.h"
+#include "../app/history/ExportTakeJob.h"
 
 #include <bit>
 #include <chrono>
@@ -20,42 +19,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kBlock = 512;
 constexpr int kFrames = 88200; // one bar at 120 BPM, accepted by the pedal
 
 float rampSample(int frame)
 {
     return static_cast<float>(frame - kFrames / 2) / 131072.0f;
 }
-
-// The real playback callback runs against a device description, without hardware.
-struct FakeDevice final : juce::AudioIODevice {
-    FakeDevice() : juce::AudioIODevice("fake", "fake-type") {}
-    juce::StringArray getOutputChannelNames() override { return { "L", "R" }; }
-    juce::StringArray getInputChannelNames() override { return {}; }
-    juce::Array<double> getAvailableSampleRates() override { return { 44100.0 }; }
-    juce::Array<int> getAvailableBufferSizes() override { return { kBlock }; }
-    int getDefaultBufferSize() override { return kBlock; }
-    juce::String open(const juce::BigInteger&, const juce::BigInteger&, double, int) override { return {}; }
-    void close() override {}
-    bool isOpen() override { return true; }
-    void start(juce::AudioIODeviceCallback*) override {}
-    void stop() override {}
-    bool isPlaying() override { return false; }
-    juce::String getLastError() override { return {}; }
-    int getCurrentBufferSizeSamples() override { return kBlock; }
-    double getCurrentSampleRate() override { return 44100.0; }
-    int getCurrentBitDepth() override { return 16; }
-    juce::BigInteger getActiveOutputChannels() const override
-    {
-        juce::BigInteger b;
-        b.setRange(0, 2, true);
-        return b;
-    }
-    juce::BigInteger getActiveInputChannels() const override { return {}; }
-    int getOutputLatencyInSamples() override { return 0; }
-    int getInputLatencyInSamples() override { return 0; }
-};
 
 enum class TakeOrigin { push, pedal };
 
@@ -154,15 +123,6 @@ void checkTimeline(Fixture& fixture, std::initializer_list<std::string> kinds)
 void settle()
 {
     juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
-}
-
-juce::Button* buttonNamed(juce::Component& parent, const juce::String& name)
-{
-    for (auto* child : parent.getChildren())
-        if (auto* button = dynamic_cast<juce::Button*>(child))
-            if (button->getButtonText() == name)
-                return button;
-    return nullptr;
 }
 
 } // namespace
@@ -289,26 +249,23 @@ int main()
         CHECK(volume::listSlotWavs(fixture.card, 4).empty());
         CHECK(rc0::slotBody(commands::readMemory(fixture.card), 4) == rc0::factorySlotBody(4));
         const auto rows = history::rows::forSlot(fixture.rec->store().slotTimeline(4));
-        const std::size_t expectedRows = onPedal ? 2u : 3u;
+        // A take the pedal recorded was there when the card was first seen:
+        // its Original row is the state to go back to. A pushed take was
+        // not, and a slot empty at first sight has no Original row at all.
+        const std::size_t expectedRows = 2u;
         CHECK_EQ(rows.size(), expectedRows);
         if (rows.size() != expectedRows)
             continue;
-        const auto& snapshot = rows[0];
-        const int restoreIndex = onPedal ? 0 : 1;
-        const auto& original = rows[static_cast<std::size_t>(restoreIndex)];
+        const auto& original = rows[0];
         const auto& cleared = rows.back();
-        CHECK_EQ(snapshot.line.action, std::string("Card first seen"));
-        CHECK_EQ(snapshot.playable, onPedal);
-        CHECK_EQ(snapshot.takeHash.empty(), !onPedal);
-        CHECK(snapshot.restorable);
-        CHECK_EQ(original.line.action, std::string(onPedal ? "Card first seen" : "Pushed"));
+        CHECK_EQ(original.line.action, std::string(onPedal ? "Original" : "Pushed"));
         CHECK(original.playable);
         CHECK(original.restorable);
         CHECK_EQ(original.takeHash, history::HistoryStore::contentHash(take));
         CHECK(fixture.rec->store().takeBytes(original.takeHash) == take);
         if (onPedal) {
-            CHECK_EQ(snapshot.line.detail, name);
-            CHECK_EQ(snapshot.line.audio, std::string("take kept"));
+            CHECK_EQ(original.line.detail, name);
+            CHECK_EQ(original.line.audio, std::string("take kept"));
         }
         CHECK_EQ(cleared.line.action, std::string("Cleared"));
         CHECK(cleared.playable);
@@ -320,73 +277,51 @@ int main()
                 juce::String(row.state), juce::String(row.line.audio), row.playable, row.restorable,
                 row.op });
         pane.setRows(std::move(shown), 4);
-        history::TakeAudition audition(fixture.root / "audition");
-        AudioEngine engine;
-        FakeDevice device;
-        engine.audioDeviceAboutToStart(&device);
-        int plays = 0;
-        pane.onPlay = [&](std::int64_t op) {
-            ++plays;
+
+        // The cleared take is still the player's: the cleared row's menu
+        // exports it, under its own name, and the file is the very bytes
+        // that left the slot. The export is the history's alone: it needs no
+        // card, and the card is the same bytes after it.
+        int exports = 0;
+        pane.onExportTake = [&](int slot, std::int64_t op) {
+            ++exports;
+            CHECK_EQ(slot, 4);
             CHECK_EQ(op, rows.back().op);
-            const auto file = audition.materialize(fixture.rec->store(), rows.back().takeHash);
-            CHECK(file.has_value());
-            if (!file)
-                return;
-            CHECK(commands::readFileBytes(*file) == take);
-            CHECK(engine.load(juce::File(juce::String(file->string()))).wasOk());
-            engine.play();
+            CHECK_EQ(history::exportName(rows.back().takeName, 4), name);
+            const auto cardBefore = fixture.cardBytes();
+            const fs::path file = fixture.root / "exported" / name;
+            fs::create_directories(file.parent_path());
+            auto job = history::exportTakeJob(fixture.rec, rows.back().takeHash, file);
+            CHECK(!job.needsVolume);
+            CHECK_EQ(job.slot, 0);
+            CHECK(!job.background && !job.quiet); // the player asked, and is told
+            CHECK(job.description == "Export take to " + juce::String(name));
+            CHECK(job.before == nullptr && job.after == nullptr); // no operation in the history
+            job.work(fs::path()); // what the worker hands a job that needs no card
+            CHECK(commands::readFileBytes(file) == take);
+            CHECK(fixture.cardBytes() == cardBefore);
+
+            auto gone = history::exportTakeJob(fixture.rec, history::HistoryStore::contentHash("never kept"),
+                                               fixture.root / "exported" / "gone.wav");
+            CHECK_THROWS(gone.work(fs::path()), "no longer kept in the history");
+            CHECK(!fs::exists(fixture.root / "exported" / "gone.wav"));
         };
-        auto* play = buttonNamed(pane, "Play");
-        CHECK(play != nullptr && play->isEnabled());
-        if (play != nullptr)
-            play->triggerClick();
-        settle();
-        CHECK_EQ(plays, 1);
-        CHECK(engine.isPlaying());
-        bool heard = false;
-        const auto deadline = juce::Time::getMillisecondCounterHiRes() + 5000;
-        while (!heard && juce::Time::getMillisecondCounterHiRes() < deadline) {
-            float left[kBlock] {}, right[kBlock] {};
-            float* outputs[] { left, right };
-            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, kBlock, {});
-            for (int i = 0; i < kBlock; ++i) {
-                if (std::abs(left[i]) < 1.0e-6f)
-                    continue;
-                const auto frame = static_cast<int>(std::lround(left[i] * 131072.0f)) + kFrames / 2;
-                CHECK(frame >= 0 && frame < kFrames / 4);
-                bool matches = true;
-                for (int sample = i; sample < kBlock; ++sample)
-                    if (std::abs(left[sample] - rampSample(frame + sample - i)) >= 1.0e-6f
-                        || std::abs(left[sample] + right[sample]) >= 1.0e-6f)
-                        matches = false;
-                CHECK(matches);
-                heard = true;
-                break;
-            }
-            if (!heard)
-                juce::Thread::sleep(10);
-        }
-        CHECK(heard);
-        engine.unload();
-        engine.audioDeviceStopped();
+        pane.choose(4, rows.back().op, historymenu::Entry::exportTake);
+        CHECK_EQ(exports, 1);
 
         int restores = 0;
-        pane.onRestore = [&](std::int64_t op) {
+        pane.onRestore = [&](int slot, std::int64_t op) {
             ++restores;
+            CHECK_EQ(slot, 4);
             CHECK_EQ(op, original.op);
             if (op != original.op)
                 return;
             fixture.run("restore", [&](const auto& write) {
+                fixture.rec->restores("restore", op); // as the app names it, before the card
                 history::restoreOperation(fixture.rec->store(), op, fixture.card, write, 4);
             });
         };
-        for (auto* child : pane.getChildren())
-            if (auto* list = dynamic_cast<juce::ListBox*>(child))
-                list->selectRow(restoreIndex);
-        auto* restore = buttonNamed(pane, "Restore this state");
-        CHECK(restore != nullptr && restore->isEnabled());
-        if (restore != nullptr)
-            restore->triggerClick();
+        pane.choose(4, original.op, historymenu::Entry::restore);
         settle();
         CHECK_EQ(restores, 1);
         if (onPedal)
@@ -397,6 +332,20 @@ int main()
         for (const int bank : { 1, 2 })
             CHECK(rc0::slotBody(commands::readFileBytes(volume::memoryPath(fixture.card, bank)), 4) == body);
         CHECK(volume::listSlotWavs(fixture.card, 4) == std::vector<std::string> { name });
+        // The Restored row says what came back, and from which row by that
+        // row's clock (the same day, so the time alone).
+        const auto after = history::rows::forSlot(fixture.rec->store().slotTimeline(4));
+        CHECK(!after.empty() && after.back().line.action == "Restored");
+        if (!after.empty()) {
+            const std::string& detail = after.back().line.detail;
+            const juce::Time then(original.at), now(after.back().at);
+            const bool sameDay = then.getYear() == now.getYear() && then.getDayOfYear() == now.getDayOfYear();
+            const std::string backTo
+                = " - back to " + then.formatted(sameDay ? "%H:%M" : "%d %b %H:%M").toStdString();
+            const std::string facts = name + " - 0:02 - "; // the take, its two seconds, then the tempo
+            CHECK_EQ(detail.substr(0, facts.size()), facts);
+            CHECK(detail.size() >= backTo.size() && detail.substr(detail.size() - backTo.size()) == backTo);
+        }
         const auto restored = volume::wavDir(fixture.card, 4) / name;
         CHECK(fs::is_regular_file(restored));
         if (fs::is_regular_file(restored))

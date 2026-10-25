@@ -66,7 +66,8 @@ inline std::string kindWords(const std::string& kind)
         { "restore", "restore" },
         { "oneshot", "One Shot change" },
         { "countin", "Play Count-In change" },
-        { "rhythm", "rhythm change" },
+        { "rhythm", "Rhythm change" },
+        { "playstop", "Start & Stop change" },
         { "push", "push" },
         { "downmix", "downmix" },
         { "normalize", "normalize" },
@@ -317,7 +318,7 @@ inline void putBodyBack(const fs::path& volume, int slot, const std::string& bod
             if (rc0::sectionField(body, section, field) != rc0::sectionField(now, section, field))
                 throw Error("slot " + std::to_string(slot) + " holds another take than it did then ("
                             + (family.trackCount == 1 ? std::string() : section + " ") + field
-                            + " differs) — its settings would not match its audio, so nothing was"
+                            + " differs) - its settings would not match its audio, so nothing was"
                               " put back");
     }
     commands::writeMemoryPair(volume, rc0::replaceSlotBody(document, slot, body), options);
@@ -402,7 +403,7 @@ inline Checked check(HistoryStore& store, bool redo, std::int64_t target)
     const Targets targets = store.offeredTargets();
     const std::optional<std::int64_t> offered = redo ? targets.redo : targets.undo;
     if (!offered || *offered != target)
-        throw Error(std::string("the history moved on since the press — nothing was written;"
+        throw Error(std::string("the history moved on since the press - nothing was written;"
                                 " press ")
                     + (redo ? "Redo" : "Undo") + " again");
     const auto timeline = store.cardTimeline();

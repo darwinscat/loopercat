@@ -72,7 +72,7 @@ inline SlotParams computeSlotParams(std::int64_t frames)
                 throw Error("sample of " + std::to_string(frames) + " frames implies "
                             + std::to_string(tempoTenths / 10) + "." + std::to_string(tempoTenths % 10)
                             + " BPM even at " + std::to_string(measures)
-                            + " measures — below the pedal's tempo range");
+                            + " measures - below the pedal's tempo range");
             return { measures, static_cast<int>(tempoTenths) };
         }
     }
