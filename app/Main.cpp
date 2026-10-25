@@ -367,9 +367,9 @@ private:
         }
     }
 
-    // --edit <undo|redo>[,<undo|redo>...] [--anyway]: Edit -> Undo / Redo
-    // pressed headless on the pinned volume, in that order, in ONE session —
-    // through the very function the menu and Cmd-Z call. The speed bump
+    // --edit <undo|redo>[,<undo|redo>...] [--anyway]: Undo / Redo pressed
+    // headless on the pinned volume, in that order, in ONE session — through
+    // the very function a press of either calls. The speed bump
     // prints what it would ask and answers yes only with --anyway; a crossing
     // already answered in this session is not asked about again, which a
     // sequence shows. Prints each press's outcome; 0 when every press ran,

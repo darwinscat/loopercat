@@ -11,6 +11,15 @@
 //   - Rhythm's face is past the strip: select() refuses it, no x on the
 //     strip names it, and the strip tells nobody about it
 //   - History is still reachable by a click, and lands on its own face
+//   - and when the window shows the face the strip cannot name, the strip
+//     underlines nothing rather than claim the pane is Audio -- after which
+//     Audio is clickable again, which it would not be if the strip still
+//     thought it was the live tab
+//
+// What the window does with all this -- building its strip from these
+// titles, and turning the tab a player clicked into the face of the same
+// number -- is two lines of MainComponent that no headless suite can reach.
+// hidden_features_tests anchors both.
 
 #include "support.hpp"
 
@@ -45,10 +54,14 @@ int main()
     int fired = 0, last = -1;
     strip.onTabChanged = [&](int index) { ++fired; last = index; };
 
-    // Every x across the whole strip, well past its tabs: no point on it
-    // names a fourth tab.
-    for (int x = -4; x < 600; ++x)
-        CHECK(strip.tabAt(x) <= static_cast<int>(bottompane::history));
+    // No point on the strip names a fourth tab: the last tab's own edges,
+    // the first x past it, and well beyond. (TabStrip's own sweep is
+    // tab_strip_tests'; this is about there being three.)
+    const auto lastTab = strip.tabBounds(bottompane::history);
+    CHECK_EQ(strip.tabAt(lastTab.getX()), static_cast<int>(bottompane::history));
+    CHECK_EQ(strip.tabAt(lastTab.getRight() - 1), static_cast<int>(bottompane::history));
+    CHECK_EQ(strip.tabAt(lastTab.getRight()), -1);
+    CHECK_EQ(strip.tabAt(599), -1);
 
     strip.select(bottompane::rhythm);
     CHECK_EQ(fired, 0);
@@ -59,6 +72,20 @@ int main()
     CHECK_EQ(fired, 1);
     CHECK_EQ(last, static_cast<int>(bottompane::history));
     CHECK_EQ(strip.selected(), static_cast<int>(bottompane::history));
+
+    // --- the face with no tab: the strip underlines nothing, and says so ---
+    strip.deselect();
+    CHECK_EQ(strip.selected(), -1);
+    CHECK_EQ(fired, 1); // deselecting is the owner's own doing, not a change
+    // And the tab that was live before is live again on the next click: a
+    // strip that still thought History was selected would swallow it.
+    strip.select(bottompane::history);
+    CHECK_EQ(strip.selected(), static_cast<int>(bottompane::history));
+    CHECK_EQ(fired, 2);
+    strip.deselect();
+    strip.deselect(); // already nothing: tells nobody, changes nothing
+    CHECK_EQ(strip.selected(), -1);
+    CHECK_EQ(fired, 2);
 
     return testkit::summary("bottom_pane_tests");
 }

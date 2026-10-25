@@ -178,6 +178,8 @@ public:
     HistoryStoragePanel& storage() { return storage_; }
     MaintenancePanel& maintenance() { return maintenance_; }
     void showHistoryStorage() { tabs_.select(kHistoryTab); } // --history-storage, for a headless run
+    void showMaintenance() { tabs_.select(kMaintenanceTab); }
+    const juce::StringArray& tabTitles() const { return tabs_.titles(); }
 
     // "-18" for whole targets, "-17.5" otherwise — the number a player typed,
     // not a printf artefact. Shared with the slot menu's Normalize label.

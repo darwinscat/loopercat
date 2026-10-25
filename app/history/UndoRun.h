@@ -148,7 +148,7 @@ inline std::string menuText(bool redo, const Offer& offer)
 // its own, and an operation an undo took back — and no redo brought back —
 // is no longer there to be written over. Plan::writesOver lists every
 // finished later operation on the same slots; without this the bump would
-// stand in front of every second Cmd-Z, for the undo row the first one wrote.
+// stand in front of every second undo, for the undo row the first one wrote.
 inline std::vector<std::int64_t> stillInEffect(const std::vector<HistoryStore::CardEntry>& timeline,
                                                const std::vector<std::int64_t>& ops)
 {

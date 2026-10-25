@@ -592,8 +592,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             // A job may have written a row: what Undo offers and what the
             // History window shows are read again, off the worker.
             refreshUndoOffer();
-            if (historyHost != nullptr && historyHost->isVisible())
-                feedHistoryWindow();
+            feedHistoryWindowIfShown();
             // The job's result cleared the cells of the audio it moved, and
             // the history may know those bytes (an undo put a measured take
             // back); the rescan that came first still saw the old cells. The
@@ -1282,7 +1281,7 @@ void MainComponent::clearSlotHistory(int slot)
             safe->clearingHistory = false;
             safe->history.setBusy(safe->pedalBusy);
             safe->updateHistory();
-            safe->feedHistoryWindow();
+            safe->feedHistoryWindowIfShown();
             safe->refreshUndoOffer();
         });
     };
@@ -1486,7 +1485,7 @@ void MainComponent::readCardName()
                     safe->snapshotNext(safe->firstSeenRun, 1);
                 }
                 safe->updateHistory();
-                safe->feedHistoryWindow();
+                safe->feedHistoryWindowIfShown();
             });
         },
         nullptr,
@@ -1538,7 +1537,7 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
                 safe->updateStatusText();
                 if (safe->firstSeenSettled) {
                     safe->updateHistory();
-                    safe->feedHistoryWindow();
+                    safe->feedHistoryWindowIfShown();
                 } else {
                     safe->snapshotNext(run, slot + 1);
                 }
@@ -1627,10 +1626,8 @@ void MainComponent::savePedalBook()
 
 maintenance::Offer MainComponent::maintenanceOffer() const
 {
-    return maintenance::offer({ .connected = snapshot.state == lifecycle::State::connected
-                                    && snapshot.error.empty(),
-                                .busy = pedalBusy,
-                                .family = snapshot.family });
+    return maintenance::offer(
+        maintenance::pedalFrom(snapshot.state, snapshot.error, pedalBusy, snapshot.family));
 }
 
 void MainComponent::runCleanJunk()
@@ -3290,6 +3287,12 @@ void MainComponent::openHistoryWindow()
 // the buttons need (the take to play, the slots a restore touches); the view
 // keeps the sentences. Every call re-reads the store: a pin the window showed
 // optimistically is confirmed or taken back here.
+void MainComponent::feedHistoryWindowIfShown()
+{
+    if (historyHost != nullptr && historyHost->isVisible())
+        feedHistoryWindow();
+}
+
 void MainComponent::feedHistoryWindow()
 {
     juce::Component::SafePointer<MainComponent> safe(this);

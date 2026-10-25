@@ -1191,6 +1191,30 @@ target_link_libraries(tab_strip_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME tab_strip_tests COMMAND tab_strip_tests)
 
+# The Settings dialog's own tabs after the card sweep moved into it (0.9.6):
+# the real dialog, its fifth tab selected through the same seam a headless run
+# uses -- app tier, needs a device manager, so a harness.
+juce_add_console_app(settings_dialog_harness PRODUCT_NAME "settings_dialog_harness")
+target_sources(settings_dialog_harness PRIVATE tests/settings_dialog_harness.cpp
+    app/HistoryStoragePanel.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(settings_dialog_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(settings_dialog_harness PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_audio_utils
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME settings_dialog_harness COMMAND settings_dialog_harness)
+
 # The storage panel (issue #74's visible part): driven without a mouse, a
 # database or a worker — it shows what it is handed and offers only what the
 # plan gives.

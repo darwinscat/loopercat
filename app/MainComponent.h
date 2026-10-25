@@ -97,8 +97,13 @@ public:
     void showProperties() { bottomTabs.select(bottompane::properties); } // --properties
     void showHistory() { bottomTabs.select(bottompane::history); }       // --history
     // --rhythm, for snapshots. The tab is hidden in 0.9.6, so the pane is
-    // reached past a strip that no longer names it (BottomPane.h).
-    void showRhythm() { showBottomTab(bottompane::rhythm); }
+    // reached past a strip that no longer names it (BottomPane.h) -- and the
+    // strip stops underlining anything, rather than claim this pane is Audio.
+    void showRhythm()
+    {
+        bottomTabs.deselect();
+        showBottomTab(bottompane::rhythm);
+    }
     bool historyReady() const { return historyRows > 0; }        // its rows have landed
     // The card's own name (issue #99): read from its marker once the volume
     // is up, minted when it has none. For the --snapshot seam: whether that
@@ -238,6 +243,11 @@ private:
     void playFromHistory(std::int64_t op);    // an archived take, out of the store
     void restoreFromHistory(std::int64_t op); // a recorded state, back onto the card
     void playArchivedTake(int slot, std::string hash, juce::String title); // tab and window alike
+    // The window's rows cost a whole-card read on the worker. Nothing can
+    // open the window in 0.9.6, so a job that may have written a row pays
+    // that read only while the window is up; the --history-window seam asks
+    // for its own feed directly.
+    void feedHistoryWindowIfShown();
 
     // The History window's rows as the owner needs them for the buttons: the
     // take a row plays and exports, and the slots its restore touches.

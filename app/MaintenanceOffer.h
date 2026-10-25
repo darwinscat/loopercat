@@ -5,6 +5,8 @@
 
 #include "CardPermissions.h"
 
+#include <loopercat/Lifecycle.hpp>
+
 #include <string>
 
 //==============================================================================
@@ -36,6 +38,16 @@ struct Offer {
     bool enabled = false;
     std::string why; // empty when enabled, and only then
 };
+
+// What the window knows, read off the snapshot it holds. A lifecycle state
+// of connected is not enough on its own: a volume that is there and
+// unreadable carries an error, and no write may be offered on it (the gate
+// the Maintenance menu carried, MainComponent::updateToolbar).
+inline Pedal pedalFrom(lifecycle::State state, const std::string& error, bool busy,
+                       std::string family)
+{
+    return { state == lifecycle::State::connected && error.empty(), busy, std::move(family) };
+}
 
 inline Offer offer(const Pedal& pedal)
 {

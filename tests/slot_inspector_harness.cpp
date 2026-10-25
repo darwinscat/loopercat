@@ -9,10 +9,14 @@
 //     Count-In and One Shot, side by side, both inside the pane
 //   - nothing of Start & Stop is in the inspector: no card, and none of its
 //     three choices (startMode, stopMode, fadeTime) anywhere in the tree
-//   - and nothing is PAINTED where the third card used to be: the pane's
-//     own background, every pixel of it, measured against a corner of the
-//     pane itself rather than a colour typed in here
-//   - the two cards that stayed are painted, and still report their clicks
+//   - and nothing is PAINTED anywhere the inspector does not show a child:
+//     every such pixel is the pane's own background, measured against a
+//     corner of the pane rather than a colour typed in here. Not "the band
+//     where the third card sat" -- anywhere, because a farewell box in the
+//     bottom strip is as much a Start & Stop as a card in its old place
+//   - the two cards that stayed are really drawn (most of each card is the
+//     card's own fill, not one pixel of difference) and still report their
+//     clicks, and the row is as tall as the taller of the two asks
 //   - identity stayed too: the name and the tempo fields are there
 
 #include "support.hpp"
@@ -63,19 +67,15 @@ int comboBoxesInTree(juce::Component& root)
     return found;
 }
 
-// Whether the whole rectangle is one colour: the pane with nothing on it.
-bool uniform(const juce::Image& shot, juce::Rectangle<int> area, juce::Colour colour)
+// How much of a rectangle is one colour, in pixels.
+int pixelsOf(const juce::Image& shot, juce::Rectangle<int> area, juce::Colour colour)
 {
+    int found = 0;
     for (int y = area.getY(); y < area.getBottom(); ++y)
         for (int x = area.getX(); x < area.getRight(); ++x)
-            if (shot.getPixelAt(x, y) != colour)
-                return false;
-    return true;
-}
-
-bool anyPixelOtherThan(const juce::Image& shot, juce::Rectangle<int> area, juce::Colour colour)
-{
-    return !uniform(shot, area, colour);
+            if (shot.getPixelAt(x, y) == colour)
+                ++found;
+    return found;
 }
 
 } // namespace
@@ -116,6 +116,11 @@ int main()
     CHECK(!left.isEmpty() && !right.isEmpty());
     CHECK(left.getRight() <= right.getX());          // side by side, not stacked
     CHECK_EQ(left.getHeight(), right.getHeight());
+    // The row is as tall as the taller card asks -- the hidden third card,
+    // which asks for 96, must not be what sets it, and a card clipped short
+    // of its orange line must not pass either.
+    CHECK_EQ(left.getHeight(),
+             juce::jmax(countIn->preferredHeight(), oneShot->preferredHeight()));
     CHECK(inspector.getLocalBounds().contains(left));
     CHECK(inspector.getLocalBounds().contains(right));
     CHECK(countIn->isVisible() && oneShot->isVisible());
@@ -126,19 +131,33 @@ int main()
         juce::Graphics g(shot);
         inspector.paintEntireComponent(g, false);
     }
-    // The pane's own background, read off the pane: below the cards nothing
-    // is ever drawn, so that corner IS the background.
+    // The pane's own background, read off the pane: the corner below the
+    // cards is never drawn on. It has to be opaque, or a paint() that stopped
+    // filling would leave the image cleared and every check below would be
+    // comparing transparency with transparency.
     const juce::Colour background = shot.getPixelAt(inspector.getWidth() - 2,
                                                     inspector.getHeight() - 2);
-    CHECK(anyPixelOtherThan(shot, left, background));
-    CHECK(anyPixelOtherThan(shot, right, background));
-    // Where a third card of the same size would have sat, the whole way to
-    // the pane's padding: bare.
-    const juce::Rectangle<int> third(right.getRight() + 1, right.getY(),
-                                     inspector.getWidth() - right.getRight() - 2,
-                                     right.getHeight());
-    CHECK(third.getWidth() > 0);
-    CHECK(uniform(shot, third, background));
+    CHECK_EQ(static_cast<int>(background.getAlpha()), 255);
+
+    // Each card is really drawn: most of its area is the card's own fill
+    // (UseCaseCard::paint), not a pixel's worth of difference.
+    const juce::Colour cardFill { 0xff17171d };
+    CHECK(pixelsOf(shot, left, cardFill) > left.getWidth() * left.getHeight() / 2);
+    CHECK(pixelsOf(shot, right, cardFill) > right.getWidth() * right.getHeight() / 2);
+
+    // And every pixel the inspector does not show a child at is background.
+    const auto underAChild = [&inspector](int x, int y) {
+        for (auto* child : inspector.getChildren())
+            if (child->isVisible() && child->getBounds().contains(x, y))
+                return true;
+        return false;
+    };
+    int strayPixels = 0;
+    for (int y = 0; y < inspector.getHeight(); ++y)
+        for (int x = 0; x < inspector.getWidth(); ++x)
+            if (!underAChild(x, y) && shot.getPixelAt(x, y) != background)
+                ++strayPixels;
+    CHECK_EQ(strayPixels, 0);
 
     // --- the cards that stayed still work ---
     int countIns = 0, oneShots = 0;

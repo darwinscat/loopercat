@@ -13,12 +13,18 @@
 //   - a card whose model nobody knows, and a card whose model has not been
 //     read yet, are refused like any card this app does not write to
 //
+// the reading of the window's snapshot that feeds it:
+//
+//   - only a lifecycle state of connected counts, and only with no error:
+//     a volume that is there and unreadable is not a pedal to sweep
+//
 // and the tab over it, which judges nothing:
 //
 //   - before the owner says anything, the button is dead and silent
 //   - the button's words never change; only whether it can be pressed
 //   - a press reaches the owner exactly once, and a dead button reaches
-//     nobody however the press arrives
+//     nobody however the press arrives -- through the button a player can
+//     actually click, and through the action behind it
 
 #include "support.hpp"
 
@@ -53,9 +59,9 @@ int main()
         CHECK_EQ(offer.why, std::string("Connect the pedal to clean its card."));
     }
 
-    // --- busy ---
-    {
-        const auto offer = maintenance::offer({ .connected = true, .busy = true, .family = writable });
+    // --- busy, whatever the card is: busy is said before read-only ---
+    for (const std::string& family : { writable, readOnly }) {
+        const auto offer = maintenance::offer({ .connected = true, .busy = true, .family = family });
         CHECK(!offer.enabled);
         CHECK_EQ(offer.why, std::string("The pedal is busy. This waits for the job to finish."));
     }
@@ -74,6 +80,28 @@ int main()
         CHECK(offer.why.empty());
     }
 
+    // --- what the window reads off its snapshot ---
+    {
+        using lifecycle::State;
+        // Connected and readable: the only pedal a sweep may be offered on.
+        const auto live = maintenance::pedalFrom(State::connected, "", false, writable);
+        CHECK(live.connected);
+        CHECK(maintenance::offer(live).enabled);
+        // There and unreadable is not connected, whatever the state says.
+        const auto unreadable =
+            maintenance::pedalFrom(State::connected, "unreadable card", false, writable);
+        CHECK(!unreadable.connected);
+        CHECK_EQ(maintenance::offer(unreadable).why,
+                 std::string("Connect the pedal to clean its card."));
+        // And no other state is a pedal to sweep, error or not.
+        for (const State state : { State::disconnected, State::ghost, State::ejecting,
+                                   State::ejected })
+            CHECK(!maintenance::pedalFrom(state, "", false, writable).connected);
+        // The other two facts travel through untouched.
+        CHECK(maintenance::pedalFrom(State::connected, "", true, writable).busy);
+        CHECK_EQ(maintenance::pedalFrom(State::connected, "", false, readOnly).family, readOnly);
+    }
+
     // --- the tab: a face over the offer ---
     {
         int swept = 0;
@@ -81,12 +109,25 @@ int main()
         panel.setSize(496, 300); // the Settings dialog's area under its tabs
         panel.onCleanJunk = [&] { ++swept; };
 
+        // The button a player clicks, found the way a player finds it: the
+        // one button on the tab. Its onClick is the only path a mouse has.
+        juce::TextButton* button = nullptr;
+        for (auto* child : panel.getChildren())
+            if (auto* candidate = dynamic_cast<juce::TextButton*>(child))
+                button = candidate;
+        CHECK(button != nullptr);
+        const auto click = [&button] {
+            if (button != nullptr && button->onClick)
+                button->onClick();
+        };
+
         // Nothing said yet: dead and silent, and a press reaches nobody.
         CHECK_EQ(panel.offersShown(), 0);
         CHECK(!panel.cleanEnabled());
         CHECK(panel.whyLine().isEmpty());
         CHECK_EQ(panel.cleanButtonText(), juce::String(MaintenancePanel::kCleanJunk));
         panel.cleanJunk();
+        click();
         CHECK_EQ(swept, 0);
 
         const auto refused =
@@ -97,6 +138,7 @@ int main()
         CHECK_EQ(panel.whyLine(), juce::String::fromUTF8(refused.why.c_str()));
         CHECK_EQ(panel.cleanButtonText(), juce::String(MaintenancePanel::kCleanJunk));
         panel.cleanJunk(); // refused, so nobody hears of it
+        click();           // and the same through the button itself
         CHECK_EQ(swept, 0);
 
         const auto ready =
@@ -107,16 +149,27 @@ int main()
         CHECK(panel.whyLine().isEmpty());
         CHECK_EQ(panel.cleanButtonText(), juce::String(MaintenancePanel::kCleanJunk));
 
-        // The press the owner hears, once per press.
+        // The press the owner hears, once per press -- and the button a
+        // player clicks is wired to the same action.
         panel.cleanJunk();
         CHECK_EQ(swept, 1);
+        click();
+        CHECK_EQ(swept, 2);
 
         // And the pedal goes away again: the offer with it.
         panel.show(maintenance::offer({ .connected = false, .busy = false, .family = writable }));
         CHECK(!panel.cleanEnabled());
         CHECK(!panel.whyLine().isEmpty());
         panel.cleanJunk();
-        CHECK_EQ(swept, 1);
+        click();
+        CHECK_EQ(swept, 2);
+
+        // The sentence has somewhere to be read: a reason nobody can see is
+        // the greyed button with no reason beside it all over again.
+        CHECK(!panel.whyLine().isEmpty());
+        for (auto* child : panel.getChildren())
+            CHECK(child->getBounds().isEmpty()
+                  || panel.getLocalBounds().contains(child->getBounds()));
     }
 
     return testkit::summary("maintenance_tests");

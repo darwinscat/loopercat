@@ -46,12 +46,17 @@ public:
         return menu;
     }
 
-    explicit AppMenu(Actions actions) : actions_(std::move(actions))
+    // The actions are not kept: the only one there is goes into the About
+    // item, and AppKit holds that item from here on. A member nobody reads
+    // is also a warning on every compiler that looks for one.
+    explicit AppMenu(Actions actions)
     {
 #if JUCE_MAC
         // setMacMainMenu takes a copy of the extras; the local one is enough.
-        const juce::PopupMenu extras = appleMenuItems(actions_.about);
+        const juce::PopupMenu extras = appleMenuItems(std::move(actions.about));
         juce::MenuBarModel::setMacMainMenu(this, &extras);
+#else
+        juce::ignoreUnused(actions); // no menu bar off macOS, and never was (#25)
 #endif
     }
 
@@ -73,8 +78,6 @@ public:
     void menuItemSelected(int, int) override {}
 
 private:
-    const Actions actions_;
-
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AppMenu)
 };
 
