@@ -63,13 +63,13 @@ int main()
     {
         pedalbook::Book book;
         book.remember({ "2016199893", "734978af", "RC-5 Drummer", "RC-5", 1758836825000 });
-        book.remember({ "904629978", "d273db4a", "RC-500 Bob \xf0\x9f\x90\xb1", "RC-500", 1758836826000 }); // utf-8 name
+        book.remember({ "904629978", "d273db4a", "RC-500 Bob \xf0\x9f\x90\xb1", "RC-500", 1758836826000 }); // utf-8 name; utf8-data: a pedal's name
         const std::string text = book.serialize();
         CHECK(text.find("RC-5 Drummer") != std::string::npos);
         const pedalbook::Book back = pedalbook::Book::parse(text);
         CHECK_EQ(back.entries().size(), 2u);
         CHECK_EQ(back.serialize(), text);
-        CHECK_EQ(back.find("904629978")->name, std::string("RC-500 Bob \xf0\x9f\x90\xb1"));
+        CHECK_EQ(back.find("904629978")->name, std::string("RC-500 Bob \xf0\x9f\x90\xb1"));  // utf8-data: a pedal's name
         CHECK_EQ(back.find("2016199893")->seenMs, 1758836825000);
         CHECK(pedalbook::Book::parse("").entries().empty());
         CHECK(pedalbook::Book::parse("\n\n").entries().empty());

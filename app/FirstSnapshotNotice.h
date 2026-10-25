@@ -96,7 +96,7 @@ private:
     // ".", "!", "?" or an ellipsis.
     static bool endsSentence(const std::string& told)
     {
-        static constexpr std::string_view kEllipsis = "\xe2\x80\xa6";
+        static constexpr std::string_view kEllipsis = "\xe2\x80\xa6"; // utf8-data: a sentence handed in may end so
         if (told.size() >= kEllipsis.size()
             && told.compare(told.size() - kEllipsis.size(), kEllipsis.size(), kEllipsis) == 0)
             return true;

@@ -274,6 +274,7 @@ loopercat_core_test(quit_tests)
 loopercat_core_test(rc0_tests)
 # The RC family as a table, and the guard that asks it (DeviceProfile.hpp).
 loopercat_core_test(device_profile_tests)
+loopercat_core_test(card_permissions_tests)
 # The same model against a whole real card, byte for byte (fixtures/rc5-card.RC0).
 loopercat_core_test(rc5_card_tests)
 # The pedal's settings file, against a real one (fixtures/rc5-system.RC0).
@@ -302,6 +303,9 @@ target_link_libraries(slot_rows_tests PRIVATE loopercat_sqlite3)
 # The same decision for the whole card's rows (the History window).
 loopercat_core_test(card_rows_tests)
 target_link_libraries(card_rows_tests PRIVATE loopercat_sqlite3)
+# The menu a row of the History tab opens, over the rows a real store makes.
+loopercat_core_test(history_row_menu_tests)
+target_link_libraries(history_row_menu_tests PRIVATE loopercat_sqlite3)
 # Undo and Redo over the timeline: the cursor and the plan, pure.
 loopercat_core_test(undo_tests)
 target_link_libraries(undo_tests PRIVATE loopercat_sqlite3)
@@ -324,6 +328,21 @@ loopercat_core_test(linux_device_rules_tests)
 # The pedal's MIDI port name: which model is on the bus. Pure, like the
 # rules above, so every lane checks that an RC-500 is not taken for an RC-5.
 loopercat_core_test(pedal_port_name_tests)
+
+# Every non-ASCII string literal in app/, core/ and tests/ is the direct
+# argument of fromUTF8(...) or utf8(...), plain ASCII, or data marked as such:
+# JUCE reads a bare const char* as ASCII, which is how operations.log carried
+# mojibake in the 0.9.6 previews. The lint, and the lint tried on planted sources.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME utf8_literals_lint
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_utf8_literals.py
+                 ${CMAKE_CURRENT_SOURCE_DIR}/app ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_test(NAME utf8_literals_lint_tests
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_utf8_literals_test.py)
+# The lint attacked: escapes the compiler splices, sources it must be able
+# to read, suffixes it must not pass over (review of feat/history-row-menu).
+add_test(NAME utf8_literals_lint_attack_tests
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_utf8_literals_attack_test.py)
 
 endif()  # LOOPERCAT_BUILD_TESTS
 
@@ -709,6 +728,21 @@ target_link_libraries(pedal_link_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME pedal_link_tests COMMAND pedal_link_tests)
 
+# operations.log: a line with a non-ASCII reason in it comes back byte for byte.
+juce_add_console_app(operations_log_tests PRODUCT_NAME "operations_log_tests")
+target_sources(operations_log_tests PRIVATE tests/operations_log_tests.cpp)
+target_compile_definitions(operations_log_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(operations_log_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME operations_log_tests COMMAND operations_log_tests)
+
 # ----------------------------------------------------------------------------
 # The playback harness: the REAL AudioEngine pumped through its device
 # callback with a fake device — samples must match the frame-index ramp, so
@@ -853,6 +887,48 @@ target_link_libraries(history_recorder_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_recorder_tests COMMAND history_recorder_tests)
 
+# What the history writes for an RC-5, row for row (the multi-track history
+# must not move a byte of it): one scripted session through the recorder,
+# dumped and compared with tests/golden/rc5-history-rows.txt.
+juce_add_console_app(history_golden_tests PRODUCT_NAME "history_golden_tests")
+target_sources(history_golden_tests PRIVATE tests/history_golden_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_golden_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json"
+    LOOPERCAT_HISTORY_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/rc5-history-rows.txt")
+target_link_libraries(history_golden_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_golden_tests COMMAND history_golden_tests)
+
+# The history of a two-track card: the first sighting keeps every track, a
+# take is recorded with its track, and one track's file is never another's.
+juce_add_console_app(history_tracks_tests PRODUCT_NAME "history_tracks_tests")
+target_sources(history_tracks_tests PRIVATE tests/history_tracks_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(history_tracks_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(history_tracks_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME history_tracks_tests COMMAND history_tracks_tests)
+
 # The single-slot Normalize around its plan (#142): the target typed in
 # Settings, the read-only first step, the guard ahead of the write, one step
 # per slot — on synthetic cards, through the recorder as the app wires it.
@@ -915,6 +991,27 @@ target_link_libraries(first_seen_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME first_seen_tests COMMAND first_seen_tests)
+
+# "Export take..." as the worker runs it (review of feat/history-row-menu):
+# no card, no operation, the bytes whole through a folder in any alphabet.
+juce_add_console_app(export_take_job_tests PRODUCT_NAME "export_take_job_tests")
+target_sources(export_take_job_tests PRIVATE tests/export_take_job_tests.cpp
+    app/history/HistoryRecorder.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(export_take_job_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(export_take_job_tests PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_events
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME export_take_job_tests COMMAND export_take_job_tests)
 
 # Injected confirmations and the recorded worker job: no native windows.
 juce_add_console_app(clear_history_action_tests PRODUCT_NAME "clear_history_action_tests")

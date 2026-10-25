@@ -102,14 +102,6 @@ juce::String requestStorageMode(bool enter, const Pedal& pedal)
     return {};
 }
 
-juce::String requestStorageMode(bool enter)
-{
-    const auto device = findPedal();
-    if (!device)
-        return "no RC-5 MIDI device on the bus";
-    return requestStorageMode(enter, *device);
-}
-
 StorageQuery readStorageState(const Pedal& pedal, int timeoutMs)
 {
     if (timeoutMs <= 0)

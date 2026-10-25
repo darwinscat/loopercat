@@ -85,7 +85,7 @@ inline void create(const fs::path& root, const profile::DeviceProfile& family)
     if (fs::exists(root, ec) && !fs::is_directory(root, ec))
         throw Error("cannot make a card folder at " + root.string() + ": not a directory");
     if (fs::exists(root / "ROLAND", ec))
-        throw Error(root.string() + " already holds a card folder (ROLAND/) \xe2\x80\x94 refusing"
+        throw Error(root.string() + " already holds a card folder (ROLAND/) - refusing"
                     " to write over it");
     fs::create_directories(volume::dataDir(root), ec);
     if (ec)

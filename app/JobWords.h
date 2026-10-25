@@ -107,7 +107,7 @@ inline std::string firstSnapshotInterrupted(const JobOutcome& outcome)
     if (!outcome.didNotRun())
         throw Error("only a step that did not run interrupts the first snapshot; "
                     "a failed step has the banner's words");
-    return "The card's first snapshot stopped; it will finish next time you connect.";
+    return "Saving the original stopped; it will finish next time you connect.";
 }
 
 // The same interruption as the History window's row reads it, after the

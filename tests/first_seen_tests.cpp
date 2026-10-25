@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Darwin's Cat. Part of Looper Cat — see LICENSE.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "support.hpp"
+#include "timeline_support.hpp"
 #include "../app/history/FirstSeenJob.h"
 #include "../app/history/WriteOptionsFactory.h"
 #include "../app/history/SlotRows.h"
@@ -176,25 +177,30 @@ static int runTests()
             CHECK(!entry.beforeBody);
             CHECK(entry.afterBody == rc0::slotBody(before, slot));
             const auto rows = history::rows::forSlot(timeline);
-            CHECK_EQ(rows.front().line.action, std::string("Card first seen"));
+            // A slot that held a take has its Original row, named by the take;
+            // one that was empty has no row at all (0.9.6).
+            CHECK_EQ(rows.size(), std::size_t { takes.contains(slot) ? 1u : 0u });
             if (takes.contains(slot)) {
-                CHECK_EQ(entry.takeName, std::string("Original.wav"));
-                CHECK(entry.takeHash == HistoryStore::contentHash(takes[slot]));
-                CHECK(entry.takeKept);
-                CHECK(store.takeBytes(*entry.takeHash) == takes[slot]);
-                CHECK_EQ(rows.front().line.detail, std::string("Original.wav"));
-                CHECK_EQ(rows.front().line.audio, std::string("take kept"));
+                CHECK_EQ(testkit::firstTake(entry).name, std::string("Original.wav"));
+                CHECK(testkit::firstTake(entry).hash == HistoryStore::contentHash(takes[slot]));
+                CHECK(testkit::firstTake(entry).kept);
+                CHECK(store.takeBytes(*testkit::firstTake(entry).hash) == takes[slot]);
+                if (rows.size() == 1) {
+                    CHECK_EQ(rows.front().line.action, std::string("Original"));
+                    CHECK_EQ(rows.front().line.detail, std::string("Original.wav"));
+                    CHECK_EQ(rows.front().line.audio, std::string("take kept"));
+                }
                 expectedBytes += static_cast<std::int64_t>(takes[slot].size());
             } else {
-                CHECK(!entry.takeHash);
-                CHECK(entry.takeName.empty());
+                CHECK(!testkit::firstTake(entry).hash);
+                CHECK(testkit::firstTake(entry).name.empty());
             }
         }
         CHECK_EQ(store.usage().audioBytes, expectedBytes);
         CHECK_EQ(store.keptBlobs(store.offeredTargets()).size(), 4u);
         const auto cardRows = history::rows::forCard(store.cardTimeline());
         CHECK_EQ(cardRows.size(), 1u);
-        CHECK_EQ(cardRows.front().action, std::string("Card first seen"));
+        CHECK_EQ(cardRows.front().action, std::string("Original"));
         CHECK_EQ(cardRows.front().takes.size(), 99u);
         CHECK_EQ(cardRows.front().detail, std::string("4 takes, ") + history::retention::bytesText(expectedBytes));
 
@@ -204,8 +210,18 @@ static int runTests()
             write(rec, card, "push", [&](const auto& options) {
                 commands::push(card, source, slot, { .force = true, .write = options });
             });
-            const auto timeline = store.slotTimeline(slot);
-            CHECK(history::rows::forSlot(timeline).front().restorable);
+            // The tab offers the original back for a slot that held a take;
+            // slot 8 was empty at first sight and has no Original row (0.9.6).
+            // The card's first-sighting row restores either.
+            const auto slotRows = history::rows::forSlot(store.slotTimeline(slot));
+            CHECK(!slotRows.empty());
+            if (!slotRows.empty() && takes.contains(slot)) {
+                CHECK_EQ(slotRows.front().line.action, std::string("Original"));
+                CHECK(slotRows.front().restorable);
+            } else if (!slotRows.empty()) {
+                CHECK_EQ(slotRows.size(), 1u);
+                CHECK_EQ(slotRows.front().line.action, std::string("Pushed"));
+            }
             const auto row = history::rows::forCard(store.cardTimeline()).front();
             CHECK(row.restorable());
             const auto eligible = row.restorableSlots();
@@ -255,11 +271,11 @@ static int runTests()
         CHECK_EQ(marker::read(a)->name, marker::read(b)->name);
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM cards"), 2);
         CHECK_EQ(rec->store().slotTimeline(1).size(), 1u);
-        CHECK(rec->store().slotTimeline(1).front().takeHash == HistoryStore::contentHash(bBytes));
+        CHECK(testkit::firstTake(rec->store().slotTimeline(1).front()).hash == HistoryStore::contentHash(bBytes));
         CHECK_EQ(rec->store().cardTimeline().size(), 1u);
         CHECK_EQ(rec->store().operations().size(), 1u);
         CHECK(!rec->firstSeen(a));
-        CHECK(rec->store().slotTimeline(1).front().takeHash == HistoryStore::contentHash(aBytes));
+        CHECK(testkit::firstTake(rec->store().slotTimeline(1).front()).hash == HistoryStore::contentHash(aBytes));
         const auto renamed = marker::rename(a, "Alice's card").card;
         CHECK(!rec->firstSeen(a));
         sqlite::Statement name(rec->store().db(), "SELECT name, model FROM cards WHERE marker_id = ?1");
@@ -278,7 +294,7 @@ static int runTests()
         fs::rename(a, tmp.path / "away");
         fs::rename(b, a);
         CHECK(!rec->firstSeen(a));
-        CHECK(rec->store().slotTimeline(1).front().takeHash == HistoryStore::contentHash(bBytes));
+        CHECK(testkit::firstTake(rec->store().slotTimeline(1).front()).hash == HistoryStore::contentHash(bBytes));
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM sessions WHERE disconnected_at IS NULL"), 1);
     }
 
@@ -335,10 +351,10 @@ static int runTests()
             CHECK(!ending->failed());
             CHECK(!ending->told(refused.quiet)); // the worker tells nobody: no banner line
             CHECK_EQ(jobwords::firstSnapshotInterrupted(*ending),
-                     std::string("The card's first snapshot stopped; it will finish next time you connect."));
+                     std::string("Saving the original stopped; it will finish next time you connect."));
             CHECK_EQ(jobwords::firstSnapshotInterruptedLog(14, *ending),
                      std::string("first snapshot interrupted at slot 14: pedal is disconnected "
-                                 "\xe2\x80\x94 refusing to touch the volume"));
+                                 "- refusing to touch the volume"));
         }
         CHECK_EQ(rec->store().opStatus(baseline.op), std::string("interrupted"));
         CHECK_EQ(rec->store().touchedSlots(baseline.op).size(), 13u);
@@ -351,9 +367,14 @@ static int runTests()
             note.bind(1, baseline.op);
             CHECK(note.step());
             CHECK_EQ(note.text(0), std::string("stopped when the pedal was disconnected"));
-            const auto slotOne = history::rows::forSlot(rec->store().slotTimeline(1)).front().line;
-            CHECK(slotOne.detail.find("stopped when the pedal was disconnected") != std::string::npos);
-            CHECK(slotOne.detail.find("refusing to touch") == std::string::npos);
+            // A slot it photographed is whole: its Original row names the
+            // take and claims no interruption - that is the card's row's to
+            // say, above (0.9.6).
+            const auto slotOne = history::rows::forSlot(rec->store().slotTimeline(1)).front();
+            CHECK_EQ(slotOne.line.action, std::string("Original"));
+            CHECK(slotOne.line.detail.find("stopped when") == std::string::npos);
+            CHECK(slotOne.line.detail.find("refusing to touch") == std::string::npos);
+            CHECK(slotOne.state.empty());
         }
         putTake(card, 1, 4321);
         if (restartApp) { rec.reset(); rec = recorderAt(tmp.path / "history"); }
@@ -365,7 +386,7 @@ static int runTests()
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM ops"), 1);
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM slot_changes"), 99);
         CHECK_EQ(number(rec->store(), "SELECT count(*) FROM slot_audio"), 1);
-        CHECK(rec->store().slotTimeline(1).front().takeHash == HistoryStore::contentHash(original));
+        CHECK(testkit::firstTake(rec->store().slotTimeline(1).front()).hash == HistoryStore::contentHash(original));
     }
 
     // A step whose own work fails — the volume under the run is another one —
@@ -449,7 +470,7 @@ static int runTests()
         FirstSnapshotNotice notice;
         CHECK(notice.departed(lifecycle::State::ejecting, true, run->completed.load())
               == std::optional<std::string>("first snapshot interrupted at slot 7: pedal is ejecting "
-                                            "\xe2\x80\x94 refusing to touch the volume"));
+                                            "- refusing to touch the volume"));
         // A refused step moves nothing: the run still stands at 6.
         auto seven = history::firstSeenJob(rec, run, 7, [](int, const JobOutcome&) {});
         seven.after(JobOutcome::refused(lifecycle::State::ejecting));
@@ -483,9 +504,9 @@ static int runTests()
             CHECK_EQ(entry.op, baseline.op);
             CHECK(entry.afterBody == rc0::slotBody(before, slot));
             if (slot == 90) {
-                CHECK(entry.takeHash == HistoryStore::contentHash(original));
-                CHECK(rec->store().takeBytes(*entry.takeHash) == original);
-            } else CHECK(entry.takeName.empty());
+                CHECK(testkit::firstTake(entry).hash == HistoryStore::contentHash(original));
+                CHECK(rec->store().takeBytes(*testkit::firstTake(entry).hash) == original);
+            } else CHECK(testkit::firstTake(entry).name.empty());
         }
     }
 
@@ -548,7 +569,7 @@ static int runTests()
         write(rec, b, "rename", [&](const auto& options) { commands::rename(b, 1, "B one", options); });
         const auto timeline = rec->store().slotTimeline(1); // card B selected
         CHECK_EQ(timeline.size(), 2u);
-        CHECK(timeline.back().takeHash == HistoryStore::contentHash(bBytes));
+        CHECK(testkit::firstTake(timeline.back()).hash == HistoryStore::contentHash(bBytes));
     }
 
     // R9: another mounted card cannot release the bytes needed by Undo.
@@ -618,8 +639,8 @@ static int runTests()
             const auto entry = rec->store().slotTimeline(slot).front();
             CHECK_EQ(entry.kind, std::string("snapshot"));
             CHECK(entry.afterBody == rc0::slotBody(before, slot));
-            CHECK(entry.takeHash == HistoryStore::contentHash(bytes));
-            CHECK(entry.takeHash && rec->store().takeBytes(*entry.takeHash) == bytes);
+            CHECK(testkit::firstTake(entry).hash == HistoryStore::contentHash(bytes));
+            CHECK(testkit::firstTake(entry).hash && rec->store().takeBytes(*testkit::firstTake(entry).hash) == bytes);
         }
     }
 
@@ -645,7 +666,7 @@ static int runTests()
         for (const auto& e : timeline) std::printf(" %s", e.kind.c_str());
         std::printf("\n");
         CHECK(!timeline.empty() && timeline.front().kind == "snapshot");
-        CHECK(!timeline.empty() && timeline.front().takeHash == HistoryStore::contentHash(t5));
+        CHECK(!timeline.empty() && testkit::firstTake(timeline.front()).hash == HistoryStore::contentHash(t5));
     }
     // An oversized slot is a durable failed row; the worker continues and reconnect does not retry.
     {
@@ -671,7 +692,7 @@ static int runTests()
         CHECK(history::rows::forSlot({failed}).front().line.detail.find("size limit") != std::string::npos);
         CHECK(!history::rows::forSlot({failed}).front().restorable);
         CHECK(history::rows::forCard(rec->store().cardTimeline()).front().state.find("slot 2 failed: take Original.wav exceeds") != std::string::npos);
-        CHECK(rec->store().slotTimeline(3).front().takeHash == HistoryStore::contentHash(good));
+        CHECK(testkit::firstTake(rec->store().slotTimeline(3).front()).hash == HistoryStore::contentHash(good));
         CHECK_EQ(rec->store().opStatus(baseline.op), std::string("done"));
         rec->disconnect();
         CHECK(!rec->firstSeen(card));
@@ -708,8 +729,8 @@ static int runTests()
         complete(*rec, baseline);
         const auto first = rec->store().slotTimeline(60).front();
         CHECK(first.afterBody == before);
-        CHECK(first.takeHash == HistoryStore::contentHash(bytes));
-        CHECK(first.takeHash && rec->store().takeBytes(*first.takeHash) == bytes);
+        CHECK(testkit::firstTake(first).hash == HistoryStore::contentHash(bytes));
+        CHECK(testkit::firstTake(first).hash && rec->store().takeBytes(*testkit::firstTake(first).hash) == bytes);
     }
     return testkit::summary("first_seen_tests");
 }

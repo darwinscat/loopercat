@@ -75,8 +75,8 @@ public:
                           << "] family=" << std::string(pedal.family())
                           << (pedal.profile->allows(profile::Operation::read) ? "" : " (card not readable)")
                           << "\n";
-            const auto found = pedallink::findPedal();
-            std::cout << "found: " << (found ? found->name : juce::String("NOTHING")) << "\n";
+            const auto found = pedallink::firstOfFamily(pedallink::findFamily(), profile::kRc5.familyName);
+            std::cout << "found: " << (found ? found->endpoint.name : juce::String("NOTHING")) << "\n";
             const int probeFlag = args.indexOf("--midi-probe");
             // "--midi-probe read <identifier>" asks that endpoint for its
             // storage register and sends nothing else (issue #85): the seam
@@ -109,7 +109,7 @@ public:
             // "--midi-probe exit" sends the leaving frame instead, so the
             // Disconnect half of the same path can be measured too.
             const bool enter = !(probeFlag >= 0 && args[probeFlag + 1] == "exit");
-            const juce::String error = pedallink::requestStorageMode(enter);
+            const juce::String error = pedallink::requestStorageModeOfFamily(enter, profile::kRc5.familyName);
             std::cout << "send: " << (error.isEmpty() ? juce::String("reported ok") : error)
                       << std::endl;
             setApplicationReturnValue(error.isEmpty() ? 0 : 1);

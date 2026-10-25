@@ -16,6 +16,7 @@
 //     nothing at all
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/history/HistoryStore.h"
 #include "../app/history/TakeExport.h"
@@ -141,12 +142,12 @@ int main()
         // card (not in the store); neither is the newest on slot 12
         const auto* p = entryFor(entries, push);
         CHECK(p && p->slots.size() == 1 && !p->slots[0].newest);
-        CHECK(p && p->slots.size() == 1 && p->slots[0].facts.takeKept);
-        CHECK(p && p->slots.size() == 1 && p->slots[0].facts.takeHash == HistoryStore::contentHash(bytesA));
+        CHECK(p && p->slots.size() == 1 && testkit::firstTake(p->slots[0].facts).kept);
+        CHECK(p && p->slots.size() == 1 && testkit::firstTake(p->slots[0].facts).hash == HistoryStore::contentHash(bytesA));
         const auto* t = entryFor(entries, trim);
         CHECK(t && t->slots.size() == 1 && !t->slots[0].newest);
-        CHECK(t && t->slots.size() == 1 && !t->slots[0].facts.takeKept);
-        CHECK(t && t->slots.size() == 1 && t->slots[0].facts.takeHash == HistoryStore::contentHash(bytesB));
+        CHECK(t && t->slots.size() == 1 && !testkit::firstTake(t->slots[0].facts).kept);
+        CHECK(t && t->slots.size() == 1 && testkit::firstTake(t->slots[0].facts).hash == HistoryStore::contentHash(bytesB));
         CHECK(t && t->slots.size() == 1 && t->slots[0].facts.afterBody == std::string("b12-2"));
         // the failed op touched nothing and is still an entry, with its reason
         const auto* f = entryFor(entries, failed);
@@ -166,9 +167,9 @@ int main()
                     CHECK(row.beforeBody == touched.facts.beforeBody);
                     CHECK(row.afterBody == touched.facts.afterBody);
                     CHECK(row.swappedWith == touched.facts.swappedWith);
-                    CHECK_EQ(row.takeName, touched.facts.takeName);
-                    CHECK(row.takeHash == touched.facts.takeHash);
-                    CHECK_EQ(row.takeKept, touched.facts.takeKept);
+                    CHECK_EQ(testkit::firstTake(row).name, testkit::firstTake(touched.facts).name);
+                    CHECK(testkit::firstTake(row).hash == testkit::firstTake(touched.facts).hash);
+                    CHECK_EQ(testkit::firstTake(row).kept, testkit::firstTake(touched.facts).kept);
                     CHECK_EQ(row.kind, touched.facts.kind);
                     CHECK_EQ(row.note, touched.facts.note);
                 }
@@ -201,7 +202,7 @@ int main()
         CHECK_EQ(entries.front().op, old); // read first
         CHECK_EQ(entries.front().actor, std::string("app"));
         CHECK(entries.front().slots.size() == 1 && entries.front().slots[0].slot == 5);
-        CHECK(entries.front().slots.size() == 1 && entries.front().slots[0].facts.takeKept);
+        CHECK(entries.front().slots.size() == 1 && testkit::firstTake(entries.front().slots[0].facts).kept);
         CHECK(entries.front().slots.size() == 1 && !entries.front().slots[0].newest);
         CHECK(entries.back().slots.size() == 1 && entries.back().slots[0].newest);
     }
@@ -253,11 +254,11 @@ int main()
         CHECK(entryFor(entries, undone)->reverts == clear);
         // the clear archived the take: its slot carries it, the push's does not
         const auto* c = entryFor(entries, clear);
-        CHECK(c && c->slots.size() == 1 && c->slots[0].archived.has_value());
-        CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->name == "take.wav");
-        CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->hash == HistoryStore::contentHash(bytes));
-        CHECK(c && c->slots.size() == 1 && c->slots[0].archived && c->slots[0].archived->kept);
-        CHECK(entryFor(entries, push)->slots.size() == 1 && !entryFor(entries, push)->slots[0].archived);
+        CHECK(c && c->slots.size() == 1 && c->slots[0].archived.size() == 1u);
+        CHECK(c && c->slots.size() == 1 && !c->slots[0].archived.empty() && c->slots[0].archived.front().name == "take.wav");
+        CHECK(c && c->slots.size() == 1 && !c->slots[0].archived.empty() && c->slots[0].archived.front().hash == HistoryStore::contentHash(bytes));
+        CHECK(c && c->slots.size() == 1 && !c->slots[0].archived.empty() && c->slots[0].archived.front().kept);
+        CHECK(entryFor(entries, push)->slots.size() == 1 && entryFor(entries, push)->slots[0].archived.empty());
         // the cursor's targets out of the real rows
         const auto t = r.store.offeredTargets();
         CHECK(t.undo == push);          // the undo row is transparent: the clear is undone, the push stands
@@ -272,7 +273,7 @@ int main()
         // released since: still named, no longer kept
         r.store.releaseBlobs({ HistoryStore::contentHash(bytes) }, {}, 9);
         const auto after = r.store.cardTimeline();
-        CHECK(entryFor(after, clear)->slots[0].archived && !entryFor(after, clear)->slots[0].archived->kept);
+        CHECK(!entryFor(after, clear)->slots[0].archived.empty() && !entryFor(after, clear)->slots[0].archived.front().kept);
 
         CHECK_THROWS(r.store.setReverts(undone, undone), "itself");
         CHECK_THROWS(r.store.setReverts(424242, clear), "no operation");
@@ -315,7 +316,7 @@ int main()
         CHECK_EQ(rows.size(), 2u);
         CHECK(rows.size() == 2 && rows[0].takeIsAfter);
         CHECK(rows.size() == 2 && !rows[1].takeIsAfter);
-        CHECK(rows.size() == 2 && rows[1].takeKept); // archived, and kept
+        CHECK(rows.size() == 2 && testkit::firstTake(rows[1]).kept); // archived, and kept
         const auto entries = r.store.cardTimeline();
         CHECK(entries.size() == 2 && !entryFor(entries, clear)->slots.front().facts.takeIsAfter);
     }
@@ -365,6 +366,20 @@ int main()
         const fs::path gone = tmp.path / "exported" / "gone.wav";
         CHECK_THROWS(history::exportTake(r.store, hash, gone), "no longer kept");
         CHECK(!fs::exists(gone));
+    }
+
+    // --- the name the save dialog proposes: the take's own, a WAV once ---
+    {
+        CHECK_EQ(history::exportName("i-am-projection.wav", 4), std::string("i-am-projection.wav"));
+        CHECK_EQ(history::exportName("RC5_0001.WAV", 4), std::string("RC5_0001.WAV")); // the pedal's case kept
+        CHECK_EQ(history::exportName("take.Wav", 4), std::string("take.Wav"));
+        CHECK_EQ(history::exportName("i-am-projection", 4), std::string("i-am-projection.wav"));
+        CHECK_EQ(history::exportName("song.mp3", 4), std::string("song.mp3.wav"));
+        CHECK_EQ(history::exportName("wav", 4), std::string("wav.wav"));     // an ending, not a dot
+        CHECK_EQ(history::exportName("songwav", 4), std::string("songwav.wav"));
+        CHECK_EQ(history::exportName("a.wav.part", 4), std::string("a.wav.part.wav"));
+        CHECK_EQ(history::exportName("", 4), std::string("slot 4 take.wav"));
+        CHECK_EQ(history::exportName("", 99), std::string("slot 99 take.wav"));
     }
 
     return testkit::summary("card_timeline_tests");

@@ -143,6 +143,17 @@ public:
     void recordSubject(std::int64_t op, int slot);
     std::vector<int> subjects(std::int64_t op); // ascending
 
+    // A take a row names on one track: its file name, the hash of its bytes
+    // (absent when the store never saw them), and whether those bytes are
+    // kept — it can be played, exported or put back.
+    struct SlotTake {
+        int track = 0;
+        std::string name;
+        std::optional<std::string> hash;
+        bool kept = false;
+        bool operator==(const SlotTake&) const = default;
+    };
+
     // One row of a slot's timeline, with everything the tab needs to write a
     // sentence and to know what it may offer for it.
     struct TimelineEntry {
@@ -155,21 +166,28 @@ public:
         std::optional<std::string> beforeBody;
         std::optional<std::string> afterBody;
         std::optional<int> swappedWith; // the slot a swap exchanged with
-        // The state's take, or the archived take when the slot was emptied.
-        std::string takeName;
-        std::optional<std::string> takeHash;
-        bool takeKept = false; // the bytes are in the store: it can be played
-        // The take is the one the operation left in the slot (its 'after'
-        // side). False when the row offers the take it archived instead — a
-        // clear or an undo that emptied the slot. That take is
-        // not on the card, whatever the row's place in the timeline.
+        // The state's takes, one per track that held one, by track — or,
+        // when the operation left no take in the slot, the takes it archived.
+        // A track folder that held two files offers the first by name; the
+        // count and bytes below are every file's.
+        std::vector<SlotTake> takes;
         std::int64_t takeCount = 0;
         std::int64_t takeBytes = 0;
+        // The takes are the ones the operation left in the slot (its 'after'
+        // side), and so the state's own. False when the row offers the takes
+        // it archived instead — a clear or an undo that emptied the slot.
+        // Those are not on the card, whatever the row's place in the
+        // timeline, and they are no part of the state the row recorded.
         bool takeIsAfter = false;
         // The operation was about this slot and recorded nothing here — a
         // normalize that found its slot at target (#144). The row says what
         // was tried, not what the slot holds: it is never the slot's state.
         bool subjectOnly = false;
+        // For a restore: the operation it went back to, and when that one
+        // happened. Absent for a restore older than store version 11, and
+        // once the row it named is forgotten.
+        std::optional<std::int64_t> restores;
+        std::optional<std::int64_t> restoredAt;
     };
 
     // Selected card only; no selection returns no rows. Ordered by time, then
@@ -182,9 +200,12 @@ public:
     std::string opStatus(std::int64_t op);
     // Every slot an operation touched, by its body or its audio.
     std::vector<int> touchedSlots(std::int64_t op);
-    bool hasAfterAudio(std::int64_t op, int slot);
-    // What a new row for a file of this name inherits from the newest word
-    // about it before `op`. First a real read of these very facts (name,
+    // The operation recorded a take on this track of the slot after it ran.
+    bool hasAfterAudio(std::int64_t op, int slot, int track);
+    // What a new row for a file of this name on this track inherits from the
+    // newest word about it before `op`: rows about the slot's other tracks
+    // are about other files, whatever their names. First — on the first
+    // track, the only one a read is filed for — a real read of these very facts (name,
     // size, stamp) that no earlier operation on the slot came after: the
     // hash of the bytes it read, with the file's stamp. Otherwise the slot's
     // newest row before `op`: that row's hash — only when it carries one,
@@ -203,11 +224,12 @@ public:
         std::optional<std::string> hash;
         std::optional<std::int64_t> modifiedMs;
     };
-    Held heldBefore(std::int64_t op, int slot, const std::string& name, std::int64_t size,
-                    std::int64_t modifiedMs);
+    Held heldBefore(std::int64_t op, int slot, int track, const std::string& name,
+                    std::int64_t size, std::int64_t modifiedMs);
     // heldBefore's hash alone.
-    std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, const std::string& name,
-                                              std::int64_t size, std::int64_t modifiedMs);
+    std::optional<std::string> hashHeldBefore(std::int64_t op, int slot, int track,
+                                              const std::string& name, std::int64_t size,
+                                              std::int64_t modifiedMs);
 
     // --- what a connect can tell from a directory entry (#141) ---
 
@@ -217,13 +239,15 @@ public:
     std::optional<std::int64_t> cardFor(const std::string& markerId);
 
     // A take as a connect scan sees it without reading it: the directory
-    // entry's name, size and stamp (TakeFacts.h), and the frame count the
-    // slot's config says the take has (WavLen).
+    // entry's name, size and stamp (TakeFacts.h), the frame count the slot's
+    // config says the take has (that track's WavLen), and the track whose
+    // folder the entry is in — 0 names none and is refused.
     struct TakeSighting {
         std::string name;
         std::int64_t size = 0;
         std::int64_t modifiedMs = 0;
         std::int64_t frames = 0;
+        int track = 0;
     };
     // The highest operation sequence ever issued, 0 before the first: what a
     // read that begins now comes after. It never goes down, and beginOp never
@@ -233,7 +257,10 @@ public:
     // What a real read of a take saw (#141): the file's name, size and stamp
     // on this card's slot, and the hash of the bytes read under them — the
     // check job's read, the player's pass and a normalize's measurement all
-    // have all of it.
+    // have all of it. Each of them reads the first track and no other (the
+    // player measures a one-track memory only), and the table keeps no track
+    // (Schema.h): a sighting speaks for the first track's file alone, and
+    // the readers below ask it about nothing else.
     // `readBegan` is newestOp() as it stood when the read began; the read is
     // filed after the slot's newest operation at or below it, and every
     // operation that records a body or a take in the slot with a higher
@@ -241,6 +268,10 @@ public:
     // The same facts read again keep the newest read. Refused: a hash that
     // is not 32 bytes, a negative `readBegan`, and (by the table) a slot
     // outside 1..99.
+    // The one track a sighting is about: the first, the take the LUFS column
+    // measures. take_sightings keeps no track (schema v10); a read of
+    // another track's file would need one before it could be filed.
+    static constexpr int kSightedTrack = 1;
     void recordSighting(std::int64_t card, int slot, const std::string& name, std::int64_t size,
                         std::int64_t modifiedMs, const std::string& hash, std::int64_t readBegan,
                         std::int64_t nowMs);
@@ -250,12 +281,12 @@ public:
     //   - a read of these very facts (recordSighting) that no operation
     //     recording a body or a take in the slot came after, by sequence:
     //     its hash — the bytes were read under them;
-    //   - otherwise the slot's newest row for the file name on the first
-    //     track — the take the LUFS column measures — when it is that last
+    //   - otherwise the slot's newest row for the file name on the sighted
+    //     track — the take the LUFS column measures is the first's — when it is that last
     //     operation's own, the operation finished (or is the first
     //     sighting, which commits slot by slot), it carries a hash, its size
     //     and its stamp are the entry's, and the body recorded with it (the
-    //     newest at or before it) says the same WavLen.
+    //     newest at or before it) says the same WavLen in that track's section.
     // All of it or nothing: a row without a hash, with another size or
     // stamp, or without a stamp at all (older than store version 9, or
     // vouched for by such a row) answers nothing and no older row is asked
@@ -296,6 +327,11 @@ public:
 
     // An 'undo' or 'redo' row names the operation it reverts.
     void setReverts(std::int64_t op, std::int64_t target);
+
+    // A 'restore' row names the operation it goes back to, on the same card.
+    // Refused: a row that is not a restore, a target that is the row itself,
+    // and a target the store does not hold for that card.
+    void setRestores(std::int64_t op, std::int64_t target);
 
     // --- what the history costs, and giving space back (Retention.h) ---
 
@@ -389,12 +425,6 @@ public:
         std::string after;
     };
 
-    // A take named by a row: what an operation archived before it wrote.
-    struct TakeRef {
-        std::string name;
-        std::string hash;
-        bool kept = false; // the bytes are in the store
-    };
     struct CardEntry {
         std::int64_t op = 0;
         std::int64_t at = 0;
@@ -405,13 +435,16 @@ public:
         bool pinned = false;
         std::int64_t session = 0;            // the connection it happened in
         std::optional<std::int64_t> reverts; // for an 'undo' or 'redo' row: the operation it reverts
+        std::optional<std::int64_t> restores; // for a 'restore' row: the operation it went back to
+        std::optional<std::int64_t> restoredAt; // and when that operation happened
         struct Slot {
             int slot = 0;
             bool newest = false;
             TimelineEntry facts;
-            // The take this operation replaced or removed in the slot — its
-            // 'before' row — which is what putting the operation back needs.
-            std::optional<TakeRef> archived;
+            // The takes this operation replaced or removed in the slot, one
+            // per track, by track — its 'before' rows, each with a hash —
+            // which is what putting the operation back needs.
+            std::vector<SlotTake> archived;
         };
         std::vector<Slot> slots; // ascending by slot
         // The slots the operation was about (#144), ascending — beside the

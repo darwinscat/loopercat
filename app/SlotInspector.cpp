@@ -130,8 +130,8 @@ void SlotInspector::refresh()
     countIn_.setEnabled(live && can.countIn && !info_.countInRefused);
     oneShot_.setEnabled(live && can.oneShot);
     playStop_.setEnabled(live && can.playStop);
-    footer_.setText(can.anyWrite() ? juce::String("Disconnect to hear the changes.")
-                                   : juce::String(CardPermissions::writesOnlyTo()),
+    footer_.setText(juce::String(can.footer(can.rename || can.tempo || can.countIn || can.oneShot
+                                            || can.playStop)),
                     juce::dontSendNotification);
 
     for (auto* child : std::initializer_list<juce::Component*> { &nameCaption_, &tempoCaption_,

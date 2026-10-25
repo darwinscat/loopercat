@@ -313,12 +313,12 @@ int main()
     // about where it came from. T1/T2 is what the pedal calls its tracks.
 
     CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 1, 1), std::string("05 - My Loop.wav"));
-    CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 1, 2), std::string("05 - My Loop T1.wav"));
-    CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 2, 2), std::string("05 - My Loop T2.wav"));
+    CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 1, 2), std::string("05 - My Loop Track1.wav"));
+    CHECK_EQ(wav::trackFileName("05 - My Loop.wav", 2, 2), std::string("05 - My Loop Track2.wav"));
     // The suffix goes before the extension, whatever the name holds.
-    CHECK_EQ(wav::trackFileName("a.b.wav", 2, 2), std::string("a.b T2.wav"));
-    CHECK_EQ(wav::trackFileName("noextension", 2, 2), std::string("noextension T2"));
-    CHECK_EQ(wav::trackFileName("010_1.WAV", 1, 2), std::string("010_1 T1.WAV"));
+    CHECK_EQ(wav::trackFileName("a.b.wav", 2, 2), std::string("a.b Track2.wav"));
+    CHECK_EQ(wav::trackFileName("noextension", 2, 2), std::string("noextension Track2"));
+    CHECK_EQ(wav::trackFileName("010_1.WAV", 1, 2), std::string("010_1 Track1.WAV"));
     // A track the model does not have is a caller bug, not a name.
     CHECK_THROWS(wav::trackFileName("x.wav", 0, 2), "track out of range");
     CHECK_THROWS(wav::trackFileName("x.wav", 3, 2), "track out of range");

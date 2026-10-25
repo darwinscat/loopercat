@@ -21,6 +21,7 @@
 //     back, and its subject changes neither the cursor nor the plan
 
 #include "support.hpp"
+#include "timeline_support.hpp"
 
 #include "../app/history/Undo.h"
 
@@ -31,7 +32,7 @@ using namespace loopercat;
 namespace undo = loopercat::history::undo;
 using Card = loopercat::history::HistoryStore::CardEntry;
 using Op = loopercat::history::HistoryStore::OpSummary;
-using TakeRef = loopercat::history::HistoryStore::TakeRef;
+using HistoryStore = loopercat::history::HistoryStore;
 
 namespace {
 
@@ -61,7 +62,7 @@ Card card(std::int64_t seq, const char* kind, std::int64_t session = 1, const ch
 }
 
 Card::Slot slot(int number, std::optional<std::string> before, std::optional<std::string> after,
-                std::optional<TakeRef> archived = std::nullopt, const std::string& takeName = {},
+                std::vector<HistoryStore::SlotTake> archived = {}, const std::string& takeName = {},
                 bool newest = false)
 {
     Card::Slot s;
@@ -70,9 +71,10 @@ Card::Slot slot(int number, std::optional<std::string> before, std::optional<std
     s.facts.beforeBody = std::move(before);
     s.facts.afterBody = std::move(after);
     s.archived = std::move(archived);
-    s.facts.takeName = takeName;
-    if (!takeName.empty())
-        s.facts.takeHash = std::string(32, '\x11');
+    if (!takeName.empty()) {
+        testkit::takeOf(s.facts).name = takeName;
+        testkit::takeOf(s.facts).hash = std::string(32, '\x11');
+    }
     return s;
 }
 
@@ -153,15 +155,18 @@ int main()
     // --- a trim goes back to the body and the take it archived ---
     {
         Card trim = card(2, "trim");
-        trim.slots = { slot(12, loaded, shorter, TakeRef { "take.wav", std::string(32, '\x22'), true }, "take.wav", true) };
+        trim.slots = { slot(12, loaded, shorter, { { 1, "take.wav", std::string(32, '\x22'), true } }, "take.wav", true) };
         const auto plan = undo::plan({ card(1, "push"), trim }, 2);
         CHECK(plan.possible());
         CHECK_EQ(plan.steps.size(), 1u);
         CHECK(plan.steps.front().slot == 12);
         CHECK(plan.steps.front().body == loaded);
-        CHECK(!plan.steps.front().keepTake);
-        CHECK(plan.steps.front().takeName == std::string("take.wav"));
-        CHECK(plan.steps.front().takeHash == std::string(32, '\x22'));
+        CHECK(!plan.steps.front().keepsAudio());
+        CHECK(plan.steps.front().takes.size() == 1u && plan.steps.front().takes.front().track == 1);
+        CHECK(plan.steps.front().takes.size() == 1u && plan.steps.front().takes.front().name == "take.wav");
+        CHECK(plan.steps.front().takes.size() == 1u
+              && plan.steps.front().takes.front().hash == std::string(32, '\x22'));
+        CHECK(plan.steps.front().emptied.empty());
         CHECK(!plan.swapBack);
         CHECK(plan.writesOver.empty());
         CHECK(!plan.crossesConnection && !plan.crossesPedal);
@@ -170,7 +175,7 @@ int main()
     // --- the archived take is gone: refused by name, with the slot ---
     {
         Card trim = card(2, "trim");
-        trim.slots = { slot(12, loaded, shorter, TakeRef { "take.wav", std::string(32, '\x22'), false }, "take.wav") };
+        trim.slots = { slot(12, loaded, shorter, { { 1, "take.wav", std::string(32, '\x22'), false } }, "take.wav") };
         const auto plan = undo::plan({ trim }, 2);
         CHECK(!plan.possible());
         CHECK(plan.refusal == undo::Refusal::takeNotKept);
@@ -183,34 +188,36 @@ int main()
     // --- a body-only change leaves the file alone; a push into an empty slot goes back to empty ---
     {
         Card rename = card(3, "rename");
-        rename.slots = { slot(12, loaded, loaded, std::nullopt, "take.wav") };
+        rename.slots = { slot(12, loaded, loaded, {}, "take.wav") };
         const auto r = undo::plan({ rename }, 3);
         CHECK(r.possible());
-        CHECK(r.steps.front().keepTake);
+        CHECK(r.steps.front().keepsAudio());
         CHECK(r.steps.front().body == loaded);
-        CHECK(!r.steps.front().takeHash);
+        CHECK(r.steps.front().takes.empty());
 
         Card push = card(4, "push");
-        push.slots = { slot(7, empty, loaded, std::nullopt, "new.wav") };
+        push.slots = { slot(7, empty, loaded, {}, "new.wav") };
         const auto p = undo::plan({ push }, 4);
         CHECK(p.possible());
-        CHECK(!p.steps.front().keepTake);
-        CHECK(!p.steps.front().takeName && !p.steps.front().takeHash); // the slot goes empty
+        CHECK(!p.steps.front().keepsAudio());
+        CHECK(p.steps.front().takes.empty()); // the slot goes empty
+        CHECK((p.steps.front().emptied == std::vector<int> { 1 }));
         CHECK(p.steps.front().body == empty);
 
         // an audio-only operation that recorded no body and archived nothing: not knowable
         Card odd = card(5, "normalize");
-        odd.slots = { slot(7, std::nullopt, std::nullopt, std::nullopt, "") };
+        odd.slots = { slot(7, std::nullopt, std::nullopt, {}, "") };
         const auto o = undo::plan({ odd }, 5);
         CHECK(o.refusal == undo::Refusal::stateNotRecorded);
         CHECK_EQ(o.refusedSlot, 7);
         // a normalize that archived its take: the body stays, the take goes back
         Card norm = card(6, "normalize");
-        norm.slots = { slot(7, std::nullopt, std::nullopt, TakeRef { "n.wav", std::string(32, '\x33'), true }, "n.wav") };
+        norm.slots = { slot(7, std::nullopt, std::nullopt, { { 1, "n.wav", std::string(32, '\x33'), true } }, "n.wav") };
         const auto n = undo::plan({ norm }, 6);
         CHECK(n.possible());
         CHECK(!n.steps.front().body);
-        CHECK(n.steps.front().takeHash == std::string(32, '\x33'));
+        CHECK(n.steps.front().takes.size() == 1u && n.steps.front().takes.front().hash == std::string(32, '\x33'));
+        CHECK(n.steps.front().emptied.empty()); // no body: no track is read as empty
     }
 
     // --- whether the slot held a take is read from the body, never guessed from the kind ---
@@ -219,28 +226,28 @@ int main()
         // that holds a take: the take stays, whatever the kind is called
         for (const char* kind : { "level", "pan", "loop-length", "memory-settings" }) {
             Card unknown = card(9, kind);
-            unknown.slots = { slot(12, loaded, shorter, std::nullopt, "take.wav") };
+            unknown.slots = { slot(12, loaded, shorter, {}, "take.wav") };
             const auto p = undo::plan({ unknown }, 9);
             CHECK(p.possible());
-            CHECK(p.steps.size() == 1 && p.steps.front().keepTake);
-            CHECK(p.steps.size() == 1 && !p.steps.front().takeHash);
+            CHECK(p.steps.size() == 1 && p.steps.front().keepsAudio());
+            CHECK(p.steps.size() == 1 && p.steps.front().takes.empty());
         }
         // the same unknown kind on a slot whose body said empty: back to empty
         Card intoEmpty = card(10, "level");
-        intoEmpty.slots = { slot(12, empty, loaded, std::nullopt, "take.wav") };
+        intoEmpty.slots = { slot(12, empty, loaded, {}, "take.wav") };
         const auto e = undo::plan({ intoEmpty }, 10);
         CHECK(e.possible());
-        CHECK(e.steps.size() == 1 && !e.steps.front().keepTake && !e.steps.front().takeHash);
+        CHECK(e.steps.size() == 1 && !e.steps.front().keepsAudio() && e.steps.front().takes.empty());
         // a body that only half says empty (the pedal's flag set, no length) is read as held
         std::string flagged = rc0::setSectionField(empty, rc0::kSectionTrack1, "WavStat", rc0::kWavStatIndexed);
         Card odd = card(11, "push");
-        odd.slots = { slot(12, flagged, loaded, std::nullopt, "take.wav") };
-        CHECK(undo::plan({ odd }, 11).steps.front().keepTake);
+        odd.slots = { slot(12, flagged, loaded, {}, "take.wav") };
+        CHECK(undo::plan({ odd }, 11).steps.front().keepsAudio());
         std::string lengthOnly = rc0::setSectionField(empty, rc0::kSectionTrack1, "WavLen", 100);
         Card odd2 = card(12, "push");
-        odd2.slots = { slot(12, lengthOnly, loaded, std::nullopt, "take.wav") };
-        CHECK(undo::plan({ odd2 }, 12).steps.front().keepTake);
-        CHECK(undo::bodyHoldsTake(loaded) && !undo::bodyHoldsTake(empty));
+        odd2.slots = { slot(12, lengthOnly, loaded, {}, "take.wav") };
+        CHECK(undo::plan({ odd2 }, 12).steps.front().keepsAudio());
+        CHECK(undo::bodyHoldsTake(loaded, 1) && !undo::bodyHoldsTake(empty, 1));
     }
 
     // --- a refused plan is refused whole: no steps, no swap ---
@@ -272,7 +279,7 @@ int main()
         CHECK(b.system.size() == 2 && b.system[0].section == "SETUP" && b.system[1].section == "CTL");
         // a slot operation sees no settings step
         Card trim = card(22, "trim");
-        trim.slots = { slot(12, loaded, shorter, TakeRef { "take.wav", std::string(32, '\x22'), true }, "take.wav") };
+        trim.slots = { slot(12, loaded, shorter, { { 1, "take.wav", std::string(32, '\x22'), true } }, "take.wav") };
         const auto t = undo::plan({ trim }, 22);
         CHECK(t.possible() && t.system.empty() && t.steps.size() == 1);
         // a row that is not a section's text was not recorded
@@ -298,7 +305,7 @@ int main()
     // --- a swap goes back by swapping again ---
     {
         Card swap = card(8, "swap");
-        swap.slots = { slot(12, loaded, shorter, std::nullopt, "a.wav"), slot(43, shorter, loaded, std::nullopt, "b.wav") };
+        swap.slots = { slot(12, loaded, shorter, {}, "a.wav"), slot(43, shorter, loaded, {}, "b.wav") };
         const auto plan = undo::plan({ swap }, 8);
         CHECK(plan.possible());
         CHECK(plan.swapBack == std::make_pair(12, 43));
@@ -321,8 +328,8 @@ int main()
         }
         // an undo of something else on the same two slots is no swap
         Card clearTwo = card(11, "clear");
-        clearTwo.slots = { slot(12, loaded, empty, TakeRef { "a.wav", std::string(32, '\x33'), true }, "a.wav"),
-                           slot(43, loaded, empty, TakeRef { "b.wav", std::string(32, '\x44'), true }, "b.wav") };
+        clearTwo.slots = { slot(12, loaded, empty, { { 1, "a.wav", std::string(32, '\x33'), true } }, "a.wav"),
+                           slot(43, loaded, empty, { { 1, "b.wav", std::string(32, '\x44'), true } }, "b.wav") };
         Card undoClear = card(12, "undo");
         undoClear.reverts = 11;
         undoClear.slots = { slot(12, empty, loaded), slot(43, empty, loaded) };
@@ -353,11 +360,11 @@ int main()
     // --- what the press crosses, and what it writes over ---
     {
         Card first = card(1, "push", 1);
-        first.slots = { slot(12, empty, loaded, std::nullopt, "a.wav") };
+        first.slots = { slot(12, empty, loaded, {}, "a.wav") };
         Card pedal = card(2, "push", 2, "done", "pedal"); // after a reconnect, the pedal itself
-        pedal.slots = { slot(43, empty, loaded, std::nullopt, "p.wav") };
+        pedal.slots = { slot(43, empty, loaded, {}, "p.wav") };
         Card later = card(3, "rename", 2);
-        later.slots = { slot(12, loaded, loaded, std::nullopt, "a.wav") };
+        later.slots = { slot(12, loaded, loaded, {}, "a.wav") };
         Card elsewhere = card(4, "rename", 2);
         elsewhere.slots = { slot(7, empty, empty) };
         Card unfinished = card(5, "trim", 2, "failed");
@@ -406,7 +413,7 @@ int main()
         // A later operation that was only about the slot wrote nothing over
         // it: the push's plan lists it nowhere.
         Card push = card(1, "push");
-        push.slots = { slot(7, empty, loaded, std::nullopt, "take.wav") };
+        push.slots = { slot(7, empty, loaded, {}, "take.wav") };
         Card later = card(2, "normalize");
         later.subjects = { 7 };
         const auto plan = undo::plan({ push, later }, 1);

@@ -545,7 +545,7 @@ int main()
 
     // The arrow the report draws — the one describeNormalize already uses,
     // so a note carrying both sentences reads with one.
-    const std::string arrow = " \xe2\x86\x92 ";
+    const std::string arrow = juce::String::fromUTF8(" \xe2\x86\x92 ").toStdString();
 
     // 48 kHz, 24-bit, mono: every fact differs from the pedal's, and the
     // sentence says all three — source on the left, the pedal on the right.

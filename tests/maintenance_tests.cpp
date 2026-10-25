@@ -12,6 +12,9 @@
 //     away AND busy is first of all away
 //   - a card whose model nobody knows, and a card whose model has not been
 //     read yet, are refused like any card this app does not write to
+//   - and the sweep follows the profile table rather than a list of its own:
+//     a model with ANY write open is offered it, the RC-500 included since
+//     its pull, rename, clear and restore were opened (#161)
 //
 // the reading of the window's snapshot that feeds it:
 //
@@ -39,11 +42,16 @@ int main()
     juce::ScopedJuceInitialiser_GUI juceInit;
 
     const std::string writable { profile::kRc5.familyName };
-    const std::string readOnly { profile::kRc500.familyName };
-    // The profile table is the premise of every "no" below: the sweep writes,
-    // and only one model is open for writes.
+    const std::string alsoWritable { profile::kRc500.familyName };
+    const std::string strange { "RC-404" }; // no card the table knows
+    // The profile table is the premise of every answer below: the sweep is a
+    // write, so it is offered exactly where the table opens one. Both models
+    // the table knows have writes open now; a name it does not know has
+    // none, and neither has a card whose model has not been read yet.
     CHECK(CardPermissions::of(writable).anyWrite());
-    CHECK(!CardPermissions::of(readOnly).anyWrite());
+    CHECK(CardPermissions::of(alsoWritable).anyWrite());
+    CHECK(!CardPermissions::of(strange).anyWrite());
+    CHECK(!CardPermissions::of(std::string()).anyWrite());
 
     // --- no pedal ---
     {
@@ -54,28 +62,28 @@ int main()
 
     // --- away and busy at once: away is the first thing to say ---
     {
-        const auto offer = maintenance::offer({ .connected = false, .busy = true, .family = readOnly });
+        const auto offer = maintenance::offer({ .connected = false, .busy = true, .family = strange });
         CHECK(!offer.enabled);
         CHECK_EQ(offer.why, std::string("Connect the pedal to clean its card."));
     }
 
-    // --- busy, whatever the card is: busy is said before read-only ---
-    for (const std::string& family : { writable, readOnly }) {
+    // --- busy, whatever the card is: busy is said before the card's model ---
+    for (const std::string& family : { writable, strange }) {
         const auto offer = maintenance::offer({ .connected = true, .busy = true, .family = family });
         CHECK(!offer.enabled);
         CHECK_EQ(offer.why, std::string("The pedal is busy. This waits for the job to finish."));
     }
 
-    // --- a card this app only reads, and one whose model is not known ---
-    for (const std::string& family : { readOnly, std::string("RC-404"), std::string() }) {
+    // --- a card this app writes nothing to, by name or by silence ---
+    for (const std::string& family : { strange, std::string() }) {
         const auto offer = maintenance::offer({ .connected = true, .busy = false, .family = family });
         CHECK(!offer.enabled);
         CHECK_EQ(offer.why, CardPermissions::writesOnlyTo() + ". This card keeps its junk.");
     }
 
-    // --- ready: on offer, with nothing to explain ---
-    {
-        const auto offer = maintenance::offer({ .connected = true, .busy = false, .family = writable });
+    // --- ready: on offer, with nothing to explain, on either model ---
+    for (const std::string& family : { writable, alsoWritable }) {
+        const auto offer = maintenance::offer({ .connected = true, .busy = false, .family = family });
         CHECK(offer.enabled);
         CHECK(offer.why.empty());
     }
@@ -99,7 +107,7 @@ int main()
             CHECK(!maintenance::pedalFrom(state, "", false, writable).connected);
         // The other two facts travel through untouched.
         CHECK(maintenance::pedalFrom(State::connected, "", true, writable).busy);
-        CHECK_EQ(maintenance::pedalFrom(State::connected, "", false, readOnly).family, readOnly);
+        CHECK_EQ(maintenance::pedalFrom(State::connected, "", false, strange).family, strange);
     }
 
     // --- the tab: a face over the offer ---

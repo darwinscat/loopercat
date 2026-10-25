@@ -419,13 +419,13 @@ int main()
         });
         b.op("trim", [&](const commands::WriteOptions& o) { commands::trim(b.volume, 5, 0, 44100 * 2, { o }); });
         const auto trimRow = newest(b.rec->store());
-        CHECK(trimRow.slots.size() == 1 && trimRow.slots[0].archived.has_value());
+        CHECK(trimRow.slots.size() == 1 && trimRow.slots[0].archived.size() == 1u);
         b.op("push", [&](const commands::WriteOptions& o) {
             commands::push(b.volume, sourceWav(b.tmp.path, "b.wav", 44100 * 3), 5,
                            { .force = true, .write = o });
         });
         HistoryStore& store = b.rec->store();
-        store.releaseBlobs({ trimRow.slots[0].archived->hash }, store.offeredTargets(), tick());
+        store.releaseBlobs({ *trimRow.slots[0].archived.front().hash }, store.offeredTargets(), tick());
         CHECK_EQ(b.press(false), std::string()); // the replace: its 'before' is the trimmed take, kept
         const CardState now = cardState(b.volume);
         const std::string gone = b.press(false);
@@ -529,6 +529,16 @@ int main()
         e.system.push_back({ "CTL", "<CTL></CTL>", "<CTL>x</CTL>" });
         CHECK_EQ(undo::operationWords(e), std::string("frobnicate of slot 1 and the pedal settings"));
         CHECK_EQ(undo::menuText(false, {}), std::string("Undo"));
+        // the app's names, not the store's kinds
+        HistoryStore::CardEntry drums;
+        drums.kind = "rhythm";
+        drums.slots.resize(1);
+        drums.slots[0].slot = 4;
+        CHECK_EQ(undo::operationWords(drums), std::string("Rhythm change of slot 4"));
+        drums.kind = "playstop";
+        CHECK_EQ(undo::operationWords(drums), std::string("Start & Stop change of slot 4"));
+        CHECK_EQ(undo::kindWords("rhythm"), std::string("Rhythm change"));
+        CHECK_EQ(undo::kindWords("playstop"), std::string("Start & Stop change"));
     }
 
     // --- a section spliced back: only its bytes change ---
@@ -564,6 +574,99 @@ int main()
         CHECK_EQ(newest(b.rec->store()).status, std::string("done"));
         CHECK_THROWS(history::restoreOperation(b.rec->store(), 9999, b.volume, b.options("none")),
                      "not in the history");
+    }
+
+    // --- ATTACK (review of feat/history-row-menu): "Restore this state" of a
+    // Cleared row. The state a clear left is an empty slot; the take the row
+    // offers for Export is the one it archived on the way out. Restoring the
+    // row must put the empty slot back - the body alone - and not hand the
+    // archived take to the restore primitive beside a body that says the
+    // slot holds nothing, which that primitive refuses. The same shape is a
+    // row that undid a push. The tab's restore builds the same state from
+    // the same facts (MainComponent::restoreFromHistory). ---
+    {
+        Bench b;
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "a.wav", 44100 * 4), 5, { .write = o });
+        });
+        b.op("clear", [&](const commands::WriteOptions& o) { commands::clear(b.volume, { 5 }, { .write = o }); });
+        const CardState cleared = cardState(b.volume);
+        const std::int64_t clearOp = newest(b.rec->store()).op;
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "b.wav", 44100 * 3), 5, { .force = true, .write = o });
+        });
+        CHECK(!diff(cardState(b.volume), cleared).empty());
+
+        // both views offer the row's restore
+        HistoryStore& store = b.rec->store();
+        const auto cardRows = history::rows::forCard(store.cardTimeline());
+        bool windowOffers = false;
+        for (const auto& row : cardRows)
+            if (row.op == clearOp)
+                windowOffers = row.restorable();
+        CHECK(windowOffers);
+        bool tabOffers = false;
+        for (const auto& row : history::rows::forSlot(store.slotTimeline(5)))
+            if (row.op == clearOp)
+                tabOffers = row.restorable;
+        CHECK(tabOffers);
+
+        // the restore, named before the card is touched, the way the window's job runs it
+        const std::string id = "op-" + std::to_string(++b.ops);
+        b.rec->begin(id, "restore", b.volume);
+        std::string error;
+        try {
+            b.rec->restores(id, clearOp);
+            history::restoreOperation(store, clearOp, b.volume, b.options(id));
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        b.rec->finish(id, error);
+        if (!error.empty())
+            std::printf("  restore of the Cleared row failed: %s\n", error.c_str());
+        CHECK_EQ(error, std::string());
+        CHECK_SAME(cardState(b.volume), cleared);
+        const HistoryStore::CardEntry restored = newest(store);
+        CHECK_EQ(restored.kind, std::string("restore"));
+        CHECK_EQ(restored.status, std::string("done"));
+        CHECK(restored.restores == clearOp); // named, whatever the outcome
+    }
+
+    // --- a Restored row, end to end: it says what came back and names the
+    // row it went back to by that row's clock (0.9.6) ---
+    {
+        Bench b;
+        b.op("push", [&](const commands::WriteOptions& o) {
+            commands::push(b.volume, sourceWav(b.tmp.path, "a.wav", 44100 * 4), 5, { .write = o });
+        });
+        const CardState pushed = cardState(b.volume);
+        const std::int64_t pushOp = newest(b.rec->store()).op;
+        const std::int64_t pushAt = newest(b.rec->store()).at;
+        b.op("trim", [&](const commands::WriteOptions& o) { commands::trim(b.volume, 5, 0, 44100 * 2, { o }); });
+        const std::string id = "op-" + std::to_string(++b.ops);
+        b.rec->begin(id, "restore", b.volume);
+        std::string error;
+        try {
+            b.rec->restores(id, pushOp);
+            history::restoreOperation(b.rec->store(), pushOp, b.volume, b.options(id));
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        b.rec->finish(id, error);
+        CHECK_EQ(error, std::string());
+        CHECK_SAME(cardState(b.volume), pushed);
+        const auto rows = history::rows::forSlot(b.rec->store().slotTimeline(5));
+        CHECK(!rows.empty());
+        if (!rows.empty()) {
+            const auto& row = rows.back();
+            CHECK_EQ(row.line.action, std::string("Restored"));
+            // the take, its length, the tempo push gave it, and the row it came from
+            CHECK(row.line.detail.rfind("a.wav - 0:04 - ", 0) == 0);
+            const std::string tail = " BPM - back to " + history::story::clockWords(pushAt, row.at);
+            CHECK(row.line.detail.size() > tail.size()
+                  && row.line.detail.compare(row.line.detail.size() - tail.size(), tail.size(), tail) == 0);
+            CHECK_EQ(row.line.audio, std::string("in the slot now"));
+        }
     }
 
     // --- an operation about a slot it did not change (#144): Undo and Redo as without it ---

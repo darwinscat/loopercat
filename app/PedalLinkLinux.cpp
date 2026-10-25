@@ -158,16 +158,8 @@ juce::String requestStorageMode(bool enter, const Pedal& pedal)
         const auto frame = enter ? sysex::enterStorageMode(pedal.modelId()) : sysex::exitStorageMode(pedal.modelId());
         return sendFrame(portOf(pedal), frame);
     } catch (const Error& e) {
-        return e.what();
+        return utf8(e.what());
     }
-}
-
-juce::String requestStorageMode(bool enter)
-{
-    const auto port = findRawMidi(profile::kRc5.familyName);
-    if (!port)
-        return "no RC-5 MIDI device on the bus";
-    return sendFrame(*port, enter ? sysex::enterStorageMode() : sysex::exitStorageMode());
 }
 
 StorageQuery readStorageState(const Pedal& pedal, int timeoutMs)
