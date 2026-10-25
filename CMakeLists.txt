@@ -256,6 +256,12 @@ loopercat_core_test(connect_gate_tests)
 # What the app remembers about the pedals it has met (issue #98): pure, so
 # it is a core suite though it lives in app/.
 loopercat_core_test(pedal_book_tests)
+# The doors 0.9.6 closed, proved shut by reading app/ as text: a key binding
+# and a window opener are not things a headless suite can ask MainComponent
+# about, because MainComponent wants a pedal, a worker and a screen.
+loopercat_core_test(hidden_features_tests)
+target_compile_definitions(hidden_features_tests PRIVATE
+    LOOPERCAT_APP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app")
 # What a file name on the card may be (FatName.hpp): FAT's rules and Windows's.
 loopercat_core_test(fat_name_tests)
 # The name a pushed file lands under (issue #139): pure, so it is a core
@@ -637,6 +643,29 @@ target_link_libraries(play_stop_card_harness PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME play_stop_card_harness COMMAND play_stop_card_harness)
+
+# The Properties studio after Start & Stop was hidden (0.9.6): the real
+# SlotInspector, laid out and painted — two cards side by side, and nothing
+# drawn where the third one sat.
+juce_add_console_app(slot_inspector_harness PRODUCT_NAME "slot_inspector_harness")
+target_sources(slot_inspector_harness PRIVATE tests/slot_inspector_harness.cpp
+    app/SlotInspector.cpp
+    app/PlayStopCard.cpp
+    app/SlotTable.cpp)
+target_compile_definitions(slot_inspector_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(slot_inspector_harness PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME slot_inspector_harness COMMAND slot_inspector_harness)
 
 # The Rhythm tab against what the card permits (CardPermissions.h) and what
 # the slot holds: the real RhythmPane, its switch pressed and its fields
@@ -1191,6 +1220,57 @@ target_link_libraries(history_pane_tests PRIVATE
     juce::juce_recommended_warning_flags)
 add_test(NAME history_pane_tests COMMAND history_pane_tests)
 
+# The card sweep after it moved from the Maintenance menu to a Settings tab
+# (0.9.6): the gate as a function of what the window knows, and the thin tab
+# over it.
+juce_add_console_app(maintenance_tests PRODUCT_NAME "maintenance_tests")
+target_sources(maintenance_tests PRIVATE tests/maintenance_tests.cpp)
+target_compile_definitions(maintenance_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(maintenance_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME maintenance_tests COMMAND maintenance_tests)
+
+# The app menu, all that is left of the menu bar (0.9.6): About LooperCat and
+# nothing else, with the old items' ids dead.
+juce_add_console_app(app_menu_tests PRODUCT_NAME "app_menu_tests")
+target_sources(app_menu_tests PRIVATE tests/app_menu_tests.cpp)
+target_compile_definitions(app_menu_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(app_menu_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME app_menu_tests COMMAND app_menu_tests)
+
+# The bottom pane's faces after Rhythm was hidden (0.9.6): three tabs, and a
+# face the strip cannot reach — driven through the very strip the window
+# builds from them.
+juce_add_console_app(bottom_pane_tests PRODUCT_NAME "bottom_pane_tests")
+target_sources(bottom_pane_tests PRIVATE tests/bottom_pane_tests.cpp)
+target_compile_definitions(bottom_pane_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(bottom_pane_tests PRIVATE
+    loopercat::core
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME bottom_pane_tests COMMAND bottom_pane_tests)
+
 # The tab strip's lead column (#145): geometry and hit test, driven without
 # a mouse — the label names no tab, and the tabs never move.
 juce_add_console_app(tab_strip_tests PRODUCT_NAME "tab_strip_tests")
@@ -1207,6 +1287,30 @@ target_link_libraries(tab_strip_tests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 add_test(NAME tab_strip_tests COMMAND tab_strip_tests)
+
+# The Settings dialog's own tabs after the card sweep moved into it (0.9.6):
+# the real dialog, its fifth tab selected through the same seam a headless run
+# uses -- app tier, needs a device manager, so a harness.
+juce_add_console_app(settings_dialog_harness PRODUCT_NAME "settings_dialog_harness")
+target_sources(settings_dialog_harness PRIVATE tests/settings_dialog_harness.cpp
+    app/HistoryStoragePanel.cpp
+    app/history/HistoryStore.cpp)
+target_compile_definitions(settings_dialog_harness PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+target_link_libraries(settings_dialog_harness PRIVATE
+    loopercat::core
+    loopercat_sqlite3
+    nlohmann_json::nlohmann_json
+    felitronics::appkit
+    juce::juce_gui_basics
+    juce::juce_audio_utils
+    juce::juce_cryptography
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+add_test(NAME settings_dialog_harness COMMAND settings_dialog_harness)
 
 # The storage panel (issue #74's visible part): driven without a mouse, a
 # database or a worker — it shows what it is handed and offers only what the

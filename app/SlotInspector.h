@@ -20,6 +20,12 @@
 // then one card per thing a player asks for — each card the pedal's own name
 // for it, one switch, and no field we have not verified on hardware.
 //
+// Start & Stop is hidden in 0.9.6 and comes back in a later release. Its
+// card is still built here and still fed by every refresh, so it is right
+// the moment it is shown again; what hiding it means is that it is not a
+// child of this component and gets no bounds. Un-hiding it is the two lists
+// below and its place in resized().
+//
 // It owns no memory bytes: the callbacks hand slot numbers and values to the
 // owner, which turns each into one worker job like every other mutation.
 //==============================================================================

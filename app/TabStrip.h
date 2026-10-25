@@ -44,7 +44,23 @@ public:
             onTabChanged(selected_);
     }
 
+    // No tab is the live one. The pane above may be showing a face this
+    // strip has no tab for (bottompane::rhythm, hidden in 0.9.6): without
+    // this the underline would sit under a tab whose pane is off screen, and
+    // that tab would be dead to a click, because select() refuses the index
+    // it already holds. Tells nobody: the owner is the one asking.
+    void deselect()
+    {
+        if (selected_ < 0)
+            return;
+        selected_ = -1;
+        repaint();
+    }
+
     int selected() const { return selected_; }
+
+    // The labels it was built with, for the owner and the tests.
+    const juce::StringArray& titles() const { return titles_; }
 
     // The words ahead of the tabs; empty clears them. The column was sized
     // for "SLOT nn", and a label that would not fit is refused rather than

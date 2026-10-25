@@ -28,7 +28,7 @@
 #include <loopercat/Wav.hpp>
 
 #include <felitronics/appkit/AudioSettingsPanel.h>
-#include <felitronics/appkit/Brand.h> // feedTheCatUrl — the family tip jar
+#include <felitronics/appkit/Brand.h> // the family palette
 
 #include <BinaryData.h>
 
@@ -394,7 +394,11 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     };
 
     settingsButton.onClick = [this] { openSettings(); };
-    bottomTabs.onTabChanged = [this](int index) { showBottomTab(index); };
+    // The tab at index k shows Face(k) — the invariant BottomPane.h states
+    // and bottom_pane_tests holds it to.
+    bottomTabs.onTabChanged = [this](int index) {
+        showBottomTab(static_cast<bottompane::Face>(index));
+    };
 
     player.onVolumeChanged = [this](double percent) {
         if (auto* file = settings.file())
@@ -441,36 +445,17 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     };
 
     // The toolbar carries only the primary story — Connect / Disconnect and
-    // the empty-slot view filter; service actions live in the Maintenance
-    // menu, About in the app menu (platform standard).
+    // the empty-slot view filter; service actions live in Settings, About in
+    // the macOS app menu (platform standard) and under the version badge.
     for (auto* button : { &connectButton, &disconnectButton }) {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e1e26));
         button->setEnabled(false);
     }
     connectButton.onClick = [this] { beginConnect(); };
     disconnectButton.onClick = [this] { beginDisconnect(); };
-    appMenu = std::make_unique<AppMenu>(AppMenu::Actions {
-        .about = [this] { showAbout(); },
-        .cleanJunk = [this] { runCleanJunk(); },
-        .feedTheCat = [] {
-            // Signed like the badge's own link: which app, which machine, which wrapper.
-            felitronics::appkit::brand::feedTheCatLink("LooperCat",
-                                                       felitronics::appkit::brand::feedTheCatUrl,
-                                                       kBadgeFormat)
-                .launchInDefaultBrowser();
-        },
-        .maintenanceEnabled = [this] {
-            return snapshot.state == lifecycle::State::connected && snapshot.error.empty()
-                && !pedalBusy;
-        },
-        .cleanJunkEnabled = [this] { return CardPermissions::of(snapshot.family).anyWrite(); },
-        .undo = [this] { pressUndo(false); },
-        .redo = [this] { pressUndo(true); },
-        .undoText = [this] { return undoMenuText(false); },
-        .redoText = [this] { return undoMenuText(true); },
-        .undoEnabled = [this] { return undoEnabled(false); },
-        .redoEnabled = [this] { return undoEnabled(true); },
-        .openHistory = [this] { openHistoryWindow(); } });
+    // About is all the menu bar left behind (0.9.6): the popover it opens
+    // carries the tip jar's link, on every platform.
+    appMenu = std::make_unique<AppMenu>(AppMenu::Actions { .about = [this] { showAbout(); } });
 
     showEmptyToggle.setColour(juce::ToggleButton::textColourId, kStatusText);
     showEmptyToggle.setColour(juce::ToggleButton::tickColourId,
@@ -611,8 +596,7 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
             // A job may have written a row: what Undo offers and what the
             // History window shows are read again, off the worker.
             refreshUndoOffer();
-            if (historyHost != nullptr && historyHost->isVisible())
-                feedHistoryWindow();
+            feedHistoryWindowIfShown();
             // The job's result cleared the cells of the audio it moved, and
             // the history may know those bytes (an undo put a measured take
             // back); the rescan that came first still saw the old cells. The
@@ -809,12 +793,12 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     setWantsKeyboardFocus(true); // Space toggles playback
 
     applyColumnPreferences();
-    showBottomTab(kAudioTab);
+    showBottomTab(bottompane::audio);
     applySnapshot({}); // the no-pedal state, until the first scan lands
     setSize(920, 680);
 
     worker.start();
-    refreshUndoOffer(); // the Edit menu names its targets from the first open
+    refreshUndoOffer(); // what Undo would put back, known from the first open
     startTimer(kMidiPollIntervalMs); // presence poll — cheap device-list scan, message thread
 }
 
@@ -1305,7 +1289,7 @@ void MainComponent::clearSlotHistory(int slot)
             safe->clearingHistory = false;
             safe->history.setBusy(safe->pedalBusy);
             safe->updateHistory();
-            safe->feedHistoryWindow();
+            safe->feedHistoryWindowIfShown();
             safe->refreshUndoOffer();
         });
     };
@@ -1434,17 +1418,22 @@ void MainComponent::applyHistoryRows(std::vector<HistoryPane::Row> rows, int slo
     history.setRows(std::move(rows), slot);
 }
 
-// The bottom pane has four faces for the selected slot: listen to it (the
-// player), set it up (its properties), its drums (the rhythm), and what
-// happened to it (the history). One pane, so the table never moves.
-void MainComponent::showBottomTab(int index)
+// The bottom pane has one place and four faces for the selected slot: listen
+// to it (the player), set it up (its properties), its drums (the rhythm), and
+// what happened to it (the history). One pane, so the table never moves.
+//
+// Three of the faces are tabs. Rhythm is hidden in 0.9.6 and reached only by
+// the --rhythm snapshot, which is why the face in view is remembered here
+// instead of read back off the strip: the strip cannot name it.
+void MainComponent::showBottomTab(bottompane::Face face)
 {
+    bottomFace = face;
     const bool mounted = table.isVisible();
-    player.setVisible(mounted && index == kAudioTab);
-    inspector.setVisible(mounted && index == kPropertiesTab);
-    rhythmPane.setVisible(mounted && index == kRhythmTab);
-    history.setVisible(mounted && index == kHistoryTab);
-    if (mounted && index == kHistoryTab)
+    player.setVisible(mounted && face == bottompane::audio);
+    inspector.setVisible(mounted && face == bottompane::properties);
+    rhythmPane.setVisible(mounted && face == bottompane::rhythm);
+    history.setVisible(mounted && face == bottompane::history);
+    if (mounted && face == bottompane::history)
         updateHistory();
     resized();
 }
@@ -1471,8 +1460,11 @@ void MainComponent::updateToolbar()
     connectButton.setEnabled(midiPedalPresent && !pedalBusy && !connectQueryPending
                              && snapshot.state == lifecycle::State::disconnected
                              && !connectAttempt.active() && !connectHoldActive());
-    if (appMenu != nullptr)
-        appMenu->menuItemsChanged(); // the Maintenance items follow the same gate
+    // The card sweep is gated on the same facts, and its tab is live while
+    // the player watches: push the offer again rather than make them reopen
+    // Settings to see the button wake up.
+    if (maintenancePanel != nullptr)
+        maintenancePanel->show(maintenanceOffer());
 }
 
 // The card's identity, from the card itself (issues #98, #99). The marker at
@@ -1516,7 +1508,7 @@ void MainComponent::readCardName()
                     safe->snapshotNext(safe->firstSeenRun, 1);
                 }
                 safe->updateHistory();
-                safe->feedHistoryWindow();
+                safe->feedHistoryWindowIfShown();
             });
         },
         nullptr,
@@ -1568,7 +1560,7 @@ void MainComponent::snapshotNext(const std::shared_ptr<history::FirstSeenRun>& r
                 safe->updateStatusText();
                 if (safe->firstSeenSettled) {
                     safe->updateHistory();
-                    safe->feedHistoryWindow();
+                    safe->feedHistoryWindowIfShown();
                 } else {
                     safe->snapshotNext(run, slot + 1);
                 }
@@ -1654,6 +1646,12 @@ void MainComponent::savePedalBook()
         file->setValue(kPedalBookKey, juce::String::fromUTF8(pedalBook.serialize().c_str()));
         file->saveIfNeeded();
     }
+}
+
+maintenance::Offer MainComponent::maintenanceOffer() const
+{
+    return maintenance::offer(
+        maintenance::pedalFrom(snapshot.state, snapshot.error, pedalBusy, snapshot.family));
 }
 
 void MainComponent::runCleanJunk()
@@ -1922,7 +1920,7 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
     table.setVisible(mounted);
     bottomTabs.setVisible(mounted);
     hint.setVisible(!mounted);
-    showBottomTab(bottomTabs.selected()); // the pane follows the pedal in and out
+    showBottomTab(bottomFace); // the pane follows the pedal in and out
     if (!mounted)
         selectedSlot = 0;
     updateInspector();
@@ -3129,6 +3127,13 @@ std::unique_ptr<SettingsDialog> MainComponent::makeSettingsDialog()
     // The storage panel (issue #74) is fed by the worker, where the store
     // lives, and reads nothing itself. A SafePointer, because the dialog may
     // be closed while a read or a release is still on the worker's queue.
+    // The card sweep, where the Maintenance menu used to be: the panel says
+    // what is on offer and the window answers the press, exactly as the menu
+    // item did. The offer is pushed now and again on every toolbar refresh.
+    maintenancePanel = juce::Component::SafePointer<MaintenancePanel>(&dialog->maintenance());
+    dialog->maintenance().onCleanJunk = [this] { runCleanJunk(); };
+    dialog->maintenance().show(maintenanceOffer());
+
     juce::Component::SafePointer<HistoryStoragePanel> panel(&dialog->storage());
     dialog->storage().onLimitChanged = [this, panel](std::int64_t bytes) {
         if (auto* file = settings.file()) {
@@ -3237,8 +3242,6 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     // to prevent (issue #61).
     if (batchOverlay.isVisible())
         return true;
-    if (historyKeys(key))
-        return true;
     // Standard list ergonomics: select every row — the way to point a check
     // (or a batch) at the whole setlist without a dedicated button.
     if (key == juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0) && table.isVisible()) {
@@ -3255,7 +3258,8 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     }
     if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)
         && table.isVisible()) {
-        bottomTabs.select(bottomTabs.selected() == kPropertiesTab ? kAudioTab : kPropertiesTab);
+        bottomTabs.select(bottomTabs.selected() == bottompane::properties ? bottompane::audio
+                                                                           : bottompane::properties);
         return true;
     }
     return false;
@@ -3310,7 +3314,7 @@ void MainComponent::openHistoryWindow()
 {
     if (historyHost == nullptr)
         historyHost = std::make_unique<HistoryWindowHost>(
-            historyView, [this](const juce::KeyPress& key) { return historyKeys(key); });
+            historyView);
     historyHost->setVisible(true);
     historyHost->toFront(true);
     feedHistoryWindow();
@@ -3321,6 +3325,12 @@ void MainComponent::openHistoryWindow()
 // the buttons need (the take to play, the slots a restore touches); the view
 // keeps the sentences. Every call re-reads the store: a pin the window showed
 // optimistically is confirmed or taken back here.
+void MainComponent::feedHistoryWindowIfShown()
+{
+    if (historyHost != nullptr && historyHost->isVisible())
+        feedHistoryWindow();
+}
+
 void MainComponent::feedHistoryWindow()
 {
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -3507,19 +3517,6 @@ void MainComponent::pinFromWindow(std::int64_t op, bool pinned)
     worker.enqueue(std::move(job));
 }
 
-bool MainComponent::historyKeys(const juce::KeyPress& key)
-{
-    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
-        pressUndo(true);
-        return true;
-    }
-    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)) {
-        pressUndo(false);
-        return true;
-    }
-    return false;
-}
-
 // Undo writes to the card like any operation: a card honestly connected, in
 // a model this app writes to, and no job of the player's running.
 bool MainComponent::cardTakesEdits() const
@@ -3540,8 +3537,6 @@ void MainComponent::refreshUndoOffer()
                                  return;
                              safe->undoOffer = offer;
                              ++safe->undoOfferReads;
-                             if (safe->appMenu != nullptr)
-                                 safe->appMenu->menuItemsChanged();
                          });
                      },
                      nullptr, 0, true, true, false });
@@ -3687,8 +3682,6 @@ void MainComponent::settleHistoryEdit(juce::String outcome)
     historyEditDescription.clear();
     historyEditOutcome = std::move(outcome);
     ++historyEditsDone;
-    if (appMenu != nullptr)
-        appMenu->menuItemsChanged();
 }
 
 } // namespace loopercat

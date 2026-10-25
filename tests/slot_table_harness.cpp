@@ -205,7 +205,7 @@ int main()
     model->cellClicked(1, countInColumn, clickAt(table));
     CHECK_EQ(countInClicks, 1);
     CHECK(model->getCellTooltip(1, countInColumn).contains("6/4"));
-    CHECK(model->getCellTooltip(1, countInColumn).contains("switch the rhythm on first"));
+    CHECK(model->getCellTooltip(1, countInColumn).contains("switch the rhythm on at the pedal"));
     model->cellClicked(2, countInColumn, clickAt(table));
     CHECK_EQ(countInClicks, 2);
     CHECK(model->getCellTooltip(2, countInColumn).isEmpty());

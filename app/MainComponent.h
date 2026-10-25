@@ -19,6 +19,7 @@
 #include "AudioEngine.h"
 #include "BannerStrip.h"
 #include "BatchOverlay.h"
+#include "BottomPane.h"
 #include "DeviceWatcher.h"
 #include "FirstSnapshotNotice.h"
 #include "LooperMark.h"
@@ -93,9 +94,16 @@ public:
     // programmatic slot selection, and "is the waveform drawn yet".
     void refreshNow();
     void selectSlot(int slot);
-    void showProperties() { bottomTabs.select(kPropertiesTab); } // --properties, for snapshots
-    void showHistory() { bottomTabs.select(kHistoryTab); }       // --history, for snapshots
-    void showRhythm() { bottomTabs.select(kRhythmTab); }         // --rhythm, for snapshots
+    void showProperties() { bottomTabs.select(bottompane::properties); } // --properties
+    void showHistory() { bottomTabs.select(bottompane::history); }       // --history
+    // --rhythm, for snapshots. The tab is hidden in 0.9.6, so the pane is
+    // reached past a strip that no longer names it (BottomPane.h) -- and the
+    // strip stops underlining anything, rather than claim this pane is Audio.
+    void showRhythm()
+    {
+        bottomTabs.deselect();
+        showBottomTab(bottompane::rhythm);
+    }
     bool historyReady() const { return historyRows > 0; }        // its rows have landed
     // The card's own name (issue #99): read from its marker once the volume
     // is up, minted when it has none. For the --snapshot seam: whether that
@@ -141,19 +149,25 @@ public:
     std::string volumePath() const;
     std::vector<std::string> bannerLines() const;
 
-    // The card's whole history in a window of its own (#73): Window ->
-    // History. The view is fed on the worker from the store, needs no pedal,
-    // and is read again after every job. Public for the --history-window
-    // seam, which feeds the very view the window shows without a window.
+    // The card's whole history in a window of its own (#73). Hidden in
+    // 0.9.6: nothing in the app opens it any more. A slot's own History tab
+    // is where a player looks, and the pin only this window could set has no
+    // home until it is back -- rows already pinned stay pinned. The code and
+    // the --history-window seam stay, and the seam is what feeds the view
+    // from here: on the worker, out of the store, with no pedal and no
+    // window.
     void openHistoryWindow();
     void feedHistoryWindow();
     HistoryWindow& historyWindowView() { return historyView; }
     int historyWindowFeeds() const { return historyWindowFed; }
 
-    // Edit -> Undo / Redo over the history (#73), and Cmd-Z / Cmd-Shift-Z.
-    // What is on offer is read from the store after every job; a press is
-    // planned on the worker, may ask first (the speed bump), and runs as one
-    // recorded operation. Public for the --undo / --redo seam.
+    // Undo / Redo over the history (#73). Hidden in 0.9.6: the menu that
+    // carried them is gone and so are their keys, and a slot's own history
+    // puts a state back instead (Restore rewrites the body AND the take).
+    // The machinery stays, reachable from the --undo / --redo seam: what is
+    // on offer is read from the store after every job; a press is planned on
+    // the worker, may ask first (the speed bump), and runs as one recorded
+    // operation.
     void pressUndo(bool redo);
     juce::String undoMenuText(bool redo) const;
     bool undoEnabled(bool redo) const;
@@ -174,9 +188,6 @@ public:
     bool keyPressed(const juce::KeyPress& key) override;
 
 private:
-    static constexpr int kAudioTab = 0, kPropertiesTab = 1, kRhythmTab = 2,
-                         kHistoryTab = 3; // the bottom pane's faces
-
     void applySnapshot(const PedalSnapshot& snapshot);
     void slotChosen(int slot, bool startPlaying);
     void openSettings();
@@ -212,13 +223,17 @@ private:
     void trace(const juce::String& line); // one step of a connection into operations.log
 
     void runCleanJunk();
+    // Whether the card sweep is on offer, and why not: the gates the
+    // Maintenance menu used to carry, now read by its Settings tab
+    // (MaintenanceOffer.h).
+    maintenance::Offer maintenanceOffer() const;
     void restoreListening(); // the selected occupied slot is the one in the player
     const SlotRow* slotRowFor(int slot) const; // null when unmounted/out of range
 
     // Mutations: every action becomes a queued worker job with the standard
     // write options (history hooks and a fresh operation id).
     void showSlotMenu(int slot, juce::Point<int> screenPosition);
-    void showBottomTab(int index);          // Audio (the player) or Properties (the slot)
+    void showBottomTab(bottompane::Face face); // which face the bottom pane wears
     void updateInspector();                 // push the selected row into the panel
     void clearSlotHistory(int slot);
     bool clearingHistory = false;
@@ -228,6 +243,11 @@ private:
     void restoreFromHistory(int slot, std::int64_t op); // a recorded state, back onto the card
     void exportFromHistory(int slot, std::int64_t op, int track); // a kept take of one track, to a file the player chose
     void playArchivedTake(int slot, std::string hash, juce::String title); // the window's Play
+    // The window's rows cost a whole-card read on the worker. Nothing can
+    // open the window in 0.9.6, so a job that may have written a row pays
+    // that read only while the window is up; the --history-window seam asks
+    // for its own feed directly.
+    void feedHistoryWindowIfShown();
 
     // The History window's rows as the owner needs them for the buttons: the
     // take a row plays and exports, and the slots its restore touches.
@@ -249,7 +269,6 @@ private:
     void exportFromWindow(std::int64_t op);
     void restoreFromWindow(std::int64_t op, std::optional<int> snapshotSlot = std::nullopt);
     void pinFromWindow(std::int64_t op, bool pinned);
-    bool historyKeys(const juce::KeyPress& key); // Cmd-Z / Cmd-Shift-Z, from either window
 
     // A press of Undo or Redo, planned on the worker and handed back.
     struct HistoryEdit {
@@ -274,6 +293,11 @@ private:
     juce::String historyEditOutcome;
     int historyRows = 0; // what the tab last received, for the --history seam
     void applyColumnPreferences();          // Settings -> Columns, onto the table
+    // The Maintenance tab of a Settings dialog that is open right now: its
+    // button follows the pedal, so the window pushes the offer again
+    // whenever the toolbar's own gate moves. Null when no dialog is open,
+    // and a SafePointer because the player can close one at any moment.
+    juce::Component::SafePointer<MaintenancePanel> maintenancePanel;
     // Settings -> History (issue #74): the limit in force, the read that
     // feeds the panel, and the press that frees what it offered.
     std::int64_t historyLimit();
@@ -366,9 +390,9 @@ private:
     juce::ToggleButton showEmptyToggle { "show empty slots" };
     felitronics::appkit::brand::GearButton settingsButton; // app settings, by the pedal light
     SlotTable table;
-    // The strip names the slot ahead of its tabs (#145): one place, true
-    // for Audio, Properties, Rhythm and History alike.
-    TabStrip bottomTabs { { "Audio", "Properties", "Rhythm", "History" }, TabStrip::Lead::label };
+    // The strip names the slot ahead of its tabs (#145): one place, true for
+    // every face of the pane under it.
+    TabStrip bottomTabs { bottompane::tabTitles(), TabStrip::Lead::label };
     HistoryPane history;
     SlotInspector inspector;
     RhythmPane rhythmPane;
@@ -406,6 +430,9 @@ private:
     PlayerPane player { engine };
     juce::String deviceError;
     int selectedSlot = 0;        // what the Properties tab is showing (0 = nothing)
+    // The face in view. Not every face is a tab — Rhythm is hidden in 0.9.6
+    // — so the strip's selection cannot answer this on its own.
+    bottompane::Face bottomFace = bottompane::audio;
     bool pedalBusy = false;
     bool ghostCleanupStarted = false; // one cleanup attempt per ghost episode
     bool midiPedalPresent = false;    // a pedal whose card this build reads is on USB (normal mode)
@@ -445,7 +472,7 @@ private:
     // the frame, and the view keeps its rows and selection for the next open.
     HistoryWindow historyView;
     std::unique_ptr<HistoryWindowHost> historyHost;
-    std::unique_ptr<AppMenu> appMenu; // after the components its actions touch
+    std::unique_ptr<AppMenu> appMenu; // after the badge its About item opens
     app::DeviceWatcher deviceWatcher; // before the worker: its probe runs on the worker thread
     // The history (#72). Only the worker thread touches it; declared before the
     // worker so it outlives the thread, and shared with every queued job's

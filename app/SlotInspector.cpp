@@ -83,7 +83,7 @@ SlotInspector::SlotInspector()
     };
     for (auto* child : std::initializer_list<juce::Component*> {
              &nameCaption_, &tempoCaption_, &barsHint_, &footer_, &nameEditor_, &tempoEditor_,
-             &countIn_, &oneShot_, &playStop_ })
+             &countIn_, &oneShot_ })
         addAndMakeVisible(child);
 
     setSlot(nullptr);
@@ -137,7 +137,7 @@ void SlotInspector::refresh()
     for (auto* child : std::initializer_list<juce::Component*> { &nameCaption_, &tempoCaption_,
                                                                 &barsHint_, &footer_,
                                                                 &nameEditor_, &tempoEditor_,
-                                                                &countIn_, &oneShot_, &playStop_ })
+                                                                &countIn_, &oneShot_ })
         child->setVisible(hasSlot_);
 
     if (!hasSlot_) {
@@ -258,16 +258,16 @@ void SlotInspector::resized()
     footer_.setBounds(identity); // the "disconnect to hear it" note rides the same row
 
     area.removeFromTop(8);
-    const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight(),
-                                      playStop_.preferredHeight());
+    // Start & Stop is hidden in 0.9.6 (SlotInspector.h): it is not laid out,
+    // and it does not set the row's height either — a card nobody can see
+    // must not reserve the tallest row in the studio.
+    const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight());
     auto cards = area.removeFromTop(juce::jmin(cardHeight, area.getHeight()));
-    // Three cards across, each no wider than it needs: the studio is a strip.
-    const int cardWidth = juce::jmin(320, (cards.getWidth() - 2 * kCardGap) / 3);
+    // Two cards across, each no wider than it needs: the studio is a strip.
+    const int cardWidth = juce::jmin(320, (cards.getWidth() - kCardGap) / 2);
     countIn_.setBounds(cards.removeFromLeft(cardWidth));
     cards.removeFromLeft(kCardGap);
     oneShot_.setBounds(cards.removeFromLeft(cardWidth));
-    cards.removeFromLeft(kCardGap);
-    playStop_.setBounds(cards.removeFromLeft(cardWidth));
 }
 
 } // namespace loopercat

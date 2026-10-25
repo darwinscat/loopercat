@@ -314,7 +314,7 @@ public:
     };
     std::vector<OpSummary> operations();
 
-    // What Cmd-Z and Cmd-Shift-Z would put back, read from the rows by the
+    // What Undo and Redo would put back, read from the rows by the
     // cursor in Undo.h: `undo` is the newest live operation, `redo` the
     // newest undo row still standing — reverting it is the redo — and
     // `redoRestores` the operation that redo brings back, for its words.

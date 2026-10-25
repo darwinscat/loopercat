@@ -6,6 +6,7 @@
 #include "AppSettings.h"
 #include "HistoryStoragePanel.h"
 #include "ImportPrefs.h"
+#include "MaintenancePanel.h"
 #include "TabStrip.h"
 #include "TargetLufs.h"
 #include "UploadMark.h"
@@ -19,12 +20,15 @@
 //==============================================================================
 // loopercat::SettingsDialog — the app's own settings, behind the gear in the
 // header: the audio output on one tab, what the slot table shows on another,
-// what happens to uploads on a third, what the history costs on a fourth.
+// what happens to uploads on a third, what the history costs on a fourth,
+// and what can be done to the card on a fifth.
 //
-// The History tab is the storage panel (issue #74) and nothing else: the
-// panel shows what it is handed and asks through its callbacks, and the owner
-// of this dialog — who has the worker and the store — hands and answers. The
-// dialog only hosts it, so a store is never touched from the message thread.
+// The History and Maintenance tabs are panels and nothing else (issue #74,
+// and the menu bar's removal in 0.9.6): a panel shows what it is handed and
+// asks through its callbacks, and the owner of this dialog — who has the
+// worker, the store and the pedal — hands and answers. The dialog only hosts
+// them, so a store is never touched from the message thread and a tab never
+// judges what the card may be asked.
 //
 // Table columns are a preference, not a mode: the pedal's own facts (name,
 // duration, bars, tempo, file) always show, and the per-slot behaviour flags
@@ -152,6 +156,7 @@ public:
         addChildComponent(markHint_);
 
         addChildComponent(storage_);
+        addChildComponent(maintenance_);
 
         addAndMakeVisible(tabs_);
         addAndMakeVisible(audio_);
@@ -169,9 +174,12 @@ public:
 
     static constexpr const char* kDeviceStateKey = "audioDeviceState";
 
-    // The storage panel, for the owner to feed and to listen to.
+    // The panels, for the owner to feed and to listen to.
     HistoryStoragePanel& storage() { return storage_; }
+    MaintenancePanel& maintenance() { return maintenance_; }
     void showHistoryStorage() { tabs_.select(kHistoryTab); } // --history-storage, for a headless run
+    void showMaintenance() { tabs_.select(kMaintenanceTab); }
+    const juce::StringArray& tabTitles() const { return tabs_.titles(); }
 
     // "-18" for whole targets, "-17.5" otherwise — the number a player typed,
     // not a printf artefact. Shared with the slot menu's Normalize label.
@@ -183,7 +191,8 @@ public:
     {
         auto area = getLocalBounds();
         tabs_.setBounds(area.removeFromTop(30));
-        storage_.setBounds(area); // the panel keeps its own margins
+        storage_.setBounds(area);     // the panels keep their own margins
+        maintenance_.setBounds(area);
         area = area.reduced(12, 10);
         audio_.setBounds(area);
 
@@ -226,6 +235,7 @@ private:
                  &markCaption_, &mark_, &markRefusal_, &markHint_ })
             c->setVisible(index == 2);
         storage_.setVisible(index == kHistoryTab);
+        maintenance_.setVisible(index == kMaintenanceTab);
     }
 
     void commitColumns()
@@ -294,8 +304,8 @@ private:
         commitImport();
     }
 
-    static constexpr int kHistoryTab = 3;
-    TabStrip tabs_ { { "Audio", "Columns", "Import", "History" } };
+    static constexpr int kHistoryTab = 3, kMaintenanceTab = 4;
+    TabStrip tabs_ { { "Audio", "Columns", "Import", "History", "Maintenance" } };
     felitronics::appkit::AudioSettingsPanel audio_;
     AppSettings& settings_;
     std::function<void(Columns)> onColumnsChanged_;
@@ -317,6 +327,7 @@ private:
     juce::Label markHint_;
 
     HistoryStoragePanel storage_;
+    MaintenancePanel maintenance_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SettingsDialog)
 };

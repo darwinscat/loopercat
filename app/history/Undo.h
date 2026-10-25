@@ -23,7 +23,7 @@
 // the pedal, and a history that pretended otherwise would be lying about a
 // write that happened. Redo is the undo of that undo, and it is a row too.
 // So the timeline holds rows of kind 'undo' and 'redo', each naming the
-// operation it reverts (ops.reverts), and what Cmd-Z and Cmd-Shift-Z target
+// operation it reverts (ops.reverts), and what Undo and Redo target
 // is read back from those rows by a cursor — never remembered anywhere else.
 //
 // The cursor: a finished operation of the app's or the pedal's becomes live
@@ -32,9 +32,9 @@
 // live to undone and is itself transparent; a finished 'redo' row moves the
 // operation its target had undone back to live. A row that never finished
 // is neither, and one that was cut off may have changed the card, so it
-// closes the way back like a step forward. Cmd-Z targets the newest live operation;
-// Cmd-Shift-Z targets the newest undo row still standing — reverting it is
-// the redo.
+// closes the way back like a step forward. Undo targets the newest live
+// operation; Redo targets the newest undo row still standing — reverting it
+// is the redo.
 //
 // The plan for reverting an operation is what its rows say the slots held
 // before it — the body it recorded and the take it archived — and, for the

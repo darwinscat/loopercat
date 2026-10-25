@@ -15,10 +15,15 @@
 // loopercat::words — the player's one line for a refusal the core states as
 // a fact. The core refuses a click that would write a PATTERN number at a
 // beat whose list is not charted (Beat.hpp, #149) and says so in full for
-// the banner and the log; the Rhythm tab, the Play Count-In card and the
-// table say it in one line beside the lamp, before the click, with no date
-// and no field name in it. One place for those lines, so the three never
-// drift and there is one list to reword.
+// the banner and the log; the Play Count-In card and the table say it in one
+// line beside the lamp, before the click, with no date and no field name in
+// it, and the Rhythm tab does the same when it is shown. One place for those
+// lines, so they never drift and there is one list to reword.
+//
+// A line may only send the player somewhere they can go. The Rhythm tab is
+// hidden in 0.9.6, so the count-in's refusal points at the pedal, which can
+// still switch the rhythm on; the core says the same fact in its own words,
+// and a player never reads those here because a refused card is a lamp.
 //==============================================================================
 namespace loopercat::words
 {
@@ -50,7 +55,7 @@ inline juce::String countInRefused(usecases::countin::Refusal why, long long bea
     switch (why) {
     case usecases::countin::Refusal::onBorrowsSection:
         return "Switching on at " + beatLabel(beat)
-            + " would replace the pattern: switch the rhythm on first.";
+            + " would replace the pattern: switch the rhythm on at the pedal first.";
     case usecases::countin::Refusal::offReturnsSection:
         return "Switching off at " + beatLabel(beat)
             + " would reset the pattern: switch the count-in off on the pedal instead.";
