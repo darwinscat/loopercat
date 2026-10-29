@@ -31,11 +31,11 @@ int main()
     CHECK_EQ(rc5.footer(true), std::string("Disconnect to hear the changes."));
 
     const CardPermissions rc500 = CardPermissions::of("RC-500");
-    CHECK(rc500.rename && rc500.pull && rc500.clear && rc500.restore);
-    CHECK(!rc500.tempo && !rc500.oneShot && !rc500.countIn && !rc500.push && !rc500.swap
+    CHECK(rc500.rename && rc500.oneShot && rc500.pull && rc500.clear && rc500.restore);
+    CHECK(!rc500.tempo && !rc500.countIn && !rc500.push && !rc500.swap
           && !rc500.normalize && !rc500.trim && !rc500.rhythm && !rc500.playStop && !rc500.downmix);
     CHECK(rc500.anyWrite()); // a rename is a write; the sweep and the face follow it
-    const std::string sentence = "On the RC-500, LooperCat does rename, pull, clear and restore only";
+    const std::string sentence = "On the RC-500, LooperCat does rename, set one-shot, pull, clear and restore only";
     CHECK_EQ(rc500.closed, sentence);
     // The inspector can rename: it promises the change, and says what stays closed.
     CHECK_EQ(rc500.footer(true), "Disconnect to hear the changes. " + sentence + ".");

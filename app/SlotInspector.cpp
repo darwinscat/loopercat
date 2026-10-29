@@ -75,7 +75,11 @@ SlotInspector::SlotInspector()
     };
     oneShot_.onToggle = [this] {
         if (hasSlot_ && !busy_ && onOneShotToggled)
-            onOneShotToggled(info_.slot);
+            onOneShotToggled(info_.slot, 1);
+    };
+    oneShot2_.onToggle = [this] {
+        if (hasSlot_ && !busy_ && twoTracks() && onOneShotToggled)
+            onOneShotToggled(info_.slot, 2);
     };
     playStop_.onEdit = [this](usecases::playstop::Edits edits) {
         if (hasSlot_ && !busy_ && onPlayStopEdited && allowed().playStop)
@@ -83,7 +87,7 @@ SlotInspector::SlotInspector()
     };
     for (auto* child : std::initializer_list<juce::Component*> {
              &nameCaption_, &tempoCaption_, &barsHint_, &footer_, &nameEditor_, &tempoEditor_,
-             &countIn_, &oneShot_ })
+             &countIn_, &oneShot_, &oneShot2_ })
         addAndMakeVisible(child);
 
     setSlot(nullptr);
@@ -129,6 +133,7 @@ void SlotInspector::refresh()
     // says why, before the click rather than in a banner after it.
     countIn_.setEnabled(live && can.countIn && !info_.countInRefused);
     oneShot_.setEnabled(live && can.oneShot);
+    oneShot2_.setEnabled(live && can.oneShot);
     playStop_.setEnabled(live && can.playStop);
     footer_.setText(juce::String(can.footer(can.rename || can.tempo || can.countIn || can.oneShot
                                             || can.playStop)),
@@ -139,6 +144,7 @@ void SlotInspector::refresh()
                                                                 &nameEditor_, &tempoEditor_,
                                                                 &countIn_, &oneShot_ })
         child->setVisible(hasSlot_);
+    oneShot2_.setVisible(hasSlot_ && twoTracks());
 
     if (!hasSlot_) {
         repaint();
@@ -165,9 +171,24 @@ void SlotInspector::refresh()
                                      "pedal.")
             : juce::String());
 
-    oneShot_.setState(info_.oneShot,
-                      info_.oneShot ? "Plays once and stops at the end of the loop."
-                                    : "Loops until you stop it.");
+    // One card per track the memory has: the RC-5's one, as it always read;
+    // a two-track memory's two, each about its own track, whether that track
+    // holds a take or not — the pedal keeps the flag either way.
+    if (twoTracks()) {
+        oneShot_.setTitle("One Shot T1");
+        for (std::size_t i = 0; i < 2; ++i) {
+            const bool on = info_.tracks[i].oneShot;
+            const juce::String track = "Track " + juce::String(static_cast<int>(i) + 1);
+            (i == 0 ? oneShot_ : oneShot2_)
+                .setState(on, on ? track + " plays once and stops at the end of its loop."
+                                 : track + " loops until you stop it.");
+        }
+    } else {
+        oneShot_.setTitle("One Shot");
+        oneShot_.setState(info_.oneShot,
+                          info_.oneShot ? "Plays once and stops at the end of the loop."
+                                        : "Loops until you stop it.");
+    }
     playStop_.setValues(info_.playStop);
 
     resized(); // the count-in card grows when it has something to warn about
@@ -263,11 +284,15 @@ void SlotInspector::resized()
     // must not reserve the tallest row in the studio.
     const int cardHeight = juce::jmax(countIn_.preferredHeight(), oneShot_.preferredHeight());
     auto cards = area.removeFromTop(juce::jmin(cardHeight, area.getHeight()));
-    // Two cards across, each no wider than it needs: the studio is a strip.
-    const int cardWidth = juce::jmin(320, (cards.getWidth() - kCardGap) / 2);
+    // The cards across, each no wider than it needs: the studio is a strip.
+    // A memory of two tracks has three: its One Shot is one per track.
+    const int across = twoTracks() ? 3 : 2;
+    const int cardWidth = juce::jmin(320, (cards.getWidth() - kCardGap * (across - 1)) / across);
     countIn_.setBounds(cards.removeFromLeft(cardWidth));
     cards.removeFromLeft(kCardGap);
     oneShot_.setBounds(cards.removeFromLeft(cardWidth));
+    cards.removeFromLeft(kCardGap);
+    oneShot2_.setBounds(twoTracks() ? cards.removeFromLeft(cardWidth) : juce::Rectangle<int>());
 }
 
 } // namespace loopercat

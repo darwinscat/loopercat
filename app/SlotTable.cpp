@@ -278,6 +278,17 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
 // - Count-In: the sentence a seven-pixel dot cannot carry — for a memory
 //   whose click the core would refuse, why, in the card's words
 //   (RefusalWords.h).
+int SlotTable::oneShotTrackAt(int cellX, int trackCount)
+{
+    if (trackCount <= 1)
+        return 1;
+    // The boundary is the middle of the gap between two dots.
+    const float pitch = kDotSize + kDotGap;
+    const int track = 1 + static_cast<int>(std::floor((static_cast<float>(cellX) - kDotLeft
+                                                       + kDotGap * 0.5f) / pitch));
+    return juce::jlimit(1, trackCount, track);
+}
+
 juce::String SlotTable::getCellTooltip(int row, int columnId)
 {
     const int slot = slotOfRow(row);
@@ -291,6 +302,14 @@ juce::String SlotTable::getCellTooltip(int row, int columnId)
         if (found == loudness_.end() || found->second.pending)
             return {};
         return found->second.tooltip;
+    }
+    if (columnId == kOneShot && r.info.tracks.size() > 1) {
+        // Two dots read as one fact per track: said in words on hover.
+        juce::String said;
+        for (const auto& track : r.info.tracks)
+            said << (said.isEmpty() ? "" : ", ") << "T" << track.track
+                 << (track.oneShot ? " plays once" : " loops");
+        return said;
     }
     if (columnId == kCountIn && r.info.countInRefused)
         return words::countInRefused(*r.info.countInRefused, r.info.rhythm.beat);
@@ -340,9 +359,13 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         return;
     }
     // The One Shot cell IS the toggle — click flips it (reference web UI) —
-    // on a card that may be written to; elsewhere it is a lamp.
+    // on a card that may be written to; elsewhere it is a lamp. A memory of
+    // two tracks has a dot per track, and the click flips the one it is on.
     if (columnId == kOneShot && onOneShotToggled && slotOfRow(row) > 0 && allowed().oneShot) {
-        onOneShotToggled(slotOfRow(row));
+        auto& header = table_.getHeader();
+        const int cellX = e.x - header.getColumnPosition(header.getIndexOfColumnId(kOneShot, true)).getX();
+        const int tracks = static_cast<int>(rows_[static_cast<std::size_t>(row)].info.tracks.size());
+        onOneShotToggled(slotOfRow(row), oneShotTrackAt(cellX, tracks));
         return;
     }
     // Same gesture for the Count-In cell — unless the core would refuse the
@@ -584,6 +607,24 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
         area.removeFromLeft(6);
     }
 
+    if (columnId == kOneShot && r.info.tracks.size() > 1) {
+        // One dot per track, track 1 first, each the toggle of its own
+        // track's flag: filled = plays once, hollow = loops.
+        const bool clickable = allowed().oneShot;
+        const float y = (static_cast<float>(height) - kDotSize) * 0.5f;
+        for (std::size_t i = 0; i < r.info.tracks.size(); ++i) {
+            const float x = kDotLeft + static_cast<float>(i) * (kDotSize + kDotGap);
+            if (r.info.tracks[i].oneShot) {
+                g.setColour(felitronics::appkit::brand::orange.withAlpha(clickable ? 1.0f : 0.45f));
+                g.fillEllipse(x, y, kDotSize, kDotSize);
+            } else {
+                g.setColour(kDim.withAlpha(clickable ? 0.55f : 0.25f));
+                g.drawEllipse(x, y, kDotSize, kDotSize, 1.2f);
+            }
+        }
+        return;
+    }
+
     if (columnId == kOneShot || columnId == kCountIn) {
         // The cell is the toggle: filled = on, hollow = off (click flips it).
         // On a card this app only reads it is a lamp, not a button: the
@@ -593,8 +634,8 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
         const bool clickable = columnId == kOneShot
             ? allowed().oneShot
             : allowed().countIn && !r.info.countInRefused;
-        const float d = 7.0f;
-        const float x = static_cast<float>(area.getX()) + 2.0f;
+        const float d = kDotSize;
+        const float x = kDotLeft;
         const float y = (static_cast<float>(height) - d) * 0.5f;
         if (on) {
             g.setColour((columnId == kOneShot ? felitronics::appkit::brand::orange

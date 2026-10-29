@@ -280,9 +280,9 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     table.onSlotsContextMenu = [this](std::vector<int> slots, juce::Point<int> at) {
         showSlotsMenu(std::move(slots), at);
     };
-    table.onOneShotToggled = [this](int slot) {
+    table.onOneShotToggled = [this](int slot, int track) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
-            toggleOneShot(slot, row->info.oneShot);
+            toggleOneShot(*row, track);
     };
     table.onCountInToggled = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
@@ -346,9 +346,9 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         if (table.onTempoCommitted)
             table.onTempoCommitted(slot, tenths);
     };
-    inspector.onOneShotToggled = [this](int slot) {
+    inspector.onOneShotToggled = [this](int slot, int track) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
-            toggleOneShot(slot, row->info.oneShot);
+            toggleOneShot(*row, track);
     };
     inspector.onCountInToggled = [this](int slot) {
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
@@ -2136,17 +2136,25 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
         });
 }
 
-void MainComponent::toggleOneShot(int slot, bool currentlyOn)
+// One Shot is a flag of each track: the click names its track, and flips
+// what that track's own section says.
+void MainComponent::toggleOneShot(const SlotRow& row, int track)
 {
     if (!CardPermissions::of(snapshot.family).oneShot)
         return; // a card this app only reads: the pill is a lamp
+    if (track < 1 || track > static_cast<int>(row.info.tracks.size()))
+        return; // a track this memory has not
+    const int slot = row.info.slot;
+    const bool currentlyOn = row.info.tracks[static_cast<std::size_t>(track - 1)].oneShot;
+    const juce::String onTrack =
+        row.info.tracks.size() > 1 ? " track " + juce::String(track) + " of" : juce::String();
     const auto options = makeWriteOptions();
     worker.enqueue(recorded("oneshot", options,
-                            { juce::String(currentlyOn ? "Disable" : "Enable")
-                                  + " One Shot on slot " + juce::String(slot),
+                            { juce::String(currentlyOn ? "Disable" : "Enable") + " One Shot on"
+                                  + onTrack + " slot " + juce::String(slot),
                               slot,
-                              [slot, on = !currentlyOn, options](const volume::fs::path& volumePath) {
-                                  commands::setOneShot(volumePath, { slot }, on, options);
+                              [slot, track, on = !currentlyOn, options](const volume::fs::path& volumePath) {
+                                  commands::setOneShot(volumePath, { slot }, track, on, options);
                               } }));
 }
 

@@ -660,5 +660,56 @@ int main()
         }
     }
 
+    // --- One Shot of one track, through the history ---
+    //
+    // The flag is a field of each track's section; the history keeps bodies
+    // verbatim, so a One Shot change on track 2 is one operation about its
+    // slot whose bodies differ in that one field, and the takes of both
+    // tracks are written down after it, each with its own hash.
+    {
+        TempDir tmp;
+        const fs::path volume = testkit::makeTwoTrackCard(
+            tmp.path, { { 4, 1, "004_1.WAV", 4410, 1 }, { 4, 2, "004_2.WAV", 8820, 2 } });
+        const auto rec = std::make_shared<HistoryRecorder>(tmp.path / "history", tick);
+        const auto snapshot = rec->firstSeen(volume);
+        if (snapshot)
+            for (int slot = 1; slot <= 99; ++slot)
+                rec->snapshotStep(*snapshot, slot);
+        HistoryStore& store = rec->store();
+        const std::int64_t opsBefore = count(store.db(), "SELECT count(*) FROM ops");
+        std::string error;
+        try {
+            rec->begin("oneshot-4", "oneshot", volume);
+            rec->subject("oneshot-4", 4); // as the app's recorded job names it
+            commands::setOneShot(volume, { 4 }, 2, true, history::withHistory(rec, { .opId = "oneshot-4" }));
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        rec->finish("oneshot-4", error);
+        CHECK_EQ(error, std::string());
+        CHECK_EQ(count(store.db(), "SELECT count(*) FROM ops"), opsBefore + 1);
+        sqlite::Statement op(store.db(), "SELECT seq FROM ops WHERE id = 'oneshot-4'");
+        CHECK(op.step());
+        const std::int64_t seq = op.integer(0);
+        CHECK((store.subjects(seq) == std::vector<int> { 4 }));
+        CHECK((store.touchedSlots(seq) == std::vector<int> { 4 }));
+        const auto timeline = store.slotTimeline(4);
+        CHECK_EQ(timeline.size(), 2u);
+        if (timeline.size() == 2u && timeline[1].beforeBody && timeline[1].afterBody) {
+            const std::string& before = *timeline[1].beforeBody;
+            const std::string& after = *timeline[1].afterBody;
+            CHECK_EQ(rc0::sectionField(before, "TRACK2", "One"), 0);
+            CHECK_EQ(rc0::sectionField(after, "TRACK2", "One"), 1);
+            CHECK_EQ(rc0::sectionField(after, "TRACK1", "One"), 0);
+            CHECK(rc0::setSectionField(after, "TRACK2", "One", 0) == before); // that field, nothing else
+            const auto rows = afterRows(store, seq, 4);
+            CHECK_EQ(rows.size(), 2u);
+            if (rows.size() == 2u) {
+                CHECK(rows[0].track == 1 && rows[0].hash == hashOf(takePath(volume, 4, 1, "004_1.WAV")));
+                CHECK(rows[1].track == 2 && rows[1].hash == hashOf(takePath(volume, 4, 2, "004_2.WAV")));
+            }
+        }
+    }
+
     return testkit::summary("history_tracks_tests");
 }
