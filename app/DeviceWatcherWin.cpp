@@ -29,6 +29,8 @@
 
 #include "DeviceWatcher.h"
 
+#include "MountProbe.h"
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -53,11 +55,6 @@ namespace {
     // most transient holds into a clean eject.
     constexpr int kLockAttempts = 5;
     constexpr auto kLockRetryDelay = std::chrono::milliseconds(400);
-
-    // An I/O probe outstanding longer than this means the volume is wedged
-    // or the medium is gone mid-read: the device story is over even though
-    // nothing ever returned an error. (Same policy as the macOS backend.)
-    constexpr auto kProbeStuckAfter = std::chrono::seconds(2);
 
     std::string lastErrorText(const char* what)
     {
@@ -102,19 +99,33 @@ namespace {
     // sector-aligned buffer and length; 4096 satisfies every real sector
     // size. Success requires the actual medium to answer — cached fiction
     // cannot pass this.
-    bool uncachedReadWorks(const std::string& path)
+    mountprobe::Read uncachedRead(const std::string& path)
     {
+        mountprobe::Read result;
         const HANDLE file =
             ::CreateFileA(path.c_str(), GENERIC_READ,
                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                           OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, nullptr);
-        if (file == INVALID_HANDLE_VALUE)
-            return false;
+        if (file == INVALID_HANDLE_VALUE) {
+            result.answer = mountprobe::Answer::refused;
+            result.error = static_cast<int>(::GetLastError());
+            return result;
+        }
         alignas(4096) char buffer[4096];
         DWORD got = 0;
+        ::SetLastError(0); // a read that succeeds leaves the last error alone, and
+                           // a stale code would read in the journal like a real one
         const bool ok = ::ReadFile(file, buffer, sizeof(buffer), &got, nullptr) != FALSE;
+        const DWORD failure = ::GetLastError();
         ::CloseHandle(file);
-        return ok && got > 0;
+        // Zero bytes read without an error is neither life nor death: see
+        // mountprobe::Answer::noVerdict.
+        result.answer = !ok      ? mountprobe::Answer::refused
+                      : got > 0  ? mountprobe::Answer::served
+                                 : mountprobe::Answer::noVerdict;
+        result.bytes = ok ? static_cast<long long>(got) : 0;
+        result.error = ok ? 0 : static_cast<int>(failure);
+        return result;
     }
 
     // The uncached-read truth for one volume. Shared with the sacrificial
@@ -125,31 +136,47 @@ namespace {
     struct IoProbe {
         std::mutex mutex;
         int generation = 0; // stale probe threads may not report against a newer probe
-        bool inFlight = false;
-        std::chrono::steady_clock::time_point startedAt;
-        bool haveResult = false;
-        bool lastOk = false;
+        mountprobe::Incarnation mount; // what everything below is about
         std::string file;
+        mountprobe::Clock::time_point firstSeenAt{}; // when this mount came under our eye
+        bool inFlight = false;
+        mountprobe::Clock::time_point startedAt;
+        bool haveResult = false;
+        mountprobe::Read read{};
+        int refusals = 0; // reads in a row that did not answer, this incarnation
     };
 
-    void launchProbe(const std::shared_ptr<IoProbe>& probe, std::string file)
+    void launchProbe(const std::shared_ptr<IoProbe>& probe, const mountprobe::Incarnation& mount,
+                     std::string file)
     {
         int generation = 0;
         {
             const std::lock_guard<std::mutex> lock(probe->mutex);
+            if (!mountprobe::speaksFor(probe->mount, probe->file, mount, file)) {
+                // A mount this state knows nothing about: it starts with a
+                // clean slate and its own clock, so nothing it inherits can
+                // condemn it (issue #166).
+                probe->mount = mount;
+                probe->file = file;
+                probe->firstSeenAt = mountprobe::Clock::now();
+                probe->haveResult = false;
+                probe->read = {};
+                probe->refusals = 0;
+            }
             generation = ++probe->generation;
             probe->inFlight = true;
-            probe->startedAt = std::chrono::steady_clock::now();
-            probe->file = file;
+            probe->startedAt = mountprobe::Clock::now();
         }
         std::thread([probe, generation, target = std::move(file)] {
-            const bool ok = uncachedReadWorks(target);
+            const mountprobe::Read read = uncachedRead(target);
             const std::lock_guard<std::mutex> lock(probe->mutex);
             if (probe->generation != generation)
                 return; // a newer probe owns the state now
             probe->inFlight = false;
             probe->haveResult = true;
-            probe->lastOk = ok;
+            probe->read = read;
+            probe->refusals =
+                read.answer == mountprobe::Answer::refused ? probe->refusals + 1 : 0;
         }).detach();
     }
 
@@ -218,12 +245,41 @@ struct DeviceWatcher::Impl {
     std::mutex mutex;
     char trackedLetter = 0; // drive behind the last live verdict; guarded by mutex
     std::shared_ptr<IoProbe> ioProbe = std::make_shared<IoProbe>();
+    // The volume arrivals WM_DEVICECHANGE reported under the drive we
+    // watch, counted. What answers there after one of them is a mount we
+    // have never probed, and the letter alone cannot show it — so the
+    // count is part of a mount's identity (MountProbe.h, issue #166).
+    std::atomic<long long> mountEpoch { 0 };
+    // Without the hidden window there are no device messages at all, the
+    // count never moves, and a mount's identity falls back to the drive
+    // letter alone - the shape of issue #166. Nothing on the mount
+    // manager's side of Windows offers a per-mount number to put in its
+    // place, so the gap is named here rather than papered over with a
+    // number read out of the medium.
+    // One journal line per ghost episode: the worker asks on every 1.5 s
+    // scan, and a ghost stays one until its mount is cleared.
+    std::atomic<bool> ghostTold { false };
 
     HWND hwnd = nullptr;
     std::thread windowThread;
 
-    void diskArrived()
+    // `unitMask` is the arrival's own: the drives it brought up.
+    void diskArrived(DWORD unitMask)
     {
+        {
+            // A volume arriving under the drive we watch means whatever
+            // answers there now is a mount we have never probed, so no
+            // probe result from before may speak for it (issue #166).
+            // Arrivals elsewhere are not counted: discarding the probe
+            // state whenever any stick is plugged in would take away the
+            // state the wedged-filesystem case needs to keep long enough
+            // to call a read stuck. Neither is a REMOVAL counted - our own
+            // forced unmount of a ghost is one, and counting it would make
+            // the mount read live again on the very next scan.
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (trackedLetter != 0 && (unitMask & (1u << (trackedLetter - 'A'))) != 0)
+                mountEpoch.fetch_add(1);
+        }
         std::function<void()> cb;
         {
             const std::lock_guard<std::mutex> lock(mutex);
@@ -231,6 +287,21 @@ struct DeviceWatcher::Impl {
         }
         if (cb)
             cb();
+    }
+
+    // Why a verdict went against the mount, once per episode. Called on the
+    // thread that asked for the verdict (the pedal worker).
+    void tellGhost(const std::string& line)
+    {
+        if (ghostTold.exchange(true))
+            return;
+        std::function<void(std::string)> cb;
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            cb = owner.onGhostVerdict;
+        }
+        if (cb)
+            cb(line);
     }
 
     void volumesRemoved(DWORD unitMask)
@@ -262,7 +333,7 @@ struct DeviceWatcher::Impl {
             const auto* header = reinterpret_cast<DEV_BROADCAST_HDR*>(lParam);
             const bool isVolume = header != nullptr && header->dbch_devicetype == DBT_DEVTYP_VOLUME;
             if (wParam == DBT_DEVICEARRIVAL && isVolume)
-                impl->diskArrived();
+                impl->diskArrived(reinterpret_cast<DEV_BROADCAST_VOLUME*>(lParam)->dbcv_unitmask);
             else if (wParam == DBT_DEVICEREMOVECOMPLETE && isVolume)
                 impl->volumesRemoved(reinterpret_cast<DEV_BROADCAST_VOLUME*>(lParam)->dbcv_unitmask);
             return TRUE;
@@ -308,26 +379,36 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     const char letter = driveLetterOf(volumePath);
     // No drive letter: a relative --volume pin or an exotic mount — no
     // device to track, trusted as-is.
-    if (letter == 0)
+    if (letter == 0) {
+        impl_->ghostTold.store(false);
         return lifecycle::Backing::untracked;
+    }
 
     // A path deeper than the drive root is a plain directory ON some drive
     // (synthetic test volumes), not a medium of its own: untracked.
     std::error_code ec;
     const auto canonical = std::filesystem::weakly_canonical(volumePath, ec);
-    if (ec || canonical != canonical.root_path())
+    if (ec || canonical != canonical.root_path()) {
+        impl_->ghostTold.store(false);
         return lifecycle::Backing::untracked;
+    }
 
     const std::string root = std::string(1, letter) + ":\\";
     const UINT driveType = ::GetDriveTypeA(root.c_str());
     // The caller just saw pedal content here; the root vanishing now means
     // the medium is being torn away under us — the device story is over.
-    if (driveType == DRIVE_NO_ROOT_DIR)
+    if (driveType == DRIVE_NO_ROOT_DIR) {
+        impl_->tellGhost(mountprobe::platformGhostLine(
+            std::string("drive ") + letter + ": has no root any more - the medium is being torn "
+            "away under us"));
         return lifecycle::Backing::gone;
+    }
     // Only removable media get the device story — the pedal is one, and a
     // fixed disk can never be it. Anything else is trusted as-is.
-    if (driveType != DRIVE_REMOVABLE)
+    if (driveType != DRIVE_REMOVABLE) {
+        impl_->ghostTold.store(false);
         return lifecycle::Backing::untracked;
+    }
 
     {
         // Arm the removal push for this drive; a fresh live verdict re-arms
@@ -341,31 +422,39 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     // probe. Its result is one scan late by design: this call never waits on
     // volume I/O. (State machine mirrors the macOS backend.)
     const std::string target = probeFile.string();
-    bool gone = false;
-    bool launch = false;
+    // The letter plus the arrivals seen under it. Nothing here is asked of
+    // the MEDIUM — not its serial number, not its label:
+    // those answers stop coming exactly when the medium dies, which would
+    // change the mount's identity at the very moment a ghost appears and
+    // leave it forever "a mount we have not probed yet", never a ghost.
+    // Identity must come from the mount manager's side of the story, as it
+    // does on the other two backends (MountProbe.h).
+    const mountprobe::Incarnation here{ std::string(1, letter), 0,
+                                        impl_->mountEpoch.load() };
+    mountprobe::Facts facts;
     {
         const std::lock_guard<std::mutex> lock(impl_->ioProbe->mutex);
-        IoProbe& probe = *impl_->ioProbe;
-        const bool sameFile = probe.file == target;
-        if (probe.inFlight) {
-            const bool stuck =
-                std::chrono::steady_clock::now() - probe.startedAt > kProbeStuckAfter;
-            if (stuck) {
-                // Wedged on this volume = gone; stuck on a PREVIOUS volume =
-                // abandon that thread and start probing the new one.
-                gone = sameFile;
-                launch = !sameFile;
-            } else {
-                gone = sameFile && probe.haveResult && !probe.lastOk;
-            }
-        } else {
-            gone = sameFile && probe.haveResult && !probe.lastOk;
-            launch = true; // keep the verdict fresh (and recover if media returns)
+        const IoProbe& probe = *impl_->ioProbe;
+        facts.ours = mountprobe::speaksFor(probe.mount, probe.file, here, target);
+        if (facts.ours) {
+            const auto now = mountprobe::Clock::now();
+            facts.inFlight = probe.inFlight;
+            facts.outstanding = now - probe.startedAt;
+            facts.haveResult = probe.haveResult;
+            facts.read = probe.read;
+            facts.refusals = probe.refusals;
+            facts.seenFor = now - probe.firstSeenAt;
         }
     }
-    if (launch)
-        launchProbe(impl_->ioProbe, target);
-    return gone ? lifecycle::Backing::gone : lifecycle::Backing::live;
+    const mountprobe::Decision decision = mountprobe::decide(facts);
+    if (decision.launchProbe)
+        launchProbe(impl_->ioProbe, here, target);
+    if (decision.call == mountprobe::Call::ghost) {
+        impl_->tellGhost(mountprobe::ghostLine(facts));
+        return lifecycle::Backing::gone;
+    }
+    impl_->ghostTold.store(false); // the next ghost is a new episode
+    return lifecycle::Backing::live;
 }
 
 void DeviceWatcher::eject(const std::filesystem::path& volumePath,
