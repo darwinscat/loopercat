@@ -206,7 +206,12 @@ inline std::string ghostLine(const Facts& facts)
     if (decide(facts).call != Call::ghost)
         throw Error("mountprobe: a ghost's line asked for a mount that is not one");
     std::string line = "ghost mount: ";
-    if (facts.inFlight) {
+    // Which of the two made it a ghost, decided the same way decide() does.
+    // A probe can be out and the mount still be a ghost on a refusal that
+    // came before it, and calling THAT a wedge would put a sentence in the
+    // journal that never happened.
+    const bool wedged = facts.inFlight && facts.outstanding > kProbeStuckAfter;
+    if (wedged) {
         line += "the uncached read has not come back in " + howLong(facts.outstanding)
               + " (the filesystem is wedged)";
     } else {

@@ -279,6 +279,20 @@ int main()
         CHECK(says(lineFor(often), "4 times in a row"));
     }
 
+    // A ghost can have a probe out and still be a ghost on the refusal that
+    // came BEFORE it. The line must then name the refusal: calling it a wedge
+    // would put a sentence in the journal that never happened.
+    {
+        Facts standing = refusedOnce(10s);
+        standing.inFlight = true;
+        standing.outstanding = 100ms; // nowhere near stuck
+        CHECK(decide(standing).call == Call::ghost);
+        const std::string line = lineFor(standing);
+        CHECK(says(line, "did not answer once"));
+        CHECK(!says(line, "wedged"));
+        CHECK(!says(line, "has not come back"));
+    }
+
     // A line about a ghost for a mount that is not one would put a reason in
     // the journal for a decision nobody took.
     {
