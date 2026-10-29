@@ -88,9 +88,11 @@ namespace {
         const ssize_t got = ::read(fd, buffer, sizeof(buffer));
         const int failure = errno;
         ::close(fd);
-        result.answer = got > 0 ? mountprobe::Answer::served : mountprobe::Answer::refused;
+        result.answer = got > 0    ? mountprobe::Answer::served
+                      : got == 0   ? mountprobe::Answer::noVerdict
+                                   : mountprobe::Answer::refused;
         result.bytes = got > 0 ? got : 0;
-        result.error = got > 0 ? 0 : failure;
+        result.error = got < 0 ? failure : 0;
         return result;
     }
 
@@ -249,19 +251,22 @@ struct DeviceWatcher::Impl {
         impl->considerAutoMount(disk);
     }
 
-    // A volume path came or went: a mount happened, or an unmount did. Two
-    // of them can change what answers at the path we watch — this very disk
-    // (ours, being unmounted) and a volume arriving AT that path (a new
-    // mount, of this medium or another). Those bump the epoch, so a probe
-    // result from before the event stops speaking for the path (issue #166).
-    // An unrelated stick mounting must NOT: the wedged-filesystem case needs
-    // the probe state to stay put long enough to be called stuck
-    // (2026-07-22), and discarding it on every disk event in the house would
-    // quietly take that away.
+    // A volume path came or went: a mount happened, or an unmount did. The
+    // one event that changes what answers at the path we watch is a volume
+    // ARRIVING there — whatever is mounted now is a mount we have never
+    // probed, whether it is another medium or this one again (issue #166).
+    //
+    // An unmount is deliberately not counted, and neither is any other
+    // disk's news. Our own forced unmount of a ghost is an unmount of this
+    // very path, and counting it would reset the probe state right after the
+    // verdict that asked for it — the mount would read live again on the next
+    // scan, and the ghost would oscillate while writes were allowed to it.
+    // A stick mounting elsewhere would discard the state the wedged-
+    // filesystem case needs to keep (2026-07-22) long enough to call a read
+    // stuck.
     static void volumePathChangedCallback(DADiskRef disk, CFArrayRef, void* context)
     {
         auto* impl = static_cast<Impl*>(context);
-        const char* bsdName = DADiskGetBSDName(disk);
         std::string mountedAt;
         if (CFDictionaryRef description = DADiskCopyDescription(disk)) {
             if (const auto url = static_cast<CFURLRef>(
@@ -273,9 +278,10 @@ struct DeviceWatcher::Impl {
             }
             CFRelease(description);
         }
+        if (mountedAt.empty()) // an unmount, or a path this build cannot read
+            return;
         const std::lock_guard<std::mutex> lock(impl->mutex);
-        const bool isOurDevice = bsdName != nullptr && impl->currentBsd == bsdName;
-        if (isOurDevice || (!mountedAt.empty() && mountedAt == impl->watchedVolume))
+        if (mountedAt == impl->watchedVolume)
             impl->mountEpoch.fetch_add(1);
     }
 
@@ -462,28 +468,39 @@ DeviceWatcher::DeviceWatcher() : impl_(std::make_unique<Impl>(*this))
 {
     impl_->queue = dispatch_queue_create("com.darwinscat.loopercat.devicewatcher",
                                          DISPATCH_QUEUE_SERIAL);
+    // Everything that can fail happens FIRST, before a single callback is
+    // registered: a throw out of this constructor runs no destructor of ours,
+    // so a registration already made would be left pointing at an Impl that
+    // is about to be freed.
     impl_->session = DASessionCreate(kCFAllocatorDefault);
     if (impl_->session == nullptr)
         throw Error("cannot create a DiskArbitration session");
-    DASessionSetDispatchQueue(impl_->session, impl_->queue);
-    DARegisterDiskAppearedCallback(impl_->session, kDADiskDescriptionMatchVolumeMountable,
-                                   &Impl::diskAppearedCallback, impl_.get());
-    // Mount and unmount, as DiskArbitration sees them: the volume path key
-    // appears when a disk is mounted and goes when it is unmounted.
+    impl_->notifyPort = IONotificationPortCreate(kIOMainPortDefault);
+    if (impl_->notifyPort == nullptr) {
+        CFRelease(impl_->session);
+        impl_->session = nullptr;
+        throw Error("cannot create an IOKit notification port");
+    }
+    // Mount, as DiskArbitration sees it: the volume path key appears when a
+    // disk is mounted and goes when it is unmounted.
     const void* volumePathKey[] = { kDADiskDescriptionVolumePathKey };
     CFArrayRef watchedKeys =
         CFArrayCreate(kCFAllocatorDefault, volumePathKey, 1, &kCFTypeArrayCallBacks);
-    if (watchedKeys == nullptr)
+    if (watchedKeys == nullptr) {
+        IONotificationPortDestroy(impl_->notifyPort);
+        CFRelease(impl_->session);
+        impl_->session = nullptr;
         throw Error("cannot name the disk description keys to watch");
+    }
+
+    DASessionSetDispatchQueue(impl_->session, impl_->queue);
+    IONotificationPortSetDispatchQueue(impl_->notifyPort, impl_->queue);
+    DARegisterDiskAppearedCallback(impl_->session, kDADiskDescriptionMatchVolumeMountable,
+                                   &Impl::diskAppearedCallback, impl_.get());
     DARegisterDiskDescriptionChangedCallback(impl_->session,
                                              kDADiskDescriptionMatchVolumeMountable, watchedKeys,
                                              &Impl::volumePathChangedCallback, impl_.get());
     CFRelease(watchedKeys);
-
-    impl_->notifyPort = IONotificationPortCreate(kIOMainPortDefault);
-    if (impl_->notifyPort == nullptr)
-        throw Error("cannot create an IOKit notification port");
-    IONotificationPortSetDispatchQueue(impl_->notifyPort, impl_->queue);
 }
 
 DeviceWatcher::~DeviceWatcher()
@@ -573,7 +590,6 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     const std::string target = probeFile.string();
     const mountprobe::Incarnation here{ rec.bsd, medium, impl_->mountEpoch.load() };
     mountprobe::Facts facts;
-    facts.registryHasMedia = true; // the lookup above answered
     {
         const std::lock_guard<std::mutex> lock(impl_->ioProbe->mutex);
         const IoProbe& probe = *impl_->ioProbe;

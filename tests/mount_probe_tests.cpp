@@ -13,9 +13,13 @@
 //
 //   - a mount nobody has probed is live (whatever is remembered about
 //     another mount of the same path),
-//   - one failed read on a mount that has only just come up is not enough,
-//   - a read that never comes back IS enough (the FSKit wedge of
-//     2026-07-22 is the reason the ghost path exists at all),
+//   - nothing the probe does condemns a mount inside its settling window:
+//     not one refusal, not two, not a read that has not come back. Right
+//     after a card comes up the probes are a few hundred milliseconds apart,
+//     so a count of failures there measures nothing but the cadence,
+//   - past that window a refusal is enough, and so is a read that never
+//     comes back (the FSKit wedge of 2026-07-22 is the reason the ghost path
+//     exists at all),
 //   - and every ghost says in the journal why, with its numbers.
 
 #include "support.hpp"
@@ -43,7 +47,6 @@ Facts watched(std::chrono::steady_clock::duration seenFor)
     Facts facts;
     facts.ours = true;
     facts.seenFor = seenFor;
-    facts.registryHasMedia = true;
     return facts;
 }
 
@@ -116,7 +119,6 @@ int main()
     {
         Facts inherited = refusedOnce(1h);
         inherited.refusals = 9;
-        inherited.registryHasMedia = false;
         inherited.ours = false; // another incarnation's state
 
         const Decision decision = decide(inherited);
@@ -134,36 +136,51 @@ int main()
         }
     }
 
-    // ===== one failed read on a young mount is not a verdict =====
+    // ===== nothing condemns a mount inside its settling window =====
 
-    // "A single failed read on a mount younger than the grace period does
-    // not unmount it; a second one does."
+    // One failed read on a mount that has just come up does not unmount it,
+    // and it is asked again at once.
     {
         CHECK(decide(refusedOnce(200ms)).call == Call::live);
         CHECK(decide(refusedOnce(200ms)).launchProbe); // asked again, which is the point
-
-        Facts twice = refusedOnce(200ms);
-        twice.refusals = 2;
-        CHECK(decide(twice).call == Call::ghost);
     }
 
-    // A refusal plus the platform agreeing there is no medium behind the
-    // mount needs no second opinion.
+    // Nor does a second, or a fifth. The issue proposed "two consecutive
+    // failures" for a young mount; the probes right after a card comes up are
+    // a few hundred milliseconds apart (one per verdict, and the worker takes
+    // a verdict after every job), so the second failure lands inside the very
+    // transient the first one did. The episode of issue #166 was condemned
+    // 0.4 s and 0.7 s after "card up" — a count would have allowed exactly
+    // that.
     {
-        Facts noMedium = refusedOnce(200ms);
-        noMedium.registryHasMedia = false;
-        CHECK(decide(noMedium).call == Call::ghost);
+        for (const int refusals : { 2, 3, 5 }) {
+            Facts again = refusedOnce(700ms);
+            again.refusals = refusals;
+            CHECK(decide(again).call == Call::live);
+            CHECK(decide(again).launchProbe);
+        }
     }
 
-    // The grace is the YOUNG mount's alone: a pedal that leaves STORAGE
-    // mid-session has been watched for a while, and one refused read must
-    // still take its mount down on the next scan.
+    // A read that has not come back inside the window is a mount still
+    // coming up, not a wedged filesystem: the first read after an FSKit mount
+    // can take its time, and condemning it force-unmounts a live card whose
+    // answer was about to arrive.
+    {
+        Facts slowFirstRead = watched(2500ms);
+        slowFirstRead.inFlight = true;
+        slowFirstRead.outstanding = kProbeStuckAfter + 400ms;
+        CHECK(decide(slowFirstRead).call == Call::live);
+    }
+
+    // Past the window one refusal is enough, as it always was: that is how a
+    // pedal leaving STORAGE mid-session reads, and the mount must go on the
+    // next scan.
     {
         CHECK(decide(refusedOnce(10s)).call == Call::ghost);
-        // The boundary, both sides of it: at the settling period the mount
-        // still gets its second chance, past it it does not.
-        CHECK(decide(refusedOnce(kSettlingPeriod)).call == Call::live);
-        CHECK(decide(refusedOnce(kSettlingPeriod + 1ms)).call == Call::ghost);
+        // The boundary, both sides of it. "Younger than the window" keeps its
+        // second chance; a mount that has reached the window has had it.
+        CHECK(decide(refusedOnce(kSettlingPeriod - 1ms)).call == Call::live);
+        CHECK(decide(refusedOnce(kSettlingPeriod)).call == Call::ghost);
     }
 
     // A read that answered clears the slate, however old the mount: the
@@ -196,14 +213,14 @@ int main()
     // "A stuck probe on a mount older than the grace period is still a
     // ghost" — the FSKit wedge is what the whole ghost path is for.
     {
-        Facts wedged = watched(30s);
-        wedged.inFlight = true;
-        wedged.outstanding = kProbeStuckAfter + 1ms;
-        CHECK(decide(wedged).call == Call::ghost);
-        CHECK(!decide(wedged).launchProbe); // no second thread onto a wedged volume
+        Facts stuck = watched(30s);
+        stuck.inFlight = true;
+        stuck.outstanding = kProbeStuckAfter + 1ms;
+        CHECK(decide(stuck).call == Call::ghost);
+        CHECK(!decide(stuck).launchProbe); // no second thread onto a wedged volume
 
-        wedged.outstanding = 10s;
-        CHECK(decide(wedged).call == Call::ghost);
+        stuck.outstanding = 10s;
+        CHECK(decide(stuck).call == Call::ghost);
     }
 
     // A probe still within its time is no verdict at all: the last
@@ -223,7 +240,7 @@ int main()
         Facts youngAfterRefusal = refusedOnce(200ms);
         youngAfterRefusal.inFlight = true;
         youngAfterRefusal.outstanding = 100ms;
-        CHECK(decide(youngAfterRefusal).call == Call::live); // ...but not on a young one
+        CHECK(decide(youngAfterRefusal).call == Call::live); // ...but not inside the window
     }
 
     // A probe out on a mount this state does not speak for is abandoned,
@@ -255,12 +272,12 @@ int main()
     }
 
     {
-        Facts noMedium = refusedOnce(400ms);
-        noMedium.registryHasMedia = false;
-        const std::string line = lineFor(noMedium);
+        const std::string line = lineFor(refusedOnce(4400ms));
         CHECK(says(line, "did not answer once"));
-        CHECK(says(line, "no longer lists the medium"));
-        CHECK(says(line, "400 ms ago"));
+        // The probe's own verdict is never about a medium the system has
+        // already dropped: that one is the backend's line, below.
+        CHECK(says(line, "still lists the medium"));
+        CHECK(says(line, "4.4 s ago"));
     }
 
     {
@@ -297,7 +314,7 @@ int main()
     // the journal for a decision nobody took.
     {
         CHECK_THROWS(ghostLine(watched(10s)), "not one");
-        CHECK_THROWS(ghostLine(refusedOnce(200ms)), "not one");
+        CHECK_THROWS(ghostLine(refusedOnce(200ms)), "not one"); // inside the window
         Facts uncounted = refusedOnce(10s);
         uncounted.refusals = 0; // a refusal the backend forgot to count
         CHECK_THROWS(ghostLine(uncounted), "must be counted");
@@ -353,11 +370,17 @@ int main()
         // completion that knows it.
         CHECK(says(owner, "trace(utf8(mountprobe::forcedUnmountLine("));
 
-        // The watcher's reason is traced, not swallowed by the handler.
-        const std::size_t handler = owner.find("onGhostVerdict");
+        // The watcher's reason is traced, not swallowed by the handler the
+        // owner installs. Anchored on the assignment, and read only as far as
+        // the handler's own closing brace.
+        const std::size_t handler = owner.find("deviceWatcher.onGhostVerdict =");
         CHECK(handler != std::string::npos);
-        if (handler != std::string::npos)
-            CHECK(says(owner.substr(handler, 400), "trace("));
+        if (handler != std::string::npos) {
+            const std::size_t end = owner.find("\n    };", handler);
+            CHECK(end != std::string::npos && end > handler);
+            if (end != std::string::npos && end > handler)
+                CHECK(says(owner.substr(handler, end - handler), "trace("));
+        }
     }
 
     return testkit::summary("mount probe");

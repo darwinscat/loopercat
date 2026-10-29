@@ -162,28 +162,51 @@ namespace {
                                        readSysfsLine(sysfsBlockDir(device) + "/../removable"));
     }
 
+    // Which MOUNT this is, as the kernel counts them. statx's unique mount
+    // id is never reused while the system runs (Linux 6.8+,
+    // STATX_MNT_ID_UNIQUE); the id in /proc/self/mountinfo is NOT that - it
+    // comes from a lowest-free-index allocator and is freed on unmount, so
+    // the next mount of the same device usually gets the same number back.
+    // Taking that for an identity would let a fresh mount inherit the dead
+    // one's probe result, which is the whole of issue #166. Where the kernel
+    // is older the mountinfo id is all there is and that risk stands; the
+    // settling window still keeps a fresh mount's first reads from condemning
+    // it, but a stale refusal can outlive the mount it came from.
+    unsigned long long mountInstance(const std::filesystem::path& path, unsigned int fromTable)
+    {
+#ifdef STATX_MNT_ID_UNIQUE
+        struct ::statx stx {};
+        if (::statx(AT_FDCWD, path.c_str(), AT_STATX_DONT_SYNC, STATX_MNT_ID_UNIQUE, &stx) == 0
+            && (stx.stx_mask & STATX_MNT_ID_UNIQUE) != 0)
+            return stx.stx_mnt_id;
+#endif
+        return fromTable;
+    }
+
     //==========================================================================
     // The uncached read
     //==========================================================================
 
-    // The three outcomes are mountprobe::Answer's: served, refused, and the
-    // one this backend alone has to report — a filesystem that cannot do
-    // uncached reads at all gives no verdict and must never condemn a mount.
+    // The outcomes are mountprobe::Answer's, including the one this backend
+    // has more ways to reach than the others: a filesystem that cannot do an
+    // uncached read at all gives no verdict and may not condemn a mount.
     mountprobe::Read uncachedRead(const std::string& path)
     {
         mountprobe::Read result;
         const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
         if (fd < 0) {
+            const int failure = errno;
             // EINVAL from open means the filesystem refuses direct I/O, not
             // that the device left; anything else is a real read failure.
-            result.answer = errno == EINVAL ? mountprobe::Answer::noVerdict
-                                            : mountprobe::Answer::refused;
-            result.error = errno;
+            result.answer = failure == EINVAL ? mountprobe::Answer::noVerdict
+                                              : mountprobe::Answer::refused;
+            result.error = failure;
             return result;
         }
         void* buffer = nullptr;
-        if (::posix_memalign(&buffer, kDirectAlign, kDirectAlign) != 0) {
-            const int failure = errno;
+        // posix_memalign RETURNS its error and leaves errno alone.
+        if (const int failure = ::posix_memalign(&buffer, kDirectAlign, kDirectAlign);
+            failure != 0) {
             ::close(fd);
             result.answer = mountprobe::Answer::noVerdict;
             result.error = failure;
@@ -196,11 +219,14 @@ namespace {
         std::free(buffer);
         ::close(fd);
         // A probe file shorter than one block legitimately reads short, and
-        // even a zero-length answer proves the medium responded; only an
-        // error means it did not.
-        result.answer = got >= 0 ? mountprobe::Answer::served : mountprobe::Answer::refused;
-        result.bytes = got >= 0 ? got : 0;
-        result.error = got >= 0 ? 0 : failure;
+        // those bytes came from the medium. Zero bytes is neither life nor
+        // death - see mountprobe::Answer::noVerdict - and only an error says
+        // the medium did not answer.
+        result.answer = got > 0    ? mountprobe::Answer::served
+                      : got == 0   ? mountprobe::Answer::noVerdict
+                                   : mountprobe::Answer::refused;
+        result.bytes = got > 0 ? got : 0;
+        result.error = got < 0 ? failure : 0;
         return result;
     }
 
@@ -567,14 +593,12 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     // stays live rather than being declared a ghost on a capability gap
     // (mountprobe::Answer::noVerdict).
     const std::string target = probeFile.string();
-    // The mount id is this mount's own: a remount at the same place, of the
-    // same device, is a different incarnation and inherits nothing from this
-    // one (issue #166).
+    // The device, plus which mount of it this is (mountInstance): a remount
+    // at the same place inherits nothing from the mount before it (#166).
     const mountprobe::Incarnation here{ std::to_string(mount->deviceMajor) + ":"
                                            + std::to_string(mount->deviceMinor),
-                                       mount->mountId, 0 };
+                                       mountInstance(volumePath, mount->mountId), 0 };
     mountprobe::Facts facts;
-    facts.registryHasMedia = true; // sysfs answered for the block device above
     {
         const std::lock_guard<std::mutex> lock(impl_->ioProbe->mutex);
         const IoProbe& probe = *impl_->ioProbe;

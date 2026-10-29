@@ -48,20 +48,32 @@ using Clock = std::chrono::steady_clock;
 // nothing ever returns an error.
 inline constexpr auto kProbeStuckAfter = std::chrono::seconds(2);
 
-// How long a mount is given before ONE failed read may condemn it. Three
-// seconds covers a mount still coming up (issue #166: the first uncached read
-// after the FSKit mount appeared returned nothing while the card was alive)
-// and costs a truly dead mount two more scans of the worker's 1.5 s poll —
-// the stale mount is still cleared, just after asking twice.
+// How long a mount is given to come up before anything the probe does may
+// condemn it. Three seconds covers a mount still settling: issue #166's first
+// uncached read returned nothing right after the FSKit mount appeared, while
+// the card was perfectly alive.
+//
+// A window of TIME, deliberately, and not the count of failures the issue
+// first proposed: a probe is launched on every verdict with none in flight,
+// and the worker takes a verdict after every job it runs, so right after a
+// card comes up the probes are a few hundred milliseconds apart. Two refusals
+// in a row then prove nothing a single one did not - the episode of #166
+// force-unmounted its card 0.4 s and 0.7 s after "card up", which a
+// two-strike rule would have allowed. A dead mount still gets cleared, three
+// seconds later.
 inline constexpr auto kSettlingPeriod = std::chrono::seconds(3);
 
 // What one completed read did.
 enum class Answer {
     served,   // the medium answered with bytes from past the cache
     refused,  // the read failed: the medium is gone, or wedged
-    noVerdict // the probe could not run at all (a filesystem with no uncached
-              // read — Linux O_DIRECT on a filesystem that refuses it). It
-              // says nothing either way, so it never condemns a mount.
+    noVerdict // the read says nothing either way, so it never condemns a
+              // mount: the probe could not run at all (Linux O_DIRECT on a
+              // filesystem that refuses it), or it came back with zero bytes.
+              // Zero bytes is not an error and not proof of life either —
+              // reading nothing needs no device — and the app truncates the
+              // probe file itself when it writes a memory, so a probe racing
+              // that write must not read the empty moment as a dead card.
 };
 
 // One completed read, with the numbers. They are kept because "why did the
@@ -112,9 +124,9 @@ inline bool speaksFor(const Incarnation& stored, const std::string& storedFile,
 }
 
 // What the backend knows when it asks, as it reads its own probe state under
-// its own lock. Everything but `registryHasMedia` is about the stored probe;
-// when it does not speak for this mount (see speaksFor) the rest is not ours
-// to read, and `ours` false is the whole truth the decision needs.
+// its own lock. All of it is about the STORED probe; when that does not speak
+// for this mount (see speaksFor) the rest is not ours to read, and `ours`
+// false is the whole truth the decision needs.
 struct Facts {
     bool ours = false;
     bool inFlight = false;         // a probe thread is out
@@ -123,7 +135,6 @@ struct Facts {
     Read read{};                   // what it read
     int refusals = 0;              // reads in a row that did not answer, this incarnation
     Clock::duration seenFor{};     // how long this incarnation has been under our eye
-    bool registryHasMedia = true;  // the platform still lists a medium behind the mount
 };
 
 enum class Call {
@@ -136,18 +147,18 @@ struct Decision {
     bool launchProbe = false; // ask the medium again, on a fresh sacrificial thread
 };
 
-// The answer the last COMPLETED read leaves standing.
-inline Call settled(const Facts& facts)
+// The last completed read refused to answer. It stands while a newer probe
+// runs: nothing has contradicted it yet.
+inline bool refused(const Facts& facts)
 {
-    if (!facts.haveResult || facts.read.answer != Answer::refused)
-        return Call::live;
-    // A read that did not answer. One is enough on a mount we have been
-    // watching for a while — that is how a pedal leaving STORAGE mid-session
-    // reads. On a mount we have only just met it takes a second refusal, or
-    // the platform agreeing there is no medium behind it (issue #166).
-    if (facts.seenFor > kSettlingPeriod || facts.refusals >= 2 || !facts.registryHasMedia)
-        return Call::ghost;
-    return Call::live;
+    return facts.haveResult && facts.read.answer == Answer::refused;
+}
+
+// A read so long outstanding that no answer IS the answer — the filesystem is
+// wedged and nothing will ever come back (the FSKit spin of 2026-07-22).
+inline bool wedged(const Facts& facts)
+{
+    return facts.inFlight && facts.outstanding > kProbeStuckAfter;
 }
 
 inline Decision decide(const Facts& facts)
@@ -156,15 +167,17 @@ inline Decision decide(const Facts& facts)
     // and this mount has not been asked yet: live, and ask it.
     if (!facts.ours)
         return { Call::live, true };
-    if (facts.inFlight) {
-        // Wedged on this mount is the one case where no answer IS the answer.
-        // Short of that the last completed read stands while this one runs; a
-        // second thread would only pile onto a volume that is already busy.
-        if (facts.outstanding > kProbeStuckAfter)
-            return { Call::ghost, false };
-        return { settled(facts), false };
-    }
-    return { settled(facts), true }; // keep the verdict fresh (and recover if the medium returns)
+    // Inside the settling window the probe cannot condemn the mount at all —
+    // not by refusing, not by taking its time — because a mount that has just
+    // come up does both while being perfectly alive, and the answer to that is
+    // to ask again, not to pull the volume out from under the player. It is
+    // asked again on the very next scan. A medium the system itself has
+    // stopped listing never reaches this decision: each backend answers that
+    // from its own registry, before it consults the probe at all.
+    const bool condemning = (refused(facts) || wedged(facts)) && facts.seenFor >= kSettlingPeriod;
+    // A probe already out is not joined by a second one: it would only pile
+    // onto a volume that is already busy.
+    return { condemning ? Call::ghost : Call::live, !facts.inFlight };
 }
 
 //==============================================================================
@@ -206,12 +219,11 @@ inline std::string ghostLine(const Facts& facts)
     if (decide(facts).call != Call::ghost)
         throw Error("mountprobe: a ghost's line asked for a mount that is not one");
     std::string line = "ghost mount: ";
-    // Which of the two made it a ghost, decided the same way decide() does.
-    // A probe can be out and the mount still be a ghost on a refusal that
-    // came before it, and calling THAT a wedge would put a sentence in the
-    // journal that never happened.
-    const bool wedged = facts.inFlight && facts.outstanding > kProbeStuckAfter;
-    if (wedged) {
+    // Which of the two made it a ghost, asked the way decide() asks. A probe
+    // can be out while the mount is a ghost on a refusal that came before it,
+    // and calling THAT a wedge would put a sentence in the journal about
+    // something that never happened.
+    if (wedged(facts)) {
         line += "the uncached read has not come back in " + howLong(facts.outstanding)
               + " (the filesystem is wedged)";
     } else {
@@ -219,8 +231,10 @@ inline std::string ghostLine(const Facts& facts)
               + std::to_string(facts.read.bytes) + " bytes, error "
               + std::to_string(facts.read.error) + ")";
     }
-    line += facts.registryHasMedia ? "; the system still lists the medium"
-                                   : "; the system no longer lists the medium";
+    // Always true where this line is written, and worth writing: it says the
+    // verdict was the probe's, not a medium the system had already dropped —
+    // that one has its own line (platformGhostLine) and never gets here.
+    line += "; the system still lists the medium";
     return line + "; this mount first seen " + howLong(facts.seenFor) + " ago";
 }
 

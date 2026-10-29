@@ -118,10 +118,13 @@ namespace {
         const bool ok = ::ReadFile(file, buffer, sizeof(buffer), &got, nullptr) != FALSE;
         const DWORD failure = ::GetLastError();
         ::CloseHandle(file);
-        const bool answered = ok && got > 0;
-        result.answer = answered ? mountprobe::Answer::served : mountprobe::Answer::refused;
-        result.bytes = answered ? static_cast<long long>(got) : 0;
-        result.error = answered ? 0 : static_cast<int>(failure);
+        // Zero bytes read without an error is neither life nor death: see
+        // mountprobe::Answer::noVerdict.
+        result.answer = !ok      ? mountprobe::Answer::refused
+                      : got > 0  ? mountprobe::Answer::served
+                                 : mountprobe::Answer::noVerdict;
+        result.bytes = ok ? static_cast<long long>(got) : 0;
+        result.error = ok ? 0 : static_cast<int>(failure);
         return result;
     }
 
@@ -242,12 +245,17 @@ struct DeviceWatcher::Impl {
     std::mutex mutex;
     char trackedLetter = 0; // drive behind the last live verdict; guarded by mutex
     std::shared_ptr<IoProbe> ioProbe = std::make_shared<IoProbe>();
-    // Every volume arrival and removal WM_DEVICECHANGE reported, counted.
-    // What answers under a drive letter after such an event may be another
-    // medium or another mount of the same one, and the letter alone cannot
-    // show it — so the count is part of a mount's identity (MountProbe.h,
-    // issue #166).
+    // The volume arrivals WM_DEVICECHANGE reported under the drive we
+    // watch, counted. What answers there after one of them is a mount we
+    // have never probed, and the letter alone cannot show it — so the
+    // count is part of a mount's identity (MountProbe.h, issue #166).
     std::atomic<long long> mountEpoch { 0 };
+    // Without the hidden window there are no device messages at all, the
+    // count never moves, and a mount's identity falls back to the drive
+    // letter alone - the shape of issue #166. Nothing on the mount
+    // manager's side of Windows offers a per-mount number to put in its
+    // place, so the gap is named here rather than papered over with a
+    // number read out of the medium.
     // One journal line per ghost episode: the worker asks on every 1.5 s
     // scan, and a ghost stays one until its mount is cleared.
     std::atomic<bool> ghostTold { false };
@@ -255,9 +263,23 @@ struct DeviceWatcher::Impl {
     HWND hwnd = nullptr;
     std::thread windowThread;
 
-    void diskArrived()
+    // `unitMask` is the arrival's own: the drives it brought up.
+    void diskArrived(DWORD unitMask)
     {
-        mountEpoch.fetch_add(1);
+        {
+            // A volume arriving under the drive we watch means whatever
+            // answers there now is a mount we have never probed, so no
+            // probe result from before may speak for it (issue #166).
+            // Arrivals elsewhere are not counted: discarding the probe
+            // state whenever any stick is plugged in would take away the
+            // state the wedged-filesystem case needs to keep long enough
+            // to call a read stuck. Neither is a REMOVAL counted - our own
+            // forced unmount of a ghost is one, and counting it would make
+            // the mount read live again on the very next scan.
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (trackedLetter != 0 && (unitMask & (1u << (trackedLetter - 'A'))) != 0)
+                mountEpoch.fetch_add(1);
+        }
         std::function<void()> cb;
         {
             const std::lock_guard<std::mutex> lock(mutex);
@@ -284,7 +306,6 @@ struct DeviceWatcher::Impl {
 
     void volumesRemoved(DWORD unitMask)
     {
-        mountEpoch.fetch_add(1);
         std::function<void()> cb;
         {
             const std::lock_guard<std::mutex> lock(mutex);
@@ -312,7 +333,7 @@ struct DeviceWatcher::Impl {
             const auto* header = reinterpret_cast<DEV_BROADCAST_HDR*>(lParam);
             const bool isVolume = header != nullptr && header->dbch_devicetype == DBT_DEVTYP_VOLUME;
             if (wParam == DBT_DEVICEARRIVAL && isVolume)
-                impl->diskArrived();
+                impl->diskArrived(reinterpret_cast<DEV_BROADCAST_VOLUME*>(lParam)->dbcv_unitmask);
             else if (wParam == DBT_DEVICEREMOVECOMPLETE && isVolume)
                 impl->volumesRemoved(reinterpret_cast<DEV_BROADCAST_VOLUME*>(lParam)->dbcv_unitmask);
             return TRUE;
@@ -401,8 +422,8 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     // probe. Its result is one scan late by design: this call never waits on
     // volume I/O. (State machine mirrors the macOS backend.)
     const std::string target = probeFile.string();
-    // The letter plus the volume arrivals and removals seen since. Nothing
-    // here is asked of the MEDIUM — not its serial number, not its label:
+    // The letter plus the arrivals seen under it. Nothing here is asked of
+    // the MEDIUM — not its serial number, not its label:
     // those answers stop coming exactly when the medium dies, which would
     // change the mount's identity at the very moment a ghost appears and
     // leave it forever "a mount we have not probed yet", never a ghost.
@@ -411,7 +432,6 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     const mountprobe::Incarnation here{ std::string(1, letter), 0,
                                         impl_->mountEpoch.load() };
     mountprobe::Facts facts;
-    facts.registryHasMedia = true; // the drive root answered above
     {
         const std::lock_guard<std::mutex> lock(impl_->ioProbe->mutex);
         const IoProbe& probe = *impl_->ioProbe;

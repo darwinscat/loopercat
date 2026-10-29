@@ -52,15 +52,18 @@ int main()
         CHECK_EQ(entries[0].source, std::string("/dev/sdb1"));
         CHECK_EQ(entries[0].deviceMajor, 8u);
         CHECK_EQ(entries[0].deviceMinor, 17u);
-        // Field (1), the kernel's id for this mount: what tells one mount of
-        // the pedal from the next one, since the device number does not
-        // change across a remount (MountProbe.h, issue #166).
+        // Field (1), the kernel's id for this mount: the fallback identity of
+        // a mount incarnation where the kernel has no unique one to give
+        // (MountProbe.h, DeviceWatcherLinux.cpp, issue #166). The number is
+        // the kernel's, reusable after an unmount, so what this suite
+        // promises is only that the field arrives unmangled.
         CHECK_EQ(entries[0].mountId, 42u);
     }
 
-    // The same device, the same mount point, mounted again: only the mount
-    // id moves, and it has to arrive — a parser that drops it reads the two
-    // mounts as one and lets the first one's probe condemn the second.
+    // Two mounts of the same device at the same place, as the table shows
+    // them: each line's own id reaches its own entry. A parser that dropped
+    // the field, or read the parent id instead, would make the two
+    // indistinguishable.
     {
         const std::vector<Entry> entries = parseText(
             "42 31 8:17 / /media/alisa/BOSS\\040RC-5 rw shared:1 - vfat /dev/sdb1 rw\n"
