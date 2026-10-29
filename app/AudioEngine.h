@@ -85,6 +85,7 @@ public:
     struct MixTrack {
         juce::File file;
         float gain = 1.0f;
+        bool oneShot = false; // TRACK<n>/One: the track plays once, the rest loop
     };
 
     // Load a multi-track memory as its mix (TrackMixSource): every take at
@@ -101,6 +102,7 @@ public:
         for (const auto& track : tracks) {
             TrackMixSource::Track entry;
             entry.gain = track.gain;
+            entry.oneShot = track.oneShot;
             if (track.file != juce::File()) {
                 std::unique_ptr<juce::AudioFormatReader> reader(
                     formats_.createReaderFor(track.file));

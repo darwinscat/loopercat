@@ -28,7 +28,10 @@
 // therefore sits on this source without a buffer of its own.
 //
 // Each track loops on ITS OWN length, as on the pedal, where a 4-bar track
-// runs twice under an 8-bar one. The mix's clock is linear and folds at the
+// runs twice under an 8-bar one — unless that track is One Shot (TRACK<n>/One,
+// a flag of each track): then it plays once and is silent after its end,
+// while the others keep looping. The transport's Loop switch is above them
+// all: off, nothing loops. The mix's clock is linear and folds at the
 // longest track; with track lengths that are multiples of each other — the
 // pedal's own arithmetic — that fold is also the shorter track's wrap, so
 // every seam is gapless. A seek moves every track to the same time. This is
@@ -51,6 +54,7 @@ public:
     struct Track {
         std::unique_ptr<juce::AudioFormatReaderSource> source; // owns its reader; null = no take
         float gain = 1.0f;                                     // PlyLvl / 100
+        bool oneShot = false;                                  // TRACK<n>/One: plays once
     };
 
     // The tracks in track order, one entry per track the memory has: a track
@@ -65,9 +69,10 @@ public:
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             Lane lane;
             gains_[i].store(tracks[i].gain, std::memory_order_relaxed);
+            lane.oneShot = tracks[i].oneShot;
             if (tracks[i].source != nullptr) {
                 lane.reader = std::move(tracks[i].source);
-                lane.reader->setLooping(true);
+                lane.reader->setLooping(!lane.oneShot);
                 lane.length = lane.reader->getTotalLength();
                 lane.section = std::make_unique<SectionLoopSource>(*lane.reader);
                 lane.buffer = std::make_unique<juce::BufferingAudioSource>(
@@ -95,13 +100,21 @@ public:
     void setSolo(int track) { solo_.store(track, std::memory_order_relaxed); }
     int solo() const { return solo_.load(std::memory_order_relaxed); }
 
-    // Every track loops on its own length, or none does. MESSAGE THREAD.
+    // The transport's Loop: on, every track that is not One Shot loops on its
+    // own length; off, none does. MESSAGE THREAD.
     void setLooping(bool shouldLoop) override
     {
         looping_.store(shouldLoop, std::memory_order_relaxed);
         for (auto& lane : lanes_)
             if (lane.reader != nullptr)
-                lane.reader->setLooping(shouldLoop);
+                lane.reader->setLooping(shouldLoop && !lane.oneShot);
+    }
+
+    // Whether a track (1-based) plays once: its One Shot flag, as loaded.
+    bool trackOneShot(int track) const
+    {
+        return track >= 1 && track <= trackCount()
+            && lanes_[static_cast<std::size_t>(track - 1)].oneShot;
     }
 
     // The marker loop, in the mix's frames, on every track. MESSAGE THREAD.
@@ -159,6 +172,7 @@ public:
         info.clearActiveBufferRegion();
         const int solo = solo_.load(std::memory_order_relaxed);
         const bool looping = looping_.load(std::memory_order_relaxed);
+        // a One Shot track runs on the linear clock: past its end, silence
         int done = 0;
         while (done < info.numSamples) {
             const juce::int64 clock = position_.load(std::memory_order_relaxed);
@@ -168,7 +182,7 @@ public:
                 Lane& lane = lanes_[i];
                 if (lane.buffer == nullptr)
                     continue; // no take: silent, and no clock to keep
-                if (lane.buffer->getNextReadPosition() != laneClock(lane, clock, looping))
+                if (lane.buffer->getNextReadPosition() != laneClock(lane, clock, looping && !lane.oneShot))
                     lane.buffer->setNextReadPosition(clock);
                 const juce::int64 before = lane.buffer->getNextReadPosition();
                 lane.buffer->getNextAudioBlock({ &scratch_[i], 0, run });
@@ -208,13 +222,14 @@ public:
                 lane.buffer->setNextReadPosition(newPosition);
     }
 
-    // The audible position: folded at the longest track while looping
-    // without a section (as the one-track buffer folds it), linear otherwise
-    // (a section's facade is endless; a one-shot runs dry at the end).
+    // The audible position: folded at the longest track while any track
+    // loops and there is no section (as the one-track buffer folds it),
+    // linear otherwise (a section's facade is endless; a mix of One Shot
+    // tracks runs dry at the end).
     juce::int64 getNextReadPosition() const override
     {
         const juce::int64 position = position_.load(std::memory_order_relaxed);
-        if (looping_.load(std::memory_order_relaxed) && !hasSection() && longest_ > 0)
+        if (anyTrackLoops() && !hasSection() && longest_ > 0)
             return position % longest_;
         return position;
     }
@@ -226,7 +241,7 @@ public:
 
     bool isLooping() const override
     {
-        return hasSection() || looping_.load(std::memory_order_relaxed);
+        return hasSection() || anyTrackLoops();
     }
 
 private:
@@ -235,7 +250,20 @@ private:
         std::unique_ptr<SectionLoopSource> section;
         std::unique_ptr<juce::BufferingAudioSource> buffer;
         juce::int64 length = 0;
+        bool oneShot = false; // set once, before any audio thread reads it
     };
+
+    // Loop is on and some track with a take is not One Shot: the mix goes
+    // round. Any thread: the flags are fixed at construction.
+    bool anyTrackLoops() const
+    {
+        if (!looping_.load(std::memory_order_relaxed))
+            return false;
+        for (const auto& lane : lanes_)
+            if (lane.reader != nullptr && !lane.oneShot)
+                return true;
+        return false;
+    }
 
     // Where a track's buffer reports itself when it is on the mix's clock: a
     // looping source under a BufferingAudioSource reads modulo its length

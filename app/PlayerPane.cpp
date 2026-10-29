@@ -9,6 +9,7 @@
 #include <loopercat/Params.hpp>
 #include <loopercat/Wav.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace loopercat
@@ -145,11 +146,15 @@ void PlayerPane::setSlot(int slot, const juce::File& wav, const juce::String& ti
 }
 
 void PlayerPane::setTracks(int slot, const std::vector<TrackFile>& tracks,
-                           const juce::String& title, bool oneShot)
+                           const juce::String& title)
 {
     slot_ = slot;
     title_ = title;
-    oneShot_ = oneShot;
+    // The memory plays once only when every take does; otherwise Loop stays
+    // on and each One Shot track stops on its own (TrackMixSource).
+    oneShot_ = std::all_of(tracks.begin(), tracks.end(), [](const TrackFile& track) {
+        return track.file == juce::File() || track.oneShot;
+    });
     slotFrames_ = 0; // the frame math re-derives from the readers
     trackCount_ = juce::jlimit(1, static_cast<int>(soloButtons_.size()),
                                static_cast<int>(tracks.size()));
@@ -174,7 +179,7 @@ void PlayerPane::applyTracks(const std::vector<TrackFile>& tracks)
     std::vector<AudioEngine::MixTrack> mix;
     std::vector<juce::File> files;
     for (const auto& track : tracks) {
-        mix.push_back({ track.file, track.gain });
+        mix.push_back({ track.file, track.gain, track.oneShot });
         files.push_back(track.file);
         if (currentPath_.isEmpty() && track.file != juce::File())
             currentPath_ = track.file.getFullPathName(); // the first take: the pane's identity

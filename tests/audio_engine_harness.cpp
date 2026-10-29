@@ -532,6 +532,72 @@ int main()
                 CHECK(frameOfSample2(left[static_cast<std::size_t>(at)], 1.0f) < kFrames2 / 4);
             engine.stop();
         }
+        // One Shot per track (TRACK<n>/One): track 2 plays once and is silent
+        // after its end while track 1 keeps looping, and the transport keeps
+        // going. Soloed, each track is heard alone with the other still on
+        // the clock: track 2's ramp runs from its start to its end exactly
+        // once — no wrap, ever — and track 1 wraps at its own end.
+        {
+            CHECK(engine.loadMix({ { wavFile, 1.0f, false }, { wav2, 1.0f, true } }).wasOk());
+            engine.setLooping(true);
+            engine.setSolo(2);
+            engine.setPosition(0);
+            engine.play();
+            int heard2 = 0, wraps2 = 0, afterEnd = 0, previous = -1;
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 8000;
+            while (engine.positionSeconds() < 0.9 && juce::Time::getMillisecondCounterHiRes() < deadline) {
+                pumpBlock(engine, left, right);
+                for (int i = 0; i < kBlock; ++i) {
+                    const float sample = left[static_cast<std::size_t>(i)];
+                    if (juce::exactlyEqual(sample, 0.0f))
+                        continue; // a pause for the read-ahead, the ramp's centre, or the silence after
+                    const int frame = frameOfSample2(sample, 1.0f);
+                    ++heard2;
+                    if (previous >= 0 && frame < previous)
+                        ++wraps2;
+                    if (previous == kFrames2 - 1)
+                        ++afterEnd; // a sample after the last frame: the track went round
+                    previous = frame;
+                }
+                juce::Thread::sleep(2);
+            }
+            std::printf("ONE SHOT T2 heard %d samples, last frame %d\n", heard2, previous);
+            CHECK(heard2 > kFrames2 / 2); // it played
+            CHECK_EQ(wraps2, 0);           // and never went round
+            CHECK_EQ(afterEnd, 0);
+            CHECK(engine.isPlaying());     // track 1 still loops: the transport goes on
+            // Track 1, soloed, wraps at its own end: it is not One Shot.
+            engine.setSolo(1);
+            pumpBlock(engine, left, right); // the switch block
+            int wraps1 = 0, previous1 = -1;
+            const auto deadline1 = juce::Time::getMillisecondCounterHiRes() + 8000;
+            while (wraps1 < 1 && juce::Time::getMillisecondCounterHiRes() < deadline1) {
+                pumpBlock(engine, left, right);
+                for (int i = 0; i < kBlock; ++i) {
+                    const float sample = left[static_cast<std::size_t>(i)];
+                    if (juce::exactlyEqual(sample, 0.0f))
+                        continue;
+                    const int frame = frameOfSample(sample);
+                    if (previous1 >= 0 && frame < previous1)
+                        ++wraps1;
+                    previous1 = frame;
+                }
+                juce::Thread::sleep(2);
+            }
+            CHECK_EQ(wraps1, 1);
+            // Past the mix's own end, still nothing of track 2.
+            engine.setSolo(2);
+            pumpBlock(engine, left, right); // the switch block
+            int late2 = 0;
+            for (int block = 0; block < 20; ++block) {
+                pumpBlock(engine, left, right);
+                for (int i = kBlock / 2; i < kBlock; ++i)
+                    late2 += juce::exactlyEqual(left[static_cast<std::size_t>(i)], 0.0f) ? 0 : 1;
+            }
+            CHECK_EQ(late2, 0);
+            engine.stop();
+            engine.setSolo(0);
+        }
         // Nothing to play at all is refused, not silence.
         CHECK(engine.loadMix({ { juce::File(), 1.0f }, { juce::File(), 1.0f } }).failed());
         CHECK(!engine.hasSource());

@@ -48,6 +48,7 @@ public:
     struct TrackFile {
         juce::File file;
         float gain = 1.0f;
+        bool oneShot = false; // TRACK<n>/One: this track plays once, the others loop
     };
 
     // Load a multi-track memory for listening: every take at its level, as
@@ -55,8 +56,8 @@ public:
     // track. The track list is the memory's — as many entries as its model
     // has tracks (DeviceProfile), which is what puts the solo buttons on the
     // row: a one-track model never shows them.
-    void setTracks(int slot, const std::vector<TrackFile>& tracks, const juce::String& title,
-                   bool oneShot);
+    // The Loop toggle starts on unless every take is One Shot.
+    void setTracks(int slot, const std::vector<TrackFile>& tracks, const juce::String& title);
     void clear();
 
     // Re-open the current file after it changed on disk (a trim landed):

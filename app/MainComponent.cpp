@@ -1975,7 +1975,8 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
             const std::string& trackPath =
                 i < row.trackPaths.size() ? row.trackPaths[i] : std::string();
             tracks.push_back({ trackPath.empty() ? juce::File() : juce::File(utf8(trackPath)),
-                               static_cast<float>(row.info.tracks[i].level) / 100.0f });
+                               static_cast<float>(row.info.tracks[i].level) / 100.0f,
+                               row.info.tracks[i].oneShot });
             if (firstPath.isEmpty() && !trackPath.empty())
                 firstPath = utf8(trackPath);
         }
@@ -1985,7 +1986,7 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
         }
         if (firstPath != player.currentPath()) {
             playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
-            player.setTracks(row.info.slot, tracks, title, row.info.oneShot);
+            player.setTracks(row.info.slot, tracks, title);
         }
     } else {
         const juce::String path = utf8(row.wavPath);
