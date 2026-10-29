@@ -324,6 +324,11 @@ loopercat_core_test(usecase_controls_tests)
 # decision the three DeviceWatcher backends share, pure, so the rule that
 # force-unmounted a live card is gated on every lane without a device.
 loopercat_core_test(mount_probe_tests)
+# Its last section reads MainComponent.cpp as text: that the ghost's reason
+# and the forced unmount reach operations.log cannot be asked of a component
+# that wants a pedal, a worker and a screen.
+target_compile_definitions(mount_probe_tests PRIVATE
+    LOOPERCAT_APP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app")
 # Parsing and decisions only — no syscalls, no Linux headers — so the
 # contracts behind the Linux DeviceWatcher are gated on every platform's
 # lane, not just on a machine that happens to have /proc and /sys.

@@ -23,6 +23,8 @@
 #include "../app/MountProbe.h"
 
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace loopercat::mountprobe;
@@ -316,6 +318,32 @@ int main()
         CHECK_EQ(howLong(1049ms), std::string("1.0 s"));
         CHECK_EQ(howLong(1050ms), std::string("1.1 s"));
         CHECK_EQ(howLong(65s), std::string("65.0 s"));
+    }
+
+    // ===== the lines reach the journal, not just this suite =====
+
+    // The two call sites live in MainComponent, which no headless suite can
+    // build (it wants a pedal, a worker thread and a screen), so they are
+    // proved by reading it as text — the way hidden_features_tests proves
+    // what this release hid. Silence here is the other half of issue #166:
+    // the app force-unmounted the player's card and wrote nothing at all,
+    // and only the system log knew who had done it.
+    {
+        std::ifstream in(std::string(LOOPERCAT_APP_DIR) + "/MainComponent.cpp");
+        CHECK(in.good());
+        const std::string owner((std::istreambuf_iterator<char>(in)),
+                                std::istreambuf_iterator<char>());
+        CHECK(owner.size() > 10000); // a file that failed to read would pass the rest
+
+        // The forced unmount's outcome is traced, both ways, from the
+        // completion that knows it.
+        CHECK(says(owner, "trace(utf8(mountprobe::forcedUnmountLine("));
+
+        // The watcher's reason is traced, not swallowed by the handler.
+        const std::size_t handler = owner.find("onGhostVerdict");
+        CHECK(handler != std::string::npos);
+        if (handler != std::string::npos)
+            CHECK(says(owner.substr(handler, 400), "trace("));
     }
 
     return testkit::summary("mount probe");
