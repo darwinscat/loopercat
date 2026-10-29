@@ -320,6 +320,10 @@ loopercat_core_test(usecase_rhythm_tests)
 loopercat_core_test(usecase_play_stop_tests)
 # The pedal's controls (SETUP > CONTROL) as a use case over the SYSTEM file.
 loopercat_core_test(usecase_controls_tests)
+# What the uncached-read probe may conclude about a mount (issue #166): the
+# decision the three DeviceWatcher backends share, pure, so the rule that
+# force-unmounted a live card is gated on every lane without a device.
+loopercat_core_test(mount_probe_tests)
 # Parsing and decisions only — no syscalls, no Linux headers — so the
 # contracts behind the Linux DeviceWatcher are gated on every platform's
 # lane, not just on a machine that happens to have /proc and /sys.
