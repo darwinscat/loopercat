@@ -161,6 +161,23 @@ void PlayerPane::setTracks(int slot, const std::vector<TrackFile>& tracks,
     applyTracks(tracks);
 }
 
+void PlayerPane::setOneShots(const std::vector<bool>& perTrack)
+{
+    if (trackCount_ <= 1 || static_cast<int>(perTrack.size()) != trackCount_
+        || static_cast<int>(hasTake_.size()) != trackCount_)
+        return;
+    bool all = true;
+    for (std::size_t i = 0; i < perTrack.size(); ++i) {
+        engine_.setTrackOneShot(static_cast<int>(i) + 1, perTrack[i]);
+        all = all && (!hasTake_[i] || perTrack[i]);
+    }
+    if (all != oneShot_) {
+        oneShot_ = all;
+        engine_.setLooping(!oneShot_);
+        updateTransportRow();
+    }
+}
+
 void PlayerPane::applyTracks(const std::vector<TrackFile>& tracks)
 {
     readPass_.stop();
@@ -178,7 +195,9 @@ void PlayerPane::applyTracks(const std::vector<TrackFile>& tracks)
 
     std::vector<AudioEngine::MixTrack> mix;
     std::vector<juce::File> files;
+    hasTake_.clear();
     for (const auto& track : tracks) {
+        hasTake_.push_back(track.file != juce::File());
         mix.push_back({ track.file, track.gain, track.oneShot });
         files.push_back(track.file);
         if (currentPath_.isEmpty() && track.file != juce::File())

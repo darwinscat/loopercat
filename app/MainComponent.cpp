@@ -1987,6 +1987,13 @@ void MainComponent::slotChosen(int slot, bool startPlaying)
         if (firstPath != player.currentPath()) {
             playerReadBegan = recorder->newestOp(); // where the pass's read begins (#141)
             player.setTracks(row.info.slot, tracks, title);
+        } else {
+            // The same memory, maybe with a One Shot flipped since it loaded:
+            // the preview follows the card's flags, track by track.
+            std::vector<bool> oneShots;
+            for (const auto& track : row.info.tracks)
+                oneShots.push_back(track.oneShot);
+            player.setOneShots(oneShots);
         }
     } else {
         const juce::String path = utf8(row.wavPath);

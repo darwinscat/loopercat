@@ -156,6 +156,14 @@ public:
 
     int solo() const { return mixSource_ != nullptr ? mixSource_->solo() : 0; }
 
+    // A track's One Shot flag (1-based) on the loaded mix, changed while it
+    // plays. Nothing to change on a one-track load.
+    void setTrackOneShot(int track, bool oneShot)
+    {
+        if (mixSource_ != nullptr)
+            mixSource_->setTrackOneShot(track, oneShot);
+    }
+
     void play()
     {
         jassert(hasSource()); // UI must not offer play with nothing loaded

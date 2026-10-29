@@ -114,9 +114,10 @@ public:
     static juce::String formatTempo(long long tenths);
 
     // The One Shot cell of a memory with more than one track draws a dot per
-    // track, side by side, track 1 first; a click picks the dot it falls on.
-    // Pure, so the cell's geometry and its click cannot drift apart. `cellX`
-    // is the click's x inside the cell; a one-track memory has track 1 only.
+    // track, side by side, track 1 first; a click picks the dot it falls on,
+    // and a click on none of them is 0, no track. Pure, so the cell's
+    // geometry and its click cannot drift apart. `cellX` is the click's x
+    // inside the cell; a one-track memory's whole cell is track 1.
     static int oneShotTrackAt(int cellX, int trackCount);
     static constexpr float kDotSize = 7.0f;
     static constexpr float kDotLeft = 10.0f; // the cell's 8 px inset and a 2 px margin

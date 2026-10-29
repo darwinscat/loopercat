@@ -495,5 +495,26 @@ int main()
         }
     }
 
+    // --- One Shot of a two-track memory: the track that changed, read off its own section ---
+    {
+        const std::string loops = testkit::syntheticTwoTrackSlotBody("Memory 4", { 4, 176400 },
+                                                                     { 8, 352800 }, 1200, 4);
+        const std::string t2on = rc0::setSectionField(loops, "TRACK2", "One", 1);
+        CHECK_EQ(story::tell({ .kind = "oneshot", .beforeBody = loops, .afterBody = t2on }).action,
+                 std::string("One Shot T2 on"));
+        const std::string t1on = rc0::setSectionField(loops, "TRACK1", "One", 1);
+        const std::string both = rc0::setSectionField(t1on, "TRACK2", "One", 1);
+        // Track 2 off while track 1 stays on: "off", and about track 2.
+        CHECK_EQ(story::tell({ .kind = "oneshot", .beforeBody = both, .afterBody = t1on }).action,
+                 std::string("One Shot T2 off"));
+        CHECK_EQ(story::tell({ .kind = "oneshot", .beforeBody = t2on, .afterBody = both }).action,
+                 std::string("One Shot T1 on"));
+        // A body that did not change names no track and claims nothing.
+        CHECK_EQ(story::tell({ .kind = "oneshot", .beforeBody = both, .afterBody = both }).action,
+                 std::string("One Shot"));
+        // Without both bodies: the switch, no claim.
+        CHECK_EQ(story::tell({ .kind = "oneshot", .afterBody = t2on }).action, std::string("One Shot"));
+    }
+
     return testkit::summary("slot_story_tests");
 }

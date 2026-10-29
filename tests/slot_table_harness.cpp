@@ -316,8 +316,9 @@ int main()
     //
     // The flag lives in each TRACK section. The cell draws a dot per track,
     // track 1 left, and a click flips the dot it lands on: the boundary is
-    // the middle of the gap between them, and a click past the last dot is
-    // still the last track's, never a third.
+    // the middle of the gap between them, and a click on no dot — the empty
+    // rest of the cell, or before the first — writes nothing, never a third
+    // track and never the last one by default.
     {
         CHECK_EQ(SlotTable::oneShotTrackAt(0, 1), 1);
         CHECK_EQ(SlotTable::oneShotTrackAt(500, 1), 1); // one track: the whole cell
@@ -330,9 +331,13 @@ int main()
         CHECK_EQ(SlotTable::oneShotTrackAt(second, 2), 2);
         CHECK_EQ(SlotTable::oneShotTrackAt(boundary - 1, 2), 1);
         CHECK_EQ(SlotTable::oneShotTrackAt(boundary + 1, 2), 2);
-        CHECK_EQ(SlotTable::oneShotTrackAt(0, 2), 1);
-        CHECK_EQ(SlotTable::oneShotTrackAt(80, 2), 2); // past the dots: the last track
-        CHECK_EQ(SlotTable::oneShotTrackAt(-20, 2), 1);
+        const int dotsEnd = static_cast<int>(SlotTable::kDotLeft + 2 * SlotTable::kDotSize
+                                              + SlotTable::kDotGap * 1.5f);
+        CHECK_EQ(SlotTable::oneShotTrackAt(dotsEnd - 1, 2), 2);
+        CHECK_EQ(SlotTable::oneShotTrackAt(dotsEnd + 1, 2), 0); // past the dots: nothing
+        CHECK_EQ(SlotTable::oneShotTrackAt(80, 2), 0);
+        CHECK_EQ(SlotTable::oneShotTrackAt(2, 2), 0);           // before the first: nothing
+        CHECK_EQ(SlotTable::oneShotTrackAt(-20, 2), 0);
 
         std::string twoText = testkit::syntheticTwoTrackMemoryText();
         twoText = rc0::replaceSlotBody(twoText, 1,
@@ -355,6 +360,7 @@ int main()
         };
         model->cellClicked(0, oneShotColumn, clickAtX(second));
         model->cellClicked(0, oneShotColumn, clickAtX(first));
+        model->cellClicked(0, oneShotColumn, clickAtX(70)); // the empty rest of the cell
         CHECK((flips == std::vector<std::pair<int, int>> { { 1, 2 }, { 1, 1 } }));
         // The hover says what the two dots mean, track by track.
         CHECK_EQ(model->getCellTooltip(0, oneShotColumn), juce::String("T1 loops, T2 plays once"));

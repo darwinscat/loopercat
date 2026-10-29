@@ -595,6 +595,60 @@ int main()
                     late2 += juce::exactlyEqual(left[static_cast<std::size_t>(i)], 0.0f) ? 0 : 1;
             }
             CHECK_EQ(late2, 0);
+            // The flag moves on the card while the mix is loaded: track 2 now
+            // loops, from where the clock is — heard again, going round.
+            engine.setTrackOneShot(2, false);
+            engine.setPosition(0);
+            pumpBlock(engine, left, right); // the switch block
+            int heardAgain = 0, wrapsAgain = 0, previousAgain = -1;
+            const auto deadlineAgain = juce::Time::getMillisecondCounterHiRes() + 8000;
+            while (wrapsAgain < 1 && juce::Time::getMillisecondCounterHiRes() < deadlineAgain) {
+                pumpBlock(engine, left, right);
+                for (int i = 0; i < kBlock; ++i) {
+                    const float sample = left[static_cast<std::size_t>(i)];
+                    if (juce::exactlyEqual(sample, 0.0f))
+                        continue;
+                    ++heardAgain;
+                    const int frame = frameOfSample2(sample, 1.0f);
+                    if (previousAgain >= 0 && frame < previousAgain)
+                        ++wrapsAgain;
+                    previousAgain = frame;
+                }
+                juce::Thread::sleep(2);
+            }
+            CHECK(heardAgain > 0);
+            CHECK_EQ(wrapsAgain, 1);
+            engine.stop();
+            engine.setSolo(0);
+        }
+        // Every take One Shot and Loop on: the player asked for it to go
+        // round, and it does — as Loop does over a one-track One Shot memory;
+        // a Loop switch that reads "on" over a mix that stops would be a lie.
+        for (const bool secondTakes : { false, true }) {
+            CHECK(engine.loadMix({ { wavFile, 1.0f, true },
+                                   { secondTakes ? wav2 : juce::File(), 1.0f, true } })
+                      .wasOk());
+            engine.setLooping(true);
+            engine.setSolo(1);
+            engine.setPosition(0);
+            engine.play();
+            int wraps = 0, previous = -1;
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 8000;
+            while (wraps < 1 && engine.isPlaying() && juce::Time::getMillisecondCounterHiRes() < deadline) {
+                pumpBlock(engine, left, right);
+                for (int i = 0; i < kBlock; ++i) {
+                    const float sample = left[static_cast<std::size_t>(i)];
+                    if (juce::exactlyEqual(sample, 0.0f))
+                        continue;
+                    const int frame = frameOfSample(sample);
+                    if (previous >= 0 && frame < previous)
+                        ++wraps;
+                    previous = frame;
+                }
+                juce::Thread::sleep(2);
+            }
+            CHECK_EQ(wraps, 1);
+            CHECK(engine.isPlaying());
             engine.stop();
             engine.setSolo(0);
         }

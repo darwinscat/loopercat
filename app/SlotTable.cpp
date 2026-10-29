@@ -281,12 +281,15 @@ void SlotTable::selectedRowsChanged(int lastRowSelected)
 int SlotTable::oneShotTrackAt(int cellX, int trackCount)
 {
     if (trackCount <= 1)
-        return 1;
-    // The boundary is the middle of the gap between two dots.
+        return 1; // one dot: the whole cell is its switch, as it always was
+    // Each dot owns itself and half the gap on either side; the boundary
+    // between two is the middle of their gap. A click on none of them — the
+    // empty rest of the cell — is no track: it writes nothing.
     const float pitch = kDotSize + kDotGap;
-    const int track = 1 + static_cast<int>(std::floor((static_cast<float>(cellX) - kDotLeft
-                                                       + kDotGap * 0.5f) / pitch));
-    return juce::jlimit(1, trackCount, track);
+    const float from = static_cast<float>(cellX) - kDotLeft + kDotGap * 0.5f;
+    if (from < 0.0f || from >= pitch * static_cast<float>(trackCount))
+        return 0;
+    return 1 + static_cast<int>(std::floor(from / pitch));
 }
 
 juce::String SlotTable::getCellTooltip(int row, int columnId)
@@ -365,7 +368,8 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         auto& header = table_.getHeader();
         const int cellX = e.x - header.getColumnPosition(header.getIndexOfColumnId(kOneShot, true)).getX();
         const int tracks = static_cast<int>(rows_[static_cast<std::size_t>(row)].info.tracks.size());
-        onOneShotToggled(slotOfRow(row), oneShotTrackAt(cellX, tracks));
+        if (const int track = oneShotTrackAt(cellX, tracks); track > 0)
+            onOneShotToggled(slotOfRow(row), track);
         return;
     }
     // Same gesture for the Count-In cell — unless the core would refuse the
