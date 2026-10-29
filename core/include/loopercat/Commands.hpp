@@ -481,14 +481,24 @@ inline WriteResult rename(const fs::path& volume, int slot, std::string_view nam
                            options);
 }
 
-inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& slots, bool on,
-                              const WriteOptions& options)
+// One Shot is a flag of each track (<One> in its TRACK section), not of the
+// memory: on the two-track model each track plays once or loops on its own,
+// as the pedal sets it. The RC-5's one track is track 1.
+inline WriteResult setOneShot(const fs::path& volume, const std::vector<int>& slots, int track,
+                              bool on, const WriteOptions& options)
 {
     std::string text = readMemoryFor(volume, profile::Operation::setOneShot);
+    const profile::DeviceProfile& family = rc0::profileOf(text);
+    if (track < 1 || track > family.trackCount)
+        throw Error("set one-shot: track " + std::to_string(track) + ", but an \""
+                    + std::string(family.familyName) + "\" memory holds "
+                    + (family.trackCount == 1 ? std::string("one track")
+                                              : std::to_string(family.trackCount) + " tracks"));
+    const std::string section = rc0::trackSectionName(track);
     for (const int slot : slots) {
         const std::string body = rc0::slotBody(text, slot);
-        text = rc0::replaceSlotBody(
-            text, slot, rc0::setSectionField(body, rc0::kSectionTrack1, "One", on ? 1 : 0));
+        text = rc0::replaceSlotBody(text, slot,
+                                    rc0::setSectionField(body, section, "One", on ? 1 : 0));
     }
     return writeMemoryPair(volume, text, options);
 }

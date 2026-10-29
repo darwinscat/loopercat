@@ -44,7 +44,7 @@ public:
 
     std::function<void(int, juce::String)> onRenameCommitted;
     std::function<void(int, long long)> onTempoCommitted;
-    std::function<void(int)> onOneShotToggled;
+    std::function<void(int slot, int track)> onOneShotToggled;
     std::function<void(int)> onCountInToggled;
     std::function<void(int, usecases::playstop::Edits)> onPlayStopEdited;
 
@@ -73,6 +73,10 @@ private:
     juce::TextEditor nameEditor_, tempoEditor_;
     UseCaseCard countIn_ { "Play Count-In" };
     UseCaseCard oneShot_ { "One Shot" };
+    // A memory of two tracks has a One Shot per track: this is track 2's,
+    // shown only then (the pedal keeps the flag in each TRACK section).
+    UseCaseCard oneShot2_ { "One Shot T2" };
+    bool twoTracks() const { return info_.tracks.size() > 1; }
     PlayStopCard playStop_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SlotInspector)

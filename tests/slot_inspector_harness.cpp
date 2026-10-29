@@ -44,6 +44,17 @@ std::vector<T*> childrenOfType(juce::Component& root)
     return found;
 }
 
+// The cards a player can see: a card the memory has no use for (the second
+// track's One Shot of a one-track memory) is a hidden child, not a card.
+std::vector<UseCaseCard*> visibleCards(juce::Component& root)
+{
+    std::vector<UseCaseCard*> found;
+    for (auto* card : childrenOfType<UseCaseCard>(root))
+        if (card->isVisible())
+            found.push_back(card);
+    return found;
+}
+
 // A component anywhere under this one carrying that id. Component's own
 // findChildWithID looks one level down, and the choices this suite must not
 // find would be two.
@@ -97,7 +108,7 @@ int main()
     inspector.setSize(900, 160); // the studio's strip (MainComponent::resized)
 
     // --- two cards, the pedal's own words, side by side ---
-    const auto cards = childrenOfType<UseCaseCard>(inspector);
+    const auto cards = visibleCards(inspector);
     CHECK_EQ(cards.size(), std::size_t { 2 });
     CHECK(childrenOfType<PlayStopCard>(inspector).empty());
     for (const char* id : { "startMode", "stopMode", "fadeTime" })
@@ -162,7 +173,7 @@ int main()
     // --- the cards that stayed still work ---
     int countIns = 0, oneShots = 0;
     inspector.onCountInToggled = [&](int) { ++countIns; };
-    inspector.onOneShotToggled = [&](int) { ++oneShots; };
+    inspector.onOneShotToggled = [&](int, int) { ++oneShots; };
     const auto clickOn = [](juce::Component& target) {
         const auto now = juce::Time::getCurrentTime();
         const juce::MouseEvent event(juce::Desktop::getInstance().getMainMouseSource(),
@@ -178,6 +189,59 @@ int main()
 
     // --- identity did not move ---
     CHECK_EQ(childrenOfType<juce::TextEditor>(inspector).size(), std::size_t { 2 });
+
+    // --- a memory of two tracks: a One Shot per track ---
+    //
+    // The flag lives in each TRACK section, so a two-track memory shows one
+    // card per track, each with that track's own state, and a click names
+    // its track. Track 1 loops and track 2 plays once here, so a card that
+    // read the other track's flag shows the wrong state.
+    {
+        std::string text = testkit::syntheticTwoTrackMemoryText();
+        text = rc0::replaceSlotBody(text, 1,
+                                    rc0::setSectionField(rc0::slotBody(text, 1), "TRACK2", "One", 1));
+        const auto twoTrack = catalog::listSlots(text);
+        SlotRow both { twoTrack.front(), "", "", { "" }, std::nullopt };
+        inspector.permissions = [] { return CardPermissions::of(profile::kRc500.familyName); };
+        inspector.setSlot(&both);
+        const auto three = visibleCards(inspector);
+        CHECK_EQ(three.size(), std::size_t { 3 });
+        UseCaseCard* t1 = nullptr;
+        UseCaseCard* t2 = nullptr;
+        for (auto* card : three) {
+            if (card->title() == "One Shot T1")
+                t1 = card;
+            if (card->title() == "One Shot T2")
+                t2 = card;
+        }
+        CHECK(t1 != nullptr && t2 != nullptr);
+        if (t1 != nullptr && t2 != nullptr) {
+            CHECK(!t1->isOn());
+            CHECK(t2->isOn());
+            CHECK(t1->isEnabled() && t2->isEnabled()); // the RC-500 opens One Shot
+            CHECK(t1->getBounds().getRight() <= t2->getBounds().getX()); // side by side
+            CHECK(inspector.getLocalBounds().contains(t2->getBounds()));
+            std::vector<int> tracks;
+            inspector.onOneShotToggled = [&tracks](int slot, int track) {
+                CHECK_EQ(slot, 1);
+                tracks.push_back(track);
+            };
+            clickOn(*t2);
+            clickOn(*t1);
+            CHECK((tracks == std::vector<int> { 2, 1 }));
+        }
+        // The second track alone recorded: both cards, the flag kept either way.
+        SlotRow solo { twoTrack[10], "", "", { "" }, std::nullopt };
+        inspector.setSlot(&solo);
+        CHECK_EQ(visibleCards(inspector).size(), std::size_t { 3 });
+        // A one-track memory again: one One Shot card, its old word.
+        inspector.permissions = [] { return CardPermissions::of(profile::kRc5.familyName); };
+        inspector.setSlot(&row);
+        const auto back = visibleCards(inspector);
+        CHECK_EQ(back.size(), std::size_t { 2 });
+        for (auto* card : back)
+            CHECK(card->title() == "Play Count-In" || card->title() == "One Shot");
+    }
 
     return testkit::summary("slot_inspector_harness");
 }

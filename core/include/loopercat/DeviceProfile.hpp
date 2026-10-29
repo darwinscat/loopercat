@@ -17,7 +17,8 @@
 // The operation set is the guard's other half. Knowing a model is not the
 // same as being allowed to touch its card: the two-track model is known here
 // and opened one operation at a time, for the ones that carry every track —
-// pull, rename, clear and restore. The others work on the first track alone
+// pull, rename, clear and restore — and One Shot, which names its track. The
+// others work on the first track alone
 // (push, trim, downmix, normalize, tempo) or move only its audio (swap), and
 // would corrupt such a card silently; on this table they are not untested on
 // it, they are unreachable.
@@ -365,13 +366,14 @@ inline constexpr std::string_view kRc500FactorySections = R"(
 // card (the root name, <TRACK1> and <TRACK2> in every memory, audio folders
 // NNN_1 and NNN_2, 99 memories), the sysex probe with both pedals on the bus
 // (model id 00 00 00 77 answers, 76 and 78 are silent; Identity Reply family
-// 0x0377), ioreg (product id 0x0252). Open: reading, and the operations that
+// 0x0377), ioreg (product id 0x0252). Open: reading, the operations that
 // carry every track of a memory — pull, rename, clear, restore (decided for
-// 0.9.6, 2026-10-18). Everything else is refused.
+// 0.9.6, 2026-10-18) — and One Shot, which the pedal keeps per track and the
+// app sets per track (decided 2026-10-29). Everything else is refused.
 inline constexpr DeviceProfile kRc500 {
     "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, kRc500FactorySections,
-    operations({ Operation::read, Operation::pull, Operation::rename, Operation::clear,
-                 Operation::restore })
+    operations({ Operation::read, Operation::pull, Operation::rename, Operation::setOneShot,
+                 Operation::clear, Operation::restore })
 };
 
 inline constexpr std::array<const DeviceProfile*, 2> kAll { &kRc5, &kRc500 };

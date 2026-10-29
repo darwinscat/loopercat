@@ -78,10 +78,10 @@ int main()
         CHECK(rc5.closed.empty());
         // The two-track model: what carries every track of a memory, nothing else.
         const CardPermissions rc500 = CardPermissions::of("RC-500");
-        CHECK(rc500.rename && rc500.pull && rc500.clear && rc500.restore);
-        CHECK(!rc500.tempo && !rc500.oneShot && !rc500.countIn && !rc500.push && !rc500.swap
+        CHECK(rc500.rename && rc500.oneShot && rc500.pull && rc500.clear && rc500.restore);
+        CHECK(!rc500.tempo && !rc500.countIn && !rc500.push && !rc500.swap
               && !rc500.normalize && !rc500.trim && !rc500.downmix && !rc500.rhythm && !rc500.playStop);
-        CHECK_EQ(rc500.closed, "On the RC-500, LooperCat does rename, pull, clear and restore only");
+        CHECK_EQ(rc500.closed, "On the RC-500, LooperCat does rename, set one-shot, pull, clear and restore only");
         for (const char* name : { "RC-505", "", "rc-5" }) {
             const CardPermissions none = CardPermissions::of(name);
             CHECK(!none.anyWrite());
@@ -131,7 +131,7 @@ int main()
     CHECK(oneShotColumn > 0 && countInColumn > 0 && nameColumn > 0 && wavColumn > 0);
 
     int oneShotClicks = 0, countInClicks = 0, hintClicks = 0, activations = 0;
-    table.onOneShotToggled = [&oneShotClicks](int) { ++oneShotClicks; };
+    table.onOneShotToggled = [&oneShotClicks](int, int) { ++oneShotClicks; };
     table.onCountInToggled = [&countInClicks](int) { ++countInClicks; };
     table.onEmptyWavCellClicked = [&hintClicks](int) { ++hintClicks; };
     table.onSlotActivated = [&activations](int) { ++activations; };
@@ -169,13 +169,14 @@ int main()
     doubleClick(nameColumn);
     CHECK_EQ(activations, 1);
 
-    // The two-track model: One Shot, Count-In and push stay closed — the
-    // same lamps, no drag — and the name, which is open, takes the editing
-    // path on a double-click instead of playing.
+    // The two-track model: Count-In and push stay closed — a lamp, no drag
+    // — while One Shot is open (a flag of each track) and its click goes
+    // through; the name, also open, takes the editing path on a double-click
+    // instead of playing.
     table.permissions = [] { return CardPermissions::of("RC-500"); };
     click(oneShotColumn);
     click(countInColumn);
-    CHECK_EQ(oneShotClicks, 0);
+    CHECK_EQ(oneShotClicks, 1);
     CHECK_EQ(countInClicks, 0);
     CHECK(!table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
     table.onRenameCommitted = nullptr;
@@ -191,7 +192,7 @@ int main()
     click(oneShotColumn);
     click(countInColumn);
     click(wavColumn);
-    CHECK_EQ(oneShotClicks, 1);
+    CHECK_EQ(oneShotClicks, 2);
     CHECK_EQ(countInClicks, 1);
     CHECK_EQ(hintClicks, 1);
     CHECK(table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
@@ -212,7 +213,7 @@ int main()
     CHECK(model->getCellTooltip(0, countInColumn).isEmpty());
     CHECK(model->getCellTooltip(1, oneShotColumn).isEmpty());
     model->cellClicked(1, oneShotColumn, clickAt(table)); // One Shot is not beat-relative
-    CHECK_EQ(oneShotClicks, 2);
+    CHECK_EQ(oneShotClicks, 3);
 
     // A right-click is the context menu on either card — a read of the
     // situation, never a write — so it is not gated here.
@@ -309,6 +310,70 @@ int main()
         CHECK(table.loudnessColumnVisible());
         table.setOptionalColumns(true, false, false);
         CHECK(!table.loudnessColumnVisible());
+    }
+
+    // --- One Shot of a two-track memory: a dot per track, a click per dot ---
+    //
+    // The flag lives in each TRACK section. The cell draws a dot per track,
+    // track 1 left, and a click flips the dot it lands on: the boundary is
+    // the middle of the gap between them, and a click on no dot — the empty
+    // rest of the cell, or before the first — writes nothing, never a third
+    // track and never the last one by default.
+    {
+        CHECK_EQ(SlotTable::oneShotTrackAt(0, 1), 1);
+        CHECK_EQ(SlotTable::oneShotTrackAt(500, 1), 1); // one track: the whole cell
+        const int first = static_cast<int>(SlotTable::kDotLeft + SlotTable::kDotSize * 0.5f);
+        const int second = static_cast<int>(SlotTable::kDotLeft + SlotTable::kDotSize
+                                             + SlotTable::kDotGap + SlotTable::kDotSize * 0.5f);
+        const int boundary = static_cast<int>(SlotTable::kDotLeft + SlotTable::kDotSize
+                                               + SlotTable::kDotGap * 0.5f);
+        CHECK_EQ(SlotTable::oneShotTrackAt(first, 2), 1);
+        CHECK_EQ(SlotTable::oneShotTrackAt(second, 2), 2);
+        CHECK_EQ(SlotTable::oneShotTrackAt(boundary - 1, 2), 1);
+        CHECK_EQ(SlotTable::oneShotTrackAt(boundary + 1, 2), 2);
+        const int dotsEnd = static_cast<int>(SlotTable::kDotLeft + 2 * SlotTable::kDotSize
+                                              + SlotTable::kDotGap * 1.5f);
+        CHECK_EQ(SlotTable::oneShotTrackAt(dotsEnd - 1, 2), 2);
+        CHECK_EQ(SlotTable::oneShotTrackAt(dotsEnd + 1, 2), 0); // past the dots: nothing
+        CHECK_EQ(SlotTable::oneShotTrackAt(80, 2), 0);
+        CHECK_EQ(SlotTable::oneShotTrackAt(2, 2), 0);           // before the first: nothing
+        CHECK_EQ(SlotTable::oneShotTrackAt(-20, 2), 0);
+
+        std::string twoText = testkit::syntheticTwoTrackMemoryText();
+        twoText = rc0::replaceSlotBody(twoText, 1,
+                                       rc0::setSectionField(rc0::slotBody(twoText, 1), "TRACK2", "One", 1));
+        std::vector<SlotRow> twoRows;
+        for (auto& info : catalog::listSlots(twoText))
+            twoRows.push_back({ std::move(info), "", "", { "" }, std::nullopt });
+        table.setRows(twoRows);
+        table.permissions = [] { return CardPermissions::of("RC-500"); };
+        std::vector<std::pair<int, int>> flips;
+        table.onOneShotToggled = [&flips](int slot, int track) { flips.emplace_back(slot, track); };
+        auto& header = box->getHeader();
+        const int columnX = header.getColumnPosition(header.getIndexOfColumnId(oneShotColumn, true)).getX();
+        const auto clickAtX = [&](int cellX) {
+            const auto now = juce::Time::getCurrentTime();
+            const juce::Point<float> at { static_cast<float>(columnX + cellX), 4.0f };
+            return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), at,
+                                    juce::ModifierKeys::leftButtonModifier, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                    &table, &table, now, at, now, 1, false);
+        };
+        model->cellClicked(0, oneShotColumn, clickAtX(second));
+        model->cellClicked(0, oneShotColumn, clickAtX(first));
+        model->cellClicked(0, oneShotColumn, clickAtX(70)); // the empty rest of the cell
+        CHECK((flips == std::vector<std::pair<int, int>> { { 1, 2 }, { 1, 1 } }));
+        // The hover says what the two dots mean, track by track.
+        CHECK_EQ(model->getCellTooltip(0, oneShotColumn), juce::String("T1 loops, T2 plays once"));
+        // A card that keeps One Shot closed: the dots are lamps.
+        table.permissions = [] { return CardPermissions::of("RC-505"); };
+        model->cellClicked(0, oneShotColumn, clickAtX(second));
+        CHECK_EQ(flips.size(), std::size_t { 2 });
+        // A one-track row: one dot, no words on hover, every click track 1.
+        table.setRows(rows);
+        table.permissions = [] { return CardPermissions::of("RC-5"); };
+        model->cellClicked(0, oneShotColumn, clickAtX(second));
+        CHECK((flips.back() == std::pair<int, int> { 1, 1 }));
+        CHECK(model->getCellTooltip(0, oneShotColumn).isEmpty());
     }
 
     return testkit::summary("slot_table_harness");
