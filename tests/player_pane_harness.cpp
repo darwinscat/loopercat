@@ -274,6 +274,30 @@ int main()
     CHECK(!readCame);
     CHECK_EQ(failures, 1);
 
+    // --- a two-track memory's One Shot, per track ---
+    //
+    // The Loop toggle starts off only when every take is One Shot, and when
+    // the card's flags move while the memory is loaded the preview follows
+    // them: the toggle is set again the way a load sets it. A list that is
+    // not one flag per track changes nothing.
+    {
+        pane.setTracks(5, { { floatFile, 1.0f, true }, { floatFile, 1.0f, false } }, "Two");
+        CHECK(engine.isLooping());  // track 2 loops: Loop starts on
+        pane.setOneShots({ true, true });
+        CHECK(!engine.isLooping()); // every take plays once now: Loop off
+        pane.setOneShots({ false });
+        CHECK(!engine.isLooping()); // not one flag per track: nothing changes
+        pane.setOneShots({ true, false });
+        CHECK(engine.isLooping());
+        pane.setTracks(6, { { floatFile, 1.0f, true }, { juce::File(), 1.0f, false } }, "Solo");
+        CHECK(!engine.isLooping()); // the one take is One Shot; the empty track does not loop it
+        // A one-track load is not a mix: per-track flags are no business of it.
+        pane.setSlot(7, floatFile, "One", false, kFrames);
+        CHECK(engine.isLooping());
+        pane.setOneShots({ true, true });
+        CHECK(engine.isLooping());
+    }
+
     pane.clear();
     wavFile.deleteFile();
     floatFile.deleteFile();

@@ -227,10 +227,30 @@ inline Line tell(const Facts& facts)
     } else if (facts.kind == "oneshot") {
         // On or off is read from the body the operation left. Without one —
         // an attempt that failed, or one that found nothing to change — the
-        // row names the switch and claims no setting.
+        // row names the switch and claims no setting. One Shot is a flag of
+        // each track: a memory of one track says it as it always has; one of
+        // more names the track whose flag the operation changed, from that
+        // track's own section.
         line.action = "One Shot";
-        if (bodies)
-            line.action += track(*facts.afterBody, "One") == 1 ? " on" : " off";
+        if (bodies) {
+            int tracks = 0;
+            while (facts.afterBody->find(rc0::trackSectionOpen(tracks + 1)) != std::string::npos)
+                ++tracks;
+            if (tracks <= 1) {
+                line.action += track(*facts.afterBody, "One") == 1 ? " on" : " off";
+            } else {
+                std::string changed;
+                for (int n = 1; n <= tracks; ++n) {
+                    const std::string section = rc0::trackSectionName(n);
+                    const long long now = rc0::sectionField(*facts.afterBody, section, "One");
+                    if (now == rc0::sectionField(*facts.beforeBody, section, "One"))
+                        continue;
+                    changed += (changed.empty() ? " " : ", ") + std::string("T") + std::to_string(n)
+                             + (now == 1 ? " on" : " off");
+                }
+                line.action += changed;
+            }
+        }
     } else if (facts.kind == "countin") {
         line.action = "Play Count-In";
         if (bodies)

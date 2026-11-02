@@ -306,7 +306,7 @@ int main()
         CHECK_THROWS(controls::readAll(twoTrack), notOnRecord);
         CHECK_THROWS(controls::set(twoTrack, controls::Control::pedal, 28),
                      "set controls refused on an \"RC-500\" card - on this model LooperCat"
-                     " does rename, pull, clear and restore only");
+                     " does rename, set one-shot, pull, clear and restore only");
         const std::string unknown = withRoot(system, "RC-505");
         CHECK_THROWS(controls::read(unknown, controls::Control::pedal),
                      "this is an \"RC-505\" card, not an RC-5");

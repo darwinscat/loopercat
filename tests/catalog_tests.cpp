@@ -219,5 +219,22 @@ int main()
         CHECK(catalog::readSlot(oneShort, 4) == memories.at(3)); // its neighbours still read
     }
 
+    // One Shot is a flag of each track: a two-track memory's flags are read
+    // from each TRACK section, and the flat field is track 1's alone.
+    {
+        std::string flags = testkit::syntheticTwoTrackMemoryText();
+        flags = rc0::replaceSlotBody(flags, 3, rc0::setSectionField(rc0::slotBody(flags, 3), "TRACK2", "One", 1));
+        const catalog::SlotInfo second = catalog::readSlot(flags, 3);
+        CHECK(second.tracks.size() == 2u && !second.tracks[0].oneShot && second.tracks[1].oneShot);
+        CHECK(!second.oneShot); // track 2's flag does not speak for the memory
+        flags = rc0::replaceSlotBody(flags, 3, rc0::setSectionField(rc0::slotBody(flags, 3), "TRACK1", "One", 1));
+        const catalog::SlotInfo both = catalog::readSlot(flags, 3);
+        CHECK(both.tracks[0].oneShot && both.tracks[1].oneShot && both.oneShot);
+        // A track with no take keeps its flag: the pedal does.
+        flags = rc0::replaceSlotBody(flags, 11, rc0::setSectionField(rc0::slotBody(flags, 11), "TRACK1", "One", 1));
+        const catalog::SlotInfo solo = catalog::readSlot(flags, 11);
+        CHECK(!solo.tracks[0].hasAudio && solo.tracks[0].oneShot && !solo.tracks[1].oneShot);
+    }
+
     return testkit::summary("catalog");
 }

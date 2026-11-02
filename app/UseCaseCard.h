@@ -71,6 +71,14 @@ public:
     // the tests.
     const juce::String& title() const { return title_; }
 
+    // The word changes with the memory it shows: One Shot of a one-track
+    // memory, "One Shot T1" of one track of two.
+    void setTitle(juce::String title)
+    {
+        title_ = std::move(title);
+        repaint();
+    }
+
     std::function<void()> onToggle;
 
     void setState(bool on, juce::String meaning, juce::String cost = {})
@@ -80,6 +88,8 @@ public:
         cost_ = std::move(cost);
         repaint();
     }
+
+    bool isOn() const { return on_; } // the state the switch shows
 
     void enablementChanged() override { repaint(); } // greys out while a job runs
 
@@ -128,7 +138,7 @@ public:
     }
 
 private:
-    const juce::String title_;
+    juce::String title_;
     juce::String meaning_, cost_;
     bool on_ = false;
     bool hovered_ = false;

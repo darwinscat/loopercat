@@ -669,11 +669,11 @@ int main()
         // not one slot more — slot 9 is in the list but already off.
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
-        commands::setOneShot(volume, { 9 }, false, writeOpts(tmp.path));
+        commands::setOneShot(volume, { 9 }, 1, false, writeOpts(tmp.path));
         std::vector<commands::SlotChange> heard;
         commands::WriteOptions options = writeOpts(tmp.path);
         options.journal.bodiesChanging = [&](const std::vector<commands::SlotChange>& c) { heard = c; };
-        commands::setOneShot(volume, { 40, 9, 3 }, true, options);
+        commands::setOneShot(volume, { 40, 9, 3 }, 1, true, options);
         std::vector<int> slots;
         for (const auto& change : heard)
             slots.push_back(change.slot);
@@ -1014,7 +1014,7 @@ int main()
     {
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
-        commands::setOneShot(volume, { 3, 5 }, true, writeOpts(tmp.path));
+        commands::setOneShot(volume, { 3, 5 }, 1, true, writeOpts(tmp.path));
         const std::string text = commands::readMemory(volume);
         CHECK_EQ(rc0::field(rc0::slotBody(text, 3), "One"), 1);
         CHECK_EQ(rc0::field(rc0::slotBody(text, 5), "One"), 1);
@@ -2690,10 +2690,13 @@ int main()
 
         // setOneShot: TRACK1's <One>, on and off again — and the card's own
         // document is back, to the byte.
-        commands::setOneShot(volume, { 11 }, true, writeOpts(tmp.path));
+        commands::setOneShot(volume, { 11 }, 1, true, writeOpts(tmp.path));
         CHECK_EQ(slotChangesOnCard(card, memory(), 11), "TRACK1.One 0->1");
         const std::string oneShotOn = memory();
-        commands::setOneShot(volume, { 11 }, false, writeOpts(tmp.path));
+        commands::setOneShot(volume, { 11 }, 1, false, writeOpts(tmp.path));
+        // The RC-5 has one track: a second is not one of its tracks.
+        CHECK_THROWS(commands::setOneShot(volume, { 11 }, 2, true, writeOpts(tmp.path)),
+                     "set one-shot: track 2, but an \"RC-5\" memory holds one track");
         CHECK_EQ(slotChangesOnCard(oneShotOn, memory(), 11), "TRACK1.One 1->0");
         CHECK(rc0::splitFile(memory()).document == rc0::splitFile(card).document);
 
@@ -2792,7 +2795,7 @@ int main()
         // into it would read as OTHER.<tag>.
 
         std::string before = memory();
-        commands::setOneShot(volume, { 5 }, true, writeOpts(tmp.path));
+        commands::setOneShot(volume, { 5 }, 1, true, writeOpts(tmp.path));
         CHECK_EQ(slotChangesOnCard(before, memory(), 5), "TRACK1.One 0->1");
 
         before = memory();
@@ -2896,8 +2899,7 @@ int main()
         commands::writeFileBytes(
             source, bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 })));
         const std::string refused = " refused on an \"RC-500\" card - on this model LooperCat"
-                                    " does rename, pull, clear and restore only";
-        CHECK_THROWS(commands::setOneShot(volume, { 1 }, true, write), "set one-shot" + refused);
+                                    " does rename, set one-shot, pull, clear and restore only";
         CHECK_THROWS(commands::setTempo(volume, 1, 1200, write), "set tempo" + refused);
         CHECK_THROWS(commands::setCountIn(volume, { 1 }, true, write), "set count-in" + refused);
         CHECK_THROWS(commands::push(volume, source, 42, { .write = write }), "push" + refused);
@@ -2940,6 +2942,44 @@ int main()
             CHECK(rc0::setName(rc0::slotBody(after, 1), "Memory 1") == rc0::slotBody(text, 1));
             CHECK(commands::readFileBytes(fileOf(1, 1, "001_1.WAV")) == t1);
             CHECK(commands::readFileBytes(fileOf(1, 2, "001_2.WAV")) == t2);
+        }
+
+        // One Shot, track by track: a write flips that track's own <One> and
+        // nothing else — the other track's flag, every other field and every
+        // other memory as they were, both takes untouched.
+        {
+            const std::string start = commands::readMemory(volume);
+            commands::setOneShot(volume, { 1 }, 2, true, writeOpts(tmp.path, "oneshot-t2"));
+            const std::string second = commands::readMemory(volume);
+            CHECK_EQ(slotChangesOnCard(start, second, 1), "TRACK2.One 0->1");
+            commands::setOneShot(volume, { 1, 3 }, 1, true, writeOpts(tmp.path, "oneshot-t1"));
+            const std::string both = commands::readMemory(volume);
+            CHECK_EQ(fieldChanges(rc0::slotBody(second, 1), rc0::slotBody(both, 1)), "TRACK1.One 0->1");
+            CHECK_EQ(fieldChanges(rc0::slotBody(second, 3), rc0::slotBody(both, 3)), "TRACK1.One 0->1");
+            for (int slot = 1; slot <= rc0::kSlotCount; ++slot)
+                if (slot != 1 && slot != 3)
+                    CHECK(rc0::slotBody(both, slot) == rc0::slotBody(start, slot));
+            const auto one = catalog::readSlot(both, 1);
+            CHECK(one.tracks.size() == 2u && one.tracks[0].oneShot && one.tracks[1].oneShot);
+            CHECK(one.oneShot); // the flat field is track 1's
+            CHECK(!catalog::readSlot(both, 3).tracks[1].oneShot); // slot 3's second track: not asked
+            commands::setOneShot(volume, { 1 }, 2, false, writeOpts(tmp.path, "oneshot-t2-off"));
+            CHECK_EQ(slotChangesOnCard(both, commands::readMemory(volume), 1), "TRACK2.One 1->0");
+            // A track the model has not, and no track at all: refused by name,
+            // the card as it was.
+            const auto settled = volumeBytes(volume);
+            CHECK_THROWS(commands::setOneShot(volume, { 1 }, 3, true, writeOpts(tmp.path, "oneshot-t3")),
+                         "set one-shot: track 3, but an \"RC-500\" memory holds 2 tracks");
+            CHECK_THROWS(commands::setOneShot(volume, { 1 }, 0, true, writeOpts(tmp.path, "oneshot-t0")),
+                         "set one-shot: track 0");
+            CHECK_THROWS(commands::setOneShot(volume, { 1 }, -1, true, writeOpts(tmp.path, "oneshot-tm")),
+                         "set one-shot: track -1");
+            CHECK(volumeBytes(volume) == settled);
+            CHECK(commands::readFileBytes(fileOf(1, 1, "001_1.WAV")) == t1);
+            CHECK(commands::readFileBytes(fileOf(1, 2, "001_2.WAV")) == t2);
+            // Back as it was, for what follows.
+            commands::setOneShot(volume, { 1, 3 }, 1, false, writeOpts(tmp.path, "oneshot-t1-off"));
+            CHECK(rc0::slotBody(commands::readMemory(volume), 1) == rc0::slotBody(start, 1));
         }
 
         // Clear, then restore: both tracks gone and both kept, then both back,

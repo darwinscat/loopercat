@@ -304,7 +304,7 @@ private:
     void refreshHistoryStorage(juce::Component::SafePointer<HistoryStoragePanel> panel);
     void releaseHistoryTakes(juce::Component::SafePointer<HistoryStoragePanel> panel,
                              std::vector<std::string> hashes);
-    void toggleOneShot(int slot, bool currentlyOn);
+    void toggleOneShot(const SlotRow& row, int track);
     void toggleCountIn(int slot, bool currentlyOn);
     void editRhythm(int slot, long long beat, usecases::rhythm::Edits edits);
     void editPlayStop(int slot, usecases::playstop::Edits edits);
