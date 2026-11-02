@@ -36,6 +36,11 @@
 namespace loopercat::mounttable {
 
 struct Entry {
+    // Field (1): the kernel's id for THIS mount. A remount of the same
+    // device at the same place gets a new one, which is what tells one
+    // mount incarnation from the next (MountProbe.h, issue #166) — the
+    // device number alone cannot, since it does not change.
+    unsigned int mountId = 0;
     unsigned int deviceMajor = 0;
     unsigned int deviceMinor = 0;
     std::string mountPoint; // unescaped
@@ -107,6 +112,10 @@ inline std::vector<Entry> parse(std::istream& mountInfo)
         if (fields.size() < 8)
             continue;
 
+        const std::optional<unsigned int> mountId = parseNumber(fields[0]);
+        if (!mountId)
+            continue;
+
         const std::string& majorMinor = fields[2];
         const size_t colon = majorMinor.find(':');
         if (colon == std::string::npos)
@@ -125,6 +134,7 @@ inline std::vector<Entry> parse(std::istream& mountInfo)
             continue;
 
         Entry entry;
+        entry.mountId = *mountId;
         entry.deviceMajor = *major;
         entry.deviceMinor = *minor;
         entry.mountPoint = unescape(fields[4]);

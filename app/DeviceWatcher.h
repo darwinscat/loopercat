@@ -21,7 +21,9 @@
 // device, a dead one (the mount serves page cache — a ghost), or no device
 // at all (a plain directory: synthetic test volumes, --volume pins). Truth
 // comes from the IORegistry, not from the mount table — the 2026-07-22
-// incident showed diskarbitrationd's view can lag reality by hours.
+// incident showed diskarbitrationd's view can lag reality by hours. What the
+// backends may conclude from the probe behind that verdict, and what they may
+// not conclude about a mount they have not probed yet, is MountProbe.h.
 //
 // Detach notification is push: the first live verdict for a device registers
 // an IOKit interest notification, and its termination fires onDeviceLost
@@ -56,6 +58,12 @@ public:
     // Termination of the device behind the most recent live verdict.
     // Arbitrary thread. Set before the first verdict() call.
     std::function<void()> onDeviceLost;
+
+    // Why a verdict called the volume a ghost — the operations.log line, once
+    // per episode, on the thread that asked for the verdict. The decision
+    // ends in a forced unmount of the player's card, and until issue #166 it
+    // was written down nowhere: the only trace was in the system log.
+    std::function<void(std::string line)> onGhostVerdict;
 
     // A mountable disk appeared — worth rescanning immediately. Arbitrary thread.
     std::function<void()> onDiskAppeared;

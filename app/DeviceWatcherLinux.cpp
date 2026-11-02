@@ -46,6 +46,7 @@
 #include "DeviceWatcher.h"
 
 #include "LinuxDeviceRules.h"
+#include "MountProbe.h"
 #include "MountTable.h"
 
 #include <libudev.h>
@@ -82,11 +83,6 @@ namespace {
     // What to CALL the pedal in the "Mounted …" toast. A display string
     // only: matching happens on the USB identity, never on this.
     constexpr const char* kPedalDisplayName = "BOSS RC-5";
-
-    // An I/O probe outstanding longer than this means the volume is wedged
-    // or the medium is gone mid-read: the device story is over even though
-    // nothing ever returned an error. (Same policy as the other backends.)
-    constexpr auto kProbeStuckAfter = std::chrono::seconds(2);
 
     // How long the session's own automounter gets before we do it ourselves.
     constexpr auto kAutoMountGrace = std::chrono::seconds(5);
@@ -166,36 +162,72 @@ namespace {
                                        readSysfsLine(sysfsBlockDir(device) + "/../removable"));
     }
 
+    // Which MOUNT this is, as the kernel counts them. statx's unique mount
+    // id is never reused while the system runs (Linux 6.8+,
+    // STATX_MNT_ID_UNIQUE); the id in /proc/self/mountinfo is NOT that - it
+    // comes from a lowest-free-index allocator and is freed on unmount, so
+    // the next mount of the same device usually gets the same number back.
+    // Taking that for an identity would let a fresh mount inherit the dead
+    // one's probe result, which is the whole of issue #166. Where the kernel
+    // is older the mountinfo id is all there is and that risk stands; the
+    // settling window still keeps a fresh mount's first reads from condemning
+    // it, but a stale refusal can outlive the mount it came from.
+    unsigned long long mountInstance(const std::filesystem::path& path, unsigned int fromTable)
+    {
+#ifdef STATX_MNT_ID_UNIQUE
+        struct ::statx stx {};
+        if (::statx(AT_FDCWD, path.c_str(), AT_STATX_DONT_SYNC, STATX_MNT_ID_UNIQUE, &stx) == 0
+            && (stx.stx_mask & STATX_MNT_ID_UNIQUE) != 0)
+            return stx.stx_mnt_id;
+#endif
+        return fromTable;
+    }
+
     //==========================================================================
     // The uncached read
     //==========================================================================
 
-    enum class ProbeOutcome {
-        answered,    // the medium served bytes past the cache
-        refused,     // the read failed — the medium is gone or wedged
-        unsupported, // this filesystem cannot do O_DIRECT at all
-    };
-
-    ProbeOutcome uncachedRead(const std::string& path)
+    // The outcomes are mountprobe::Answer's, including the one this backend
+    // has more ways to reach than the others: a filesystem that cannot do an
+    // uncached read at all gives no verdict and may not condemn a mount.
+    mountprobe::Read uncachedRead(const std::string& path)
     {
+        mountprobe::Read result;
         const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
         if (fd < 0) {
+            const int failure = errno;
             // EINVAL from open means the filesystem refuses direct I/O, not
             // that the device left; anything else is a real read failure.
-            return errno == EINVAL ? ProbeOutcome::unsupported : ProbeOutcome::refused;
+            result.answer = failure == EINVAL ? mountprobe::Answer::noVerdict
+                                              : mountprobe::Answer::refused;
+            result.error = failure;
+            return result;
         }
         void* buffer = nullptr;
-        if (::posix_memalign(&buffer, kDirectAlign, kDirectAlign) != 0) {
+        // posix_memalign RETURNS its error and leaves errno alone.
+        if (const int failure = ::posix_memalign(&buffer, kDirectAlign, kDirectAlign);
+            failure != 0) {
             ::close(fd);
-            return ProbeOutcome::unsupported;
+            result.answer = mountprobe::Answer::noVerdict;
+            result.error = failure;
+            return result;
         }
+        errno = 0; // only a failing read sets it, and a stale number would
+                   // read in the journal exactly like a real one
         const ssize_t got = ::read(fd, buffer, kDirectAlign);
+        const int failure = errno;
         std::free(buffer);
         ::close(fd);
         // A probe file shorter than one block legitimately reads short, and
-        // even a zero-length answer proves the medium responded; only an
-        // error means it did not.
-        return got >= 0 ? ProbeOutcome::answered : ProbeOutcome::refused;
+        // those bytes came from the medium. Zero bytes is neither life nor
+        // death - see mountprobe::Answer::noVerdict - and only an error says
+        // the medium did not answer.
+        result.answer = got > 0    ? mountprobe::Answer::served
+                      : got == 0   ? mountprobe::Answer::noVerdict
+                                   : mountprobe::Answer::refused;
+        result.bytes = got > 0 ? got : 0;
+        result.error = got < 0 ? failure : 0;
+        return result;
     }
 
     // Shared with the sacrificial probe threads so a stuck thread can never
@@ -205,31 +237,47 @@ namespace {
     struct IoProbe {
         std::mutex mutex;
         int generation = 0; // stale probe threads may not report against a newer probe
-        bool inFlight = false;
-        std::chrono::steady_clock::time_point startedAt;
-        bool haveResult = false;
-        ProbeOutcome lastOutcome = ProbeOutcome::answered;
+        mountprobe::Incarnation mount; // what everything below is about
         std::string file;
+        mountprobe::Clock::time_point firstSeenAt{}; // when this mount came under our eye
+        bool inFlight = false;
+        mountprobe::Clock::time_point startedAt;
+        bool haveResult = false;
+        mountprobe::Read read{};
+        int refusals = 0; // reads in a row that did not answer, this incarnation
     };
 
-    void launchProbe(const std::shared_ptr<IoProbe>& probe, std::string file)
+    void launchProbe(const std::shared_ptr<IoProbe>& probe, const mountprobe::Incarnation& mount,
+                     std::string file)
     {
         int generation = 0;
         {
             const std::lock_guard<std::mutex> lock(probe->mutex);
+            if (!mountprobe::speaksFor(probe->mount, probe->file, mount, file)) {
+                // A mount this state knows nothing about: it starts with a
+                // clean slate and its own clock, so nothing it inherits can
+                // condemn it (issue #166).
+                probe->mount = mount;
+                probe->file = file;
+                probe->firstSeenAt = mountprobe::Clock::now();
+                probe->haveResult = false;
+                probe->read = {};
+                probe->refusals = 0;
+            }
             generation = ++probe->generation;
             probe->inFlight = true;
-            probe->startedAt = std::chrono::steady_clock::now();
-            probe->file = file;
+            probe->startedAt = mountprobe::Clock::now();
         }
         std::thread([probe, generation, target = std::move(file)] {
-            const ProbeOutcome outcome = uncachedRead(target);
+            const mountprobe::Read read = uncachedRead(target);
             const std::lock_guard<std::mutex> lock(probe->mutex);
             if (probe->generation != generation)
                 return; // a newer probe owns the state now
             probe->inFlight = false;
             probe->haveResult = true;
-            probe->lastOutcome = outcome;
+            probe->read = read;
+            probe->refusals =
+                read.answer == mountprobe::Answer::refused ? probe->refusals + 1 : 0;
         }).detach();
     }
 
@@ -320,6 +368,9 @@ struct DeviceWatcher::Impl {
     dev_t trackedDevice = 0; // device behind the last live verdict; guarded by mutex
     std::set<std::string> mountAttempted;
     std::shared_ptr<IoProbe> ioProbe = std::make_shared<IoProbe>();
+    // One journal line per ghost episode: the worker asks on every 1.5 s
+    // scan, and a ghost stays one until its mount is cleared.
+    std::atomic<bool> ghostTold { false };
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
     std::atomic<bool> stopping { false };
     int wakeFd = -1;
@@ -334,6 +385,21 @@ struct DeviceWatcher::Impl {
         }
         if (cb)
             cb();
+    }
+
+    // Why a verdict went against the mount, once per episode. Called on the
+    // thread that asked for the verdict (the pedal worker).
+    void tellGhost(const std::string& line)
+    {
+        if (ghostTold.exchange(true))
+            return;
+        std::function<void(std::string)> cb;
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            cb = owner.onGhostVerdict;
+        }
+        if (cb)
+            cb(line);
     }
 
     void deviceRemoved(dev_t device)
@@ -484,23 +550,32 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     // Not a mount point of its own: a plain directory (synthetic test
     // volume, --volume pin) has no device story to tell.
     const std::optional<mounttable::Entry> mount = mountAt(volumePath);
-    if (!mount.has_value())
+    if (!mount.has_value()) {
+        impl_->ghostTold.store(false);
         return lifecycle::Backing::untracked;
+    }
 
     // Major 0 is a virtual filesystem (tmpfs, overlay) — no block device
     // exists for it, so its absence from sysfs must not read as `gone`.
-    if (mount->deviceMajor == 0)
+    if (mount->deviceMajor == 0) {
+        impl_->ghostTold.store(false);
         return lifecycle::Backing::untracked;
+    }
 
     const dev_t device = deviceOf(*mount);
 
     // The caller just saw pedal content here; the block device vanishing now
     // means the medium is being torn away under us.
-    if (!blockDeviceExists(device))
+    if (!blockDeviceExists(device)) {
+        impl_->tellGhost(mountprobe::platformGhostLine(
+            "sysfs no longer has the block device behind " + volumePath.string()));
         return lifecycle::Backing::gone;
+    }
 
-    if (!deviceIsRemovable(device))
+    if (!deviceIsRemovable(device)) {
+        impl_->ghostTold.store(false);
         return lifecycle::Backing::untracked;
+    }
 
     {
         // Arm the removal push for this device; a fresh live verdict re-arms
@@ -513,37 +588,40 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
     // STORAGE surrenders the medium while its USB stack stays registered.
     // The uncached read settles it. Its result is one scan late by design:
     // this call never waits on volume I/O.
+    // A filesystem with no O_DIRECT support gives no verdict at all; on
+    // Linux the sysfs check above is a real answer on its own, so the volume
+    // stays live rather than being declared a ghost on a capability gap
+    // (mountprobe::Answer::noVerdict).
     const std::string target = probeFile.string();
-    bool gone = false;
-    bool launch = false;
+    // The device, plus which mount of it this is (mountInstance): a remount
+    // at the same place inherits nothing from the mount before it (#166).
+    const mountprobe::Incarnation here{ std::to_string(mount->deviceMajor) + ":"
+                                           + std::to_string(mount->deviceMinor),
+                                       mountInstance(volumePath, mount->mountId), 0 };
+    mountprobe::Facts facts;
     {
         const std::lock_guard<std::mutex> lock(impl_->ioProbe->mutex);
-        IoProbe& probe = *impl_->ioProbe;
-        const bool sameFile = probe.file == target;
-        // A filesystem with no O_DIRECT support gives no verdict at all; on
-        // Linux the sysfs check above is a real answer on its own, so the
-        // volume stays live rather than being declared a ghost on a
-        // capability gap.
-        const bool refused = probe.haveResult && probe.lastOutcome == ProbeOutcome::refused;
-        if (probe.inFlight) {
-            const bool stuck =
-                std::chrono::steady_clock::now() - probe.startedAt > kProbeStuckAfter;
-            if (stuck) {
-                // Wedged on this volume = gone; stuck on a PREVIOUS volume =
-                // abandon that thread and start probing the new one.
-                gone = sameFile;
-                launch = !sameFile;
-            } else {
-                gone = sameFile && refused;
-            }
-        } else {
-            gone = sameFile && refused;
-            launch = true; // keep the verdict fresh (and recover if media returns)
+        const IoProbe& probe = *impl_->ioProbe;
+        facts.ours = mountprobe::speaksFor(probe.mount, probe.file, here, target);
+        if (facts.ours) {
+            const auto now = mountprobe::Clock::now();
+            facts.inFlight = probe.inFlight;
+            facts.outstanding = now - probe.startedAt;
+            facts.haveResult = probe.haveResult;
+            facts.read = probe.read;
+            facts.refusals = probe.refusals;
+            facts.seenFor = now - probe.firstSeenAt;
         }
     }
-    if (launch)
-        launchProbe(impl_->ioProbe, target);
-    return gone ? lifecycle::Backing::gone : lifecycle::Backing::live;
+    const mountprobe::Decision decision = mountprobe::decide(facts);
+    if (decision.launchProbe)
+        launchProbe(impl_->ioProbe, here, target);
+    if (decision.call == mountprobe::Call::ghost) {
+        impl_->tellGhost(mountprobe::ghostLine(facts));
+        return lifecycle::Backing::gone;
+    }
+    impl_->ghostTold.store(false); // the next ghost is a new episode
+    return lifecycle::Backing::live;
 }
 
 void DeviceWatcher::eject(const std::filesystem::path& volumePath,

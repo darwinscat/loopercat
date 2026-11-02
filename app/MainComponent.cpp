@@ -14,6 +14,7 @@
 #include "history/SlotLoudness.h"
 #include "history/SlotRows.h"
 #include "JobWords.h"
+#include "MountProbe.h"
 #include "OperationsLog.h"
 #include "PedalPortName.h"
 #include "Strings.h"
@@ -480,6 +481,12 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
         juce::MessageManager::callAsync([this, alive] {
             if (*alive)
                 worker.postDeviceLost();
+        });
+    };
+    deviceWatcher.onGhostVerdict = [this, alive = uiAlive](std::string line) {
+        juce::MessageManager::callAsync([this, alive, text = utf8(line)] {
+            if (*alive)
+                trace(text);
         });
     };
     deviceWatcher.onDiskAppeared = [this, alive = uiAlive] {
@@ -1683,14 +1690,19 @@ void MainComponent::showAbout()
 
 // A ghost cannot heal by itself: the stale mount blocks the next attach.
 // Force-unmount is safe by construction (nothing flushes to a dead device);
-// one attempt per episode, failures land on the banner line.
+// one attempt per episode, failures land on the banner line. Both the verdict
+// behind it (DeviceWatcher::onGhostVerdict) and what came of it go into
+// operations.log: the app pulls the player's card out here, which is the one
+// step of the story the player did not ask for (issue #166).
 void MainComponent::cleanUpGhostMount()
 {
     deviceWatcher.forceUnmount(
         snapshot.volume, [this, alive = uiAlive](bool ok, std::string message) {
-            juce::MessageManager::callAsync([this, alive, ok, note = utf8(message)] {
+            juce::MessageManager::callAsync([this, alive, ok, message,
+                                             note = utf8(message)] {
                 if (!*alive)
                     return;
+                trace(utf8(mountprobe::forcedUnmountLine(ok, message)));
                 if (!ok) {
                     banners.showError(banners::Source::connection,
                                       "Could not clear the stale mount (" + note

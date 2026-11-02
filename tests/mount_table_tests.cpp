@@ -52,6 +52,37 @@ int main()
         CHECK_EQ(entries[0].source, std::string("/dev/sdb1"));
         CHECK_EQ(entries[0].deviceMajor, 8u);
         CHECK_EQ(entries[0].deviceMinor, 17u);
+        // Field (1), the kernel's id for this mount: the fallback identity of
+        // a mount incarnation where the kernel has no unique one to give
+        // (MountProbe.h, DeviceWatcherLinux.cpp, issue #166). The number is
+        // the kernel's, reusable after an unmount, so what this suite
+        // promises is only that the field arrives unmangled.
+        CHECK_EQ(entries[0].mountId, 42u);
+    }
+
+    // Two mounts of the same device at the same place, as the table shows
+    // them: each line's own id reaches its own entry. A parser that dropped
+    // the field, or read the parent id instead, would make the two
+    // indistinguishable.
+    {
+        const std::vector<Entry> entries = parseText(
+            "42 31 8:17 / /media/alisa/BOSS\\040RC-5 rw shared:1 - vfat /dev/sdb1 rw\n"
+            "57 31 8:17 / /media/alisa/BOSS\\040RC-5 rw shared:1 - vfat /dev/sdb1 rw\n");
+        CHECK_EQ(entries.size(), static_cast<std::size_t>(2));
+        CHECK_EQ(entries[0].mountId, 42u);
+        CHECK_EQ(entries[1].mountId, 57u);
+    }
+
+    // A mount id that is not a number, and a line that has none at all (its
+    // fields then shift one place left): as malformed as a broken device
+    // number, so dropped rather than guessed at.
+    {
+        const std::vector<Entry> entries =
+            parseText("x 0 8:1 / /mnt/a rw - vfat /dev/sda1 rw\n"
+                      " 0 8:1 / /mnt/b rw - vfat /dev/sdb1 rw\n"
+                      "7 0 8:1 / /mnt/good rw - vfat /dev/sdc1 rw\n");
+        CHECK_EQ(entries.size(), static_cast<std::size_t>(1));
+        CHECK_EQ(entries[0].mountPoint, std::string("/mnt/good"));
     }
 
     // All four characters mountinfo escapes, not just the space that we
