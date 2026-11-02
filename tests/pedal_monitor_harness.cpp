@@ -260,6 +260,45 @@ int main()
         CHECK(afterwards);
     }
 
+    // 5d. While an eject is in flight the worker does not read the card
+    // (issue #169): a scan's open files are one more holder the unmount
+    // would have to wait out, and the busy retries would be waiting for the
+    // app itself. A fresh worker whose eject starter never answers on its
+    // own: the card changes on disk while it ejects, and no delivery may
+    // show the change — until the refusal returns the worker to connected,
+    // when the next scan must.
+    {
+        std::vector<PedalSnapshot> held;
+        PedalWorker holder(volume.string(), [&held](const PedalSnapshot& s) { held.push_back(s); });
+        int ejectsStarted = 0;
+        holder.setEjectStarter([&ejectsStarted](const std::string&) { ++ejectsStarted; });
+        holder.start();
+        CHECK(pumpUntil([&] { return !held.empty() && held.back().state == lifecycle::State::connected; }, 5000));
+        const std::string nameBefore = held.empty() || held.back().slots.size() < 43
+                                           ? std::string() : held.back().slots.at(42).info.name;
+        holder.requestEject();
+        CHECK(pumpUntil([&] { return !held.empty() && held.back().state == lifecycle::State::ejecting; }, 5000));
+        CHECK_EQ(ejectsStarted, 1);
+        const std::size_t fromEjecting = held.size();
+        {
+            std::string text = readTextFile(volume / "ROLAND" / "DATA" / "MEMORY1.RC0");
+            text = rc0::replaceSlotBody(text, 43, rc0::setName(rc0::slotBody(text, 43), "Mid Eject 43"));
+            writeMemoryPair(volume, text);
+        }
+        // Two poll periods and then some: a worker still scanning would have
+        // read the new name by now.
+        pumpUntil([] { return false; }, 3500);
+        for (std::size_t i = fromEjecting; i < held.size(); ++i) {
+            CHECK(held[i].state == lifecycle::State::ejecting);
+            CHECK(held[i].slots.size() < 43 || held[i].slots.at(42).info.name == nameBefore);
+        }
+        holder.postEjectFinished(false); // refused: connected again, and the card is the worker's to read
+        CHECK(pumpUntil([&] {
+            return !held.empty() && held.back().state == lifecycle::State::connected
+                && held.back().slots.size() >= 43 && held.back().slots.at(42).info.name == "Mid Eject 43";
+        }, 5000));
+    }
+
     // 6. The content disappears (an unmount): the mounted state drops — no
     // rows and no clean volume left standing.
     fs::remove_all(volume);
