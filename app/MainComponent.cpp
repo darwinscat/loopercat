@@ -151,8 +151,12 @@ namespace
     // How long a quit waits for the release before leaving anyway: a busy or
     // wedged volume must not hold the exit hostage (issue #1) — past the
     // bound the pedal simply stays in STORAGE, as an unsupervised quit left
-    // it before.
-    constexpr int kQuitReleaseBoundMs = 5000;
+    // it before. It outlasts the busy retries (issue #169): a quit that left
+    // in the middle of them would drop an unmount DiskArbitration may still
+    // carry out, and leave the pedal in STORAGE with its volume gone.
+    constexpr int kQuitReleaseBoundMs = 8000;
+    static_assert(std::chrono::milliseconds(kQuitReleaseBoundMs) > ejectretry::kLongestEject,
+                  "a quit must outwait the eject's busy retries");
 
     felitronics::appkit::VersionBadge::Config badgeConfig()
     {
@@ -1495,7 +1499,17 @@ void MainComponent::readCardName()
         [safe, rec = recorder, generation = cardGeneration, alive = uiAlive](const volume::fs::path& volumePath) {
             cardclaim::Claimed met = cardclaim::claim(volumePath);
             juce::MessageManager::callAsync([safe, alive, generation, claimed = std::move(met)] {
-                if (*alive && safe != nullptr && generation == safe->cardGeneration)
+                if (!*alive || safe == nullptr)
+                    return;
+                // Told whether or not the pedal is still here: what was
+                // written is on the card.
+                if (claimed.spotlightKeptOff)
+                    safe->trace("connect: " + utf8(std::string(spotlight::kNeverIndexFileName))
+                                + " written at the card's root: Spotlight leaves the card alone from its next mount");
+                if (!claimed.spotlightProblem.empty())
+                    safe->trace("connect: Spotlight could not be kept off the card: "
+                                + utf8(claimed.spotlightProblem));
+                if (generation == safe->cardGeneration)
                     safe->cardNamed(claimed);
             });
             const auto baseline = rec->firstSeen(volumePath);
@@ -1579,10 +1593,6 @@ void MainComponent::tellDeparture(const juce::String& told)
 
 void MainComponent::cardNamed(cardclaim::Claimed claimed)
 {
-    // Written down whether or not the pedal is still here: the file is on the card.
-    if (claimed.spotlightKeptOff)
-        trace("connect: " + utf8(std::string(spotlight::kNeverIndexFileName))
-              + " written at the card's root: Spotlight leaves the card alone from its next mount");
     if (snapshot.volume.empty() || snapshot.volume != cardNameVolume)
         return; // the pedal went away while the card was being read
     card = std::move(claimed.card);
@@ -1635,7 +1645,7 @@ void MainComponent::renamePedal()
                                    rec->selectVolume(volumePath); // update the stored name under the same id
                                    juce::MessageManager::callAsync([again, alive, c = written.card] {
                                        if (*alive && again != nullptr)
-                                           again->cardNamed({ c, false, false, {} }); // not minted, nothing new at the root
+                                           again->cardNamed({ c, false, false, {}, {} }); // not minted, nothing new at the root
                                    });
                                },
                                nullptr, 0, false, false, true });

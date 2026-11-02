@@ -34,9 +34,10 @@
 // The pedal ignores foreign files at the root (CardMarker.hpp: a marker file
 // survived power cycles on both RC-5s and the RC-500). Linux and Windows read
 // no such file; it costs nothing there and protects the card the day it meets
-// a Mac. Like every write to the card, creating it ends with the sweep of the
-// AppleDouble sidecar macOS plants beside a fresh file (measured on this one:
-// a ._.metadata_never_index appeared next to it).
+// a Mac. Creating it ends with the removal of the AppleDouble sidecar macOS
+// plants beside a fresh file on FAT (measured on this one: a
+// ._.metadata_never_index appeared next to it) — that sidecar and nothing
+// else: a connect that only found the marker sweeps nothing of the card's.
 
 #pragma once
 
@@ -77,6 +78,9 @@ struct KeptOff {
     bool created = false;      // the file was written just now; false: something by that name was there
     volume::SweepResult sweep; // after a write: the sidecar macOS planted, removed — or, in `failed`, not
 };
+
+// The AppleDouble sidecar macOS writes beside a fresh file on FAT.
+inline fs::path sidecarPath(const fs::path& volume) { return volume / ("._" + std::string(kNeverIndexFileName)); }
 
 namespace detail {
 
@@ -129,7 +133,12 @@ inline KeptOff keepOff(const fs::path& volume)
     if (fs::exists(status) || !detail::createExclusive(file))
         return kept;
     kept.created = true;
-    kept.sweep = volume::sweepJunk(volume);
+    const fs::path sidecar = sidecarPath(volume);
+    std::error_code removeError;
+    if (fs::remove(sidecar, removeError))
+        kept.sweep.removed.push_back(sidecar);
+    else if (removeError)
+        kept.sweep.failed.push_back(sidecar);
     return kept;
 }
 

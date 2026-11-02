@@ -91,15 +91,17 @@ int main()
         CHECK(kTries >= 2);   // one try is no retry
         CHECK(kPause > 0ms);  // back to back, the holder has no time to let go
         // A Quit is a Disconnect, and the quit waits a bounded time for the
-        // release before it leaves anyway (MainComponent.cpp). Retries whose
-        // pauses alone outlast that bound would turn every busy quit into
-        // one that leaves the pedal in STORAGE without having tried.
+        // release before it leaves anyway (MainComponent.cpp). A quit that
+        // leaves in the middle of the retries drops an unmount still in
+        // flight: the bound has to outlast all of them, tries included.
         const std::string owner = readApp("MainComponent.cpp");
         CHECK(owner.size() > 10000); // a file that failed to read would pass the rest
         std::smatch bound;
         CHECK(std::regex_search(owner, bound, std::regex(R"(kQuitReleaseBoundMs\s*=\s*(\d+))")));
+        CHECK(kLongestEject >= (kTries - 1) * kPause + kTries * kTryAnswersWithin);
+        CHECK(kTryAnswersWithin >= 500ms); // the slowest answer measured, 2026-11-03
         if (!bound.empty())
-            CHECK((kTries - 1) * kPause < std::chrono::milliseconds(std::stoll(bound[1].str())));
+            CHECK(kLongestEject < std::chrono::milliseconds(std::stoll(bound[1].str())));
     }
 
     // --- a card that stays busy: every try is made, then the banner ---
@@ -289,6 +291,12 @@ int main()
         // encodes it — not only DiskArbitration's own busy code, which it
         // was not.
         CHECK(says(macSource, "status == unix_err(EBUSY)"));
+        // A volume someone else unmounted between two tries is the eject done,
+        // not a banner about a card that is "still in use".
+        CHECK(says(macSource, "status == kDAReturnNotMounted"));
+        // The tries after the first never stat the volume on the watcher's
+        // queue: the disk is resolved once, on the caller's thread.
+        CHECK(!says(macSource, "startUnmount("));
         // No second ladder underneath: five lock tries inside each of five
         // drive tries would wait out a hold five times over.
         CHECK(!says(linuxSource, "kUnmountAttempts"));

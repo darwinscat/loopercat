@@ -14,7 +14,10 @@
 //     older marker file);
 //   - a marker this build cannot read stops the claim before anything is
 //     written;
-//   - a write ends with the sidecar sweep, and no write means no sweep.
+//   - a card that will not take the file is still known by its marker: the
+//     failure is reported, never the card's name and history lost to it;
+//   - a write ends with the removal of its own sidecar and nothing else; no
+//     write means nothing removed.
 
 #include "support.hpp"
 
@@ -245,45 +248,79 @@ int main()
         CHECK(!fs::exists(gone));
     }
 
-    // --- a write ends with the sidecar sweep; no write, no sweep ---
+    // --- a write removes its own sidecar, and nothing else of the card's ---
 
     {
         // macOS plants ._.metadata_never_index beside the fresh file (seen on
         // macOS 26 when the file was first written by hand); here a planted
-        // one stands in for it, and the write must take it away.
+        // one stands in for it, and the write must take it away. Junk that
+        // was on the card before is not this write's: the card sweep reports
+        // it, and a connect that only met the card leaves it where it is.
         TempDir tmp;
         const fs::path card = makeCard(tmp.path);
         put(marker::markerPath(card), kKittyMarker);
         put(card / "._.metadata_never_index", std::string(4096, '\0'));
+        put(card / "._stray", "x");
+        put(card / "ROLAND" / "WAVE" / "001_1" / "._001_1.WAV", "y");
         const cardclaim::Claimed claimed = cardclaim::claim(card);
         CHECK(claimed.spotlightKeptOff);
         CHECK(!fs::exists(card / "._.metadata_never_index"));
+        CHECK_EQ(claimed.sweep.removed.size(), 1u);
         CHECK(std::find(claimed.sweep.removed.begin(), claimed.sweep.removed.end(),
                         card / "._.metadata_never_index")
               != claimed.sweep.removed.end());
+        CHECK(fs::exists(card / "._stray"));
+        CHECK(fs::exists(card / "ROLAND" / "WAVE" / "001_1" / "._001_1.WAV"));
 
-        // Once the file is there, a Connect writes nothing, so it sweeps
-        // nothing either: a stray sidecar stays for the card sweep to report.
-        put(card / "._stray", "x");
+        // Once the file is there, a Connect writes nothing and removes nothing.
+        put(card / "._.metadata_never_index", "z");
         const cardclaim::Claimed again = cardclaim::claim(card);
         CHECK(!again.spotlightKeptOff);
-        CHECK(fs::exists(card / "._stray"));
+        CHECK(again.sweep.removed.empty());
+        CHECK(fs::exists(card / "._.metadata_never_index"));
     }
 
-    // --- a root that will not take the file: an Error that says where and why ---
+    // --- a root that will not take the file: the card is known all the same ---
 
 #if !defined(_WIN32)
     if (::geteuid() != 0) {
+        // A card the system mounted read-only after a FAT error, as far as a
+        // test can make one: a root nobody may write.
         TempDir tmp;
         const fs::path card = makeCard(tmp.path);
         put(marker::markerPath(card), kKittyMarker);
+        const auto before = contents(card);
         ::chmod(card.c_str(), 0555);
-        CHECK_THROWS(cardclaim::claim(card), (card / ".metadata_never_index").string());
+        // The bare write says where and why.
+        CHECK_THROWS(spotlight::keepOff(card), (card / ".metadata_never_index").string());
+        // The claim keeps the card's identity and reports the file.
+        cardclaim::Claimed claimed;
+        bool claimThrew = false;
+        try {
+            claimed = cardclaim::claim(card);
+        } catch (const std::exception&) {
+            claimThrew = true;
+        }
         ::chmod(card.c_str(), 0755);
+        CHECK(!claimThrew);
+        CHECK_EQ(claimed.card.id, "11111111-2222-4333-8444-555555555555");
+        CHECK_EQ(claimed.card.name, "RC-5 Kitty");
+        CHECK(!claimed.minted);
+        CHECK(!claimed.spotlightKeptOff);
+        CHECK(claimed.spotlightProblem.find((card / ".metadata_never_index").string()) != std::string::npos);
         CHECK(!fs::exists(spotlight::neverIndexPath(card)));
-        CHECK_EQ(slurp(marker::markerPath(card)), kKittyMarker);
+        CHECK(contents(card) == before);
     }
 #endif
+
+    // --- a card that is found and written fine carries no problem ---
+
+    {
+        TempDir tmp;
+        const fs::path card = makeCard(tmp.path);
+        CHECK_EQ(cardclaim::claim(card).spotlightProblem, "");
+        CHECK_EQ(cardclaim::claim(card).spotlightProblem, "");
+    }
 
     return testkit::summary("card_claim_tests");
 }

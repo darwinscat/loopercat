@@ -11,6 +11,7 @@
 
 #include "CardMarker.hpp"
 #include "Commands.hpp"
+#include "Error.hpp"
 #include "Rc0.hpp"
 #include "Spotlight.hpp"
 #include "Volume.hpp"
@@ -18,6 +19,7 @@
 #include <filesystem>
 #include <iterator>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace loopercat::cardclaim {
@@ -28,12 +30,20 @@ struct Claimed {
     marker::Card card;
     bool minted = false;            // the card had no marker: it was given one just now
     bool spotlightKeptOff = false;  // .metadata_never_index was written just now
+    std::string spotlightProblem;   // why it could not be written; the card is known all the same
     volume::SweepResult sweep;      // the sidecars those writes left, removed — or, in `failed`, not
 };
 
 // The marker first, then Spotlight: a marker this build cannot read is
 // refused before anything is written, exactly as marker::read refuses it.
 // A new marker is named after the card's model until the player renames it.
+//
+// The marker is the card's identity; the never-index file is a courtesy to
+// the next mount. A card the system mounted read-only — FAT after an error,
+// a locked card — is read and named as it always was, and the file that
+// could not be written is reported, not raised: refusing the name, the
+// history session and every read over it would cost the player far more
+// than one Spotlight pass.
 inline Claimed claim(const fs::path& volume)
 {
     Claimed claimed;
@@ -46,7 +56,12 @@ inline Claimed claim(const fs::path& volume)
         claimed.minted = true;
         claimed.sweep = std::move(written.sweep);
     }
-    spotlight::KeptOff kept = spotlight::keepOff(volume);
+    spotlight::KeptOff kept;
+    try {
+        kept = spotlight::keepOff(volume);
+    } catch (const Error& error) {
+        claimed.spotlightProblem = error.what();
+    }
     claimed.spotlightKeptOff = kept.created;
     claimed.sweep.removed.insert(claimed.sweep.removed.end(),
                                  std::make_move_iterator(kept.sweep.removed.begin()),

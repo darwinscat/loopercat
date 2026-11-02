@@ -288,9 +288,12 @@ int main()
         // Two poll periods and then some: a worker still scanning would have
         // read the new name by now.
         pumpUntil([] { return false; }, 3500);
+        CHECK(nameBefore.size() == 12); // the card was read before the eject: there is a name to keep
         for (std::size_t i = fromEjecting; i < held.size(); ++i) {
             CHECK(held[i].state == lifecycle::State::ejecting);
-            CHECK(held[i].slots.size() < 43 || held[i].slots.at(42).info.name == nameBefore);
+            CHECK_EQ(held[i].slots.size(), static_cast<std::size_t>(rc0::kSlotCount));
+            if (held[i].slots.size() >= 43)
+                CHECK_EQ(held[i].slots.at(42).info.name, nameBefore);
         }
         holder.postEjectFinished(false); // refused: connected again, and the card is the worker's to read
         CHECK(pumpUntil([&] {

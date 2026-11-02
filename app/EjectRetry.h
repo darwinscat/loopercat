@@ -49,6 +49,13 @@ namespace loopercat::ejectretry
 inline constexpr int kTries = 5;
 inline constexpr std::chrono::milliseconds kPause { 1000 };
 
+// What one try costs on top of the pauses: DiskArbitration answered a held
+// file within 0.24-0.50 s (a FAT32 image through the card's FSKit module,
+// 2026-11-03). Half a second each is what anything that waits for an eject
+// to finish — the quit, in MainComponent.cpp — has to leave room for.
+inline constexpr std::chrono::milliseconds kTryAnswersWithin { 500 };
+inline constexpr std::chrono::milliseconds kLongestEject = (kTries - 1) * kPause + kTries * kTryAnswersWithin;
+
 // What one unmount try came back with.
 enum class Answer {
     unmounted, // the volume is let go
@@ -58,10 +65,11 @@ enum class Answer {
 
 struct Try {
     Answer answer;
-    // refused: the OS's words for the refusal. busy: the same, kept for a
-    // trace only — the player is told the cause in words, not as a status
-    // number. unmounted: a warning about what came after (a whole-disk eject
-    // macOS refused), or empty.
+    // refused: the OS's words for the refusal, which the journal and the
+    // banner carry. busy: the OS's words too, carried nowhere — the cause is
+    // told in words instead of a status number (kBusyWords). unmounted: a
+    // note about how the volume went (a whole-disk eject macOS refused after
+    // it, or someone else's unmount between two tries), or empty.
     std::string detail;
 };
 
