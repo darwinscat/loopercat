@@ -286,6 +286,9 @@ loopercat_core_test(volume_tests)
 # The card marker: LooperCat's own identity for a card (issues #98, #99),
 # its strict TOML reader, and the root-level junk sweep it relies on.
 loopercat_core_test(card_marker_tests)
+# What meeting a card does to its root (issue #169): the marker found or
+# minted, and Spotlight kept off the card, on synthetic cards.
+loopercat_core_test(card_claim_tests)
 loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
 # The storage register read back: which frames are the pedal's answer and
