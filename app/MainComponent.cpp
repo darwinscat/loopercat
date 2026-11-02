@@ -527,24 +527,26 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     });
     worker.setEjectStarter([this](const std::string& volumePath) {
         // Worker thread. The completion reports through the message thread.
-        deviceWatcher.eject(volumePath, [this, alive = uiAlive](bool unmounted, std::string message) {
+        // A busy card has already been tried again by then (EjectRetry.h): the
+        // banner below is for a hold that outlived the retries.
+        deviceWatcher.eject(volumePath, [this, alive = uiAlive](ejectretry::Outcome ejected) {
             juce::MessageManager::callAsync(
-                [this, alive, unmounted, note = utf8(message)] {
+                [this, alive, outcome = std::move(ejected)] {
                     if (!*alive)
                         return;
-                    worker.postEjectFinished(unmounted);
-                    trace(unmounted ? "disconnect: ejected" + (note.isNotEmpty() ? " (" + note + ")" : juce::String())
-                                    : "disconnect: eject refused" + (note.isNotEmpty() ? " (" + note + ")" : juce::String()));
-                    if (!unmounted) {
+                    worker.postEjectFinished(outcome.unmounted());
+                    trace(utf8(ejectretry::traceLine(outcome)));
+                    if (!outcome.unmounted()) {
                         juce::String text = juce::String::fromUTF8(
                             "The volume would not eject \xe2\x80\x94 something is still using "
                             "the card. Press Disconnect again in a moment.");
-                        if (note.isNotEmpty())
-                            text << " (" << note << ")";
+                        if (const std::string detail = ejectretry::bannerDetail(outcome); !detail.empty())
+                            text << " (" << utf8(detail) << ")";
                         banners.showError(banners::Source::connection, text);
                         quitGate.finish(); // a refused eject must not hold the exit
                         return;
                     }
+                    const juce::String note = utf8(outcome.last.detail);
                     if (note.isNotEmpty())
                         toast.show(note);
                     // The volume is safely ejected — now walk the pedal out

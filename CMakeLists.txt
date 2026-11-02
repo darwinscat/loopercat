@@ -332,6 +332,12 @@ loopercat_core_test(mount_probe_tests)
 # that wants a pedal, a worker and a screen.
 target_compile_definitions(mount_probe_tests PRIVATE
     LOOPERCAT_APP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app")
+# What Disconnect does with a busy card (issue #169): the retry the three
+# DeviceWatcher backends share, and the words operations.log keeps about it.
+# Like the suite above, its last section reads app/ as text.
+loopercat_core_test(eject_retry_tests)
+target_compile_definitions(eject_retry_tests PRIVATE
+    LOOPERCAT_APP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app")
 # Parsing and decisions only — no syscalls, no Linux headers — so the
 # contracts behind the Linux DeviceWatcher are gated on every platform's
 # lane, not just on a machine that happens to have /proc and /sys.

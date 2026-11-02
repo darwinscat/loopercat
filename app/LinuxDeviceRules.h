@@ -126,8 +126,8 @@ inline std::vector<std::string> forceUnmountArgs(const std::string& deviceNode)
 // holds: a file manager, a desktop indexer, or our own read-ahead thread on
 // its way down all let go within a moment, and udisks2 names that case
 // DeviceBusy. Everything else — not authorized, no such device — will read
-// exactly the same in four hundred milliseconds, so retrying it only delays
-// an honest banner.
+// exactly the same a second later (EjectRetry.h's pause), so retrying it only
+// delays an honest banner.
 inline bool isBusyError(const std::string& udisksError)
 {
     return udisksError.find("DeviceBusy") != std::string::npos;

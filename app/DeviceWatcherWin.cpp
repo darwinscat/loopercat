@@ -19,10 +19,11 @@
 //   removal whose unit mask covers the tracked drive letter fires
 //   onDeviceLost within milliseconds, not at the next poll.
 // - eject — the standard removable-media release: lock the volume (briefly
-//   retried — a lock is refused while anything holds a handle), dismount,
-//   allow removal, eject the medium, over DeviceIoControl. Disconnect
-//   cannot walk the pedal out of STORAGE without it. Every failure carries
-//   the Win32 error text into the connection banner.
+//   retried, EjectRetry.h — a lock is refused while anything holds a
+//   handle), dismount, allow removal, eject the medium, over
+//   DeviceIoControl. Disconnect cannot walk the pedal out of STORAGE
+//   without it. Every failure carries the Win32 error text into the
+//   connection banner.
 //
 // No auto-mount arm: Windows assigns drive letters itself, so
 // onAutoMountResult never fires here.
@@ -49,12 +50,6 @@
 namespace loopercat::app {
 
 namespace {
-
-    // A lock is refused while any handle to the volume is open; explorer
-    // windows and indexers let go quickly, so a short retry ladder converts
-    // most transient holds into a clean eject.
-    constexpr int kLockAttempts = 5;
-    constexpr auto kLockRetryDelay = std::chrono::milliseconds(400);
 
     std::string lastErrorText(const char* what)
     {
@@ -187,27 +182,25 @@ namespace {
             != FALSE;
     }
 
-    // The whole eject protocol, blocking. Returns an empty string on
-    // success, the failing step's error text otherwise.
-    std::string ejectBlocking(const std::string& devicePath)
+    // One try of the eject protocol, blocking. A lock is refused while any
+    // handle to the volume is open — an explorer window, an indexer, an
+    // antivirus scan — and those let go quickly, so a refused lock is the
+    // busy answer EjectRetry.h waits out; a step after the lock that fails
+    // will fail the same way again.
+    ejectretry::Try ejectOnce(const std::string& devicePath)
     {
         const HANDLE volume =
             ::CreateFileA(devicePath.c_str(), GENERIC_READ | GENERIC_WRITE,
                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
         if (volume == INVALID_HANDLE_VALUE)
-            return lastErrorText("opening the volume");
+            return { ejectretry::Answer::refused, lastErrorText("opening the volume") };
 
-        std::string error;
-        bool locked = false;
-        for (int attempt = 0; attempt < kLockAttempts && !locked; ++attempt) {
-            if (attempt > 0)
-                std::this_thread::sleep_for(kLockRetryDelay);
-            locked = ioctl(volume, FSCTL_LOCK_VOLUME, nullptr, 0);
-        }
-        if (!locked)
-            error = lastErrorText("locking the volume (something still holds it)");
+        ejectretry::Try result { ejectretry::Answer::unmounted, {} };
+        if (!ioctl(volume, FSCTL_LOCK_VOLUME, nullptr, 0))
+            result = { ejectretry::Answer::busy,
+                       lastErrorText("locking the volume (something still holds it)") };
         else if (!ioctl(volume, FSCTL_DISMOUNT_VOLUME, nullptr, 0))
-            error = lastErrorText("dismounting the volume");
+            result = { ejectretry::Answer::refused, lastErrorText("dismounting the volume") };
         else {
             PREVENT_MEDIA_REMOVAL removal { FALSE };
             // Best-effort: some sticks refuse the removal IOCTLs after a
@@ -216,7 +209,7 @@ namespace {
             ioctl(volume, IOCTL_STORAGE_EJECT_MEDIA, nullptr, 0);
         }
         ::CloseHandle(volume);
-        return error;
+        return result;
     }
 
 } // namespace
@@ -458,19 +451,19 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
 }
 
 void DeviceWatcher::eject(const std::filesystem::path& volumePath,
-                          std::function<void(bool unmounted, std::string message)> done)
+                          std::function<void(ejectretry::Outcome outcome)> done)
 {
     const char letter = driveLetterOf(volumePath);
     if (letter == 0) {
-        done(false, "not a drive-letter volume: " + volumePath.string());
+        done({ { ejectretry::Answer::refused, "not a drive-letter volume: " + volumePath.string() }, 1 });
         return;
     }
-    // Short-lived worker: the lock retries block, and the caller (the pedal
-    // worker thread) must stay responsive. `done` fires from this thread —
-    // the owner already hops to the message thread.
-    std::thread([devicePath = devicePathFor(letter), done = std::move(done)] {
-        const std::string error = ejectBlocking(devicePath);
-        done(error.empty(), error);
+    // Short-lived worker: the tries and the pauses between them block, and
+    // the caller (the pedal worker thread) must stay responsive. `done`
+    // fires from this thread — the owner already hops to the message thread.
+    std::thread([devicePath = devicePathFor(letter), done = std::move(done)]() mutable {
+        ejectretry::drive([devicePath](ejectretry::Report report) { report(ejectOnce(devicePath)); },
+                          &ejectretry::waitBlocking, std::move(done));
     }).detach();
 }
 
@@ -480,7 +473,9 @@ void DeviceWatcher::forceUnmount(const std::filesystem::path& volumePath,
     // Ghost cleanup: nothing can flush to a medium that is already gone, so
     // the same release protocol is safe — the dismount drops the stale
     // filesystem state, and the eject IOCTLs are no-ops on a gone medium.
-    eject(volumePath, std::move(done));
+    eject(volumePath, [finish = std::move(done)](ejectretry::Outcome outcome) {
+        finish(outcome.unmounted(), std::move(outcome.last.detail));
+    });
 }
 
 } // namespace loopercat::app

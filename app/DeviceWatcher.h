@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "EjectRetry.h"
+
 #include <loopercat/Lifecycle.hpp>
 
 #include <filesystem>
@@ -31,7 +33,8 @@
 // next poll. onDiskAppeared pokes on any new mountable disk — the fast path
 // for reconnect.
 //
-// eject() runs the DiskArbitration unmount + whole-disk eject protocol;
+// eject() runs the DiskArbitration unmount + whole-disk eject protocol,
+// waiting out a busy volume the way EjectRetry.h says (issue #169);
 // forceUnmount() clears a ghost mount (nothing can flush to a dead device,
 // so force is safe there by construction).
 //==============================================================================
@@ -73,11 +76,12 @@ public:
     // aftermath showed the OS automount can simply not happen. Arbitrary thread.
     std::function<void(bool ok, std::string message)> onAutoMountResult;
 
-    // Unmount the volume, then eject its whole disk. `done(unmounted, message)`
-    // fires on an arbitrary thread: `unmounted` is the safety-relevant fact;
-    // `message` carries the unmount dissent or a post-unmount eject warning.
+    // Unmount the volume, then eject its whole disk; a busy volume is tried
+    // again (ejectretry::drive). `done` fires once, on an arbitrary thread:
+    // `unmounted()` is the safety-relevant fact; the last try carries the
+    // refusal's words or a post-unmount eject warning, and the count of tries.
     void eject(const std::filesystem::path& volumePath,
-               std::function<void(bool unmounted, std::string message)> done);
+               std::function<void(ejectretry::Outcome outcome)> done);
 
     // Force-unmount a ghost. `done(ok, message)` on an arbitrary thread.
     void forceUnmount(const std::filesystem::path& volumePath,
