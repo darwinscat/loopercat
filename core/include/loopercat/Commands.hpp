@@ -165,8 +165,10 @@ inline std::string readMemory(const fs::path& volume, int fileNo)
 // simply loses the vote; a tie — the app stamps both banks alike — reads
 // the first bank.
 //
-// The pair is inspected once, into this, and the reader, the doctor and the
-// connect line in operations.log all take their answer from the same vote.
+// The pair is inspected into this, and the reader, the doctor and the
+// connect line in operations.log all take their answer from the same vote
+// (newestBank): the scan's one inspection serves the slots and the line,
+// the doctor inspects again to judge each bank on its own.
 struct BankPair {
     std::map<int, std::string> texts;         // the banks that read and validated
     std::map<int, std::string> errors;        // ...and the ones that did not, with the reason
@@ -200,9 +202,13 @@ inline BankPair inspectBanks(const fs::path& volume, volume::Bank bank)
     return pair;
 }
 
-// The memory pair with each bank through the profile gate (DeviceProfile.hpp):
-// a bank of a model this app has not opened for the operation cannot vote,
-// and with neither bank left the refusal is the error the reader throws.
+// The memory pair with the profile gate (DeviceProfile.hpp) on each bank
+// that read. A bank of a model this app has not opened for the operation
+// keeps its vote — the pedal wrote it and its counter is real — but its
+// text is withheld: when the vote names it, the database is refused in the
+// gate's words, exactly as reading the newest bank and then gating it did,
+// never quietly replaced by the older bank; and the doctor names each
+// refused bank on its own.
 inline BankPair inspectMemory(const fs::path& volume, profile::Operation operation)
 {
     BankPair pair = inspectBanks(volume, volume::Bank::memory);
@@ -214,19 +220,18 @@ inline BankPair inspectMemory(const fs::path& volume, profile::Operation operati
         } catch (const Error& e) {
             pair.errors[fileNo] = e.what();
             pair.texts.erase(fileNo);
-            pair.generations.erase(fileNo);
         }
     }
-    pair.newest = newestBank(pair);
     return pair;
 }
 
-// The database out of an inspected pair; with neither bank readable the
-// first bank's error propagates, as it always did.
+// The database out of an inspected pair: the bank the vote names, or the
+// reason it has no text — the first bank's read error when neither read,
+// as it always was, or the gate's refusal of the newest bank.
 inline std::string databaseOf(BankPair pair)
 {
-    if (pair.texts.empty())
-        throw Error(pair.errors.at(1));
+    if (!pair.texts.contains(pair.newest))
+        throw Error(pair.errors.at(pair.newest));
     return std::move(pair.texts.at(pair.newest));
 }
 
@@ -1717,6 +1722,18 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                                      + " / " + hexGeneration(banks.generations.at(2))
                                      + " are more than one step apart - unexpected "
                                        "state, copy the card before writing" });
+        // One counter on both banks means one document: the app writes the
+        // pair from one text, and the pedal stamps the bank it writes past
+        // the other. Two documents under one counter is a state neither
+        // writer leaves, and the reader would take MEMORY1 without a word
+        // — so this one is still said, as the unexpected state it is.
+        else if (delta == 0 && banks.texts.contains(1) && banks.texts.contains(2)
+                 && rc0::splitFile(banks.texts.at(1)).document
+                        != rc0::splitFile(banks.texts.at(2)).document)
+            findings.push_back({ Level::warn,
+                                 "MEMORY1 and MEMORY2 differ under the same write generation "
+                                     + hexGeneration(banks.generations.at(1))
+                                     + " - unexpected state, copy the card before writing" });
     }
 
     if (const auto database = banks.texts.find(banks.newest); database != banks.texts.end()) {
@@ -1731,19 +1748,19 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                                          + "\") is configured with audio but its folder is empty" });
             if (!slot.hasAudio && !wavs.empty()) {
                 // What the pedal does with a file dropped into an empty slot
-                // folder depends on its format, and each sentence below says
-                // only what a dated reading showed (issue #171). 32-bit float
-                // — the pedal's own recording format — it indexes at its next
-                // boot, filling the slot config and deriving the tempo itself
+                // folder, each sentence below saying only what a dated reading
+                // showed (issue #171). It indexes the file at its next boot,
+                // filling the slot config and deriving the tempo itself
                 // (rc5cat 0.1.0, 2026-07-19: push --no-config, reboot; the
-                // pedal-authored slot params in golden.json are the product).
-                // Anything else it neither indexes nor plays (PR #45,
-                // 2026-08-19: a 16-bit take re-indexed to hasAudio=NO beside a
-                // float32 one at YES, neither file rewritten; 2026-11-05: a
-                // hand-copied PCM file in slot 30 came through a reboot still
-                // there and still unindexed). So a non-float file is sent to
-                // a re-push, which converts it — not to a reboot, which does
-                // nothing to it either way.
+                // pedal-authored slot params in golden.json are the product)
+                // — when it can play the file, and it plays 32-bit float
+                // only: a 16-bit take re-indexed to hasAudio=NO beside a
+                // float32 one at YES, neither file rewritten (PR #45,
+                // 2026-08-19), and a hand-copied PCM file in slot 30 came
+                // through a reboot still there and still unindexed
+                // (2026-11-05). So a non-float file is sent to a re-push,
+                // which converts it — not to a reboot, which does nothing to
+                // it either way.
                 std::string files;
                 bool allFloat32 = true;
                 for (const auto& f : wavs) {

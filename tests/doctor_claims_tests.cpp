@@ -11,11 +11,13 @@
 // that reboot, still there and still unindexed. The app reads the bank the
 // counters name as newest (issue #37), so a healthy pair one step apart asks
 // nothing of the player. Hence: no finding for such a pair, either order; the
-// warning for a pair two or more steps apart stays; the generations and the
-// bank read go to operations.log at connect; the non-float finding keeps its
-// facts and loses its reboot clause; and every doctor sentence that still
+// warning for a pair two or more steps apart stays, and so does one for two
+// documents under one counter, which no writer leaves; the generations and
+// the bank read go to operations.log at connect; the non-float finding keeps
+// its facts and loses its reboot clause; and every doctor sentence that still
 // says what the pedal does at boot is one this suite lists with the dated
-// hardware reading behind it.
+// hardware reading behind it - and the source names that reading beside the
+// sentence.
 
 #include "support.hpp"
 
@@ -23,6 +25,7 @@
 
 #include <loopercat/Catalog.hpp>
 #include <loopercat/Commands.hpp>
+#include <loopercat/DeviceProfile.hpp>
 #include <loopercat/Rc0.hpp>
 #include <loopercat/Volume.hpp>
 
@@ -31,6 +34,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -147,6 +151,19 @@ std::string trimmed(std::string name)
     return name;
 }
 
+// The doctor's source, line by line, for the check that a sentence about
+// boot has its reading written beside it.
+std::vector<std::string> doctorSource()
+{
+    std::ifstream in(LOOPERCAT_COMMANDS_HPP);
+    if (!in)
+        testkit::fail("cannot open the doctor's source: " LOOPERCAT_COMMANDS_HPP, __FILE__, __LINE__);
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(in, line);)
+        lines.push_back(line);
+    return lines;
+}
+
 } // namespace
 
 int main()
@@ -218,10 +235,28 @@ int main()
     }
     {
         // Equal counters - the app's own writes stamp both banks alike - read
-        // the first bank, and the line says so.
+        // the first bank, and the line says so; one document under one
+        // counter is nothing to report.
         TempDir tmp;
         const fs::path volume = makeCard(tmp.path, 0x25b, 0x25b);
         CHECK_EQ(banksLine(volume), std::string("memory banks 0x25b / 0x25b, reading MEMORY1"));
+        CHECK(commands::doctor(volume).empty());
+    }
+    {
+        // Two documents under one counter: no writer leaves this - the app
+        // writes the pair from one text, the pedal stamps the bank it writes
+        // past the other - and the reader would take MEMORY1 without a word.
+        // Still a warning, with the counter, and still no reboot in it.
+        TempDir tmp;
+        const fs::path volume = makeCard(tmp.path, 0x25b, 0x25b, renamed(5, "ONE"), renamed(5, "OTHER"));
+        const auto findings = commands::doctor(volume);
+        CHECK_EQ(findings.size(), 1u);
+        if (!findings.empty()) {
+            CHECK(findings.front().level == commands::Level::warn);
+            CHECK(findings.front().message.find("differ under the same write generation 0x25b")
+                  != std::string::npos);
+            CHECK(!mentions(findings.front().message, "reboot"));
+        }
     }
     {
         // A bank that cannot vote is named as such, never given a number it
@@ -282,6 +317,27 @@ int main()
         CHECK_EQ(seen.banks,
                  std::string("memory banks unreadable / unreadable, reading MEMORY1"));
         CHECK_THROWS(commands::readMemory(volume), "not an RC0 memory file");
+    }
+
+    // --- the gate falls on the bank the vote names, never on a stand-in ---
+
+    {
+        // A card with an RC-5 bank beside a newer RC-500 bank: no pedal
+        // leaves one, but the rule must hold anyway. The reader takes the
+        // newest bank, and a mutation the newest bank's model keeps closed is
+        // refused in that model's words - the older bank is not quietly
+        // read in its place.
+        TempDir tmp;
+        const fs::path volume = makeCard(tmp.path, 0x38, 0x39, testkit::syntheticMemoryText(),
+                                         testkit::syntheticTwoTrackMemoryText());
+        CHECK(rc0::profileOf(commands::readMemory(volume)).familyName == "RC-500");
+        CHECK_THROWS(commands::readMemoryFor(volume, profile::Operation::setTempo), "RC-500");
+        CHECK_EQ(banksLine(volume), std::string("memory banks 0x38 / 0x39, reading MEMORY2"));
+        // The doctor names the refused bank and judges nothing by the other.
+        const commands::BankPair writing = commands::inspectMemory(volume, profile::Operation::setTempo);
+        CHECK_EQ(writing.newest, 2);
+        CHECK(writing.errors.contains(2) && !writing.texts.contains(2));
+        CHECK(writing.generations.contains(2)); // its counter is real, the vote stands
     }
 
     // --- the doctor judges slots by the document the player is shown ---
@@ -345,16 +401,24 @@ int main()
         };
         const Backed backed[] = {
             { "reboot the pedal to index it",
-              "rc5cat 0.1.0, 2026-07-19: a float32 WAV pushed with --no-config was indexed at "
-              "the next boot, the pedal filling the slot config itself; golden.json's "
-              "pedal-authored slot params are what that indexing wrote" },
+              "rc5cat 0.1.0, 2026-07-19: a WAV pushed with --no-config was indexed at the next "
+              "boot, the pedal filling the slot config itself; golden.json's pedal-authored slot "
+              "params are what that indexing wrote. That it takes 32-bit float only is PR #45, "
+              "2026-08-19, which is why the sentence is said of a float32 file alone" },
             { "pedal may refuse to boot",
               "rc5cat 0.1.0, 2026-07-19 (README, the macOS landmine): the pedal's parser chokes "
               "at boot on AppleDouble sidecars in its own tree" },
         };
 
-        // Every kind of finding the doctor has, over three cards.
+        // Every kind of finding the doctor has, over four cards.
         std::vector<std::string> messages;
+        {
+            TempDir tmp;
+            const fs::path volume =
+                makeCard(tmp.path, 0x25b, 0x25b, renamed(5, "ONE"), renamed(5, "OTHER"));
+            for (const auto& message : messagesOf(volume))
+                messages.push_back(message);
+        }
         {
             TempDir tmp;
             // two steps apart; slot 7 configured with audio over an empty folder
@@ -384,8 +448,9 @@ int main()
         // The sweep saw every kind, or it proves nothing.
         for (const std::string_view kind :
              { "AppleDouble junk", "interrupted swap", "trailer is malformed", "MEMORY1.RC0:",
-               "more than one step apart", "configured with audio but its folder is empty",
-               "not indexed yet", "cannot index" })
+               "more than one step apart", "differ under the same write generation",
+               "configured with audio but its folder is empty", "not indexed yet",
+               "cannot index" })
             if (!says(messages, kind))
                 testkit::fail("the sweep never saw the finding: " + std::string(kind), __FILE__,
                               __LINE__);
@@ -401,11 +466,36 @@ int main()
                 testkit::fail("a boot promise with no reading behind it: " + message, __FILE__,
                               __LINE__);
         }
+
+        // Each listed sentence is still said, its reading here is dated, and
+        // the source says the sentence with a dated reading in the comment
+        // above it - the player's banner and the engineer's comment cannot
+        // drift apart without this failing.
+        const std::vector<std::string> source = doctorSource();
+        constexpr std::size_t kCommentReach = 60; // lines between a reading and the sentence it backs
         for (const Backed& b : backed) {
             if (!says(messages, b.sentence))
                 testkit::fail("listed with a reading but no longer said: " + std::string(b.sentence),
                               __FILE__, __LINE__);
             CHECK(b.reading.find("2026-") != std::string_view::npos); // a reading is dated
+            std::size_t at = source.size();
+            for (std::size_t i = 0; i < source.size(); ++i)
+                if (source[i].find(b.sentence) != std::string::npos) {
+                    at = i;
+                    break;
+                }
+            if (at == source.size()) {
+                testkit::fail("the doctor's source does not say: " + std::string(b.sentence),
+                              __FILE__, __LINE__);
+                continue;
+            }
+            bool dated = false;
+            for (std::size_t i = at - std::min(at, kCommentReach); i < at; ++i)
+                dated = dated || (source[i].find("//") != std::string::npos
+                                  && source[i].find("2026-") != std::string::npos);
+            if (!dated)
+                testkit::fail("no dated reading in the comment above: " + std::string(b.sentence),
+                              __FILE__, __LINE__);
         }
     }
 

@@ -871,7 +871,8 @@ target_sources(doctor_claims_tests PRIVATE tests/doctor_claims_tests.cpp)
 target_compile_definitions(doctor_claims_tests PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json")
+    LOOPERCAT_GOLDEN_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/golden.json"
+    LOOPERCAT_COMMANDS_HPP="${CMAKE_CURRENT_SOURCE_DIR}/core/include/loopercat/Commands.hpp")
 target_link_libraries(doctor_claims_tests PRIVATE
     loopercat::core
     nlohmann_json::nlohmann_json
