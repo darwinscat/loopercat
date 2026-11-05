@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <loopercat/CardClaim.hpp>
 #include <loopercat/CardMarker.hpp>
 
 #include <map>
@@ -212,12 +213,13 @@ private:
 
     // The card's identity (issues #98, #99): its marker is read on the worker
     // once the volume is up — minted with the model's name when the card has
-    // none — and the name lands in the corner and in the pedal book under
-    // the endpoint Connect chose. A click on the name renames the card.
+    // none, and Spotlight kept off the card (issue #169) — and the name lands
+    // in the corner and in the pedal book under the endpoint Connect chose.
+    // A click on the name renames the card.
     void readCardName();
     void snapshotNext(const std::shared_ptr<history::FirstSeenRun>& run, int slot);
     void tellDeparture(const juce::String& told); // the pedal has gone: the toast's last word
-    void cardNamed(marker::Card card, bool minted, std::string sweepNote);
+    void cardNamed(cardclaim::Claimed claimed);
     void renamePedal();
     void savePedalBook();
     void trace(const juce::String& line); // one step of a connection into operations.log

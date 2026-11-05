@@ -5,6 +5,8 @@
 #include "FileTime.h"
 #include "../OperationId.h"
 
+#include <loopercat/CardClaim.hpp>
+
 namespace loopercat::history
 {
 
@@ -47,21 +49,19 @@ std::int64_t HistoryRecorder::sessionFor(const std::filesystem::path& volume)
 {
     // Open first: failure must not even mint a marker on the card.
     auto& history = store();
-    auto identity = marker::read(volume);
-    if (!identity)
-        identity = marker::mint(volume, rc0::familyOf(commands::readMemory(volume)).familyName).card;
+    const marker::Card identity = cardclaim::claim(volume).card;
     const std::int64_t now = clock_();
-    const auto card = history.card(identity->id, identity->model, identity->name, now);
+    const auto card = history.card(identity.id, identity.model, identity.name, now);
     history.selectCard(card);
     // A model this app does not know is refused here, by name, before any
     // operation on the card has begun.
-    const profile::DeviceProfile& family = profile::byFamilyName(identity->model);
-    if (session_ && sessionVolume_ == volume && sessionMarker_ == identity->id)
+    const profile::DeviceProfile& family = profile::byFamilyName(identity.model);
+    if (session_ && sessionVolume_ == volume && sessionMarker_ == identity.id)
         return *session_;
     disconnect();
     session_ = history.openSession(card, now);
     sessionVolume_ = volume;
-    sessionMarker_ = identity->id;
+    sessionMarker_ = identity.id;
     sessionFamily_ = &family;
     return *session_;
 }

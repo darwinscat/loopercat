@@ -160,6 +160,8 @@ static int runTests()
         const auto marker = marker::read(card);
         CHECK(marker.has_value());
         CHECK_EQ(snapshot->markerId, marker->id);
+        // Meeting the card keeps Spotlight off it from its next mount (issue #169).
+        CHECK(fs::is_regular_file(card / ".metadata_never_index"));
         complete(*rec, *snapshot);
         auto& store = rec->store();
         CHECK_EQ(number(store, "SELECT count(*) FROM cards"), 1);

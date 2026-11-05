@@ -151,8 +151,12 @@ namespace
     // How long a quit waits for the release before leaving anyway: a busy or
     // wedged volume must not hold the exit hostage (issue #1) — past the
     // bound the pedal simply stays in STORAGE, as an unsupervised quit left
-    // it before.
-    constexpr int kQuitReleaseBoundMs = 5000;
+    // it before. It outlasts the busy retries (issue #169): a quit that left
+    // in the middle of them would drop an unmount DiskArbitration may still
+    // carry out, and leave the pedal in STORAGE with its volume gone.
+    constexpr int kQuitReleaseBoundMs = 8000;
+    static_assert(std::chrono::milliseconds(kQuitReleaseBoundMs) > ejectretry::kLongestEject,
+                  "a quit must outwait the eject's busy retries");
 
     felitronics::appkit::VersionBadge::Config badgeConfig()
     {
@@ -527,24 +531,26 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
     });
     worker.setEjectStarter([this](const std::string& volumePath) {
         // Worker thread. The completion reports through the message thread.
-        deviceWatcher.eject(volumePath, [this, alive = uiAlive](bool unmounted, std::string message) {
+        // A busy card has already been tried again by then (EjectRetry.h): the
+        // banner below is for a hold that outlived the retries.
+        deviceWatcher.eject(volumePath, [this, alive = uiAlive](ejectretry::Outcome ejected) {
             juce::MessageManager::callAsync(
-                [this, alive, unmounted, note = utf8(message)] {
+                [this, alive, outcome = std::move(ejected)] {
                     if (!*alive)
                         return;
-                    worker.postEjectFinished(unmounted);
-                    trace(unmounted ? "disconnect: ejected" + (note.isNotEmpty() ? " (" + note + ")" : juce::String())
-                                    : "disconnect: eject refused" + (note.isNotEmpty() ? " (" + note + ")" : juce::String()));
-                    if (!unmounted) {
+                    worker.postEjectFinished(outcome.unmounted());
+                    trace(utf8(ejectretry::traceLine(outcome)));
+                    if (!outcome.unmounted()) {
                         juce::String text = juce::String::fromUTF8(
                             "The volume would not eject \xe2\x80\x94 something is still using "
                             "the card. Press Disconnect again in a moment.");
-                        if (note.isNotEmpty())
-                            text << " (" << note << ")";
+                        if (const std::string detail = ejectretry::bannerDetail(outcome); !detail.empty())
+                            text << " (" << utf8(detail) << ")";
                         banners.showError(banners::Source::connection, text);
                         quitGate.finish(); // a refused eject must not hold the exit
                         return;
                     }
+                    const juce::String note = utf8(outcome.last.detail);
                     if (note.isNotEmpty())
                         toast.show(note);
                     // The volume is safely ejected — now walk the pedal out
@@ -1477,12 +1483,13 @@ void MainComponent::updateToolbar()
 // The card's identity, from the card itself (issues #98, #99). The marker at
 // the volume root, loopercat.toml, carries the history id and the name the
 // player gave the pedal; a card without one gets one here, named
-// after its model until the player renames it. On the worker, like every
-// touch of the card: minting is a write, and it sweeps the sidecar macOS
-// plants beside it. Quiet on success — the corner is the report — and a
-// marker this build cannot read (foreign, damaged, newer) is a job error
-// that reaches the toast with its reason, while the corner keeps the
-// volume's label.
+// after its model until the player renames it. The same claim keeps
+// Spotlight off the card from its next mount (CardClaim.hpp, issue #169).
+// On the worker, like every touch of the card: minting is a write, and it
+// sweeps the sidecar macOS plants beside it. Quiet on success — the corner
+// is the report — and a marker this build cannot read (foreign, damaged,
+// newer) is a job error that reaches the toast with its reason, while the
+// corner keeps the volume's label.
 void MainComponent::readCardName()
 {
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -1490,21 +1497,20 @@ void MainComponent::readCardName()
         "Read the card's name",
         0,
         [safe, rec = recorder, generation = cardGeneration, alive = uiAlive](const volume::fs::path& volumePath) {
-            std::optional<marker::Card> found = marker::read(volumePath);
-            bool minted = false;
-            std::string sweepNote;
-            if (!found) {
-                const std::string text = commands::readMemory(volumePath);
-                const marker::Written written =
-                    marker::mint(volumePath, rc0::familyOf(text).familyName);
-                found = written.card;
-                minted = true;
-                if (!written.sweep.failed.empty())
-                    sweepNote = "a sidecar would not delete: " + written.sweep.failed.front().string();
-            }
-            juce::MessageManager::callAsync([safe, alive, generation, c = *found, minted, sweepNote] {
-                if (*alive && safe != nullptr && generation == safe->cardGeneration)
-                    safe->cardNamed(c, minted, sweepNote);
+            cardclaim::Claimed met = cardclaim::claim(volumePath);
+            juce::MessageManager::callAsync([safe, alive, generation, claimed = std::move(met)] {
+                if (!*alive || safe == nullptr)
+                    return;
+                // Told whether or not the pedal is still here: what was
+                // written is on the card.
+                if (claimed.spotlightKeptOff)
+                    safe->trace("connect: " + utf8(std::string(spotlight::kNeverIndexFileName))
+                                + " written at the card's root: Spotlight leaves the card alone from its next mount");
+                if (!claimed.spotlightProblem.empty())
+                    safe->trace("connect: Spotlight could not be kept off the card: "
+                                + utf8(claimed.spotlightProblem));
+                if (generation == safe->cardGeneration)
+                    safe->cardNamed(claimed);
             });
             const auto baseline = rec->firstSeen(volumePath);
             juce::MessageManager::callAsync([safe, alive, generation, baseline] {
@@ -1585,18 +1591,19 @@ void MainComponent::tellDeparture(const juce::String& told)
         toast.show(utf8(*words));
 }
 
-void MainComponent::cardNamed(marker::Card named, bool minted, std::string sweepNote)
+void MainComponent::cardNamed(cardclaim::Claimed claimed)
 {
     if (snapshot.volume.empty() || snapshot.volume != cardNameVolume)
         return; // the pedal went away while the card was being read
-    card = std::move(named);
+    card = std::move(claimed.card);
     cardNameSettled = true;
     pedalLight.set(true, utf8(card->name));
-    if (minted)
+    if (claimed.minted)
         toast.show(juce::String::fromUTF8("This card is now known as \xe2\x80\x9c") + utf8(card->name)
                    + juce::String::fromUTF8("\xe2\x80\x9d \xe2\x80\x94 click the name to change it"));
-    if (!sweepNote.empty())
-        banners.showError(banners::Source::connection, utf8(sweepNote));
+    if (!claimed.sweep.failed.empty())
+        banners.showError(banners::Source::connection,
+                          utf8("a sidecar would not delete: " + claimed.sweep.failed.front().string()));
     // The endpoint Connect chose carried this card: the book learns it, so
     // the next Connect can ask by name before the card is readable.
     if (connectTarget) {
@@ -1638,7 +1645,7 @@ void MainComponent::renamePedal()
                                    rec->selectVolume(volumePath); // update the stored name under the same id
                                    juce::MessageManager::callAsync([again, alive, c = written.card] {
                                        if (*alive && again != nullptr)
-                                           again->cardNamed(c, false, {});
+                                           again->cardNamed({ c, false, false, {}, {} }); // not minted, nothing new at the root
                                    });
                                },
                                nullptr, 0, false, false, true });

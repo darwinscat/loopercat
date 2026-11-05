@@ -148,6 +148,27 @@ namespace {
         return "refused with status " + std::to_string(DADissenterGetStatus(dissenter));
     }
 
+    // What a dissent means for the eject (EjectRetry.h). The kernel's EBUSY
+    // comes back BSD-encoded: unix_err(EBUSY) is 0xC010, the 49168 of issue
+    // #169, where diskarbitrationd logged "unable to unmount (status code
+    // 0x00000010)" with no client dissenting; a client that holds the disk
+    // can dissent as busy itself. A volume that is no longer mounted — Finder
+    // or someone else got there between two tries — is what the eject was
+    // for. Measured on a FAT32 image through the same FSKit module as the
+    // card, 2026-11-03: a file held open answered 0xC010 within 0.24-0.50 s,
+    // a volume already unmounted kDAReturnNotMounted, a detached disk
+    // kDAReturnBadArgument — the last one is a refusal: whether a mount
+    // outlived its device is the ghost path's question, not this one's.
+    ejectretry::Answer answerOf(DADissenterRef dissenter)
+    {
+        const DAReturn status = DADissenterGetStatus(dissenter);
+        if (status == unix_err(EBUSY) || status == kDAReturnBusy)
+            return ejectretry::Answer::busy;
+        if (status == kDAReturnNotMounted)
+            return ejectretry::Answer::unmounted;
+        return ejectretry::Answer::refused;
+    }
+
     // The statfs view of a path: which mount covers it, and what device (if
     // any) that mount comes from.
     struct MountRecord {
@@ -403,64 +424,108 @@ struct DeviceWatcher::Impl {
 
     // --- unmount / eject plumbing ---
 
+    // ONE unmount try; ejectretry decides whether there is another.
     struct UnmountCtx {
-        std::function<void(bool, std::string)> done;
+        ejectretry::Report report;
         bool thenEjectWholeDisk = false;
     };
 
     static void ejectDone(DADiskRef, DADissenterRef dissenter, void* context)
     {
-        auto* ctx = static_cast<UnmountCtx*>(context);
+        std::unique_ptr<UnmountCtx> ctx(static_cast<UnmountCtx*>(context));
         // The volume is already unmounted — that is the safety guarantee; a
         // refused whole-disk eject is only worth a warning.
-        ctx->done(true, dissenter != nullptr
-                            ? "volume unmounted, but ejecting the disk was refused: "
-                                  + dissenterMessage(dissenter)
-                            : std::string{});
-        delete ctx;
+        ctx->report({ ejectretry::Answer::unmounted,
+                      dissenter != nullptr ? "volume unmounted, but ejecting the disk was refused: "
+                                                 + dissenterMessage(dissenter)
+                                           : std::string{} });
     }
 
     static void unmountDone(DADiskRef disk, DADissenterRef dissenter, void* context)
     {
-        auto* ctx = static_cast<UnmountCtx*>(context);
+        std::unique_ptr<UnmountCtx> ctx(static_cast<UnmountCtx*>(context));
         if (dissenter != nullptr) {
-            ctx->done(false, dissenterMessage(dissenter));
-            delete ctx;
+            const ejectretry::Answer answer = answerOf(dissenter);
+            ctx->report({ answer, answer == ejectretry::Answer::unmounted
+                                      ? std::string("the volume had already been unmounted")
+                                      : dissenterMessage(dissenter) });
             return;
         }
         if (!ctx->thenEjectWholeDisk) {
-            ctx->done(true, {});
-            delete ctx;
+            ctx->report({ ejectretry::Answer::unmounted, {} });
             return;
         }
         // Ejecting the whole disk drops the lingering device object as well —
         // in the 2026-07-22 recovery that, not the unmount, was what let a
         // fresh attach start from clean state.
         if (DADiskRef whole = DADiskCopyWholeDisk(disk)) {
-            DADiskEject(whole, kDADiskEjectOptionDefault, &ejectDone, ctx);
+            DADiskEject(whole, kDADiskEjectOptionDefault, &ejectDone, ctx.release());
             CFRelease(whole);
             return;
         }
-        ctx->done(true, {});
-        delete ctx;
+        ctx->report({ ejectretry::Answer::unmounted, {} });
     }
 
-    void startUnmount(const std::filesystem::path& volumePath, DADiskUnmountOptions options,
-                      bool thenEject, std::function<void(bool, std::string)> done)
+    // A disk, held for as long as an eject's tries need it.
+    struct HeldDisk {
+        explicit HeldDisk(DADiskRef d) : ref(d) {}
+        ~HeldDisk() { CFRelease(ref); }
+        HeldDisk(const HeldDisk&) = delete;
+        HeldDisk& operator=(const HeldDisk&) = delete;
+        DADiskRef ref;
+    };
+
+    struct DiskBehind {
+        std::shared_ptr<HeldDisk> disk; // null: `refusal` says why
+        std::string refusal;
+    };
+
+    // Which disk backs the volume — statfs, on the caller's thread, once per
+    // eject. The tries after the first run on the watcher's queue and touch
+    // only DiskArbitration: a statfs there on a wedged FSKit mount (the spin
+    // of 2026-07-22) would stall every callback on the queue, and the
+    // destructor's drain with them.
+    DiskBehind diskBehind(const std::filesystem::path& volumePath)
     {
         const MountRecord rec = mountRecordFor(volumePath);
-        if (!rec.statOk || !rec.isOwnMount || rec.bsd.empty()) {
-            done(false, "not a device-backed mount: " + volumePath.string());
-            return;
-        }
+        if (!rec.statOk || !rec.isOwnMount || rec.bsd.empty())
+            return { nullptr, "not a device-backed mount: " + volumePath.string() };
         DADiskRef disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, rec.from.c_str());
-        if (disk == nullptr) {
-            done(false, "cannot address disk " + rec.from);
-            return;
-        }
-        auto* ctx = new UnmountCtx{ std::move(done), thenEject };
-        DADiskUnmount(disk, options, &unmountDone, ctx);
-        CFRelease(disk);
+        if (disk == nullptr)
+            return { nullptr, "cannot address disk " + rec.from };
+        return { std::make_shared<HeldDisk>(disk), {} };
+    }
+
+    // ONE unmount try. DiskArbitration keeps its own reference to the disk
+    // until the callback has run.
+    static void unmountOnce(const HeldDisk& disk, DADiskUnmountOptions options, bool thenEject,
+                            ejectretry::Report report)
+    {
+        DADiskUnmount(disk.ref, options, &unmountDone, new UnmountCtx{ std::move(report), thenEject });
+    }
+
+    // The pause between busy tries, on the watcher's own queue — where the
+    // tries themselves are answered. Like the auto-mount grace, it can fire
+    // after the destructor's drain, and then it is a no-op: the app is
+    // leaving, and the quit bound has already let it go.
+    struct PauseCtx {
+        std::shared_ptr<std::atomic<bool>> alive;
+        std::function<void()> then;
+    };
+
+    static void pauseOver(void* context)
+    {
+        std::unique_ptr<PauseCtx> ctx(static_cast<PauseCtx*>(context));
+        if (ctx->alive->load())
+            ctx->then();
+    }
+
+    void after(std::chrono::milliseconds pause, std::function<void()> then)
+    {
+        auto* ctx = new PauseCtx{ aliveFlag, std::move(then) };
+        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,
+                                       std::chrono::duration_cast<std::chrono::nanoseconds>(pause).count()),
+                         queue, ctx, &pauseOver);
     }
 };
 
@@ -616,9 +681,22 @@ lifecycle::Backing DeviceWatcher::verdict(const std::filesystem::path& volumePat
 }
 
 void DeviceWatcher::eject(const std::filesystem::path& volumePath,
-                          std::function<void(bool, std::string)> done)
+                          std::function<void(ejectretry::Outcome)> done)
 {
-    impl_->startUnmount(volumePath, kDADiskUnmountOptionDefault, true, std::move(done));
+    Impl::DiskBehind behind = impl_->diskBehind(volumePath);
+    if (behind.disk == nullptr) {
+        done({ { ejectretry::Answer::refused, std::move(behind.refusal) }, 1 });
+        return;
+    }
+    Impl* impl = impl_.get();
+    ejectretry::drive(
+        [disk = std::move(behind.disk)](ejectretry::Report report) {
+            Impl::unmountOnce(*disk, kDADiskUnmountOptionDefault, true, std::move(report));
+        },
+        [impl](std::chrono::milliseconds pause, std::function<void()> then) {
+            impl->after(pause, std::move(then));
+        },
+        std::move(done));
 }
 
 void DeviceWatcher::forceUnmount(const std::filesystem::path& volumePath,
@@ -626,8 +704,17 @@ void DeviceWatcher::forceUnmount(const std::filesystem::path& volumePath,
 {
     // Force is safe by construction here: this path is only for ghosts, and
     // nothing can flush to a device that is already gone. Ejecting the whole
-    // disk afterwards purges the stale device object too.
-    impl_->startUnmount(volumePath, kDADiskUnmountOptionForce, true, std::move(done));
+    // disk afterwards purges the stale device object too. No retry: force
+    // does not take no for busy.
+    Impl::DiskBehind behind = impl_->diskBehind(volumePath);
+    if (behind.disk == nullptr) {
+        done(false, std::move(behind.refusal));
+        return;
+    }
+    Impl::unmountOnce(*behind.disk, kDADiskUnmountOptionForce, true,
+                      [finish = std::move(done)](ejectretry::Try result) {
+                          finish(result.answer == ejectretry::Answer::unmounted, std::move(result.detail));
+                      });
 }
 
 } // namespace loopercat::app

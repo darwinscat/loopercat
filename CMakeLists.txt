@@ -286,6 +286,9 @@ loopercat_core_test(volume_tests)
 # The card marker: LooperCat's own identity for a card (issues #98, #99),
 # its strict TOML reader, and the root-level junk sweep it relies on.
 loopercat_core_test(card_marker_tests)
+# What meeting a card does to its root (issue #169): the marker found or
+# minted, and Spotlight kept off the card, on synthetic cards.
+loopercat_core_test(card_claim_tests)
 loopercat_core_test(lifecycle_tests)
 loopercat_core_test(sysex_tests)
 # The storage register read back: which frames are the pedal's answer and
@@ -328,6 +331,12 @@ loopercat_core_test(mount_probe_tests)
 # and the forced unmount reach operations.log cannot be asked of a component
 # that wants a pedal, a worker and a screen.
 target_compile_definitions(mount_probe_tests PRIVATE
+    LOOPERCAT_APP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app")
+# What Disconnect does with a busy card (issue #169): the retry the three
+# DeviceWatcher backends share, and the words operations.log keeps about it.
+# Like the suite above, its last section reads app/ as text.
+loopercat_core_test(eject_retry_tests)
+target_compile_definitions(eject_retry_tests PRIVATE
     LOOPERCAT_APP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app")
 # Parsing and decisions only — no syscalls, no Linux headers — so the
 # contracts behind the Linux DeviceWatcher are gated on every platform's

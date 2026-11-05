@@ -422,6 +422,17 @@ private:
     // One scan folded into the lifecycle machine. WORKER THREAD ONLY.
     PedalSnapshot scanAdvanced()
     {
+        // While an eject is in flight the card is left alone: every file a
+        // scan opens is one more holder the unmount has to wait out, and the
+        // busy retries (EjectRetry.h, issue #169) would end up waiting for
+        // us. The machine absorbs scans while ejecting anyway — the
+        // completion decides where it lands — so the card as last seen is
+        // the honest picture until then.
+        if (machine_.state() == lifecycle::State::ejecting && last_) {
+            PedalSnapshot held = *last_;
+            held.state = machine_.state();
+            return held;
+        }
         PedalSnapshot snapshot = scanOnce();
         if (snapshot.volume.empty())
             machine_.pedalMissing();
