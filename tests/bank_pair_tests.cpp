@@ -5,9 +5,10 @@
 //
 // A card holds MEMORY1/MEMORY2 and SYSTEM1/SYSTEM2, and the pair mechanism is
 // the card's, not one file kind's: the pedal saves into one bank, stamps its
-// write counter one past the other, and reconciles the pair at its next boot.
-// So reading means "the bank the counters name as newest" and writing means
-// "both banks, stamped past the highest generation, each verified".
+// write counter one past the other, and leaves the pair that way through its
+// reboots (hardware reading 2026-11-05, issue #171). So reading means "the
+// bank the counters name as newest" and writing means "both banks, stamped
+// past the highest generation, each verified".
 //
 // The tests are written from what that mechanism promises, and from the two
 // ways it can betray a musician: reading a stale bank (a just-saved loop
