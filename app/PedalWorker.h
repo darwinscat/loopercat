@@ -61,6 +61,18 @@ struct SlotRow
     bool operator==(const SlotRow&) const = default;
 };
 
+// Whether the row's memory is offered an upload: the config's say
+// (catalog::uploadOffered) and the folders' as the scan listed them. The core
+// refuses a two-track memory with a take on either track, configured or
+// merely in its folder (commands::push); the menu, the drag's highlight, the
+// drop and the empty-slot hint all ask this, so the player is not offered a
+// push the core refuses. On the one-track model every row is offered one:
+// an occupied slot takes a replace.
+inline bool offersUpload(const SlotRow& row)
+{
+    return catalog::uploadOffered(row.info) && (row.info.tracks.size() <= 1 || row.wavFile.empty());
+}
+
 struct PedalSnapshot
 {
     std::string volume;                      // mount path; empty = no pedal found

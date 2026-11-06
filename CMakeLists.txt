@@ -296,6 +296,8 @@ loopercat_core_test(sysex_tests)
 loopercat_core_test(storage_register_tests)
 loopercat_core_test(catalog_tests)
 loopercat_core_test(commands_tests)
+# Push on the two-track model: into a memory with no take on any track, nowhere else.
+loopercat_core_test(rc500_push_tests)
 # A card as a folder on disk (#77): the factory pair, export by restore, import by the scan.
 loopercat_core_test(card_folder_tests)
 loopercat_core_test(slot_story_tests)

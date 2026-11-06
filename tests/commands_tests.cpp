@@ -2899,10 +2899,14 @@ int main()
         commands::writeFileBytes(
             source, bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 })));
         const std::string refused = " refused on an \"RC-500\" card - on this model LooperCat"
-                                    " does rename, set one-shot, pull, clear and restore only";
+                                    " does rename, set one-shot, push, pull, clear and restore only";
         CHECK_THROWS(commands::setTempo(volume, 1, 1200, write), "set tempo" + refused);
         CHECK_THROWS(commands::setCountIn(volume, { 1 }, true, write), "set count-in" + refused);
-        CHECK_THROWS(commands::push(volume, source, 42, { .write = write }), "push" + refused);
+        // Push is open on this model, into a memory with no take on any
+        // track only (rc500_push_tests): memory 1 holds two, so it is refused
+        // by push's own rule, before a byte moves.
+        CHECK_THROWS(commands::push(volume, source, 1, { .write = write }),
+                     "memory 1 holds a take on track 1");
         CHECK_THROWS(commands::trim(volume, 1, 0, 22050, { .write = write }), "trim" + refused);
         CHECK_THROWS(commands::downmixToMono(volume, 1, { .write = write }), "downmix" + refused);
         CHECK_THROWS(commands::normalize(volume, 1, { .targetLufs = -18.0, .write = write }),
