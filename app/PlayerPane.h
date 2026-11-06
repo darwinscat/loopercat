@@ -161,6 +161,7 @@ private:
     void applyFile(const juce::File& wav);
     void applyTracks(const std::vector<TrackFile>& tracks);
     void soloPressed(int track);
+    void refreshSoloTips(); // each solo button's tooltip from its lit state: the way back is named
     juce::AudioThumbnail& thumbnailFor(int lane) { return lane == 0 ? thumbnail_ : thumbnail2_; }
     juce::Rectangle<int> laneArea(int lane) const;
     int titleLeft() const; // where the title starts: past the transport, and past the solo pair

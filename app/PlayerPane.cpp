@@ -100,10 +100,10 @@ PlayerPane::PlayerPane(AudioEngine& engine) : engine_(engine)
         button.setColour(juce::TextButton::buttonOnColourId, felitronics::appkit::brand::violet);
         button.setColour(juce::TextButton::textColourOffId, kDim);
         button.setColour(juce::TextButton::textColourOnId, kText);
-        button.setTooltip("Solo track " + juce::String(i + 1));
         button.onClick = [this, track = static_cast<int>(i) + 1] { soloPressed(track); };
         addChildComponent(button); // appear with a multi-track memory
     }
+    refreshSoloTips();
 
     thumbnail_.addChangeListener(this); // repaint as the background build progresses
     thumbnail2_.addChangeListener(this);
@@ -192,6 +192,7 @@ void PlayerPane::applyTracks(const std::vector<TrackFile>& tracks)
         button.setToggleState(false, juce::dontSendNotification);
         button.setVisible(trackCount_ > 1);
     }
+    refreshSoloTips();
 
     std::vector<AudioEngine::MixTrack> mix;
     std::vector<juce::File> files;
@@ -226,7 +227,23 @@ void PlayerPane::soloPressed(int track)
         if (static_cast<int>(i) + 1 != track)
             soloButtons_[i].setToggleState(false, juce::dontSendNotification);
     engine_.setSolo(on ? track : 0);
+    refreshSoloTips();
     repaint();
+}
+
+// The buttons say the way back. A player who soloed a track could not find
+// how to hear both again (2026-10-25); the way is the lit button itself, so
+// an unlit button offers the solo and names the second click, and a lit one
+// says what is playing and that one click brings both tracks back. Nothing
+// else about a click changes.
+void PlayerPane::refreshSoloTips()
+{
+    for (std::size_t i = 0; i < soloButtons_.size(); ++i) {
+        const juce::String track(static_cast<int>(i) + 1);
+        soloButtons_[i].setTooltip(soloButtons_[i].getToggleState()
+                                       ? "Only track " + track + " is playing - click to hear both"
+                                       : "Solo track " + track + " - click again to hear both");
+    }
 }
 
 void PlayerPane::applyFile(const juce::File& wav)
@@ -244,6 +261,7 @@ void PlayerPane::applyFile(const juce::File& wav)
         button.setToggleState(false, juce::dontSendNotification);
         button.setVisible(false); // a one-track memory has nothing to solo
     }
+    refreshSoloTips();
     const juce::Result loaded = engine_.load(wav);
     if (loaded.failed()) {
         error_ = loaded.getErrorMessage();
@@ -550,6 +568,7 @@ void PlayerPane::clear()
         button.setToggleState(false, juce::dontSendNotification);
         button.setVisible(false);
     }
+    refreshSoloTips();
     title_.clear();
     error_.clear();
     currentPath_.clear();

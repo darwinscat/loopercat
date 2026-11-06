@@ -20,6 +20,10 @@
 //     name, size and stamp as one stat reads them; a file the meter cannot
 //     measure is said to the owner through onLoudnessFailed, and no reading
 //     comes up for it
+//   - the solo pair of a two-track memory: one track at a time, the other
+//     lane drawn dim, the lit button naming the way back, and the way back
+//     being that button; a load clears the solo, a one-track memory has
+//     no buttons
 
 #include "support.hpp"
 
@@ -34,6 +38,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 using namespace loopercat;
 
@@ -72,6 +77,36 @@ void settle(PlayerPane& pane)
 // Where the 0.2 s and 0.7 s marks fall in a 44.1 kHz file.
 constexpr juce::int64 kInFrame = 8820;
 constexpr juce::int64 kOutFrame = 30870;
+
+// How much of the waveform's violet each lane of a two-track pane draws,
+// lane 1 then lane 2, read off a snapshot. The brand violet is blue well
+// over red and green; so is the palette's dark background, faintly, and
+// over a lane's thousands of pixels that faint tint outweighs the
+// waveform. So a pixel counts only by its blue past the other channels
+// beyond a floor the background never reaches: the waveform at its full
+// alpha clears it by half as much again, and a lane the solo has muted,
+// at a quarter of the alpha, does not clear it at all. The lanes are the
+// equal halves of the strip under the transport row, which ends under the
+// solo buttons' inset; the lane labels and the divider are grey, and the
+// playhead spans both lanes alike.
+std::pair<double, double> laneInk(PlayerPane& pane, const juce::Button& soloButton)
+{
+    constexpr int kInkFloor = 40; // blue past red/green: ~8 for the background, ~90 for the lit waveform, ~30 dimmed
+    const juce::Image shot = pane.createComponentSnapshot(pane.getLocalBounds(), false, 1.0f);
+    const juce::Image::BitmapData pixels(shot, juce::Image::BitmapData::readOnly); // one map, not one per pixel
+    const int top = soloButton.getBottom() + 4;
+    const int mid = top + (shot.getHeight() - top) / 2;
+    const auto ink = [&pixels](int y0, int y1) {
+        double sum = 0.0;
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < pixels.width; ++x) {
+                const juce::Colour c = pixels.getPixelColour(x, y);
+                sum += juce::jmax(0, c.getBlue() - juce::jmax(c.getRed(), c.getGreen()) - kInkFloor);
+            }
+        return sum;
+    };
+    return { ink(top, mid), ink(mid, pixels.height) };
+}
 
 const juce::String kTrim = "Trim";
 const juce::String kReset = "Reset";
@@ -298,9 +333,83 @@ int main()
         CHECK(engine.isLooping());
     }
 
+    // --- the solo pair: one track at a time, and the way back ---
+    //
+    // A two-track memory shows T1 and T2, unlit, and the engine plays both
+    // (solo 0). One press solos that track and dims the other lane; the lit
+    // button says what is playing and names the way back, and pressing it
+    // again is the way back. Pressing the other button moves the solo: one
+    // at a time, as on the pedal. Another memory loads with no solo, and a
+    // one-track memory shows no buttons at all. A player once could not
+    // find the way back (2026-10-25); the buttons say it now.
+    const juce::File rampFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                    .getChildFile("loopercat_player_pane_harness_ramp.wav");
+    {
+        // Audio with a shape, so a lane's dimming shows in a snapshot: the
+        // ramp fill is pcm16 only, and the preview plays pcm16.
+        testkit::WavSpec ramp;
+        ramp.frames = kFrames;
+        ramp.rampFill = true;
+        const auto bytes = testkit::syntheticWav(ramp);
+        std::ofstream out(rampFile.getFullPathName().toStdString(), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+    juce::TextButton* t1 = buttonNamed(pane, "T1");
+    juce::TextButton* t2 = buttonNamed(pane, "T2");
+    CHECK(t1 != nullptr && t2 != nullptr);
+    if (t1 != nullptr && t2 != nullptr) {
+        const juce::String soloOne = "Solo track 1 - click again to hear both";
+        const juce::String soloTwo = "Solo track 2 - click again to hear both";
+        const juce::String onlyOne = "Only track 1 is playing - click to hear both";
+        const juce::String onlyTwo = "Only track 2 is playing - click to hear both";
+
+        pane.setTracks(8, { { rampFile, 1.0f, false }, { rampFile, 1.0f, false } }, "Two");
+        settle(pane);
+        CHECK(t1->isVisible() && t2->isVisible());
+        CHECK(!t1->getToggleState() && !t2->getToggleState());
+        CHECK_EQ(engine.solo(), 0);
+        CHECK(t1->getTooltip() == soloOne);
+        CHECK(t2->getTooltip() == soloTwo);
+        const auto both = laneInk(pane, *t1);
+        CHECK(both.first > 0.0 && both.second > 0.0); // the lanes draw something to dim
+
+        press(*t1);
+        CHECK_EQ(engine.solo(), 1);
+        CHECK(t1->getToggleState() && !t2->getToggleState());
+        CHECK(t1->getTooltip() == onlyOne);
+        CHECK(t2->getTooltip() == soloTwo);
+        const auto one = laneInk(pane, *t1);
+        CHECK(one.second < both.second * 0.6); // lane 2 drawn dim
+        CHECK(one.first > both.first * 0.8);   // lane 1 as it was
+
+        press(*t1); // the lit button is the way back
+        CHECK_EQ(engine.solo(), 0);
+        CHECK(!t1->getToggleState() && !t2->getToggleState());
+        CHECK(t1->getTooltip() == soloOne && t2->getTooltip() == soloTwo);
+        const auto back = laneInk(pane, *t1);
+        CHECK(back.second > both.second * 0.8); // lane 2 lit again
+
+        press(*t1);
+        press(*t2);
+        CHECK_EQ(engine.solo(), 2);
+        CHECK(!t1->getToggleState() && t2->getToggleState()); // one at a time: T1 released
+        CHECK(t1->getTooltip() == soloOne && t2->getTooltip() == onlyTwo);
+
+        pane.setTracks(9, { { rampFile, 1.0f, false }, { rampFile, 1.0f, false } }, "Again");
+        CHECK_EQ(engine.solo(), 0); // a load starts with both tracks (a fresh mix does by itself)
+        CHECK(!t1->getToggleState() && !t2->getToggleState()); // ...and the buttons say so: what a forgotten reset leaves lit
+        CHECK(t1->getTooltip() == soloOne && t2->getTooltip() == soloTwo);
+
+        pane.setSlot(10, rampFile, "One", false, kFrames);
+        CHECK(!t1->isVisible() && !t2->isVisible()); // a one-track memory has nothing to solo
+        CHECK_EQ(engine.solo(), 0);
+    }
+
     pane.clear();
     wavFile.deleteFile();
     floatFile.deleteFile();
     oddFile.deleteFile();
+    CHECK(rampFile.deleteFile()); // the engine let go of it: a fixture left behind is a failure
     return testkit::summary("player_pane_harness");
 }
