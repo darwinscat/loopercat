@@ -696,13 +696,38 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     if (options.landedName)
         assertLandedName(*options.landedName);
 
+    // The gate, on every path: a drop-only push lands a file on the card as
+    // a configured one does, so the same profile refuses it, before a byte
+    // moves — and the memory it lands in is read for the rule below, config
+    // written or not.
+    const std::string memoryText = readMemoryFor(volume, profile::Operation::push);
+    const profile::DeviceProfile& family = rc0::profileOf(memoryText);
+    std::string body = rc0::slotBody(memoryText, slot);
+
+    // A memory of a model with more tracks than one takes an upload only
+    // while no track holds a take — configured or merely in its folder — and
+    // force does not change that. The take lands on track 1 as the memory's
+    // first recording; what the pedal makes of a second take of another
+    // length beside it has not been asked of it (hardware reading 2026-09-23:
+    // a track 2 recorded after track 1 came out exactly half its length; a
+    // non-multiple length is unknown), so until it has, a used memory is not
+    // offered, and the refusal names the track that is in the way (decided
+    // 2026-10-29). The one-track model keeps its replace below.
+    if (family.trackCount > 1)
+        for (int track = 1; track <= family.trackCount; ++track) {
+            const bool configured =
+                rc0::sectionField(body, rc0::trackSectionName(track), "WavStat") == 1;
+            if (configured || !volume::listTrackWavs(volume, family, slot, track).empty())
+                throw Error("push refused: memory " + std::to_string(slot) + " holds a take on track "
+                            + std::to_string(track) + " - upload into a used \""
+                            + std::string(family.familyName) + "\" memory is not offered yet");
+        }
+
     std::optional<params::SlotParams> slotParams;
     std::string newDocument;
     bool noteLengthReplaced = false;
     if (options.writeConfig) {
         slotParams = params::computeSlotParams(info.frames);
-        const std::string memoryText = readMemoryFor(volume, profile::Operation::push);
-        std::string body = rc0::slotBody(memoryText, slot);
         // The new take defines a new length, so the field becomes a bar count.
         // If it was a note value, that mode is gone — reported, never silent.
         // Only a memory that HOLDS a loop can have a length to replace: a
@@ -717,6 +742,16 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
                                     slotParams->measureField());
         body = rc0::setSectionField(body, rc0::kSectionTrack1, "RecTmp", slotParams->tempoTenths);
         body = rc0::setSectionField(body, rc0::kSectionMaster, "Tempo", slotParams->tempoTenths);
+        // LpLen is the length of the memory's first recording, on the
+        // two-track model too (hardware reading 2026-09-23: a memory recorded
+        // track 1 first at 8 bars then track 2 at 4 carries LpLen 8; one
+        // recorded on track 2 alone carries that track's length). Into an
+        // empty memory the pushed take is that recording. The two-track
+        // model's MASTER also carries CurrentTrack and LpMod, and neither is
+        // written: single-track recordings off the pedal (2026-09-22) carry
+        // CurrentTrack 0, the factory value an empty memory already holds,
+        // and LpMod 0 on one such memory and 1 on another, so it is not the
+        // recording's doing — what it is remains a checkpoint question.
         body = rc0::setSectionField(body, rc0::kSectionMaster, "LpLen", slotParams->measures);
         if (options.oneShot)
             body = rc0::setSectionField(body, rc0::kSectionTrack1, "One", 1);
@@ -725,7 +760,10 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
         newDocument = rc0::replaceSlotBody(memoryText, slot, body);
     }
 
-    const std::vector<std::string> existing = volume::listSlotWavs(volume, slot);
+    // The take's track, on every model: the first (kFirstTrack); the
+    // one-track model's folder is that track's.
+    const std::vector<std::string> existing =
+        volume::listTrackWavs(volume, family, slot, kFirstTrack);
     if (!existing.empty() && !options.force) {
         std::string files;
         for (const auto& f : existing)
@@ -744,7 +782,7 @@ inline PushResult push(const fs::path& volume, const fs::path& wavPath, int slot
     requireMemoryJournal(options.write);
     if (options.write.journal.slotsChanging)
         options.write.journal.slotsChanging({ slot });
-    const fs::path dir = volume::wavDir(volume, slot);
+    const fs::path dir = volume::trackDir(volume, family, slot, kFirstTrack);
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec)

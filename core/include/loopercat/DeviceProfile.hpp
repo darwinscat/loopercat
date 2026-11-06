@@ -368,12 +368,14 @@ inline constexpr std::string_view kRc500FactorySections = R"(
 // (model id 00 00 00 77 answers, 76 and 78 are silent; Identity Reply family
 // 0x0377), ioreg (product id 0x0252). Open: reading, the operations that
 // carry every track of a memory — pull, rename, clear, restore (decided for
-// 0.9.6, 2026-10-18) — and One Shot, which the pedal keeps per track and the
-// app sets per track (decided 2026-10-29). Everything else is refused.
+// 0.9.6, 2026-10-18) — One Shot, which the pedal keeps per track and the
+// app sets per track (decided 2026-10-29), and push, which this model takes
+// into a memory with no take on any track and refuses elsewhere (decided
+// 2026-10-29; the rule is push's, Commands.hpp). Everything else is refused.
 inline constexpr DeviceProfile kRc500 {
     "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, kRc500FactorySections,
     operations({ Operation::read, Operation::pull, Operation::rename, Operation::setOneShot,
-                 Operation::clear, Operation::restore })
+                 Operation::push, Operation::clear, Operation::restore })
 };
 
 inline constexpr std::array<const DeviceProfile*, 2> kAll { &kRc5, &kRc500 };

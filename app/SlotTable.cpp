@@ -8,6 +8,7 @@
 
 #include <felitronics/appkit/Brand.h>
 
+#include <loopercat/Catalog.hpp>
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
@@ -453,11 +454,21 @@ bool SlotTable::isInterestedInFileDrag(const juce::StringArray& files)
     return false;
 }
 
+// A row takes a file when its memory is offered an upload: every row of a
+// one-track model, an empty memory of a two-track one (catalog::uploadOffered)
+// — the highlight under the drag and the drop agree on it.
+bool SlotTable::takesAudio(int row) const
+{
+    return row >= 0 && static_cast<std::size_t>(row) < rows_.size()
+        && catalog::uploadOffered(rows_[static_cast<std::size_t>(row)].info);
+}
+
 void SlotTable::fileDragMove(const juce::StringArray&, int x, int y)
 {
     const int row = rowAt(x, y);
-    if (row != dragRow_) {
-        dragRow_ = row;
+    const int target = takesAudio(row) ? row : -1;
+    if (target != dragRow_) {
+        dragRow_ = target;
         table_.repaint();
     }
 }
@@ -473,7 +484,7 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
     const int row = rowAt(x, y);
     dragRow_ = -1;
     table_.repaint();
-    if (slotOfRow(row) <= 0 || !onAudioDropped || !allowed().push)
+    if (slotOfRow(row) <= 0 || !onAudioDropped || !allowed().push || !takesAudio(row))
         return;
     for (const auto& file : files)
         if (isImportableAudio(file)) {
