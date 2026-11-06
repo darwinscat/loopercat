@@ -93,18 +93,19 @@ std::pair<double, double> laneInk(PlayerPane& pane, const juce::Button& soloButt
 {
     constexpr int kInkFloor = 40; // blue past red/green: ~8 for the background, ~90 for the lit waveform, ~30 dimmed
     const juce::Image shot = pane.createComponentSnapshot(pane.getLocalBounds(), false, 1.0f);
+    const juce::Image::BitmapData pixels(shot, juce::Image::BitmapData::readOnly); // one map, not one per pixel
     const int top = soloButton.getBottom() + 4;
     const int mid = top + (shot.getHeight() - top) / 2;
-    const auto ink = [&shot](int y0, int y1) {
+    const auto ink = [&pixels](int y0, int y1) {
         double sum = 0.0;
         for (int y = y0; y < y1; ++y)
-            for (int x = 0; x < shot.getWidth(); ++x) {
-                const juce::Colour c = shot.getPixelAt(x, y);
+            for (int x = 0; x < pixels.width; ++x) {
+                const juce::Colour c = pixels.getPixelColour(x, y);
                 sum += juce::jmax(0, c.getBlue() - juce::jmax(c.getRed(), c.getGreen()) - kInkFloor);
             }
         return sum;
     };
-    return { ink(top, mid), ink(mid, shot.getHeight()) };
+    return { ink(top, mid), ink(mid, pixels.height) };
 }
 
 const juce::String kTrim = "Trim";
@@ -396,8 +397,8 @@ int main()
         CHECK(t1->getTooltip() == soloOne && t2->getTooltip() == onlyTwo);
 
         pane.setTracks(9, { { rampFile, 1.0f, false }, { rampFile, 1.0f, false } }, "Again");
-        CHECK_EQ(engine.solo(), 0); // a load starts with both tracks
-        CHECK(!t1->getToggleState() && !t2->getToggleState());
+        CHECK_EQ(engine.solo(), 0); // a load starts with both tracks (a fresh mix does by itself)
+        CHECK(!t1->getToggleState() && !t2->getToggleState()); // ...and the buttons say so: what a forgotten reset leaves lit
         CHECK(t1->getTooltip() == soloOne && t2->getTooltip() == soloTwo);
 
         pane.setSlot(10, rampFile, "One", false, kFrames);
