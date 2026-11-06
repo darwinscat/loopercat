@@ -153,38 +153,121 @@ inline std::string readMemory(const fs::path& volume, int fileNo)
 }
 
 // THE database: the bank the write counters name as newest. The pedal writes
-// a save into one bank and reconciles the pair only at its next boot
-// (hardware-observed 2026-08-10: a fresh WRITE landed in MEMORY2 at
-// generation 237 while MEMORY1 sat stale at 236) — always reading MEMORY1
-// showed a just-saved loop as absent, and a mutation started from the stale
-// document would clobber the fresh save on both banks. Serial arithmetic
-// picks the newer counter across the wrap; an unreadable or trailer-less
-// bank simply loses the vote, and with neither readable the MEMORY1 error
-// propagates as before.
-inline std::string readBank(const fs::path& volume, volume::Bank bank)
+// a save into one bank, one generation past the other (hardware-observed
+// 2026-08-10: a fresh WRITE landed in MEMORY2 at generation 237 while
+// MEMORY1 sat at 236), and leaves the pair that way: a freshly rebooted RC-5
+// still showed 0x25a / 0x259 with differing documents (hardware reading
+// 2026-11-05, issue #171) — the pedal rewrites MEMORY2 from MEMORY1 only
+// when MEMORY2 fails validation. Always reading MEMORY1 showed a just-saved
+// loop as absent, and a mutation started from the stale document would
+// clobber the fresh save on both banks (issue #37). Serial arithmetic picks
+// the newer counter across the wrap; an unreadable or trailer-less bank
+// simply loses the vote; a tie — the app stamps both banks alike — reads
+// the first bank.
+//
+// The pair is inspected into this, and the reader, the doctor and the
+// connect line in operations.log all take their answer from the same vote
+// (newestBank): the scan's one inspection serves the slots and the line,
+// the doctor inspects again to judge each bank on its own.
+struct BankPair {
+    std::map<int, std::string> texts;         // the banks that read and validated
+    std::map<int, std::string> errors;        // ...and the ones that did not, with the reason
+    std::map<int, std::uint32_t> generations; // the write counters of the readable banks with a trailer
+    int newest = 1;                           // the bank the vote names: the one to read
+};
+
+inline int newestBank(const BankPair& pair)
 {
-    std::map<int, std::string> texts;
-    std::map<int, std::uint32_t> generations;
+    if (pair.generations.size() == 2)
+        return static_cast<std::int32_t>(pair.generations.at(2) - pair.generations.at(1)) > 0 ? 2 : 1;
+    if (pair.generations.size() == 1)
+        return pair.generations.begin()->first; // a counted bank beats a trailer-less one
+    return !pair.texts.contains(1) && pair.texts.contains(2) ? 2 : 1;
+}
+
+inline BankPair inspectBanks(const fs::path& volume, volume::Bank bank)
+{
+    BankPair pair;
     for (const int fileNo : { 1, 2 }) {
         try {
             std::string text = readBank(volume, bank, fileNo);
             if (const auto marker = rc0::tailMarker(text))
-                generations[fileNo] = *marker;
-            texts[fileNo] = std::move(text);
-        } catch (const Error&) {
-            // this bank cannot vote
+                pair.generations[fileNo] = *marker;
+            pair.texts[fileNo] = std::move(text);
+        } catch (const Error& e) {
+            pair.errors[fileNo] = e.what(); // this bank cannot vote
         }
     }
-    if (texts.empty())
-        return readBank(volume, bank, 1); // no bank readable: surface the first one's error
-    if (generations.size() == 2) {
-        const bool secondNewer =
-            static_cast<std::int32_t>(generations[2] - generations[1]) > 0;
-        return texts[secondNewer ? 2 : 1];
+    pair.newest = newestBank(pair);
+    return pair;
+}
+
+// The memory pair with the profile gate (DeviceProfile.hpp) on each bank
+// that read. A bank of a model this app has not opened for the operation
+// keeps its vote — the pedal wrote it and its counter is real — but its
+// text is withheld: when the vote names it, the database is refused in the
+// gate's words, exactly as reading the newest bank and then gating it did,
+// never quietly replaced by the older bank; and the doctor names each
+// refused bank on its own.
+inline BankPair inspectMemory(const fs::path& volume, profile::Operation operation)
+{
+    BankPair pair = inspectBanks(volume, volume::Bank::memory);
+    for (const int fileNo : { 1, 2 }) {
+        if (!pair.texts.contains(fileNo))
+            continue;
+        try {
+            profile::require(rc0::profileOf(pair.texts.at(fileNo)), operation);
+        } catch (const Error& e) {
+            pair.errors[fileNo] = e.what();
+            pair.texts.erase(fileNo);
+        }
     }
-    if (generations.size() == 1)
-        return texts[generations.begin()->first]; // a counted bank beats a trailer-less one
-    return texts.contains(1) ? texts[1] : texts[2];
+    return pair;
+}
+
+// The database out of an inspected pair: the bank the vote names, or the
+// reason it has no text — the first bank's read error when neither read,
+// as it always was, or the gate's refusal of the newest bank.
+inline std::string databaseOf(BankPair pair)
+{
+    if (!pair.texts.contains(pair.newest))
+        throw Error(pair.errors.at(pair.newest));
+    return std::move(pair.texts.at(pair.newest));
+}
+
+inline std::string readBank(const fs::path& volume, volume::Bank bank)
+{
+    return databaseOf(inspectBanks(volume, bank));
+}
+
+// A write generation as the doctor and the operations log print it.
+inline std::string hexGeneration(std::uint32_t v)
+{
+    constexpr char digits[] = "0123456789abcdef";
+    std::string s;
+    do {
+        s.insert(s.begin(), digits[v & 0xf]);
+        v >>= 4;
+    } while (v != 0);
+    return "0x" + s;
+}
+
+// One line for operations.log at connect: both counters and the bank the app
+// reads, e.g. "memory banks 0x25a / 0x259, reading MEMORY1". A pair one step
+// apart is the pedal's normal state and asks nothing of the player, so the
+// doctor says nothing about it (issue #171); the fact stays on record here.
+inline std::string describeBanks(const BankPair& pair, volume::Bank bank)
+{
+    const auto counter = [&pair](int fileNo) -> std::string {
+        if (pair.generations.contains(fileNo))
+            return hexGeneration(pair.generations.at(fileNo));
+        return pair.texts.contains(fileNo) ? "no trailer" : "unreadable";
+    };
+    std::string kind(volume::bankStem(bank));
+    for (char& c : kind)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return kind + " banks " + counter(1) + " / " + counter(2) + ", reading "
+         + std::string(volume::bankStem(bank)) + std::to_string(pair.newest);
 }
 
 // The document a command starts from, and the gate it passes first: the
@@ -193,9 +276,7 @@ inline std::string readBank(const fs::path& volume, volume::Bank bank)
 // mutation's own words, before anything on the card has moved.
 inline std::string readMemoryFor(const fs::path& volume, profile::Operation operation)
 {
-    std::string text = readBank(volume, volume::Bank::memory);
-    profile::require(rc0::profileOf(text), operation);
-    return text;
+    return databaseOf(inspectMemory(volume, operation));
 }
 
 inline std::string readMemory(const fs::path& volume)
@@ -1368,7 +1449,8 @@ inline bool isTakeFileName(std::string_view name)
 // push uses: no state recorded from a card fails it (the pedal records and
 // indexes nothing else), and what the app puts on a card is the pedal's
 // format and nothing else (issue #44). A state that arrives from elsewhere is
-// refused here rather than discarded by the pedal at its next boot.
+// refused here rather than left on the card as a take the pedal neither
+// indexes nor plays (PR #45, 2026-08-19).
 //
 // Discipline as everywhere: everything validates before the first write; the
 // takes the slot holds, on every track, go to the archive before they leave
@@ -1581,14 +1663,18 @@ struct Finding {
     bool operator==(const Finding&) const = default;
 };
 
-// Health report: junk on the volume, trailer damage, memory-pair divergence,
-// slots whose config and audio disagree.
+// Health report: junk on the volume, trailer damage, a memory pair more than
+// one step apart, slots whose config and audio disagree. Every sentence that
+// says what the pedal will do is backed by a dated hardware reading named
+// beside it; what no reading showed, the doctor does not promise (issue #171).
 inline std::vector<Finding> doctor(const fs::path& volume)
 {
     std::vector<Finding> findings;
     // Only the pedal's own tree: a sidecar there is the boot hazard this
-    // message names. The root is swept too (volume::findJunk) but never
-    // reported — see the two questions spelled out in Volume.hpp.
+    // message names (rc5cat 0.1.0, 2026-07-19, README "the macOS landmine":
+    // the pedal's parser chokes on AppleDouble sidecars at boot). The root
+    // is swept too (volume::findJunk) but never reported — see the two
+    // questions spelled out in Volume.hpp.
     for (const auto& junk : volume::bootHazardJunk(volume))
         findings.push_back({ Level::error,
                              "AppleDouble junk (pedal may refuse to boot): " + junk.string() });
@@ -1603,63 +1689,55 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                                        "slot before the next write" });
     }
 
-    const auto hexGeneration = [](std::uint32_t v) {
-        constexpr char digits[] = "0123456789abcdef";
-        std::string s;
-        do {
-            s.insert(s.begin(), digits[v & 0xf]);
-            v >>= 4;
-        } while (v != 0);
-        return "0x" + s;
-    };
-
     // Trailers are write-generation counters, not fixed markers — any value
-    // is legal; only a structurally broken trailer is boot-fatal.
-    std::map<int, std::string> texts;
-    std::map<int, std::uint32_t> generations;
+    // is legal; only a structurally broken trailer is boot-fatal (rc5cat
+    // 0.1.0, 2026-07-19: a trailer of the wrong shape puts LOOPER DATA READ
+    // ERR on the display; rc5cat 0.7.0, 2026-08-08, issue #9 there: the
+    // value is a counter the pedal increments itself). Each bank is judged
+    // on its own here; the slot checks below follow the reader's vote, so
+    // the doctor judges the document the player is shown.
+    const BankPair banks = inspectMemory(volume, profile::Operation::read);
     for (const int fileNo : { 1, 2 }) {
-        try {
-            texts[fileNo] = readMemory(volume, fileNo);
-            if (const auto marker = rc0::tailMarker(texts[fileNo]))
-                generations[fileNo] = *marker;
-            else
-                findings.push_back({ Level::error,
-                                     "MEMORY" + std::to_string(fileNo) + ".RC0 trailer is "
-                                         "malformed - causes LOOPER DATA READ ERR" });
-        } catch (const Error& e) {
+        const std::string file = "MEMORY" + std::to_string(fileNo) + ".RC0";
+        if (banks.errors.contains(fileNo))
+            findings.push_back({ Level::error, file + ": " + banks.errors.at(fileNo) });
+        else if (!banks.generations.contains(fileNo))
             findings.push_back({ Level::error,
-                                 "MEMORY" + std::to_string(fileNo) + ".RC0: " + e.what() });
-        }
+                                 file + " trailer is malformed - causes LOOPER DATA READ ERR" });
     }
 
-    if (generations.contains(1) && generations.contains(2)) {
+    if (banks.generations.contains(1) && banks.generations.contains(2)) {
         // A healthy pair sits within one generation of itself (either order:
         // the factory ships 0x38/0x39, a pedal-side save leaves e.g.
         // 0x3a/0x39), and the distance is mod-2^32 — the pair stays healthy
-        // across the counter wrap.
-        const std::uint32_t delta = generations[1] - generations[2];
+        // across the counter wrap. One step apart is where the pedal leaves
+        // the pair, through reboots (hardware reading 2026-11-05, issue
+        // #171): the reader takes the newer bank, and there is nothing to
+        // tell the player — the generations go to operations.log at connect
+        // (describeBanks).
+        const std::uint32_t delta = banks.generations.at(1) - banks.generations.at(2);
         if (delta != 0 && delta != 1 && delta != 0xffffffffu)
             findings.push_back({ Level::warn,
-                                 "MEMORY write generations " + hexGeneration(generations[1]) + " / "
-                                     + hexGeneration(generations[2])
+                                 "MEMORY write generations " + hexGeneration(banks.generations.at(1))
+                                     + " / " + hexGeneration(banks.generations.at(2))
                                      + " are more than one step apart - unexpected "
                                        "state, copy the card before writing" });
+        // One counter on both banks means one document: the app writes the
+        // pair from one text, and the pedal stamps the bank it writes past
+        // the other. Two documents under one counter is a state neither
+        // writer leaves, and the reader would take MEMORY1 without a word
+        // — so this one is still said, as the unexpected state it is.
+        else if (delta == 0 && banks.texts.contains(1) && banks.texts.contains(2)
+                 && rc0::splitFile(banks.texts.at(1)).document
+                        != rc0::splitFile(banks.texts.at(2)).document)
+            findings.push_back({ Level::warn,
+                                 "MEMORY1 and MEMORY2 differ under the same write generation "
+                                     + hexGeneration(banks.generations.at(1))
+                                     + " - unexpected state, copy the card before writing" });
     }
 
-    if (texts.contains(1) && texts.contains(2)
-        && rc0::splitFile(texts[1]).document != rc0::splitFile(texts[2]).document) {
-        std::string generationNote;
-        if (generations.contains(1) && generations.contains(2))
-            generationNote = " (write generations " + hexGeneration(generations[1]) + " / "
-                           + hexGeneration(generations[2]) + ")";
-        findings.push_back({ Level::info,
-                             "MEMORY1 and MEMORY2 differ" + generationNote
-                                 + " - normal right after a save on the pedal; "
-                                   "a reboot reconciles the pair" });
-    }
-
-    if (texts.contains(1)) {
-        for (const auto& slot : catalog::listSlots(texts[1])) {
+    if (const auto database = banks.texts.find(banks.newest); database != banks.texts.end()) {
+        for (const auto& slot : catalog::listSlots(database->second)) {
             const auto wavs = volume::listSlotWavs(volume, slot.slot);
             std::string trimmed = slot.name;
             while (!trimmed.empty() && trimmed.back() == ' ')
@@ -1669,12 +1747,20 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                                      "slot " + std::to_string(slot.slot) + " (\"" + trimmed
                                          + "\") is configured with audio but its folder is empty" });
             if (!slot.hasAudio && !wavs.empty()) {
-                // "Reboot to index it" is only true for the pedal's own
-                // format. The RC-5 indexer takes 32-bit float ONLY; a
-                // non-float file is DISCARDED from the slot on the next boot,
-                // not indexed (hardware: issue #44/#45). So telling a user to
-                // reboot a 16-bit take would cost them the take. Read the file
-                // and only promise a reboot when the pedal could keep it.
+                // What the pedal does with a file dropped into an empty slot
+                // folder, each sentence below saying only what a dated reading
+                // showed (issue #171). It indexes the file at its next boot,
+                // filling the slot config and deriving the tempo itself
+                // (rc5cat 0.1.0, 2026-07-19: push --no-config, reboot; the
+                // pedal-authored slot params in golden.json are the product)
+                // — when it can play the file, and it plays 32-bit float
+                // only: a 16-bit take re-indexed to hasAudio=NO beside a
+                // float32 one at YES, neither file rewritten (PR #45,
+                // 2026-08-19), and a hand-copied PCM file in slot 30 came
+                // through a reboot still there and still unindexed
+                // (2026-11-05). So a non-float file is sent to a re-push,
+                // which converts it — not to a reboot, which does nothing to
+                // it either way.
                 std::string files;
                 bool allFloat32 = true;
                 for (const auto& f : wavs) {
@@ -1703,8 +1789,7 @@ inline std::vector<Finding> doctor(const fs::path& volume)
                         { Level::warn,
                           "slot " + std::to_string(slot.slot) + " has " + files
                               + ", which the pedal cannot index: it plays 32-bit float only. "
-                                "Re-push it through LooperCat to convert it - a "
-                                "reboot would discard it, not index it" });
+                                "Re-push it through LooperCat to convert it" });
             }
         }
     }

@@ -1911,6 +1911,10 @@ void MainComponent::applySnapshot(const PedalSnapshot& latest)
         cardNameVolume = snapshot.volume;
         cardNameSettled = false;
         trace("connect: card up at " + utf8(snapshot.volume) + " (" + utf8(snapshot.family) + ")");
+        // The pair's generations and the bank the slots came from, once per
+        // card: the doctor no longer turns a pair one step apart into a
+        // banner, so the fact lives here (issue #171).
+        trace("connect: " + utf8(snapshot.banks));
         readCardName();
     }
     // The pedal is gone and the story had no toast of its own — a yank

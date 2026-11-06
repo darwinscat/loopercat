@@ -72,6 +72,9 @@ struct PedalSnapshot
     long long freeBytes = 0;                 // available space on the volume
     std::vector<SlotRow> slots;              // all 99 when readable
     std::vector<commands::Finding> findings; // doctor report (health banners)
+    std::string banks;                       // the memory pair's write generations and the bank
+                                             // the slots were read from (commands::describeBanks);
+                                             // empty until the pair has been inspected
 
     // freeBytes compares at the status line's display granularity (0.1 GB):
     // byte-level drift from unrelated disk activity is not a change, and on a
@@ -82,7 +85,7 @@ struct PedalSnapshot
         return volume == other.volume && error == other.error && family == other.family
             && state == other.state
             && freeBytes / kFreeBytesBucket == other.freeBytes / kFreeBytesBucket
-            && slots == other.slots && findings == other.findings;
+            && slots == other.slots && findings == other.findings && banks == other.banks;
     }
 };
 
@@ -232,7 +235,12 @@ public:
                 snapshot.freeBytes = static_cast<long long>(space.available);
         }
         try {
-            const std::string text = commands::readMemory(*found);
+            // One inspection of the pair serves both the slots and the connect
+            // line in operations.log that names the generations and the bank
+            // they came from (issue #171).
+            commands::BankPair banks = commands::inspectMemory(*found, profile::Operation::read);
+            snapshot.banks = commands::describeBanks(banks, volume::Bank::memory);
+            const std::string text = commands::databaseOf(std::move(banks));
             // The model is the card's own word for itself, and it says how
             // many tracks a memory has (DeviceProfile.hpp).
             const profile::DeviceProfile& family = rc0::profileOf(text);

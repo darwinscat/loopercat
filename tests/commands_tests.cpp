@@ -1612,8 +1612,8 @@ int main()
                      "WavStat=2, WavLen=4410 but its take");
         // A take the pedal does not play — 16-bit, or mono — is refused at the
         // door exactly as push refuses it, frames matching or not: no state
-        // recorded from a card looks like this, and the pedal would discard
-        // it at its next boot rather than index it (issue #44).
+        // recorded from a card looks like this, and the pedal would leave it
+        // on the card unindexed rather than play it (issue #44, PR #45).
         CHECK_THROWS(commands::restore(volume, 5,
                                        { body, { commands::Take { 1, "005_1.WAV",
                                                                 bytesOf(testkit::syntheticWav(
@@ -2026,8 +2026,12 @@ int main()
         CHECK(volumeBytes(volume) == before);
 
         // Second bank unwritable: MEMORY1 already carries the swapped config —
-        // the audio still comes home, and the half-written pair is not silent:
-        // doctor reports the divergence.
+        // the audio still comes home. The pair is then one generation apart
+        // with MEMORY1 ahead: on the card that is the state a save on the
+        // pedal leaves, so the reader takes MEMORY1 and the doctor, which
+        // used to call the pair "normal right after a save; a reboot
+        // reconciles the pair", says nothing of it (issue #171). The failed
+        // write is the toast and the log line.
         fs::permissions(volume::memoryPath(volume, 2), fs::perms::owner_read,
                         fs::perm_options::replace);
         CHECK_THROWS(commands::swap(volume, 3, 7, testkit::unrecordedWrite()), "cannot write");
@@ -2035,10 +2039,9 @@ int main()
                         fs::perm_options::replace);
         CHECK_EQ(volume::listSlotWavs(volume, 3).front(), "003_1.WAV");
         CHECK_EQ(volume::listSlotWavs(volume, 7).front(), "take.wav");
-        bool sawDiverged = false;
+        CHECK(commands::readMemory(volume) == commands::readMemory(volume, 1));
         for (const auto& finding : commands::doctor(volume))
-            sawDiverged = sawDiverged || finding.message.find("differ") != std::string::npos;
-        CHECK(sawDiverged);
+            CHECK(finding.message.find("differ") == std::string::npos);
     }
 
     // --- a locked sidecar cannot un-swap a successful swap (crew review #5) ---
@@ -2168,7 +2171,9 @@ int main()
         CHECK(commands::doctor(volume).empty()); // a healthy pedal reports nothing
 
         // Junk + a slot configured with audio but an empty folder + an
-        // unindexed wav + diverged memory pair.
+        // unindexed wav, the configured slot saved pedal-style into one bank
+        // a generation past the other (MEMORY1 at 0x3a beside the factory
+        // 0x39): the doctor judges slots by the bank the reader picks.
         commands::writeFileBytes(volume / "ROLAND" / "WAVE" / ".DS_Store", "junk");
         putWav(volume, 7, "unindexed.wav");
         {
@@ -2177,7 +2182,7 @@ int main()
             body = rc0::setField(body, "WavStat", 1);
             body = rc0::setField(body, "WavLen", 4410);
             commands::writeFileBytes(volume::memoryPath(volume, 1),
-                                     rc0::setTailMarker(rc0::replaceSlotBody(text, 3, body), 1));
+                                     rc0::setTailGeneration(rc0::replaceSlotBody(text, 3, body), 0x3a));
         }
 
         const auto findings = commands::doctor(volume);
@@ -2186,14 +2191,13 @@ int main()
             ++byLevel[finding.level];
         CHECK_EQ(byLevel[commands::Level::error], 1); // the junk
         CHECK_EQ(byLevel[commands::Level::warn], 1);  // configured-but-empty
-        CHECK_EQ(byLevel[commands::Level::info], 2);  // unindexed wav + pair divergence
-        // Divergence is a fact of life after a pedal-side save, not damage.
-        bool sawDivergence = false;
+        CHECK_EQ(byLevel[commands::Level::info], 1);  // unindexed wav
+        // A pair one step apart with differing documents is where the pedal
+        // leaves it, reboots included (2026-11-05, issue #171): not a finding,
+        // and no promise about a reboot anywhere.
         for (const auto& finding : findings)
-            sawDivergence = sawDivergence
-                || (finding.level == commands::Level::info
-                    && finding.message.find("normal right after a save") != std::string::npos);
-        CHECK(sawDivergence);
+            CHECK(finding.message.find("differ") == std::string::npos
+                  && finding.message.find("reconcile") == std::string::npos);
 
         // A pedal-recorded generation pair (e.g. 0x3a/0x39, hardware-observed
         // 2026-07-24) is healthy — trailer values are counters, not constants.
@@ -2425,9 +2429,12 @@ int main()
     // --- doctor: the "reboot to index" hint tells the truth about format ---
 
     {
-        // A reboot indexes a float32 take and DISCARDS a non-float one (issue
-        // #44/#45). So the hint must never send a 16-bit take to a reboot: the
-        // doctor reads the file and only promises a reboot for float32.
+        // A reboot indexes a float32 take (rc5cat 0.1.0, 2026-07-19) and
+        // leaves a non-float one where it is, unindexed (PR #45, 2026-08-19;
+        // a PCM file through a reboot, 2026-11-05). So the hint must never
+        // send a 16-bit take to a reboot: the doctor reads the file and only
+        // promises a reboot for float32, and promises the 16-bit take nothing
+        // of one (issue #171).
         TempDir tmp;
         const fs::path volume = makePedal(tmp.path);
 
@@ -2451,12 +2458,12 @@ int main()
         // The float32 slot keeps the reboot promise...
         CHECK(floatMsg.find("reboot the pedal to index it") != std::string::npos);
         // ...and the 16-bit slot never makes it: it says the pedal cannot
-        // index the file and that a reboot would DISCARD it, and it points at
-        // the fix (re-push to convert).
+        // index the file and points at the fix (re-push to convert), and it
+        // says nothing of what a reboot would do - the file survives one.
         CHECK(pcmMsg.find("cannot index") != std::string::npos);
-        CHECK(pcmMsg.find("discard") != std::string::npos);
         CHECK(pcmMsg.find("Re-push") != std::string::npos);
-        CHECK(pcmMsg.find("reboot the pedal to index it") == std::string::npos);
+        CHECK(pcmMsg.find("reboot") == std::string::npos);
+        CHECK(pcmMsg.find("discard") == std::string::npos);
     }
 
     // --- normalize: the gain lands, the take stays recoverable (issue #53) ---
