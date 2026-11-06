@@ -2099,11 +2099,17 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     // stopped being a second copy of them.
     juce::PopupMenu menu;
     // A replace is the one-track model's; a two-track memory with a take on
-    // any track is not offered an upload (catalog::uploadOffered).
+    // any track, or a file in either folder, is not offered an upload
+    // (offersUpload) - and since push is open on the model, the greyed item
+    // says why itself: the "closed" sentence is for closed operations.
+    const bool offered = offersUpload(row);
     menu.addItem(3,
-                 occupied ? juce::String::fromUTF8("Replace audio\xe2\x80\xa6")
-                          : juce::String::fromUTF8("Push audio here\xe2\x80\xa6"),
-                 can.push && catalog::uploadOffered(row.info));
+                 !occupied && row.wavFile.empty()
+                     ? juce::String::fromUTF8("Push audio here\xe2\x80\xa6")
+                     : offered ? juce::String::fromUTF8("Replace audio\xe2\x80\xa6")
+                               : juce::String::fromUTF8("Replace audio\xe2\x80\xa6 (not offered on a used ")
+                                     + utf8(snapshot.family) + " memory yet)",
+                 can.push && offered);
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), can.pull && occupied);
     juce::PopupMenu downmix;
     downmix.addItem(6, juce::String::fromUTF8("Both outputs\xe2\x80\xa6"));

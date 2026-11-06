@@ -95,13 +95,13 @@ inline bool holdsAudio(const SlotInfo& info)
                        [](const TrackInfo& track) { return track.hasAudio; });
 }
 
-// Whether an upload is offered into a memory, as push decides it
+// Whether the config offers an upload into a memory, as push decides it
 // (Commands.hpp): on a one-track model always — an occupied slot takes a
 // replace — and on a model with more tracks only while no track holds a
 // take, because what the pedal makes of a second take of another length
-// beside a pushed first one has not been asked of it. The menu, the drop
-// target and the hint follow this, so the player is not offered a push the
-// core refuses.
+// beside a pushed first one has not been asked of it. The config's half:
+// push looks into the track folders too, and so does the app before it
+// offers one (offersUpload, PedalWorker.h), with the folders the scan read.
 inline bool uploadOffered(const SlotInfo& info)
 {
     return info.tracks.size() <= 1 || !holdsAudio(info);

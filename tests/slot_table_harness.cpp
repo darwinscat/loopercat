@@ -402,14 +402,32 @@ int main()
         // sits inside it.
         const auto rowPoint = [&box, &table](int row) {
             const auto r = box->getRowPosition(row, true);
+            CHECK_EQ(box->getRowContainingPosition(40, r.getCentreY()), row); // the point is on the row
             return table.getLocalPoint(box, juce::Point<int>(40, r.getCentreY()));
         };
         const juce::StringArray files { "/somewhere/loop.wav" };
         CHECK(table.isInterestedInFileDrag(files));
+        // The empty-slot hint's click: memory 11's flat fields say empty
+        // and its folder list is empty, but track 2 holds a take - no
+        // chooser; memory 5's opens one.
+        const int hintsBefore = hintClicks;
+        model->cellClicked(10, wavColumn, clickAt(table));
+        CHECK_EQ(hintClicks, hintsBefore);
+        model->cellClicked(4, wavColumn, clickAt(table));
+        CHECK_EQ(hintClicks, hintsBefore + 1);
         table.filesDropped(files, rowPoint(10).x, rowPoint(10).y); // memory 11: track 2 holds a take
         CHECK(landed.empty());
         table.filesDropped(files, rowPoint(4).x, rowPoint(4).y); // memory 5: nothing on either track
         CHECK((landed == std::vector<int> { 5 }));
+        // A file in a folder with the config saying empty - a hand copy, or
+        // a take the pedal has not indexed - is a used memory to the core, so
+        // neither the drop nor the hint offers it.
+        twoRows.at(4).wavFile = "T1 stray.wav";
+        table.setRows(twoRows);
+        table.filesDropped(files, rowPoint(4).x, rowPoint(4).y);
+        CHECK((landed == std::vector<int> { 5 }));
+        model->cellClicked(4, wavColumn, clickAt(table));
+        CHECK_EQ(hintClicks, hintsBefore + 1);
 
         std::string oneText = testkit::syntheticMemoryText();
         oneText = rc0::replaceSlotBody(oneText, 1,
