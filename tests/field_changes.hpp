@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Darwin's Cat. Part of Looper Cat - see LICENSE.
+// Copyright (c) 2026 Darwin's Cat. Part of Looper Cat — see LICENSE.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // The exact-changed-set view of a memory write: what one mutation did to a

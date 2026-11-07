@@ -14,8 +14,10 @@
 //   - a document's track sections must fit its model: an "RC-5" with a
 //     <TRACK2> is refused (the guard's oldest promise), an "RC-500" with a
 //     <TRACK3> or with no <TRACK2> the same way
-//   - the RC-5 is open for everything; the two-track model for nothing, and
-//     each refusal names the model and the operation
+//   - the RC-5 is open for everything; the two-track model for what carries
+//     every track or knows them (read, pull, rename, One Shot, count-in,
+//     push, clear, restore), and each refusal names the model, the
+//     operation and what is open instead
 
 #include "support.hpp"
 
