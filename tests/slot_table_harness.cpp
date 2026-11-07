@@ -78,10 +78,11 @@ int main()
         CHECK(rc5.closed.empty());
         // The two-track model: what carries every track of a memory, nothing else.
         const CardPermissions rc500 = CardPermissions::of("RC-500");
-        CHECK(rc500.rename && rc500.oneShot && rc500.pull && rc500.clear && rc500.restore);
-        CHECK(!rc500.tempo && !rc500.countIn && !rc500.push && !rc500.swap
+        CHECK(rc500.rename && rc500.oneShot && rc500.countIn && rc500.push && rc500.pull
+              && rc500.clear && rc500.restore);
+        CHECK(!rc500.tempo && !rc500.swap
               && !rc500.normalize && !rc500.trim && !rc500.downmix && !rc500.rhythm && !rc500.playStop);
-        CHECK_EQ(rc500.closed, "On the RC-500, LooperCat does rename, set one-shot, pull, clear and restore only");
+        CHECK_EQ(rc500.closed, "On the RC-500, LooperCat does rename, set one-shot, set count-in, push, pull, clear and restore only");
         for (const char* name : { "RC-505", "", "rc-5" }) {
             const CardPermissions none = CardPermissions::of(name);
             CHECK(!none.anyWrite());
@@ -169,16 +170,25 @@ int main()
     doubleClick(nameColumn);
     CHECK_EQ(activations, 1);
 
-    // The two-track model: Count-In and push stay closed — a lamp, no drag
-    // — while One Shot is open (a flag of each track) and its click goes
-    // through; the name, also open, takes the editing path on a double-click
-    // instead of playing.
+    // The two-track model: One Shot (a flag of each track) and Count-In
+    // (the RHYTHM triple, the RC-5's numbers on this card too — hardware
+    // 2026-11-07) are open, and their clicks go through; push is open, so
+    // the drag is wanted (which rows take the drop is below); the name, also
+    // open, takes the editing path on a double-click instead of playing.
     table.permissions = [] { return CardPermissions::of("RC-500"); };
     click(oneShotColumn);
     click(countInColumn);
     CHECK_EQ(oneShotClicks, 1);
-    CHECK_EQ(countInClicks, 0);
-    CHECK(!table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
+    CHECK_EQ(countInClicks, 1);
+    // The beat rule is the core's, not the model's: the dot the core would
+    // refuse at 6/4 is a lamp on this card as on the RC-5, with the same
+    // hover, and the one beside it, over a playing rhythm, is a button.
+    model->cellClicked(1, countInColumn, clickAt(table));
+    CHECK_EQ(countInClicks, 1);
+    CHECK(model->getCellTooltip(1, countInColumn).contains("6/4"));
+    model->cellClicked(2, countInColumn, clickAt(table));
+    CHECK_EQ(countInClicks, 2);
+    CHECK(table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
     table.onRenameCommitted = nullptr;
     doubleClick(nameColumn);
     CHECK_EQ(activations, 1); // unchanged: the edit path, no play
@@ -193,7 +203,7 @@ int main()
     click(countInColumn);
     click(wavColumn);
     CHECK_EQ(oneShotClicks, 2);
-    CHECK_EQ(countInClicks, 1);
+    CHECK_EQ(countInClicks, 3);
     CHECK_EQ(hintClicks, 1);
     CHECK(table.isInterestedInFileDrag({ "/somewhere/loop.wav" }));
     table.onRenameCommitted = nullptr;
@@ -204,11 +214,11 @@ int main()
     // too, and its hover says why in the card's words; a dot that can be
     // clicked, and every other cell, says nothing.
     model->cellClicked(1, countInColumn, clickAt(table));
-    CHECK_EQ(countInClicks, 1);
+    CHECK_EQ(countInClicks, 3);
     CHECK(model->getCellTooltip(1, countInColumn).contains("6/4"));
     CHECK(model->getCellTooltip(1, countInColumn).contains("switch the rhythm on at the pedal"));
     model->cellClicked(2, countInColumn, clickAt(table));
-    CHECK_EQ(countInClicks, 2);
+    CHECK_EQ(countInClicks, 4);
     CHECK(model->getCellTooltip(2, countInColumn).isEmpty());
     CHECK(model->getCellTooltip(0, countInColumn).isEmpty());
     CHECK(model->getCellTooltip(1, oneShotColumn).isEmpty());
@@ -374,6 +384,69 @@ int main()
         model->cellClicked(0, oneShotColumn, clickAtX(second));
         CHECK((flips.back() == std::pair<int, int> { 1, 1 }));
         CHECK(model->getCellTooltip(0, oneShotColumn).isEmpty());
+    }
+
+    // --- a drop lands only where an upload is offered ---
+    //
+    // On the two-track model push is open, but a memory with a take on
+    // either track is not offered one (catalog::uploadOffered): a drop on
+    // such a row calls nobody, while an empty memory takes the file - the
+    // second track alone, which the flat fields call empty, counts. On the
+    // one-track model every row takes the drop: an occupied slot's is a
+    // replace.
+    {
+        // The two-track text as measured on the pedal: memory 11 recorded on
+        // track 2 alone, memory 5 factory-empty.
+        std::vector<SlotRow> twoRows;
+        for (auto& info : catalog::listSlots(testkit::syntheticTwoTrackMemoryText()))
+            twoRows.push_back({ std::move(info), "", "", { "" }, std::nullopt });
+        CHECK(!twoRows.at(10).info.hasAudio && catalog::holdsAudio(twoRows.at(10).info));
+        CHECK(!catalog::holdsAudio(twoRows.at(4).info));
+        table.setRows(twoRows);
+        table.permissions = [] { return CardPermissions::of("RC-500"); };
+        std::vector<int> landed;
+        table.onAudioDropped = [&landed](int slot, juce::String) { landed.push_back(slot); };
+        // A point on the row, in the table's own space wherever the list box
+        // sits inside it.
+        const auto rowPoint = [&box, &table](int row) {
+            const auto r = box->getRowPosition(row, true);
+            CHECK_EQ(box->getRowContainingPosition(40, r.getCentreY()), row); // the point is on the row
+            return table.getLocalPoint(box, juce::Point<int>(40, r.getCentreY()));
+        };
+        const juce::StringArray files { "/somewhere/loop.wav" };
+        CHECK(table.isInterestedInFileDrag(files));
+        // The empty-slot hint's click: memory 11's flat fields say empty
+        // and its folder list is empty, but track 2 holds a take - no
+        // chooser; memory 5's opens one.
+        const int hintsBefore = hintClicks;
+        model->cellClicked(10, wavColumn, clickAt(table));
+        CHECK_EQ(hintClicks, hintsBefore);
+        model->cellClicked(4, wavColumn, clickAt(table));
+        CHECK_EQ(hintClicks, hintsBefore + 1);
+        table.filesDropped(files, rowPoint(10).x, rowPoint(10).y); // memory 11: track 2 holds a take
+        CHECK(landed.empty());
+        table.filesDropped(files, rowPoint(4).x, rowPoint(4).y); // memory 5: nothing on either track
+        CHECK((landed == std::vector<int> { 5 }));
+        // A file in a folder with the config saying empty - a hand copy, or
+        // a take the pedal has not indexed - is a used memory to the core, so
+        // neither the drop nor the hint offers it.
+        twoRows.at(4).wavFile = "T1 stray.wav";
+        table.setRows(twoRows);
+        table.filesDropped(files, rowPoint(4).x, rowPoint(4).y);
+        CHECK((landed == std::vector<int> { 5 }));
+        model->cellClicked(4, wavColumn, clickAt(table));
+        CHECK_EQ(hintClicks, hintsBefore + 1);
+
+        std::string oneText = testkit::syntheticMemoryText();
+        oneText = rc0::replaceSlotBody(oneText, 1,
+                                       rc0::setField(rc0::slotBody(oneText, 1), "WavStat", 1));
+        std::vector<SlotRow> oneRows;
+        for (auto& info : catalog::listSlots(oneText))
+            oneRows.push_back({ std::move(info), "", "", { "" }, std::nullopt });
+        table.setRows(oneRows);
+        table.permissions = [] { return CardPermissions::of("RC-5"); };
+        table.filesDropped(files, rowPoint(0).x, rowPoint(0).y); // slot 1 holds a take: a replace
+        CHECK((landed == std::vector<int> { 5, 1 }));
     }
 
     return testkit::summary("slot_table_harness");

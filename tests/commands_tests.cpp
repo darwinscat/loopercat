@@ -29,6 +29,7 @@
 #include "support.hpp"
 #include "archive_support.hpp"
 #include "two_track_card.hpp"
+#include "field_changes.hpp"
 
 #include "../app/OperationId.h"
 
@@ -286,99 +287,6 @@ fs::path makePedalFromCard(const fs::path& root)
     for (const int fileNo : { 1, 2 })
         commands::writeFileBytes(volume::memoryPath(volume, fileNo), card);
     return volume;
-}
-
-// One line of a memory body is one field — a tab, then <Tag>value</Tag> — or
-// one section's opener or closer on a line of its own: the shape every RC-5
-// writes (the card fixture; golden.json's factory slot). A field line taken
-// apart, or nothing for any other line.
-struct FieldLine {
-    std::string tag;
-    long long value;
-};
-
-std::optional<FieldLine> parseFieldLine(const std::string& line)
-{
-    if (line.size() < 2 || line[0] != '\t' || line[1] != '<')
-        return std::nullopt;
-    const auto tagEnd = line.find('>', 2);
-    if (tagEnd == std::string::npos)
-        return std::nullopt;
-    const std::string tag = line.substr(2, tagEnd - 2);
-    const std::string close = "</" + tag + ">";
-    const std::size_t valueBegin = tagEnd + 1;
-    if (line.size() < valueBegin + close.size()
-        || line.compare(line.size() - close.size(), close.size(), close) != 0)
-        return std::nullopt;
-    const std::string digits = line.substr(valueBegin, line.size() - close.size() - valueBegin);
-    std::size_t i = (!digits.empty() && digits[0] == '-') ? 1 : 0;
-    if (i == digits.size())
-        return std::nullopt;
-    for (; i < digits.size(); ++i)
-        if (digits[i] < '0' || digits[i] > '9')
-            return std::nullopt;
-    return FieldLine { tag, std::stoll(digits) };
-}
-
-// What changed between two bodies of one memory, as "SECTION.Tag before->after"
-// in the body's own order — or "shape" when the bodies differ in anything but
-// field values: a line added or lost, a tag renamed, a line outside any
-// section touched. A field's value is the only unit a mutation may change;
-// everything else about the body is the pedal's, byte for byte.
-std::string fieldChanges(const std::string& before, const std::string& after)
-{
-    const auto lines = [](const std::string& text) {
-        std::vector<std::string> out;
-        std::size_t from = 0;
-        while (true) {
-            const auto nl = text.find('\n', from);
-            if (nl == std::string::npos) {
-                out.push_back(text.substr(from));
-                return out;
-            }
-            out.push_back(text.substr(from, nl - from));
-            from = nl + 1;
-        }
-    };
-    const std::vector<std::string> a = lines(before);
-    const std::vector<std::string> b = lines(after);
-    if (a.size() != b.size())
-        return "shape";
-    std::string section;
-    std::string out;
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        if (a[i] == b[i]) {
-            // <X> on a line of its own opens section X; </X> closes it.
-            if (a[i].size() > 2 && a[i].front() == '<' && a[i].back() == '>'
-                && a[i].find('<', 1) == std::string::npos) {
-                if (a[i][1] == '/')
-                    section.clear();
-                else
-                    section = a[i].substr(1, a[i].size() - 2);
-            }
-            continue;
-        }
-        const auto fa = parseFieldLine(a[i]);
-        const auto fb = parseFieldLine(b[i]);
-        if (!fa || !fb || fa->tag != fb->tag || section.empty())
-            return "shape";
-        if (!out.empty())
-            out += ", ";
-        out += section + "." + fa->tag + " " + std::to_string(fa->value) + "->"
-             + std::to_string(fb->value);
-    }
-    return out;
-}
-
-// What one mutation of `slot` did to the memory document: that memory's field
-// changes, with every byte outside the memory asserted identical (the trailer
-// aside — every write stamps it).
-std::string slotChangesOnCard(const std::string& before, const std::string& after, int slot)
-{
-    const std::string afterBody = rc0::slotBody(after, slot);
-    CHECK(rc0::splitFile(rc0::replaceSlotBody(before, slot, afterBody)).document
-          == rc0::splitFile(after).document);
-    return fieldChanges(rc0::slotBody(before, slot), afterBody);
 }
 
 } // namespace
@@ -2691,13 +2599,13 @@ int main()
         // setOneShot: TRACK1's <One>, on and off again — and the card's own
         // document is back, to the byte.
         commands::setOneShot(volume, { 11 }, 1, true, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(card, memory(), 11), "TRACK1.One 0->1");
+        CHECK_EQ(testkit::slotChangesOnCard(card, memory(), 11), "TRACK1.One 0->1");
         const std::string oneShotOn = memory();
         commands::setOneShot(volume, { 11 }, 1, false, writeOpts(tmp.path));
         // The RC-5 has one track: a second is not one of its tracks.
         CHECK_THROWS(commands::setOneShot(volume, { 11 }, 2, true, writeOpts(tmp.path)),
                      "set one-shot: track 2, but an \"RC-5\" memory holds one track");
-        CHECK_EQ(slotChangesOnCard(oneShotOn, memory(), 11), "TRACK1.One 1->0");
+        CHECK_EQ(testkit::slotChangesOnCard(oneShotOn, memory(), 11), "TRACK1.One 1->0");
         CHECK(rc0::splitFile(memory()).document == rc0::splitFile(card).document);
 
         // setTempo on the loop: 120.0 BPM over 10888139 frames is 246.90 s,
@@ -2705,7 +2613,7 @@ int main()
         // TRACK1.
         const std::string beforeTempo = memory();
         commands::setTempo(volume, 11, 1200, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(beforeTempo, memory(), 11),
+        CHECK_EQ(testkit::slotChangesOnCard(beforeTempo, memory(), 11),
                  "TRACK1.Measure 97->130, TRACK1.MeasLen 90->123, TRACK1.RecTmp 870->1200, "
                  "MASTER.Tempo 870->1200");
 
@@ -2713,7 +2621,7 @@ int main()
         // bars — there is no loop to derive them from.
         const std::string beforeEmptyTempo = memory();
         commands::setTempo(volume, 42, 905, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(beforeEmptyTempo, memory(), 42),
+        CHECK_EQ(testkit::slotChangesOnCard(beforeEmptyTempo, memory(), 42),
                  "TRACK1.RecTmp 1200->905, MASTER.Tempo 1200->905");
 
         // push into the empty memory: a 30 s take, one-shot. Boot indexing
@@ -2726,7 +2634,7 @@ int main()
             commands::writeFileBytes(source, bytesOf(take));
             const std::string beforePush = memory();
             commands::push(volume, source, 42, { .oneShot = true, .write = writeOpts(tmp.path) });
-            CHECK_EQ(slotChangesOnCard(beforePush, memory(), 42),
+            CHECK_EQ(testkit::slotChangesOnCard(beforePush, memory(), 42),
                      "TRACK1.One 0->1, TRACK1.Measure 1->23, TRACK1.MeasLen 0->16, "
                      "TRACK1.RecTmp 905->1280, TRACK1.WavStat 0->1, TRACK1.WavLen 0->1323000, "
                      "MASTER.Tempo 905->1280, MASTER.LpLen 0->16");
@@ -2741,7 +2649,7 @@ int main()
         const std::string beforeTrim = memory();
         commands::trim(volume, 11, 0, 441000, { .write = writeOpts(tmp.path) });
         const std::string afterTrim = memory();
-        CHECK_EQ(slotChangesOnCard(beforeTrim, afterTrim, 11),
+        CHECK_EQ(testkit::slotChangesOnCard(beforeTrim, afterTrim, 11),
                  "TRACK1.Measure 130->12, TRACK1.MeasLen 123->5, TRACK1.WavLen 10888139->441000, "
                  "MASTER.LpLen 128->5");
 
@@ -2755,11 +2663,11 @@ int main()
         };
         commands::setTempo(volume, 11, 905, writeOpts(tmp.path));
         const std::string beforeRestore = memory();
-        CHECK_EQ(slotChangesOnCard(afterTrim, beforeRestore, 11),
+        CHECK_EQ(testkit::slotChangesOnCard(afterTrim, beforeRestore, 11),
                  "TRACK1.Measure 12->11, TRACK1.MeasLen 5->4, TRACK1.RecTmp 1200->905, "
                  "MASTER.Tempo 1200->905");
         commands::restore(volume, 11, trimmed, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(beforeRestore, memory(), 11),
+        CHECK_EQ(testkit::slotChangesOnCard(beforeRestore, memory(), 11),
                  "TRACK1.Measure 11->12, TRACK1.MeasLen 4->5, TRACK1.RecTmp 905->1200, "
                  "MASTER.Tempo 905->1200");
         CHECK(commands::readFileBytes(volume::wavDir(volume, 11) / "011_1.WAV")
@@ -2796,11 +2704,11 @@ int main()
 
         std::string before = memory();
         commands::setOneShot(volume, { 5 }, 1, true, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(before, memory(), 5), "TRACK1.One 0->1");
+        CHECK_EQ(testkit::slotChangesOnCard(before, memory(), 5), "TRACK1.One 0->1");
 
         before = memory();
         commands::setTempo(volume, 5, 905, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(before, memory(), 5),
+        CHECK_EQ(testkit::slotChangesOnCard(before, memory(), 5),
                  "TRACK1.RecTmp 1200->905, MASTER.Tempo 1200->905");
 
         // push: a 30 s take, 16 bars at 128.0 BPM (see the card block above).
@@ -2810,7 +2718,7 @@ int main()
         before = memory();
         commands::push(volume, source, 5, { .write = writeOpts(tmp.path) });
         const std::string pushed = memory();
-        CHECK_EQ(slotChangesOnCard(before, pushed, 5),
+        CHECK_EQ(testkit::slotChangesOnCard(before, pushed, 5),
                  "TRACK1.Measure 0->23, TRACK1.MeasLen 0->16, TRACK1.RecTmp 905->1280, "
                  "TRACK1.WavStat 0->1, TRACK1.WavLen 0->1323000, MASTER.Tempo 905->1280, "
                  "MASTER.LpLen 0->16");
@@ -2823,7 +2731,7 @@ int main()
 
         // trim to 10 s at the kept 128.0 BPM: 21.3 beats, 5 bars.
         commands::trim(volume, 5, 0, 441000, { .write = writeOpts(tmp.path) });
-        CHECK_EQ(slotChangesOnCard(pushed, memory(), 5),
+        CHECK_EQ(testkit::slotChangesOnCard(pushed, memory(), 5),
                  "TRACK1.Measure 23->12, TRACK1.MeasLen 16->5, TRACK1.WavLen 1323000->441000, "
                  "MASTER.LpLen 16->5");
 
@@ -2831,7 +2739,7 @@ int main()
         // the foreign section's pair would not match the take it brings.
         before = memory();
         commands::restore(volume, 5, pushedState, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(before, memory(), 5),
+        CHECK_EQ(testkit::slotChangesOnCard(before, memory(), 5),
                  "TRACK1.Measure 12->23, TRACK1.MeasLen 5->16, TRACK1.WavLen 441000->1323000, "
                  "MASTER.LpLen 5->16");
 
@@ -2843,8 +2751,11 @@ int main()
     // --- a two-track card: what is open carries every track ---
     //
     // The two-track RC model's card (root "RC-500", two <TRACKn> per memory,
-    // NNN_1 and NNN_2 audio folders) has open what carries a memory whole:
-    // reading, pull, rename, clear and restore. The rest works on the first
+    // NNN_1 and NNN_2 audio folders) has open what carries a memory whole —
+    // reading, pull, rename, clear and restore — and what the two tracks
+    // share or that knows them: One Shot per track, push into an empty memory
+    // (rc500_push_tests) and Play Count-In, the RHYTHM triple with the RC-5's
+    // numbers (rc500_count_in_tests). The rest works on the first
     // track alone or moves only its audio, and is refused in its own name,
     // saying what is open, before a byte of the card has moved — the
     // settings pair included, whose only writer is the controls.
@@ -2899,10 +2810,13 @@ int main()
         commands::writeFileBytes(
             source, bytesOf(testkit::syntheticWav({ .tag = 3, .bits = 32, .frames = 1323000 })));
         const std::string refused = " refused on an \"RC-500\" card - on this model LooperCat"
-                                    " does rename, set one-shot, pull, clear and restore only";
+                                    " does rename, set one-shot, set count-in, push, pull, clear and restore only";
         CHECK_THROWS(commands::setTempo(volume, 1, 1200, write), "set tempo" + refused);
-        CHECK_THROWS(commands::setCountIn(volume, { 1 }, true, write), "set count-in" + refused);
-        CHECK_THROWS(commands::push(volume, source, 42, { .write = write }), "push" + refused);
+        // Push is open on this model, into a memory with no take on any
+        // track only (rc500_push_tests): memory 1 holds two, so it is refused
+        // by push's own rule, before a byte moves.
+        CHECK_THROWS(commands::push(volume, source, 1, { .write = write }),
+                     "memory 1 holds a take on track 1");
         CHECK_THROWS(commands::trim(volume, 1, 0, 22050, { .write = write }), "trim" + refused);
         CHECK_THROWS(commands::downmixToMono(volume, 1, { .write = write }), "downmix" + refused);
         CHECK_THROWS(commands::normalize(volume, 1, { .targetLufs = -18.0, .write = write }),
@@ -2951,11 +2865,11 @@ int main()
             const std::string start = commands::readMemory(volume);
             commands::setOneShot(volume, { 1 }, 2, true, writeOpts(tmp.path, "oneshot-t2"));
             const std::string second = commands::readMemory(volume);
-            CHECK_EQ(slotChangesOnCard(start, second, 1), "TRACK2.One 0->1");
+            CHECK_EQ(testkit::slotChangesOnCard(start, second, 1), "TRACK2.One 0->1");
             commands::setOneShot(volume, { 1, 3 }, 1, true, writeOpts(tmp.path, "oneshot-t1"));
             const std::string both = commands::readMemory(volume);
-            CHECK_EQ(fieldChanges(rc0::slotBody(second, 1), rc0::slotBody(both, 1)), "TRACK1.One 0->1");
-            CHECK_EQ(fieldChanges(rc0::slotBody(second, 3), rc0::slotBody(both, 3)), "TRACK1.One 0->1");
+            CHECK_EQ(testkit::fieldChanges(rc0::slotBody(second, 1), rc0::slotBody(both, 1)), "TRACK1.One 0->1");
+            CHECK_EQ(testkit::fieldChanges(rc0::slotBody(second, 3), rc0::slotBody(both, 3)), "TRACK1.One 0->1");
             for (int slot = 1; slot <= rc0::kSlotCount; ++slot)
                 if (slot != 1 && slot != 3)
                     CHECK(rc0::slotBody(both, slot) == rc0::slotBody(start, slot));
@@ -2964,7 +2878,7 @@ int main()
             CHECK(one.oneShot); // the flat field is track 1's
             CHECK(!catalog::readSlot(both, 3).tracks[1].oneShot); // slot 3's second track: not asked
             commands::setOneShot(volume, { 1 }, 2, false, writeOpts(tmp.path, "oneshot-t2-off"));
-            CHECK_EQ(slotChangesOnCard(both, commands::readMemory(volume), 1), "TRACK2.One 1->0");
+            CHECK_EQ(testkit::slotChangesOnCard(both, commands::readMemory(volume), 1), "TRACK2.One 1->0");
             // A track the model has not, and no track at all: refused by name,
             // the card as it was.
             const auto settled = volumeBytes(volume);
@@ -3115,7 +3029,7 @@ int main()
         // recompute and no mode to lose.
         commands::setTempo(volume, 40, 1000, writeOpts(tmp.path));
         const std::string afterNote = commands::readMemory(volume);
-        CHECK_EQ(slotChangesOnCard(start, afterNote, 40),
+        CHECK_EQ(testkit::slotChangesOnCard(start, afterNote, 40),
                  std::string("TRACK1.RecTmp 973->1000, MASTER.Tempo 973->1000"));
 
         // On a memory whose length IS a bar count, the same edit still
@@ -3124,7 +3038,7 @@ int main()
             rc0::sectionField(rc0::slotBody(afterNote, 8), rc0::kSectionTrack1, "WavLen");
         const long long bars8 = commands::barsFromTempo(1000, frames8);
         commands::setTempo(volume, 8, 1000, writeOpts(tmp.path));
-        CHECK_EQ(slotChangesOnCard(afterNote, commands::readMemory(volume), 8),
+        CHECK_EQ(testkit::slotChangesOnCard(afterNote, commands::readMemory(volume), 8),
                  "TRACK1.Measure 100->" + std::to_string(bars8 + params::kMeasureFieldOffset)
                      + ", TRACK1.MeasLen 93->" + std::to_string(bars8)
                      + ", TRACK1.RecTmp 1250->1000, MASTER.Tempo 1250->1000");

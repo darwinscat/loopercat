@@ -316,8 +316,10 @@ MainComponent::MainComponent(std::string explicitVolume, juce::File dataOverride
                                   } }));
     };
     table.onAudioDropped = [this](int slot, juce::String path) {
+        // Occupied on any track: the one-track model replaces, the two-track
+        // model is refused by the core in its own words (catalog::uploadOffered).
         if (const SlotRow* row = pedalBusy ? nullptr : slotRowFor(slot))
-            pushWav(slot, path, row->info.hasAudio);
+            pushWav(slot, path, catalog::holdsAudio(row->info));
     };
     table.onSwapRequested = [this](int from, int to) {
         if (pedalBusy || slotRowFor(from) == nullptr || slotRowFor(to) == nullptr)
@@ -2096,10 +2098,18 @@ void MainComponent::showSlotMenu(int slot, juce::Point<int> screenPosition)
     // panel now (and the two lamp columns still flip on click), so this menu
     // stopped being a second copy of them.
     juce::PopupMenu menu;
+    // A replace is the one-track model's; a two-track memory with a take on
+    // any track, or a file in either folder, is not offered an upload
+    // (offersUpload) - and since push is open on the model, the greyed item
+    // says why itself: the "closed" sentence is for closed operations.
+    const bool offered = offersUpload(row);
     menu.addItem(3,
-                 occupied ? juce::String::fromUTF8("Replace audio\xe2\x80\xa6")
-                          : juce::String::fromUTF8("Push audio here\xe2\x80\xa6"),
-                 can.push);
+                 !occupied && row.wavFile.empty()
+                     ? juce::String::fromUTF8("Push audio here\xe2\x80\xa6")
+                     : offered ? juce::String::fromUTF8("Replace audio\xe2\x80\xa6")
+                               : juce::String::fromUTF8("Replace audio\xe2\x80\xa6 (not offered on a used ")
+                                     + utf8(snapshot.family) + " memory yet)",
+                 can.push && offered);
     menu.addItem(4, juce::String::fromUTF8("Pull to folder\xe2\x80\xa6"), can.pull && occupied);
     juce::PopupMenu downmix;
     downmix.addItem(6, juce::String::fromUTF8("Both outputs\xe2\x80\xa6"));

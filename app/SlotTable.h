@@ -144,6 +144,7 @@ private:
     void updateSwapTarget();
 
     CardPermissions allowed() const { return permissions ? permissions() : CardPermissions {}; }
+    bool takesAudio(int row) const; // the row's memory is offered an upload (catalog::uploadOffered)
     int rowAt(int x, int y);
     int rowOfSlot(int slot) const;
     int slotOfRow(int rowIndex) const; // 0 when out of range

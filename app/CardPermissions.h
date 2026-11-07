@@ -42,9 +42,10 @@ struct CardPermissions {
     bool downmix = false;
     // The one short sentence a closed control says on a card whose model has
     // some operations open and others not ("On the RC-500, LooperCat does
-    // rename, set one-shot, pull, clear and restore only"), or, on a model this app only
-    // reads, what it writes to. Empty when every operation is open, and when
-    // no card the table knows is in front of the app.
+    // rename, set one-shot, set count-in, push, pull, clear and restore
+    // only"), or, on a model this app only reads, what it writes to. Empty
+    // when every operation is open, and when no card the table knows is in
+    // front of the app.
     std::string closed;
 
     bool anyWrite() const

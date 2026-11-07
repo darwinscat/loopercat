@@ -16,12 +16,13 @@
 //
 // The operation set is the guard's other half. Knowing a model is not the
 // same as being allowed to touch its card: the two-track model is known here
-// and opened one operation at a time, for the ones that carry every track —
-// pull, rename, clear and restore — and One Shot, which names its track. The
-// others work on the first track alone
-// (push, trim, downmix, normalize, tempo) or move only its audio (swap), and
-// would corrupt such a card silently; on this table they are not untested on
-// it, they are unreachable.
+// and opened one operation at a time — for the ones that carry every track
+// (pull, rename, clear and restore), for One Shot, which names its track,
+// for push into a memory with no take on either track, and for Play
+// Count-In, whose section the card lays out as the RC-5 does. The others
+// work on the first track alone (trim, downmix, normalize, tempo) or move
+// only its audio (swap), and would corrupt such a card silently; on this
+// table they are not untested on it, they are unreachable.
 
 #pragma once
 
@@ -368,12 +369,23 @@ inline constexpr std::string_view kRc500FactorySections = R"(
 // (model id 00 00 00 77 answers, 76 and 78 are silent; Identity Reply family
 // 0x0377), ioreg (product id 0x0252). Open: reading, the operations that
 // carry every track of a memory — pull, rename, clear, restore (decided for
-// 0.9.6, 2026-10-18) — and One Shot, which the pedal keeps per track and the
-// app sets per track (decided 2026-10-29). Everything else is refused.
+// 0.9.6, 2026-10-18) — One Shot, which the pedal keeps per track and the
+// app sets per track (decided 2026-10-29), push, which this model takes
+// into a memory with no take on any track and refuses elsewhere (decided
+// 2026-10-29; the rule is push's, Commands.hpp), and Play Count-In, whose
+// three fields live in <RHYTHM> — a section this card lays out as the RC-5
+// does, field for field, with the RC-5's numbers where they were read: a
+// memory saved on the pedal with the rhythm on, pattern Blank, beat 4/4
+// reads State 1, Pattern 57, Beat 2 (hardware, 2026-11-07; Rc0.hpp,
+// Beat.hpp). PlayCount's 1 = 1MEAS is the RC-5's reading (2026-08-10)
+// carried over on that layout, and the first count heard from this pedal
+// is what confirms it. The pattern and kit lists themselves are charted
+// for the RC-5 only, so the rhythm card stays closed. Everything else is
+// refused.
 inline constexpr DeviceProfile kRc500 {
     "RC-500", { 0x00, 0x00, 0x00, 0x77 }, 0x0252, 2, 99, kRc500FactorySections,
     operations({ Operation::read, Operation::pull, Operation::rename, Operation::setOneShot,
-                 Operation::clear, Operation::restore })
+                 Operation::setCountIn, Operation::push, Operation::clear, Operation::restore })
 };
 
 inline constexpr std::array<const DeviceProfile*, 2> kAll { &kRc5, &kRc500 };

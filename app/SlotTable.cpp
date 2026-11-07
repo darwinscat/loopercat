@@ -8,6 +8,7 @@
 
 #include <felitronics/appkit/Brand.h>
 
+#include <loopercat/Catalog.hpp>
 #include <loopercat/Wav.hpp>
 
 #include <cmath>
@@ -379,10 +380,11 @@ void SlotTable::cellClicked(int row, int columnId, const juce::MouseEvent& e)
         onCountInToggled(slotOfRow(row));
         return;
     }
-    // The empty-slot hint is a button: click opens the WAV chooser.
+    // The empty-slot hint is a button: click opens the WAV chooser. Empty on
+    // every track, the second alone counts (catalog::holdsAudio).
     if (columnId == kWavFile && onEmptyWavCellClicked && slotOfRow(row) > 0 && allowed().push) {
         const SlotRow& r = rows_[static_cast<std::size_t>(row)];
-        if (!r.info.hasAudio && r.wavFile.empty())
+        if (!catalog::holdsAudio(r.info) && r.wavFile.empty())
             onEmptyWavCellClicked(r.info.slot);
     }
 }
@@ -453,11 +455,22 @@ bool SlotTable::isInterestedInFileDrag(const juce::StringArray& files)
     return false;
 }
 
+// A row takes a file when its memory is offered an upload (offersUpload,
+// PedalWorker.h): every row of a one-track model, a memory of a two-track one
+// with nothing on either track — the highlight under the drag, the drop and
+// the empty-slot hint agree on it.
+bool SlotTable::takesAudio(int row) const
+{
+    return row >= 0 && static_cast<std::size_t>(row) < rows_.size()
+        && offersUpload(rows_[static_cast<std::size_t>(row)]);
+}
+
 void SlotTable::fileDragMove(const juce::StringArray&, int x, int y)
 {
     const int row = rowAt(x, y);
-    if (row != dragRow_) {
-        dragRow_ = row;
+    const int target = takesAudio(row) ? row : -1;
+    if (target != dragRow_) {
+        dragRow_ = target;
         table_.repaint();
     }
 }
@@ -473,7 +486,7 @@ void SlotTable::filesDropped(const juce::StringArray& files, int x, int y)
     const int row = rowAt(x, y);
     dragRow_ = -1;
     table_.repaint();
-    if (slotOfRow(row) <= 0 || !onAudioDropped || !allowed().push)
+    if (slotOfRow(row) <= 0 || !onAudioDropped || !allowed().push || !takesAudio(row))
         return;
     for (const auto& file : files)
         if (isImportableAudio(file)) {
@@ -587,8 +600,9 @@ void SlotTable::paintCell(juce::Graphics& g, int row, int columnId, int width, i
     case kLufs:     break; // drawn from the loudness cells below
     case kWavFile:
         // The empty-slot hint invites a push; a card this app only reads
-        // gets no invitation.
-        text = r.wavFile.empty() && !loaded
+        // gets no invitation, and neither does a memory with a take on any
+        // track - the second alone counts (catalog::holdsAudio).
+        text = r.wavFile.empty() && !catalog::holdsAudio(r.info)
                  ? (allowed().push
                         ? juce::String::fromUTF8("\xe2\x80\x94 drop audio here, or click to choose")
                         : juce::String())
