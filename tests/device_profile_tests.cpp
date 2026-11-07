@@ -92,18 +92,21 @@ int main()
         CHECK(rc500.hasFactoryBody());
         CHECK(rc500.allowsWrites());
         // Reading, what carries a memory whole, every track of it — pull,
-        // rename, clear, restore — and One Shot, which names its track.
-        // Nothing that works on the first track alone.
+        // rename, clear, restore — One Shot, which names its track, push into
+        // an empty memory, and Play Count-In, whose RHYTHM section this card
+        // writes with the RC-5's numbers (hardware, 2026-11-07). Nothing that
+        // works on the first track alone, and not the rhythm card: its lists
+        // are charted for the RC-5 only.
         using profile::Operation;
         const auto open = [](Operation op) {
             return op == Operation::read || op == Operation::pull || op == Operation::rename
-                || op == Operation::setOneShot || op == Operation::push || op == Operation::clear
-                || op == Operation::restore;
+                || op == Operation::setOneShot || op == Operation::setCountIn
+                || op == Operation::push || op == Operation::clear || op == Operation::restore;
         };
         for (const auto op : kEveryOp)
             CHECK(rc500.allows(op) == open(op));
         CHECK_EQ(profile::openOperations(rc500),
-                 std::string("rename, set one-shot, push, pull, clear and restore"));
+                 std::string("rename, set one-shot, set count-in, push, pull, clear and restore"));
     }
     // Two entries, distinct names, distinct ids: a lookup can never answer twice.
     {
@@ -169,20 +172,20 @@ int main()
                  "this is an \"RC-500\" card, not an RC-5 - LooperCat only speaks RC-5");
     for (const auto op : { profile::Operation::read, profile::Operation::pull, profile::Operation::rename,
                            profile::Operation::setOneShot, profile::Operation::clear,
-                           profile::Operation::push,
+                           profile::Operation::push, profile::Operation::setCountIn,
                            profile::Operation::restore })
         profile::require(profile::kRc500, op); // open: no throw
     // A closed operation on a model this app reads names itself, the model,
-    // and what is open there instead.
+    // and what is open there instead — the open set in the enum's order,
+    // the count-in (opened 2026-11-07) between One Shot and push.
     for (const auto op : { profile::Operation::setTempo,
-                           profile::Operation::setCountIn,
                            profile::Operation::trim, profile::Operation::downmix,
                            profile::Operation::normalize, profile::Operation::swap,
                            profile::Operation::setControls, profile::Operation::setRhythm,
                            profile::Operation::setPlayStop })
         CHECK_THROWS(profile::require(profile::kRc500, op),
                      std::string(profile::operationName(op)) + " refused on an \"RC-500\" card -"
-                         " on this model LooperCat does rename, set one-shot, push, pull, clear and restore only");
+                         " on this model LooperCat does rename, set one-shot, set count-in, push, pull, clear and restore only");
     // With nothing open, a mutation still says what the app speaks.
     CHECK_THROWS(profile::require(closed, profile::Operation::push), "LooperCat only speaks RC-5");
     CHECK_EQ(profile::openOperations(closed), std::string());
