@@ -55,7 +55,7 @@ tempo, and the onboard rhythm drifts against the actual music. LooperCat makes
 the arithmetic visible — the Bars column — and editable: set the true tempo and
 bars on any slot, and the pedal's rhythm finally agrees with the music.
 Automatic tempo-true upload (the right numbers written the moment a WAV lands)
-is next on the roadmap (#26, #28).
+is next on the roadmap.
 
 ## The STORAGE story
 
